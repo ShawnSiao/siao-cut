@@ -188,7 +188,11 @@ pub fn cancel(db: &Connection, job_id: &str) -> Result<AudioAnalysisJob> {
     load(db, job_id)
 }
 
-pub fn resume(db: &Connection, job_id: &str) -> Result<AudioAnalysisJob> {
+pub fn resume(
+    db: &Connection,
+    job_id: &str,
+    start_delay_ms: Option<u64>,
+) -> Result<AudioAnalysisJob> {
     let job = load(db, job_id)?;
     if !["cancelled", "failed", "interrupted"].contains(&job.status.as_str()) {
         bail!("audio_job_not_resumable: 当前音频分析任务不能继续")
@@ -197,7 +201,8 @@ pub fn resume(db: &Connection, job_id: &str) -> Result<AudioAnalysisJob> {
         "UPDATE audio_analysis_jobs SET status='queued',progress=0,report_json=NULL,cancel_requested_at=NULL,error_message=NULL,completed_at=NULL,worker_pid=NULL,attempt_count=attempt_count+1,updated_at=?2 WHERE id=?1",
         params![job_id, now()],
     )?;
-    if let Err(error) = spawn_worker(job_id, None).context("无法继续本地音频分析") {
+    if let Err(error) = spawn_worker(job_id, start_delay_ms).context("无法继续本地音频分析")
+    {
         let failed_at = now();
         db.execute(
             "UPDATE audio_analysis_jobs SET status='failed',error_message=?2,completed_at=?3,updated_at=?3 WHERE id=?1",
