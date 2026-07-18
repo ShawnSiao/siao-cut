@@ -18,11 +18,13 @@ describe("desktop localization", () => {
 
   it("persists and applies locale changes without touching project preferences", () => {
     localStorage.setItem("siaocut.exportPreferences.v1", "preserve-me");
+    localStorage.setItem("siaocut.transcriptionLanguage.v1", "en");
     changeUiLocale("en-US");
     expect(getUiLocale()).toBe("en-US");
     expect(localStorage.getItem(UI_LOCALE_STORAGE_KEY)).toBe("en-US");
     expect(document.documentElement.lang).toBe("en-US");
     expect(localStorage.getItem("siaocut.exportPreferences.v1")).toBe("preserve-me");
+    expect(localStorage.getItem("siaocut.transcriptionLanguage.v1")).toBe("en");
     expect(tr("app.locale.label")).toBe("Interface language");
   });
 });

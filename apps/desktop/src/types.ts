@@ -61,6 +61,9 @@ export type Translation = {
   segments: Array<{ segmentId: string; text: string }>;
 };
 
+export type UiLocale = "zh-CN" | "en-US";
+export type TranscriptionLanguage = "auto" | "en" | "zh";
+
 export type Task = {
   id: string;
   kind: string;
@@ -69,6 +72,7 @@ export type Task = {
   progress: number;
   errorMessage: string | null;
   workflowId?: string | null;
+  instructionLocale: UiLocale;
 };
 
 export type AgentPatchItem = {
@@ -102,6 +106,7 @@ export type Workflow = {
   taskId: string;
   createdAt: string;
   updatedAt: string;
+  instructionLocale: UiLocale;
 };
 
 export type Version = { id: string; reason: string; createdAt: string };
@@ -433,6 +438,7 @@ export type AutoWorkflow = {
   completedAt: string | null;
   workerPid?: number | null;
   attemptCount: number;
+  instructionLocale: UiLocale;
 };
 
 export type AutoWorkflowEvent = {

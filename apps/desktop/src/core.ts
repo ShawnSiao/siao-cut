@@ -226,6 +226,7 @@ function ensureOk(envelope: CoreEnvelope): CoreEnvelope {
 
 async function mockRun(args: string[]): Promise<CoreEnvelope> {
   const [command, subcommand] = args;
+  const valueAfter = (flag: string) => args.includes(flag) ? args[args.indexOf(flag) + 1] : null;
   if (command === "project" && subcommand === "list") {
     mockProject = structuredClone(sampleProject);
     const secondary = structuredClone(sampleProject);
@@ -412,7 +413,11 @@ async function mockRun(args: string[]): Promise<CoreEnvelope> {
     return { apiVersion: "0.1", status: "ok", project: mockProject, subtitleImport: { format: "srt", sha256: mockSubtitlePreview.sha256, insertedSegments: 2, quality: mockProject.subtitleQuality, project: mockProject }, message: "字幕已替换并创建可撤销版本；原片和既有导出文件未修改。" };
   }
   if (command === "transcript" && subcommand === "quality") return { apiVersion: "0.1", status: "ok", subtitleQuality: mockProject.subtitleQuality };
-  if (command === "transcribe") return { apiVersion: "0.1", status: "ok", project: mockProject, message: "已完成本地转录。" };
+  if (command === "transcribe") {
+    const language = valueAfter("--language");
+    if (language === "en" || language === "zh") mockProject.transcript.sourceLanguage = language;
+    return { apiVersion: "0.1", status: "ok", project: mockProject, message: "已完成本地转录。" };
+  }
   if (command === "speech" && subcommand === "analyze") return { apiVersion: "0.1", status: "ok", projectId: mockProject.id, speechInsights: mockProject.speechInsights, message: "已根据本机词级时间生成语音节奏分析。" };
   if (command === "speech" && subcommand === "audio-start") {
     const now = new Date().toISOString();
@@ -693,7 +698,6 @@ async function mockRun(args: string[]): Promise<CoreEnvelope> {
     return { apiVersion: "0.1", status: "ok", workflows: Array.from(mockAutoWorkflows.values()).reverse() };
   }
   if (command === "auto" && subcommand === "start") {
-    const valueAfter = (flag: string) => args.includes(flag) ? args[args.indexOf(flag) + 1] : null;
     const media = valueAfter("--media");
     const url = valueAfter("--url");
     const now = new Date().toISOString();
@@ -725,6 +729,7 @@ async function mockRun(args: string[]): Promise<CoreEnvelope> {
       completedAt: null,
       workerPid: 4321,
       attemptCount: 1,
+      instructionLocale: (valueAfter("--locale") ?? "zh-CN") as AutoWorkflow["instructionLocale"],
     };
     mockAutoWorkflows.set(workflow.id, workflow);
     mockAutoPolls.set(workflow.id, 0);
@@ -799,14 +804,15 @@ async function mockRun(args: string[]): Promise<CoreEnvelope> {
     return { apiVersion: "0.1", status: "ok", workflow };
   }
   if (command === "task" && subcommand === "create") {
-    mockProject.tasks.push({ id: `t${mockProject.tasks.length + 1}`, kind: args[args.indexOf("--kind") + 1], language: null, status: "queued", progress: 0, errorMessage: null });
+    mockProject.tasks.push({ id: `t${mockProject.tasks.length + 1}`, kind: args[args.indexOf("--kind") + 1], language: null, status: "queued", progress: 0, errorMessage: null, instructionLocale: (valueAfter("--locale") ?? "zh-CN") as "zh-CN" | "en-US" });
     return { apiVersion: "0.1", status: "ok", project: mockProject, message: "任务已创建，等待 Agent 领取。" };
   }
   if (command === "workflow" && subcommand === "create") {
     const workflowId = `wf${mockProject.workflows.length + 1}`;
     const taskId = `t${mockProject.tasks.length + 1}`;
-    mockProject.tasks.push({ id: taskId, kind: args[args.indexOf("--kind") + 1], language: null, status: "queued", progress: 0, errorMessage: null, workflowId });
-    mockProject.workflows.push({ id: workflowId, kind: args[args.indexOf("--kind") + 1], language: null, status: "waiting_agent", taskId, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+    const instructionLocale = (valueAfter("--locale") ?? "zh-CN") as "zh-CN" | "en-US";
+    mockProject.tasks.push({ id: taskId, kind: args[args.indexOf("--kind") + 1], language: null, status: "queued", progress: 0, errorMessage: null, workflowId, instructionLocale });
+    mockProject.workflows.push({ id: workflowId, kind: args[args.indexOf("--kind") + 1], language: null, status: "waiting_agent", taskId, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), instructionLocale });
     return { apiVersion: "0.1", status: "ok", project: mockProject, workflowId, message: "工作流已创建，需要 Agent 继续。" };
   }
   if (command === "task" && subcommand === "review") {

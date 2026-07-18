@@ -1,16 +1,34 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import App, { PatchReviewCard, clearTransientCoreError, parseExportPreferences, shouldCheckForUpdates, startSerialPolling, taskLabel } from "./App";
+import App, { PatchReviewCard, TRANSCRIPTION_LANGUAGE_STORAGE_KEY, clearTransientCoreError, parseExportPreferences, parseTranscriptionLanguage, shouldCheckForUpdates, startSerialPolling, taskLabel } from "./App";
 import { sampleProject } from "./mock";
 
 afterEach(() => {
   cleanup();
   localStorage.removeItem("siaocut.exportPreferences.v1");
+  localStorage.removeItem(TRANSCRIPTION_LANGUAGE_STORAGE_KEY);
   vi.useRealTimers();
 });
 
 describe("SiaoCut review workbench", () => {
+  it("persists source language independently and creates the selected Agent workflow", async () => {
+    render(<App />);
+    await screen.findByRole("button", { name: "新建项目" });
+
+    fireEvent.change(screen.getByRole("combobox", { name: "素材语言" }), { target: { value: "en" } });
+    expect(localStorage.getItem(TRANSCRIPTION_LANGUAGE_STORAGE_KEY)).toBe("en");
+    expect(parseTranscriptionLanguage("unsupported")).toBe("auto");
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Agent 工作流" }), { target: { value: "edit" } });
+    fireEvent.click(screen.getByRole("button", { name: "交给 Agent" }));
+    await waitFor(() => expect(screen.getAllByText("edit").length).toBeGreaterThan(0));
+    expect(screen.getByRole("region", { name: "等待 Codex Worker" })).toHaveTextContent("不包含媒体文件或路径");
+
+    fireEvent.click(screen.getByRole("button", { name: "一键成片" }));
+    expect(screen.getByRole("combobox", { name: "素材语言 · 一键成片" })).toHaveValue("en");
+  });
+
   it("loads versioned export preferences and rejects invalid local data", () => {
     expect(parseExportPreferences('{"version":1,"subtitleMode":"bilingual","subtitleLanguage":"ja","transcriptFormat":"vtt"}')).toEqual({
       version: 1,

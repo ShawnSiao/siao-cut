@@ -38,6 +38,7 @@ pub struct StartRequest {
     pub burn_subtitles: bool,
     pub subtitle_mode: SubtitleMode,
     pub start_delay_ms: Option<u64>,
+    pub instruction_locale: String,
 }
 
 pub fn start(db: &mut Connection, request: StartRequest) -> Result<AutoWorkflow> {
@@ -68,7 +69,11 @@ fn insert_with_flag(db: &mut Connection, request: StartRequest) -> Result<(AutoW
         burn_subtitles,
         subtitle_mode,
         start_delay_ms: _,
+        instruction_locale,
     } = request;
+    if !["zh-CN", "en-US"].contains(&instruction_locale.as_str()) {
+        bail!("instruction_locale_invalid: --locale 必须为 zh-CN 或 en-US")
+    }
     if !model.is_file() {
         bail!(
             "auto_workflow_model_missing: 模型不存在：{}",
@@ -132,8 +137,9 @@ fn insert_with_flag(db: &mut Connection, request: StartRequest) -> Result<(AutoW
         "INSERT INTO auto_workflows(
              id,input_kind,input_value,title,confirmed_media_id,model_path,
              transcribe_language,translation_language,output_path,burn_subtitles,
-             subtitle_mode,status,current_stage,progress,created_at,updated_at,attempt_count
-         ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'queued','import',0,?12,?12,1)",
+             subtitle_mode,status,current_stage,progress,created_at,updated_at,attempt_count,
+             instruction_locale
+         ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'queued','import',0,?12,?12,1,?13)",
         params![
             &id,
             input_kind,
@@ -147,6 +153,7 @@ fn insert_with_flag(db: &mut Connection, request: StartRequest) -> Result<(AutoW
             burn_subtitles,
             subtitle_mode.as_str(),
             &timestamp,
+            instruction_locale,
         ],
     )?;
     append_event(db, &id, "import", "queued", 0.0, "自动工作流已创建")?;
@@ -167,7 +174,7 @@ pub fn load(db: &Connection, workflow_id: &str) -> Result<AutoWorkflow> {
                 model_path,transcribe_language,translation_language,output_path,burn_subtitles,
                 subtitle_mode,status,current_stage,progress,transcript_version_id,agent_task_id,
                 export_job_id,audit_json,cancel_requested_at,error_message,created_at,updated_at,
-                completed_at,worker_pid,attempt_count
+                completed_at,worker_pid,attempt_count,instruction_locale
          FROM auto_workflows WHERE id=?1",
         [workflow_id],
         |row| {
@@ -201,6 +208,7 @@ pub fn load(db: &Connection, workflow_id: &str) -> Result<AutoWorkflow> {
                 completed_at: row.get(24)?,
                 worker_pid: row.get(25)?,
                 attempt_count: row.get::<_, i64>(26)? as u32,
+                instruction_locale: row.get(27)?,
             })
         },
     )
@@ -703,6 +711,7 @@ fn run_suggestions(db: &mut Connection, workflow: &AutoWorkflow) -> Result<bool>
                     "translate",
                     Some(language),
                     Some(&workflow.id),
+                    &workflow.instruction_locale,
                 )
                 .map(|task| task.id)
             })?;
@@ -1024,6 +1033,7 @@ mod tests {
                 burn_subtitles: false,
                 subtitle_mode: SubtitleMode::Source,
                 start_delay_ms: None,
+                instruction_locale: "zh-CN".into(),
             },
         )
         .unwrap()

@@ -1,7 +1,8 @@
 import i18n from "i18next";
 import { enUS, type TranslationKey, zhCN } from "./locales";
+import type { UiLocale } from "./types";
 
-export type UiLocale = "zh-CN" | "en-US";
+export type { UiLocale } from "./types";
 
 export const UI_LOCALE_STORAGE_KEY = "siaocut.uiLocale.v1";
 

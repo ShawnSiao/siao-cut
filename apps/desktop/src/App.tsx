@@ -2,7 +2,7 @@ import { changeUiLocale, getUiLocale, tr, type UiLocale } from "./i18n";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Activity, Bot, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Clock3, Cpu, Database, Download, FileVideo2, FileText, Film, FolderOpen, FolderPlus, HardDrive, History, Link2, LoaderCircle, Play, RefreshCw, RotateCcw, Search, Scissors, Settings2, ShieldCheck, Sparkles, Trash2, Undo2, Redo2, Headphones, ListChecks, MoreHorizontal, MoveHorizontal, Users, X, } from "lucide-react";
 import { authorizeArtifact, authorizeMedia, checkForUpdate, installUpdate, listProjects, loadProject, openLogDirectory, pickMedia, pickModel, pickSubtitleFile, pickTranscriptPath, pickVideoPath, runCore, runtimeInfo, selectAsrBackend, updaterPolicy } from "./core";
-import type { AudioAnalysisJob, AudioRisk, AutoWorkflow, CanvasSettings, CutPreview, ExportJob, ModelDownloadJob, ModelStatus, Project, RuntimeInfo, Segment, SourceImportJob, SourcePreview, SpeakerIdentity, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SpeechEvidence, SpeechInsights, SpeechPause, SubtitleImportPreview, SubtitleQualityIssue, UpdateMetadata, UpdatePolicy } from "./types";
+import type { AudioAnalysisJob, AudioRisk, AutoWorkflow, CanvasSettings, CutPreview, ExportJob, ModelDownloadJob, ModelStatus, Project, RuntimeInfo, Segment, SourceImportJob, SourcePreview, SpeakerIdentity, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SpeechEvidence, SpeechInsights, SpeechPause, SubtitleImportPreview, SubtitleQualityIssue, TranscriptionLanguage, UpdateMetadata, UpdatePolicy } from "./types";
 import { Button, Dialog, IconButton, StatusBadge } from "./components/ui";
 type HumanState = string;
 type SegmentSelectionMode = "replace" | "toggle" | "range";
@@ -20,6 +20,8 @@ export const DEFAULT_EXPORT_PREFERENCES: ExportPreferencesV1 = {
     subtitleLanguage: "en",
     transcriptFormat: "srt",
 };
+export const TRANSCRIPTION_LANGUAGE_STORAGE_KEY = "siaocut.transcriptionLanguage.v1";
+export const parseTranscriptionLanguage = (raw: string | null): TranscriptionLanguage => ["auto", "en", "zh"].includes(raw ?? "") ? raw as TranscriptionLanguage : "auto";
 export const parseExportPreferences = (raw: string | null): ExportPreferencesV1 => {
     if (!raw)
         return DEFAULT_EXPORT_PREFERENCES;
@@ -175,6 +177,10 @@ function App() {
         changeUiLocale(locale);
         setUiLocale(locale);
     };
+    const selectTranscriptionLanguage = (language: TranscriptionLanguage) => {
+        localStorage.setItem(TRANSCRIPTION_LANGUAGE_STORAGE_KEY, language);
+        setTranscriptionLanguage(language);
+    };
     const [projects, setProjects] = useState<Project[]>([]);
     const [project, setProject] = useState<Project | null>(null);
     const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -213,6 +219,8 @@ function App() {
     const [autoAuthorized, setAutoAuthorized] = useState(false);
     const [autoTranslate, setAutoTranslate] = useState(false);
     const [autoTranslationLanguage, setAutoTranslationLanguage] = useState("en");
+    const [transcriptionLanguage, setTranscriptionLanguage] = useState<TranscriptionLanguage>(() => parseTranscriptionLanguage(localStorage.getItem(TRANSCRIPTION_LANGUAGE_STORAGE_KEY)));
+    const [agentWorkflowKind, setAgentWorkflowKind] = useState<"polish" | "proofread" | "edit" | "translate">("polish");
     const [autoBurnSubtitles, setAutoBurnSubtitles] = useState(true);
     const [autoSubtitleMode, setAutoSubtitleMode] = useState<"source" | "translated" | "bilingual">("source");
     const [autoBusy, setAutoBusy] = useState<string | null>(null);
@@ -643,6 +651,10 @@ function App() {
     const pendingEdits = project?.edits.filter((edit) => ["suggested", "proposed"].includes(edit.status)) ?? [];
     const failedTasks = project?.tasks.filter((task) => ["failed", "interrupted"].includes(task.status)) ?? [];
     const processingTasks = project?.tasks.filter((task) => ["queued", "claimed", "running"].includes(task.status)) ?? [];
+    const workerTask = processingTasks[0];
+    const workerWorkflow = workerTask ? project?.workflows.find((workflow) => workflow.taskId === workerTask.id) : undefined;
+    const workerClaimCommand = "siaocut-core task claim --worker codex-worker";
+    const workerContinueCommand = workerWorkflow ? `siaocut-core workflow continue ${workerWorkflow.id}` : workerTask ? `siaocut-core task retry ${workerTask.id}` : "";
     const recentTasks = project?.tasks.filter((task) => ["completed", "cancelled", "canceled"].includes(task.status)).slice(-5).reverse() ?? [];
     const audioRisks = audioAnalysisJob?.status === "completed" ? audioAnalysisJob.report?.risks ?? [] : [];
     const projectSpeakerJob = speakerJob?.projectId === project?.id ? speakerJob : null;
@@ -944,7 +956,8 @@ function App() {
         const envelope = await runCore([
             "auto", "start", ...inputArgs,
             "--model", modelPath,
-            "--language", "auto",
+            "--language", transcriptionLanguage,
+            "--locale", uiLocale,
             "--output", output,
             "--subtitle-mode", autoTranslate ? autoSubtitleMode : "source",
             ...(autoTranslate ? ["--translate", autoTranslationLanguage] : []),
@@ -997,7 +1010,7 @@ function App() {
             throw new Error(tr("app.s0122"));
         if (!modelPath)
             throw new Error(tr("app.s0123"));
-        const result = await runCore(["transcribe", project.id, "--model", modelPath, "--language", "auto"]);
+        const result = await runCore(["transcribe", project.id, "--model", modelPath, "--language", transcriptionLanguage]);
         await refreshProject(project.id);
         setNotice(Number(result.segments ?? 0) === 0 ? tr("app.s0124") : tr("app.s0125"));
     });
@@ -1517,7 +1530,12 @@ function App() {
         setNotice(tr("app.s0221"));
     });
     const createAgentTask = () => project && withBusy(tr("app.s0222"), async () => {
-        await runCore(["workflow", "create", project.id, "--kind", "polish"]);
+        await runCore([
+            "workflow", "create", project.id,
+            "--kind", agentWorkflowKind,
+            "--locale", uiLocale,
+            ...(agentWorkflowKind === "translate" ? ["--lang", subtitleLanguage] : []),
+        ]);
         await refreshProject(project.id);
         setNotice(tr("app.s0223"));
     });
@@ -1568,9 +1586,10 @@ function App() {
               <IconButton label={tr("app.s0251")} shortcut="Ctrl+Z" disabled={!project?.history.canUndo || Boolean(busy)} onClick={() => navigateHistory("undo")}><Undo2 size={15}/></IconButton>
               <IconButton label={tr("app.s0252")} shortcut="Ctrl+Shift+Z" disabled={!project?.history.canRedo || Boolean(busy)} onClick={() => navigateHistory("redo")}><Redo2 size={15}/></IconButton>
             </div>
+            <label className="command-select"><span>{tr("app.transcription.language")}</span><select aria-label={tr("app.transcription.language")} value={transcriptionLanguage} onChange={(event) => selectTranscriptionLanguage(event.target.value as TranscriptionLanguage)}><option value="auto">{tr("app.transcription.auto")}</option><option value="en">{tr("app.transcription.english")}</option><option value="zh">{tr("app.transcription.chinese")}</option></select></label>
             <Button disabled={!project || Boolean(busy)} onClick={transcribe}><RefreshCw size={15}/>{tr("app.s0253")}</Button>
             <Button className="rough-cut-command" disabled={!project?.transcript.words.length || Boolean(busy)} onClick={detectSuggestions}><Scissors size={15}/>{tr("app.s0254")}</Button>
-            <Button variant="agent" disabled={!project || Boolean(busy)} onClick={createAgentTask}><Bot size={15}/>{tr("app.s0255")}</Button>
+            <div className="agent-command"><select aria-label={tr("app.workflow.label")} value={agentWorkflowKind} onChange={(event) => setAgentWorkflowKind(event.target.value as typeof agentWorkflowKind)}><option value="polish">{tr("app.workflow.polish")}</option><option value="proofread">{tr("app.workflow.proofread")}</option><option value="edit">{tr("app.workflow.edit")}</option><option value="translate">{tr("app.workflow.translate")}</option></select><Button variant="agent" disabled={!project || Boolean(busy)} onClick={createAgentTask}><Bot size={15}/>{tr("app.s0255")}</Button></div>
             <div className="command-more">
               <IconButton label={tr("app.s0256")} onClick={() => setShowMoreMenu((current) => !current)}><MoreHorizontal size={17}/></IconButton>
               {showMoreMenu && <div className="command-menu" role="menu">
@@ -1629,6 +1648,7 @@ function App() {
               <aside className="review-panel">
                 <div className="section-title"><div><p className="eyebrow">{tr("app.s0294")}</p><h2>{tr("app.s0295")}</h2></div>{actionableReviewCount > 0 && <span className="state-count" aria-label={tr("app.s0296", { "0": actionableReviewCount })}>{actionableReviewCount}</span>}</div>
                 <div className="review-panel-scroll" role="region" aria-label={tr("app.s0297")} tabIndex={0}>
+                  {workerTask && <section className="codex-worker-status" aria-label={workerTask.status === "queued" ? tr("app.worker.waiting") : tr("app.worker.connected")}><header><Bot size={14}/><strong>{workerTask.status === "queued" ? tr("app.worker.waiting") : tr("app.worker.connected")}</strong></header><p>{tr("app.worker.privacy")}</p><label><span>{tr("app.worker.claimCommand")}</span><code>{workerClaimCommand}</code><button type="button" onClick={() => void navigator.clipboard?.writeText(workerClaimCommand)}>{tr("app.worker.copy")}</button></label>{workerContinueCommand && <label><span>{tr("app.worker.continueCommand")}</span><code>{workerContinueCommand}</code><button type="button" onClick={() => void navigator.clipboard?.writeText(workerContinueCommand)}>{tr("app.worker.copy")}</button></label>}</section>}
                   {orderedPatchSets.map((set) => <section className="patch-set" key={set.id}>
                     <header><span>{set.kind}{set.language ? ` · ${set.language.toUpperCase()}` : ""}</span>{set.items.length > 1 && <div><button onClick={() => reviewAll(set.taskId, "keep")}>{tr("app.s0298")}</button><button onClick={() => reviewAll(set.taskId, "apply")}>{tr("app.s0299")}</button></div>}</header>
                     {set.items.map((item) => <PatchReviewCard key={item.id} item={item} onReview={(action) => reviewPatch(item.id, action)} onSelect={() => { const segment = project.transcript.segments.find((candidate) => candidate.id === item.segmentId); if (segment)
@@ -1787,6 +1807,7 @@ function App() {
           </>}
           <div className="auto-file-row"><span><small>{tr("app.s0494")}</small><strong title={modelPath ?? undefined}>{modelPath ?? tr("app.s0468")}</strong></span><button className="button quiet" onClick={() => { setShowAutoWorkflow(false); setShowRuntime(true); }}>{tr("app.s0495")}</button></div>
           <div className="auto-options">
+            <label><span>{tr("app.transcription.language")}</span><select aria-label={`${tr("app.transcription.language")} · ${tr("app.s0236")}`} value={transcriptionLanguage} disabled={Boolean(autoBusy)} onChange={(event) => selectTranscriptionLanguage(event.target.value as TranscriptionLanguage)}><option value="auto">{tr("app.transcription.auto")}</option><option value="en">{tr("app.transcription.english")}</option><option value="zh">{tr("app.transcription.chinese")}</option></select></label>
             <label className="auto-check"><input type="checkbox" checked={autoTranslate} onChange={(event) => { setAutoTranslate(event.target.checked); if (!event.target.checked)
             setAutoSubtitleMode("source"); }}/><span>{tr("app.s0496")}</span></label>
             <label><span>{tr("app.s0497")}</span><input aria-label={tr("app.s0498")} value={autoTranslationLanguage} disabled={!autoTranslate} onChange={(event) => setAutoTranslationLanguage(event.target.value)}/></label>

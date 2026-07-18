@@ -91,8 +91,8 @@ export const sampleProject: Project = {
     { id: "e1", kind: "word_cut", status: "proposed", segmentId: "s1", start: 12.4, end: 13.1, reason: "句内口头语：嗯", cutRange: { fromWordId: "w1", toWordId: "w1", selectedStart: 12.4, selectedEnd: 13.0, paddingMs: 100, transcriptHash: "demo", stale: false }, suggestion: { suggestionType: "standalone_filler", confidence: 0.99, detectorVersion: "heuristic-v1" } },
   ],
   tasks: [
-    { id: "t1", kind: "polish", language: null, status: "queued", progress: 0, errorMessage: null },
-    { id: "t2", kind: "proofread", language: null, status: "review", progress: 1, errorMessage: null },
+    { id: "t1", kind: "polish", language: null, status: "queued", progress: 0, errorMessage: null, instructionLocale: "zh-CN" },
+    { id: "t2", kind: "proofread", language: null, status: "review", progress: 1, errorMessage: null, instructionLocale: "zh-CN" },
   ],
   patchSets: [{
     id: "patch1", taskId: "t2", kind: "proofread", language: null, status: "pending_review",

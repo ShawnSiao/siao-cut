@@ -499,6 +499,8 @@ pub struct Task {
     pub cancel_requested_at: Option<String>,
     #[serde(default)]
     pub workflow_id: Option<String>,
+    #[serde(default = "default_instruction_locale")]
+    pub instruction_locale: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -538,6 +540,8 @@ pub struct Workflow {
     pub task_id: String,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default = "default_instruction_locale")]
+    pub instruction_locale: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -570,6 +574,12 @@ pub struct AutoWorkflow {
     pub completed_at: Option<String>,
     pub worker_pid: Option<u32>,
     pub attempt_count: u32,
+    #[serde(default = "default_instruction_locale")]
+    pub instruction_locale: String,
+}
+
+fn default_instruction_locale() -> String {
+    "zh-CN".to_owned()
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
