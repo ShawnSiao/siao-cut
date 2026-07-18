@@ -78,10 +78,12 @@ pub struct AudioAnalysisJob {
     pub id: String,
     pub project_id: String,
     pub status: String,
+    pub stage_code: Option<String>,
     pub progress: f64,
     pub report: Option<AudioAnalysisReport>,
     pub cancel_requested_at: Option<String>,
     pub error_message: Option<String>,
+    pub error_code: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub completed_at: Option<String>,
@@ -127,14 +129,21 @@ pub fn load(db: &Connection, job_id: &str) -> Result<AudioAnalysisJob> {
         [job_id],
         |row| {
             let report: Option<String> = row.get(4)?;
+            let status = row.get::<_, String>(2)?;
+            let error_message = row.get::<_, Option<String>>(6)?;
             Ok(AudioAnalysisJob {
                 id: row.get(0)?,
                 project_id: row.get(1)?,
-                status: row.get(2)?,
+                stage_code: Some(status.clone()),
+                status: status.clone(),
                 progress: row.get(3)?,
                 report: report.and_then(|value| serde_json::from_str(&value).ok()),
                 cancel_requested_at: row.get(5)?,
-                error_message: row.get(6)?,
+                error_code: crate::model::background_error_code(
+                    &status,
+                    error_message.as_deref(),
+                ),
+                error_message,
                 created_at: row.get(7)?,
                 updated_at: row.get(8)?,
                 completed_at: row.get(9)?,

@@ -418,6 +418,7 @@ pub struct ExportJob {
     pub project_id: String,
     pub output_path: String,
     pub status: String,
+    pub stage_code: Option<String>,
     pub progress: f64,
     pub burn_subtitles: bool,
     pub language: Option<String>,
@@ -427,6 +428,7 @@ pub struct ExportJob {
     pub subtitle_style: SubtitleStyle,
     pub cancel_requested_at: Option<String>,
     pub error_message: Option<String>,
+    pub error_code: Option<String>,
     pub manifest_path: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -582,6 +584,23 @@ pub struct AutoWorkflow {
     pub instruction_locale: String,
 }
 
+pub fn background_error_code(status: &str, error_message: Option<&str>) -> Option<String> {
+    if status == "interrupted" {
+        return Some("job_interrupted".to_owned());
+    }
+    if let Some(prefix) = error_message
+        .and_then(|message| message.split_once(':'))
+        .map(|(value, _)| value.trim())
+        && !prefix.is_empty()
+        && prefix.chars().all(|character| {
+            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_'
+        })
+    {
+        return Some(prefix.to_owned());
+    }
+    (status == "failed").then(|| "job_failed".to_owned())
+}
+
 fn default_instruction_locale() -> String {
     "zh-CN".to_owned()
 }
@@ -674,4 +693,26 @@ pub struct Transcript {
     pub segments: Vec<Segment>,
     #[serde(default)]
     pub words: Vec<Word>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::background_error_code;
+
+    #[test]
+    fn background_error_codes_preserve_machine_prefixes_and_hide_raw_messages() {
+        assert_eq!(
+            background_error_code("failed", Some("source_download_failed: download failed")),
+            Some("source_download_failed".to_owned())
+        );
+        assert_eq!(
+            background_error_code("failed", Some("无法启动外部进程")),
+            Some("job_failed".to_owned())
+        );
+        assert_eq!(
+            background_error_code("interrupted", Some("human readable detail")),
+            Some("job_interrupted".to_owned())
+        );
+        assert_eq!(background_error_code("running", None), None);
+    }
 }

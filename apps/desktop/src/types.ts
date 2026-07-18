@@ -69,8 +69,10 @@ export type Task = {
   kind: string;
   language: string | null;
   status: string;
+  stageCode?: string | null;
   progress: number;
   errorMessage: string | null;
+  errorCode?: string | null;
   workflowId?: string | null;
   instructionLocale: UiLocale;
 };
@@ -166,6 +168,7 @@ export type ExportJob = {
   projectId: string;
   outputPath: string;
   status: string;
+  stageCode?: string | null;
   progress: number;
   burnSubtitles: boolean;
   language: string | null;
@@ -175,6 +178,7 @@ export type ExportJob = {
   subtitleStyle: SubtitleStyle;
   cancelRequestedAt: string | null;
   errorMessage: string | null;
+  errorCode?: string | null;
   manifestPath: string | null;
   createdAt: string;
   updatedAt: string;
@@ -232,12 +236,14 @@ export type ModelDownloadJob = {
   id: string;
   modelId: string;
   status: string;
+  stageCode?: string | null;
   progress: number;
   bytesDownloaded: number;
   totalBytes: number;
   targetPath: string;
   cancelRequestedAt: string | null;
   errorMessage: string | null;
+  errorCode?: string | null;
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
@@ -270,6 +276,7 @@ export type SourceImportJob = {
   durationSeconds: number;
   fileSizeBytes: number | null;
   status: string;
+  stageCode?: string | null;
   progress: number;
   bytesDownloaded: number;
   totalBytes: number | null;
@@ -280,6 +287,7 @@ export type SourceImportJob = {
   toolSha256: string;
   cancelRequestedAt: string | null;
   errorMessage: string | null;
+  errorCode?: string | null;
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
@@ -318,10 +326,12 @@ export type AudioAnalysisJob = {
   id: string;
   projectId: string;
   status: string;
+  stageCode?: string | null;
   progress: number;
   report: AudioAnalysisReport | null;
   cancelRequestedAt: string | null;
   errorMessage: string | null;
+  errorCode?: string | null;
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
@@ -398,11 +408,13 @@ export type SpeakerJob = {
   projectId: string | null;
   status: string;
   stage: string;
+  stageCode?: string | null;
   progress: number;
   bytesDownloaded: number;
   totalBytes: number;
   cancelRequestedAt: string | null;
   errorMessage: string | null;
+  errorCode?: string | null;
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
@@ -426,6 +438,7 @@ export type AutoWorkflow = {
   subtitleMode: "source" | "translated" | "bilingual";
   status: string;
   currentStage: string;
+  stageCode?: string | null;
   progress: number;
   transcriptVersionId: string | null;
   agentTaskId: string | null;
@@ -433,6 +446,7 @@ export type AutoWorkflow = {
   audit: Record<string, unknown> | null;
   cancelRequestedAt: string | null;
   errorMessage: string | null;
+  errorCode?: string | null;
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
