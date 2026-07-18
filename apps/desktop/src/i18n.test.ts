@@ -9,6 +9,10 @@ describe("desktop localization", () => {
     expect(Object.keys(enUS)).toEqual(Object.keys(zhCN));
   });
 
+  it("keeps built-in English resources free of Chinese UI copy", () => {
+    expect(Object.entries(enUS).filter(([, value]) => /[\u3400-\u9fff]/u.test(value))).toEqual([]);
+  });
+
   it("detects Chinese explicitly and defaults every other system locale to English", () => {
     expect(detectUiLocale("zh-CN")).toBe("zh-CN");
     expect(detectUiLocale("zh-TW")).toBe("zh-CN");
