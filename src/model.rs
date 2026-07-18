@@ -207,6 +207,7 @@ pub enum SubtitleIssueKind {
     Overlap,
     DurationTooLong,
     LineTooLong,
+    TooManyLines,
     ReadingSpeedHigh,
     GapTooShort,
 }
@@ -220,6 +221,7 @@ impl SubtitleIssueKind {
             Self::Overlap => "overlap",
             Self::DurationTooLong => "duration_too_long",
             Self::LineTooLong => "line_too_long",
+            Self::TooManyLines => "too_many_lines",
             Self::ReadingSpeedHigh => "reading_speed_high",
             Self::GapTooShort => "gap_too_short",
         }
@@ -233,6 +235,7 @@ pub struct SubtitleQualityThresholds {
     pub max_line_characters: usize,
     pub max_characters_per_second: f64,
     pub min_gap_seconds: f64,
+    pub max_lines: usize,
 }
 
 impl Default for SubtitleQualityThresholds {
@@ -242,6 +245,7 @@ impl Default for SubtitleQualityThresholds {
             max_line_characters: 42,
             max_characters_per_second: 20.0,
             min_gap_seconds: 0.12,
+            max_lines: 2,
         }
     }
 }

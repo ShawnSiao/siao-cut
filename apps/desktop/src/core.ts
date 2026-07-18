@@ -122,7 +122,7 @@ const mockSubtitlePreview: SubtitleImportPreview = {
     issueCount: 1,
     errorCount: 0,
     warningCount: 1,
-    thresholds: { maxDurationSeconds: 8, maxLineCharacters: 42, maxCharactersPerSecond: 20, minGapSeconds: 0.12 },
+    thresholds: { maxDurationSeconds: 8, maxLineCharacters: 42, maxCharactersPerSecond: 20, minGapSeconds: 0.12, maxLines: 2 },
     issues: [{ id: "quality-overlap-preview-2", kind: "overlap", severity: "warning", segmentId: "preview-2", relatedSegmentId: "preview-1", start: 1.9, end: 4, message: "与上一条字幕时间重叠", measuredValue: 0.1, threshold: 0 }],
   },
   canImport: true,
@@ -143,7 +143,7 @@ const mockStructureImpact = (): SubtitleStructureEdit["impact"] => ({
 });
 
 function refreshMockSubtitleQuality() {
-  const thresholds = { maxDurationSeconds: 8, maxLineCharacters: 42, maxCharactersPerSecond: 20, minGapSeconds: 0.12 };
+  const thresholds = { maxDurationSeconds: 8, maxLineCharacters: 42, maxCharactersPerSecond: 20, minGapSeconds: 0.12, maxLines: 2 };
   const issues: Project["subtitleQuality"]["issues"] = [];
   const segments = [...mockProject.transcript.segments].sort((left, right) => left.start - right.start || left.end - right.end);
   const add = (segment: Project["transcript"]["segments"][number], kind: Project["subtitleQuality"]["issues"][number]["kind"], severity: "warning" | "error", message: string, measuredValue: number | null, threshold: number | null, relatedSegmentId: string | null = null) => {
@@ -159,6 +159,8 @@ function refreshMockSubtitleQuality() {
     if (duration > thresholds.maxDurationSeconds) add(segment, "duration_too_long", "warning", "单条字幕持续时间过长", duration, thresholds.maxDurationSeconds);
     const maxLine = Math.max(0, ...segment.text.split(/\r?\n/).map((line) => Array.from(line).filter((character) => !/\s/.test(character)).length));
     if (maxLine > thresholds.maxLineCharacters) add(segment, "line_too_long", "warning", "单行字幕字符过多", maxLine, thresholds.maxLineCharacters);
+    const lineCount = segment.text.split(/\r?\n/).length;
+    if (mockProject.transcript.sourceLanguage.toLowerCase().startsWith("en") && lineCount > thresholds.maxLines) add(segment, "too_many_lines", "warning", "英文字幕超过两行", lineCount, thresholds.maxLines);
     const visibleCharacters = Array.from(segment.text).filter((character) => !/\s/.test(character)).length;
     const readingSpeed = visibleCharacters / duration;
     if (readingSpeed > thresholds.maxCharactersPerSecond) add(segment, "reading_speed_high", "warning", "字幕阅读速度过快", readingSpeed, thresholds.maxCharactersPerSecond);
@@ -234,7 +236,7 @@ async function mockRun(args: string[]): Promise<CoreEnvelope> {
     secondary.title = "第二个本地项目";
     secondary.updatedAt = "2026-07-16T09:00:00Z";
     secondary.transcript = { sourceLanguage: "en", segments: [{ id: "s-secondary", start: 1, end: 2, text: "Second project subtitle", confidence: 0.98 }], words: [] };
-    secondary.subtitleQuality = { status: "good", statusLabel: "未发现字幕问题", issueCount: 0, errorCount: 0, warningCount: 0, thresholds: { maxDurationSeconds: 8, maxLineCharacters: 42, maxCharactersPerSecond: 20, minGapSeconds: 0.12 }, issues: [] };
+    secondary.subtitleQuality = { status: "good", statusLabel: "未发现字幕问题", issueCount: 0, errorCount: 0, warningCount: 0, thresholds: { maxDurationSeconds: 8, maxLineCharacters: 42, maxCharactersPerSecond: 20, minGapSeconds: 0.12, maxLines: 2 }, issues: [] };
     secondary.speechInsights = { status: "insufficient_evidence", analyzerVersion: "rhythm-v1", thresholds: { pauseSeconds: 0.8, longPauseSeconds: 1.5, lowConfidence: 0.75 }, spanDurationSeconds: 0, spokenDurationSeconds: 0, tokenCount: 0, tokensPerMinute: 0, pauseCount: 0, longPauseCount: 0, totalPauseDurationSeconds: 0, fillerCount: 0, lowConfidenceCount: 0, pauses: [], evidence: [] };
     secondary.translations = {};
     secondary.edits = [];

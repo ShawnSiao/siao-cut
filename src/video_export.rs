@@ -59,7 +59,13 @@ pub fn create(
         bail!("视频导出路径必须使用 .mp4 扩展名")
     }
     let project = project::load(db, project_id)?;
-    let report = export::audit(&project);
+    let quality_options = ExportOptions {
+        format: "ass",
+        language: language.as_deref(),
+        subtitle_mode,
+        include_cuts: false,
+    };
+    let report = export::audit_for_options(&project, &quality_options);
     if report["ready"] != true {
         bail!("导出前审计未通过，请先处理媒体或字幕问题")
     }
@@ -67,15 +73,7 @@ pub fn create(
         bail!("全部内容都被软剪辑移除，无法导出空视频")
     }
     if burn_subtitles {
-        export::validate_subtitle_mode(
-            &project,
-            &ExportOptions {
-                format: "ass",
-                language: language.as_deref(),
-                subtitle_mode,
-                include_cuts: false,
-            },
-        )?;
+        export::validate_subtitle_mode(&project, &quality_options)?;
     }
     let source = Path::new(&project.media.source_path).canonicalize()?;
     let parent = output

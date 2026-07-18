@@ -28,7 +28,16 @@ fn issue(
     }
 }
 
+#[cfg(test)]
 pub fn inspect(segments: &[Segment], media_duration: Option<f64>) -> SubtitleQualityReport {
+    inspect_with_language(segments, media_duration, "zh")
+}
+
+pub fn inspect_with_language(
+    segments: &[Segment],
+    media_duration: Option<f64>,
+    language: &str,
+) -> SubtitleQualityReport {
     let thresholds = SubtitleQualityThresholds::default();
     let mut issues = Vec::new();
     let mut ordered = segments.iter().collect::<Vec<_>>();
@@ -114,6 +123,18 @@ pub fn inspect(segments: &[Segment], media_duration: Option<f64>) -> SubtitleQua
                 "单行字幕字符过多".to_owned(),
                 Some(max_line_characters as f64),
                 Some(thresholds.max_line_characters as f64),
+            ));
+        }
+        let line_count = segment.text.lines().count().max(1);
+        if language.to_ascii_lowercase().starts_with("en") && line_count > thresholds.max_lines {
+            issues.push(issue(
+                SubtitleIssueKind::TooManyLines,
+                SubtitleIssueSeverity::Warning,
+                segment,
+                None,
+                "英文字幕超过两行".to_owned(),
+                Some(line_count as f64),
+                Some(thresholds.max_lines as f64),
             ));
         }
         let visible_characters = segment
@@ -255,5 +276,34 @@ mod tests {
             Some(5.0),
         );
         assert_eq!(report, SubtitleQualityReport::default());
+    }
+
+    #[test]
+    fn english_quality_uses_fixed_beta_thresholds_and_counts_visible_characters() {
+        let report = inspect_with_language(
+            &[
+                segment("long-line", 0.0, 4.0, &"word ".repeat(43)),
+                segment("three-lines", 4.2, 7.0, "one\ntwo\nthree"),
+            ],
+            Some(8.0),
+            "en-US",
+        );
+        assert_eq!(report.thresholds.max_duration_seconds, 8.0);
+        assert_eq!(report.thresholds.max_line_characters, 42);
+        assert_eq!(report.thresholds.max_lines, 2);
+        assert_eq!(report.thresholds.max_characters_per_second, 20.0);
+        assert_eq!(report.thresholds.min_gap_seconds, 0.12);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.kind == SubtitleIssueKind::LineTooLong)
+        );
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.kind == SubtitleIssueKind::TooManyLines)
+        );
     }
 }

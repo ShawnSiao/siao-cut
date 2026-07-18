@@ -50,7 +50,7 @@ export const sampleProject: Project = {
     issueCount: 3,
     errorCount: 0,
     warningCount: 3,
-    thresholds: { maxDurationSeconds: 8, maxLineCharacters: 42, maxCharactersPerSecond: 20, minGapSeconds: 0.12 },
+    thresholds: { maxDurationSeconds: 8, maxLineCharacters: 42, maxCharactersPerSecond: 20, minGapSeconds: 0.12, maxLines: 2 },
     issues: [
       { id: "quality-gap-s2", kind: "gap_too_short", severity: "warning", segmentId: "s2", relatedSegmentId: "s1", start: 13.2, end: 18.6, message: "与上一条字幕间隔过短", measuredValue: 0, threshold: 0.12 },
       { id: "quality-gap-s3", kind: "gap_too_short", severity: "warning", segmentId: "s3", relatedSegmentId: "s2", start: 18.6, end: 24.4, message: "与上一条字幕间隔过短", measuredValue: 0, threshold: 0.12 },

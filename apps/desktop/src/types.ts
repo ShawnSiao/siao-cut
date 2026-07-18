@@ -477,7 +477,7 @@ export type Project = {
   workflows: Workflow[];
 };
 
-export type SubtitleIssueKind = "empty_text" | "invalid_timing" | "out_of_bounds" | "overlap" | "duration_too_long" | "line_too_long" | "reading_speed_high" | "gap_too_short";
+export type SubtitleIssueKind = "empty_text" | "invalid_timing" | "out_of_bounds" | "overlap" | "duration_too_long" | "line_too_long" | "too_many_lines" | "reading_speed_high" | "gap_too_short";
 
 export type SubtitleQualityIssue = {
   id: string;
@@ -503,6 +503,7 @@ export type SubtitleQualityReport = {
     maxLineCharacters: number;
     maxCharactersPerSecond: number;
     minGapSeconds: number;
+    maxLines: number;
   };
   issues: SubtitleQualityIssue[];
 };

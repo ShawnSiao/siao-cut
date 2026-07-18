@@ -166,8 +166,11 @@ pub fn load(db: &Connection, id: &str) -> Result<Project> {
         workflows: workflows::for_project(db, id)?,
     };
     project.speech_insights = speech::analyze(&project.transcript);
-    project.subtitle_quality =
-        subtitle_quality::inspect(&project.transcript.segments, project.media.duration_seconds);
+    project.subtitle_quality = subtitle_quality::inspect_with_language(
+        &project.transcript.segments,
+        project.media.duration_seconds,
+        &project.transcript.source_language,
+    );
     project.timeline = timeline::build(&project);
     Ok(project)
 }

@@ -942,16 +942,16 @@ fn run(cli: Cli) -> Result<Value> {
                     arguments.lang.as_deref(),
                     arguments.bilingual,
                 )?;
-                let report = export::audit(&project);
-                if report["ready"] != Value::Bool(true) {
-                    bail!("导出前审计未通过，请先处理无效字幕或媒体问题")
-                }
                 let options = export::ExportOptions {
                     format: &arguments.format,
                     language: arguments.lang.as_deref(),
                     subtitle_mode,
                     include_cuts: arguments.include_cuts,
                 };
+                let report = export::audit_for_options(&project, &options);
+                if report["ready"] != Value::Bool(true) {
+                    bail!("导出前审计未通过，请先处理无效字幕或媒体问题")
+                }
                 fs::write(&arguments.output, export::render(&project, &options)?)?;
                 Ok(envelope(json!({
                     "projectId": project.id,

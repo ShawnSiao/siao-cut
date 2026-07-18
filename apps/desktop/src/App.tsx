@@ -115,6 +115,7 @@ const subtitleIssueLabel = (kind: SubtitleQualityIssue["kind"]) => ({
     overlap: tr("app.issue.overlap"),
     duration_too_long: tr("app.issue.duration_too_long"),
     line_too_long: tr("app.issue.line_too_long"),
+    too_many_lines: tr("app.issue.too_many_lines"),
     reading_speed_high: tr("app.issue.reading_speed_high"),
     gap_too_short: tr("app.issue.gap_too_short"),
 })[kind];

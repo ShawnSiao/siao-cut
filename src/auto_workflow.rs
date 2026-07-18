@@ -812,7 +812,15 @@ fn run_audit(db: &mut Connection, workflow: &AutoWorkflow) -> Result<()> {
         .as_deref()
         .ok_or_else(|| anyhow!("auto_workflow_state_invalid: 审计阶段缺少项目"))?;
     let project = project::load(db, project_id)?;
-    let report = export::audit(&project);
+    let report = export::audit_for_options(
+        &project,
+        &export::ExportOptions {
+            format: "ass",
+            language: workflow.translation_language.as_deref(),
+            subtitle_mode: workflow.subtitle_mode,
+            include_cuts: false,
+        },
+    );
     db.execute(
         "UPDATE auto_workflows SET audit_json=?2,updated_at=?3 WHERE id=?1",
         params![&workflow.id, serde_json::to_string(&report)?, now()],
