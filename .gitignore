@@ -15,6 +15,9 @@ designs/**/_d_meta.json
 **/dist/
 **/test-results/
 **/playwright-report/
+**/coverage/
+.nyc_output/
+*.lcov
 *.tsbuildinfo
 *.db
 *.db-shm
@@ -32,6 +35,13 @@ apps/desktop/src-tauri/runtime/
 !.env.example
 *.p12
 *.pfx
+*.pem
+*.key
+*.sig
+
+# Operating system metadata
+.DS_Store
+Thumbs.db
 
 # Private plans and generated release artifacts
 *.docx

@@ -1,0 +1,63 @@
+name: Bug 报告
+description: 报告可以稳定复现的功能或运行问题
+title: "fix: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请只提交已移除个人信息的日志和截图。安全漏洞不要通过公开 Issue 报告。
+  - type: input
+    id: version
+    attributes:
+      label: SiaoCut 版本
+      description: 填写应用版本、提交哈希或分支名称。
+      placeholder: 0.2.0 或 3326942
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows 环境
+      description: 填写 Windows 版本、系统架构和相关 GPU 信息。
+      placeholder: Windows 11 24H2，x64，GTX 1660 SUPER
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 从干净启动开始，列出最小复现步骤。
+      placeholder: |
+        1. 打开……
+        2. 导入……
+        3. 点击……
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期结果
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际结果
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: 诊断材料
+      description: 可提供已脱敏的错误信息、日志片段或截图。不要上传真实媒体、数据库、密钥或本机绝对路径。
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前检查
+      options:
+        - label: 已搜索现有 Issue，没有找到相同问题。
+          required: true
+        - label: 已移除个人信息、媒体内容、密钥和本机路径。
+          required: true
+        - label: 此报告不包含安全漏洞。
+          required: true
