@@ -1,134 +1,110 @@
 # SiaoCut
 
-SiaoCut 是面向 AI 口播创作者的 Windows 本地优先剪辑工作台。当前仓库提供可运行的 Rust + SQLite Core、JSON CLI、Agent Skill、FFmpeg / whisper.cpp 本机适配器，以及 Tauri 2 + React 桌面审阅工作台。
+[简体中文](README.md) | [English](README.en.md)
 
-## 已实现
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+![Platform: Windows 10/11](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D4)
+![Status: Development](https://img.shields.io/badge/status-development-orange)
 
-- 单实例 Core 服务：CLI 通过 Windows 命名管道访问 SQLite，客户端退出不终止正在执行的本机任务。
-- SQLite 项目库：媒体 SHA-256 证据、转录、翻译、软剪辑、Agent 短租约、待审补丁和不可变版本快照；导出前审计会阻止缺失或哈希变化的原片。
-- JSON CLI：`health`、`import`、`project`、`transcript`、`task`、`workflow`、`cut`、`media`、`video`、`speech`、`speaker`、`audit`、`transcribe`。
-- FFmpeg 音频规范化与 `whisper.cpp` JSON 转录；模型由调用者显式选择，本地处理不上传媒体。
-- SRT、VTT、ASS、Markdown 导出；已应用的软剪辑和 Agent 语义剪辑使用同一时间映射重排字幕与视频。
-- 一次性代理 MP4、波形和关键帧；后台视频导出支持字幕烧录、进度、取消、磁盘检查和 JSON 清单。
-- Tauri 2 + React 桌面应用：项目列表、媒体导入、本地转录、字幕定位与编辑、三方差异审阅、软剪辑预览、版本恢复、SRT 和 MP4 导出。
-- 三档按需模型管理：显示来源、体积、许可证和 SHA-256；后台下载支持暂停、断点续传、校验和移除。
-- Windows 安装包内置 Core、whisper.cpp CPU/Vulkan 运行时和经哈希锁定的 LGPL FFmpeg；Vulkan 仅在检测到兼容显卡后启用，原始项目与模型保存在安装目录之外。
-- Windows 正式版不会创建控制台窗口；Core、FFmpeg、ffprobe 和 whisper.cpp 作为隐藏子进程运行。诊断日志仅保存在 `%LOCALAPPDATA%\SiaoCut\logs`，可从「运行环境」打开。
-- VAD 完全漏检且平均音量高于 `-55 dBFS` 时，自动使用同一本地模型重试一次；纯静音保持无字幕状态，音乐、合唱或特殊音色仍有一次本地重试机会。
-- 0.3 语音智能：根据词级时间计算语速、停顿、口头语和低置信度证据；通过 FFmpeg 检查响度、真峰值、静音和疑似削波；所有结果只用于定位和人工审阅。
-- 可选本地说话人轨：显式安装前显示 61.4 MB 下载体积、组件来源和许可证，安装后逐文件校验 SHA-256；支持改名、合并、重新分配和项目历史恢复。
-- 桌面应用通过 Tauri Rust 层调用 Core，不直接读取 SQLite。媒体预览按项目动态授权，不开放任意磁盘读取范围。
+SiaoCut 是面向 AI 口播创作者的 Windows 本地优先剪辑工作台。它以文稿和字幕为主要编辑入口，在本机完成媒体导入、语音转写、字幕审阅、软剪辑和视频导出。
 
-## 本机依赖（本次已安装）
+> **项目状态：开发中。** 当前仓库尚未发布安装包，也没有经过受信任 Windows 代码签名的公开版本。源码可以构建和运行，但不应视为正式发布版本。
 
-- Rust stable x64（Rustup）与 Visual Studio 2022 C++ Build Tools。
-- CMake 4.4。
-- FFmpeg（从现有 `PATH` 发现）。
-- `%LOCALAPPDATA%\SiaoCut\bin\whisper-cli.exe` 与同目录 DLL；由 `whisper.cpp` Release/x64 构建而来。
-- `%LOCALAPPDATA%\SiaoCut\models\ggml-tiny.en.bin` 仅作英语转录验证模型。它是显式下载的模型，不会在 CLI 运行时自动下载。
+## 工作流程
 
-`whisper.cpp` 源代码及构建目录位于本机 `third_party/whisper.cpp`，由 `.gitignore` 排除；发布前应由安装器重新下载、验证哈希并生成第三方许可证清单。
+1. 导入本地媒体，或在确认拥有处理权限后导入公开单视频 URL。
+2. 选择本地 Whisper 模型，使用 FFmpeg 和 whisper.cpp 生成带时间信息的文稿。
+3. 编辑字幕，审阅 Agent 建议、语音证据和软剪辑，再决定是否应用修改。
+4. 导出字幕或 MP4；视频导出与字幕重排共用同一套时间映射。
 
-## 使用
+## 当前能力
 
-```powershell
-# 验证 Rust Core、FFmpeg 与 whisper.cpp
-.\skills\siaocut\bin\siaocut.ps1 --json health
+| 功能 | 当前实现 |
+| --- | --- |
+| 本地转写 | 使用 FFmpeg 规范化音频，通过 whisper.cpp 在 CPU 或兼容的 Vulkan GPU 上转写；模型由使用者明确选择。 |
+| 文稿剪辑 | 支持字幕定位与编辑、翻译审阅、软剪辑、撤销、重做和版本恢复。原片不会被覆盖。 |
+| 语音证据 | 标记语速、停顿、口头语、低置信度、响度、静音和疑似削波；可选说话人模型用于生成待审阅说话人轨。 |
+| Agent 审阅 | Agent 只接收文本、时间戳和结构约束。结果以三方差异形式待审，不会直接改写项目。 |
+| 导出 | 支持 SRT、VTT、ASS、Markdown 和 MP4，可烧录字幕并导出原始比例或 9:16 画布。 |
+| 项目完整性 | Rust Core 是唯一写入者；SQLite 保存项目版本，媒体 SHA-256 审计会在原片缺失或变化时阻止导出。 |
 
-# 创建项目并转录（模型路径必须明确给出）
-.\skills\siaocut\bin\siaocut.ps1 --json import "C:\Videos\talk.mp4" --title "产品发布口播"
-.\skills\siaocut\bin\siaocut.ps1 --json transcribe <projectId> --model "$env:LOCALAPPDATA\SiaoCut\models\ggml-tiny.en.bin" --language en
+## 设计边界
 
-# 审阅、导出
-.\skills\siaocut\bin\siaocut.ps1 --json cut detect <projectId>
-.\skills\siaocut\bin\siaocut.ps1 --json media prepare <projectId>
-.\skills\siaocut\bin\siaocut.ps1 --json audit <projectId>
-.\skills\siaocut\bin\siaocut.ps1 --json transcript export <projectId> --format srt -o "C:\Exports\talk.srt"
-.\skills\siaocut\bin\siaocut.ps1 --json video export <projectId> -o "C:\Exports\talk.mp4" --burn-subtitles
-.\skills\siaocut\bin\siaocut.ps1 --json video status <jobId>
-```
+- 当前只支持 Windows 10 和 Windows 11。
+- 媒体处理在本机完成。模型、运行时和 URL 媒体只在明确操作后从标示来源下载。
+- 桌面应用、CLI 和 Skill 都通过 Rust Core 修改项目，不直接写入 SQLite。
+- 语音分析和 Agent 结果只提供证据或建议；应用文本修改和剪辑前需要人工确认。
+- 真实方言、重叠语音、复杂噪声和更多硬件组合仍需要扩充验证。
 
-默认目录为 `%LOCALAPPDATA%\SiaoCut`；开发或测试时可设置 `SIAOCUT_HOME` 覆盖。可通过 `SIAOCUT_FFMPEG`、`SIAOCUT_FFPROBE`、`SIAOCUT_WHISPER_CLI` 指向经审计的替代二进制。
+## 从源码开始
 
-运行验证：
+### 环境要求
+
+- Windows 10 或 Windows 11
+- Git
+- Rust stable 与 Visual Studio 2022 C++ Build Tools
+- Node.js 22 或更高版本
+- Microsoft Edge WebView2 Runtime
+
+### 启动桌面应用
 
 ```powershell
-npm test
+git clone https://github.com/ShawnSiao/siao-cut.git
+cd siao-cut
+npm ci --prefix apps/desktop
 cargo build --release
-npm run test:ui
-npm run test:e2e
-powershell -ExecutionPolicy Bypass -File skills\siaocut\tests\workflow-e2e.ps1
-powershell -ExecutionPolicy Bypass -File skills\siaocut\tests\video-export-e2e.ps1
-powershell -ExecutionPolicy Bypass -File skills\siaocut\tests\video-duration-matrix.ps1 -Source "C:\Videos\talk.mp4"
-powershell -ExecutionPolicy Bypass -File skills\siaocut\tests\voice-intelligence-e2e.ps1 -InstallSpeakerPackage
-```
-
-## 0.3 语音智能
-
-语音节奏和音频质量分析不需要新增模型。说话人轨为可选组件，未安装时不会阻止转录、字幕编辑或导出。
-
-```powershell
-# 查看节奏和音频质量证据
-.\skills\siaocut\bin\siaocut.ps1 --json speech analyze <projectId>
-.\skills\siaocut\bin\siaocut.ps1 --json speech audio-start <projectId>
-
-# 查看固定来源、体积与许可证，再显式安装说话人模型包
-.\skills\siaocut\bin\siaocut.ps1 --json speaker package
-.\skills\siaocut\bin\siaocut.ps1 --json speaker install
-.\skills\siaocut\bin\siaocut.ps1 --json speaker package --verify
-
-# 生成待审阅说话人轨
-.\skills\siaocut\bin\siaocut.ps1 --json speaker analyze <projectId>
-.\skills\siaocut\bin\siaocut.ps1 --json speaker track <projectId>
-```
-
-完整操作与限制见 [`docs/voice-intelligence-0.3.md`](docs/voice-intelligence-0.3.md)。
-
-启动桌面开发环境：
-
-```powershell
-npm --prefix apps/desktop install
 npm run desktop:dev
 ```
 
-生成 Windows 安装包：
+开发模式可以在本机运行界面。转写与导出前，先检查 FFmpeg、whisper.cpp 和模型状态：
 
 ```powershell
-npm run desktop:build
+.\skills\siaocut\bin\siaocut.ps1 --json health
 ```
 
-安装包生成到 `apps/desktop/src-tauri/target/release/bundle/nsis/`。构建过程会把 Release Core 作为 sidecar，从 `release/runtime-manifest.json` 指定的来源取得 FFmpeg 与 whisper.cpp CPU 运行时，并从锁定的 whisper.cpp 提交构建 Vulkan 运行时；归档文件必须通过固定 SHA-256，模型不会随安装包静默附带。包含 Vulkan 的发布构建机需要 Vulkan SDK。
+默认数据目录为 `%LOCALAPPDATA%\SiaoCut`。开发和测试可以使用 `SIAOCUT_HOME` 覆盖；`SIAOCUT_FFMPEG`、`SIAOCUT_FFPROBE` 和 `SIAOCUT_WHISPER_CLI` 可指向经过核验的本机二进制。
 
-模型管理命令：
+完整 CLI 工作流见 [`skills/siaocut/SKILL.md`](skills/siaocut/SKILL.md)。
+
+## 开发与验证
 
 ```powershell
-.\skills\siaocut\bin\siaocut.ps1 --json model list
-.\skills\siaocut\bin\siaocut.ps1 --json model install base
-.\skills\siaocut\bin\siaocut.ps1 --json model status <jobId>
-.\skills\siaocut\bin\siaocut.ps1 --json model cancel <jobId>
-.\skills\siaocut\bin\siaocut.ps1 --json model verify base
+# Rust Core 与 Node.js 合同测试
+npm test
+
+# Desktop 构建、组件测试与浏览器端到端测试
+npm --prefix apps/desktop run build
+npm run test:ui
+npm run test:e2e
+
+# 仓库提交物检查
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/check-repository-artifacts.ps1
 ```
 
-打开静态设计原型：
+完整环境、分支、提交和 Pull Request 规则见 [`CONTRIBUTING.md`](CONTRIBUTING.md)。
 
-```powershell
-npm run prototype
+## 仓库结构
+
+```text
+src/                  Rust Core、SQLite、CLI 与本机媒体适配器
+apps/desktop/         Tauri 2 + React 桌面应用
+skills/siaocut/       Agent Skill、PowerShell 入口与端到端测试
+docs/                 专题文档与仓库规范
+release/              固定运行时来源、哈希与第三方许可证
+tools/                构建、发布和仓库检查工具
 ```
 
-若 4311 已被占用，使用 `$env:PORT=4312; npm run prototype`。
+## 文档
 
-## Agent 工作方式
+- [系统架构](ARCHITECTURE.md)
+- [0.3 语音智能](docs/voice-intelligence-0.3.md)
+- [发布与更新](docs/release-updates.md)
+- [仓库提交物规范](docs/repository-artifact-policy.md)
+- [贡献指南](CONTRIBUTING.md)
+- [第三方软件说明](THIRD_PARTY_NOTICES.md)
 
-```powershell
-.\skills\siaocut\bin\siaocut.ps1 --json workflow create <projectId> --kind translate --lang en
-.\skills\siaocut\bin\siaocut.ps1 --json task claim --worker codex-1
-.\skills\siaocut\bin\siaocut.ps1 --json task submit <taskId> --worker codex-1 --response "C:\Temp\siaocut-response.json"
-```
+问题与功能建议可通过 [GitHub Issues](https://github.com/ShawnSiao/siao-cut/issues) 提交。提交日志、截图或示例前，需要移除媒体内容、本机路径和个人信息。
 
-Agent 仅取得文本、时间戳和结构约束，不能读取媒体路径。`task submit` 只创建待审补丁；只有明确执行 `task review` 或 `task review-all` 后才会修改项目。软剪辑只有在显式 `apply` 后才生效，且可恢复。
+## 许可证
 
-Agent 处理过程中可使用 `task heartbeat` 更新进度和续租；`task fail`、`task retry`、`task cancel` 和 `task events` 用于失败恢复、取消与 App 进度展示。提交文件必须包含领取任务时返回的 `baseVersionId`，项目被人工修改后旧结果不会静默覆盖。
-
-## 边界
-
-Vulkan GPU 运行时已在 GTX 1660 SUPER 上完成真实视频验证；0.3 语音智能已完成本地合成基准，但授权创作者素材、方言、重叠语音和真实噪声仍需扩充。当前发布候选仍未取得受信任的 Windows 代码签名证书，未签名的本机构建不得标记为正式发布版本。
+SiaoCut 使用 [Apache License 2.0](LICENSE)。随发布构建使用的第三方组件适用各自许可证，详见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
