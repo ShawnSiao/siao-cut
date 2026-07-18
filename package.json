@@ -1,0 +1,21 @@
+{
+  "name": "siaocut",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Windows-local, agent-assisted transcript editing reference implementation.",
+  "scripts": {
+    "cli": "powershell -ExecutionPolicy Bypass -File skills/siaocut/bin/siaocut.ps1",
+    "test": "node --test tests/core.test.mjs tests/cli.test.mjs && cargo test",
+    "test:rust": "cargo test",
+    "prototype": "node tools/serve-prototype.mjs",
+    "desktop:dev": "npm --prefix apps/desktop run tauri dev",
+    "desktop:build": "npm --prefix apps/desktop run tauri build --",
+    "test:ui": "npm --prefix apps/desktop run test:ui",
+    "test:e2e": "npm --prefix apps/desktop run test:e2e"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

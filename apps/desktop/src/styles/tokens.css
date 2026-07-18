@@ -1,0 +1,63 @@
+:root {
+  color-scheme: dark;
+
+  --bg-app: #0d1014;
+  --bg-rail: #11151a;
+  --bg-panel: #161b21;
+  --bg-panel-raised: #1c2229;
+  --bg-control: #20272f;
+  --bg-preview: #080a0d;
+  --bg-overlay: rgba(4, 7, 9, 0.76);
+
+  --border-subtle: #29313a;
+  --border-default: #35404b;
+  --border-strong: #4a5662;
+
+  --text-primary: #f2f4f5;
+  --text-secondary: #b5bec6;
+  --text-muted: #7f8b96;
+  --text-disabled: #59636c;
+  --text-on-accent: #18210f;
+
+  --brand: #b6ee72;
+  --brand-hover: #c8f68e;
+  --brand-active: #9fd65e;
+  --brand-soft: rgba(182, 238, 114, 0.12);
+  --brand-border: rgba(182, 238, 114, 0.42);
+
+  --agent: #8b7cff;
+  --agent-hover: #9d91ff;
+  --agent-active: #7668e8;
+  --agent-soft: rgba(139, 124, 255, 0.13);
+  --agent-border: rgba(139, 124, 255, 0.44);
+
+  --success: #4bc99b;
+  --success-soft: rgba(75, 201, 155, 0.12);
+  --info: #62a8ff;
+  --info-soft: rgba(98, 168, 255, 0.12);
+  --warning: #eab85b;
+  --warning-soft: rgba(234, 184, 91, 0.12);
+  --danger: #ed7466;
+  --danger-soft: rgba(237, 116, 102, 0.12);
+  --danger-border: rgba(237, 116, 102, 0.44);
+
+  --focus-ring: #8ec2ff;
+  --shadow-dialog: 0 30px 90px rgba(0, 0, 0, 0.62);
+  --preview-caption-shadow: 0 2px 5px #000, 0 0 14px #000;
+
+  --radius-control: 6px;
+  --radius-button: 8px;
+  --radius-panel: 10px;
+  --radius-dialog: 14px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  --font-ui: "Segoe UI Variable", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --font-mono: "Cascadia Mono", "Consolas", monospace;
+}

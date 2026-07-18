@@ -1,0 +1,54 @@
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--bg-app);
+}
+
+body {
+  min-width: 1080px;
+  min-height: 100vh;
+  margin: 0;
+  color: var(--text-primary);
+  background:
+    radial-gradient(circle at 55% -20%, var(--bg-panel-raised) 0, var(--bg-rail) 38%, var(--bg-app) 72%);
+  font-family: var(--font-ui);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  color: inherit;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+:where(button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+::selection {
+  color: var(--text-on-accent);
+  background: var(--brand);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}

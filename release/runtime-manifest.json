@@ -1,0 +1,204 @@
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-07-18",
+  "components": [
+    {
+      "id": "ffmpeg-cpu",
+      "name": "FFmpeg 8.1 LGPL shared",
+      "version": "8.1",
+      "kind": "bundled-runtime",
+      "backend": "cpu",
+      "source": "https://github.com/BtbN/FFmpeg-Builds",
+      "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-win64-lgpl-shared-8.1.zip",
+      "size": 70503568,
+      "sha256": "f711e0478c03fd48624c59a0487e0c5d904779a3c67280a0a7b49b0002f12b43",
+      "license": "LGPL-2.1-or-later",
+      "bundled": true
+    },
+    {
+      "id": "yt-dlp",
+      "name": "yt-dlp Windows x64",
+      "version": "2026.06.09",
+      "kind": "bundled-source-import-sidecar",
+      "source": "https://github.com/yt-dlp/yt-dlp",
+      "url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.06.09/yt-dlp.exe",
+      "size": 18202192,
+      "sha256": "3a48cb955d55c8821b60ccbdbbc6f61bc958f2f3d3b7ad5eaf3d83a543293a27",
+      "license": "GPL-3.0-or-later for the combined Windows executable; yt-dlp source is Unlicense",
+      "licenseFiles": [
+        {
+          "id": "yt-dlp-unlicense",
+          "name": "yt-dlp source license",
+          "url": "https://raw.githubusercontent.com/yt-dlp/yt-dlp/2026.06.09/LICENSE",
+          "size": 1211,
+          "sha256": "7e12e5df4bae12cb21581ba157ced20e1986a0508dd10d0e8a4ab9a4cf94e85c",
+          "target": "yt-dlp-Unlicense.txt"
+        },
+        {
+          "id": "yt-dlp-third-party",
+          "name": "yt-dlp combined executable third-party licenses",
+          "url": "https://raw.githubusercontent.com/yt-dlp/yt-dlp/2026.06.09/THIRD_PARTY_LICENSES.txt",
+          "size": 231397,
+          "sha256": "b085c65586a953cdb4b13c6390d63ec984d66912e4b6a19e66ba3582f2ed104b",
+          "target": "yt-dlp-GPL-3.0-and-third-party.txt"
+        }
+      ],
+      "bundled": true,
+      "selfUpdate": false
+    },
+    {
+      "id": "whisper-cpu",
+      "name": "whisper.cpp CPU x64",
+      "version": "1.9.1",
+      "kind": "bundled-runtime",
+      "backend": "cpu",
+      "source": "https://github.com/ggml-org/whisper.cpp",
+      "url": "https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.1/whisper-bin-x64.zip",
+      "size": 7982101,
+      "sha256": "7d8be46ecd31828e1eb7a2ecdd0d6b314feafd82163038ab6092594b0a063539",
+      "license": "MIT",
+      "bundled": true
+    },
+    {
+      "id": "whisper-vad-silero-6.2",
+      "name": "Silero VAD for whisper.cpp",
+      "version": "6.2.0",
+      "kind": "bundled-runtime-model",
+      "backend": "cpu",
+      "source": "https://huggingface.co/ggml-org/whisper-vad",
+      "upstream": "https://github.com/snakers4/silero-vad",
+      "url": "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin",
+      "size": 885098,
+      "sha256": "2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987",
+      "license": "MIT",
+      "bundled": true
+    },
+    {
+      "id": "whisper-cuda-11",
+      "name": "whisper.cpp CUDA 11.8 x64",
+      "version": "1.9.1",
+      "kind": "optional-runtime",
+      "backend": "cuda",
+      "source": "https://github.com/ggml-org/whisper.cpp",
+      "url": "https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.1/whisper-cublas-11.8.0-bin-x64.zip",
+      "size": 278557654,
+      "sha256": "aecdce0e4d4bb758a7c72a31f3f9f19a7b6d861405fd2da743cd86398633c963",
+      "license": "MIT",
+      "bundled": false,
+      "requires": "兼容 CUDA 11.8 的 NVIDIA 驱动"
+    },
+    {
+      "id": "whisper-vulkan",
+      "name": "whisper.cpp Vulkan x64",
+      "version": "1.9.1",
+      "sourceCommit": "080bbbe85230f624f0b52127f1ae1218247989f9",
+      "kind": "optional-built-runtime",
+      "backend": "vulkan",
+      "source": "https://github.com/ggml-org/whisper.cpp",
+      "license": "MIT",
+      "bundled": "when-built-with-vulkan-sdk",
+      "requires": "支持 Vulkan 1.2 的显卡与驱动；不兼容时可切回 CPU"
+    }
+  ],
+  "speakerPackages": [
+    {
+      "id": "sherpa-onnx-speaker-zh-en-v1",
+      "name": "本地说话人分离（中英）",
+      "version": "1.13.2",
+      "kind": "optional-runtime-model-package",
+      "backend": "cpu",
+      "source": "https://github.com/k2-fsa/sherpa-onnx",
+      "downloadSize": 64389270,
+      "installedSize": 56862907,
+      "license": "Apache-2.0 / MIT",
+      "bundled": false,
+      "requiresExplicitInstall": true,
+      "downloads": [
+        {
+          "id": "sherpa-onnx-runtime",
+          "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.2/sherpa-onnx-v1.13.2-win-x64-shared-MD-Release-no-tts.tar.bz2",
+          "size": 17837065,
+          "sha256": "d74ad2c3e2f943e51ed8b15d409281dea378fcb21f7bb83e8b070be03f2f6715",
+          "license": "Apache-2.0; bundled ONNX Runtime is MIT"
+        },
+        {
+          "id": "pyannote-segmentation-3.0",
+          "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2",
+          "size": 6958444,
+          "sha256": "24615ee884c897d9d2ba09bb4d30da6bb1b15e685065962db5b02e76e4996488",
+          "license": "MIT"
+        },
+        {
+          "id": "3dspeaker-eres2net-base-16k",
+          "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx",
+          "size": 39593761,
+          "sha256": "1a331345f04805badbb495c775a6ddffcdd1a732567d5ec8b3d5749e3c7a5e4b",
+          "license": "Apache-2.0"
+        }
+      ],
+      "installedAssets": [
+        {
+          "fileName": "sherpa-onnx-offline-speaker-diarization.exe",
+          "size": 323584,
+          "sha256": "86d696832204b7859aef601a0f996371abca6f955d71e1242f308027872a0e9c"
+        },
+        {
+          "fileName": "onnxruntime.dll",
+          "size": 15394304,
+          "sha256": "8b695444d1a35ed0c8338b8c14438b3be5e0a3b222b88b1e7b4ce8753f135b50"
+        },
+        {
+          "fileName": "onnxruntime_providers_shared.dll",
+          "size": 10752,
+          "sha256": "ebc55b0f28e8a79cbf78e810a7f510ba70e75a2dfbcfcc6aca31ab2b8710a59a"
+        },
+        {
+          "fileName": "pyannote-segmentation-3.0-int8.onnx",
+          "size": 1540506,
+          "sha256": "d582f4b4c6b48205de7e0643c57df0df5615a3c176189be3fc461e9d18827b5d"
+        },
+        {
+          "fileName": "3dspeaker-eres2net-base-16k.onnx",
+          "size": 39593761,
+          "sha256": "1a331345f04805badbb495c775a6ddffcdd1a732567d5ec8b3d5749e3c7a5e4b"
+        }
+      ]
+    }
+  ],
+  "models": [
+    {
+      "id": "tiny",
+      "name": "省空间",
+      "fileName": "ggml-tiny.bin",
+      "description": "约 74 MB，适合快速试用与低配置电脑。",
+      "source": "https://huggingface.co/ggerganov/whisper.cpp",
+      "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin",
+      "size": 77691713,
+      "sha256": "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21",
+      "license": "MIT"
+    },
+    {
+      "id": "base",
+      "name": "平衡",
+      "fileName": "ggml-base.bin",
+      "description": "约 141 MB，默认推荐，兼顾速度与中英识别质量。",
+      "source": "https://huggingface.co/ggerganov/whisper.cpp",
+      "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
+      "size": 147951465,
+      "sha256": "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
+      "license": "MIT",
+      "recommended": true
+    },
+    {
+      "id": "small",
+      "name": "高质量",
+      "fileName": "ggml-small.bin",
+      "description": "约 465 MB，识别质量更高，CPU 转录耗时更长。",
+      "source": "https://huggingface.co/ggerganov/whisper.cpp",
+      "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin",
+      "size": 487601967,
+      "sha256": "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
+      "license": "MIT"
+    }
+  ]
+}

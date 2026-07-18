@@ -1,0 +1,45 @@
+/target/
+/tools/updater-contract/target/
+/.siaocut/
+
+# Local planning and agent output
+/docs/goal/
+/.codex-remote-attachments/
+/.playwright-cli/
+/output/
+/.tmp-*/
+designs/**/_d_meta.json
+
+# Dependencies, builds, and test output
+**/node_modules/
+**/dist/
+**/test-results/
+**/playwright-report/
+*.tsbuildinfo
+*.db
+*.db-shm
+*.db-wal
+*.log
+.release-cache/
+apps/desktop/src-tauri/binaries/
+apps/desktop/src-tauri/runtime/
+/third_party/whisper.cpp/
+/vendor/
+
+# Local configuration and signing material
+.env
+.env.*
+!.env.example
+*.p12
+*.pfx
+
+# Private plans and generated release artifacts
+*.docx
+*.7z
+*.zip
+*.msi
+*.msix
+*.exe
+*.dll
+*.onnx
+*.gguf

@@ -1,0 +1,56 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "SiaoCut",
+  "version": "0.2.0",
+  "identifier": "app.siaocut.desktop",
+  "build": {
+    "beforeDevCommand": "cargo build --manifest-path ../../Cargo.toml && node ../../tools/prepare-sidecar.mjs && npm run dev",
+    "devUrl": "http://127.0.0.1:4313",
+    "beforeBuildCommand": "cargo build --release --manifest-path ../../Cargo.toml && node ../../tools/prepare-sidecar.mjs && powershell -NoProfile -ExecutionPolicy Bypass -File ../../tools/prepare-release-runtime.ps1 -IncludeVulkan && npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "SiaoCut · 本地剪辑工作台",
+        "width": 1440,
+        "height": 940,
+        "minWidth": 1080,
+        "minHeight": 720,
+        "center": true,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost data:; media-src 'self' asset: http://asset.localhost blob:; style-src 'self' 'unsafe-inline'",
+      "assetProtocol": { "enable": true, "scope": [] }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": ""
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico"],
+    "externalBin": ["binaries/siaocut-core"],
+    "resources": {
+      "runtime/ffmpeg/": "runtime/ffmpeg/",
+      "runtime/whisper/": "runtime/whisper/",
+      "runtime/whisper-vulkan/": "runtime/whisper-vulkan/",
+      "runtime/yt-dlp/": "runtime/yt-dlp/",
+      "runtime/licenses/": "notices/licenses/",
+      "runtime/runtime-manifest.json": "runtime/runtime-manifest.json",
+      "../../../release/runtime-manifest.json": "notices/runtime-manifest.json",
+      "../../../THIRD_PARTY_NOTICES.md": "notices/THIRD_PARTY_NOTICES.md"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  }
+}

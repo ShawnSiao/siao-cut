@@ -1,0 +1,35 @@
+{
+  "skill_name": "siaocut",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "用 SiaoCut 润色本地口播项目，先让我逐条确认，不要直接覆盖文稿。",
+      "expected_output": "创建 polish workflow，领取文字任务，提交包含 before/after/reason/confidence 的补丁，并停在待审状态。",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "把这个 SiaoCut 项目的中文字幕翻译成英文；我刚刚可能还会手改原文。",
+      "expected_output": "创建 translate workflow；即使项目版本变化也提交补丁，由 App 显示冲突，不覆盖人工修改。",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "检查 SiaoCut 口播里重复和失败重录的段落，给删除建议，但先别真的剪。",
+      "expected_output": "创建 edit 或 cut workflow，只提交完整片段建议，并在用户确认前保持媒体和项目文本不变。",
+      "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "按我确认的软剪辑导出带字幕 MP4，并告诉我进度；不要覆盖原片。",
+      "expected_output": "先运行 audit，再创建 video export 后台任务，轮询 video status，并只在 completed 后报告成片和 manifest 路径。",
+      "files": []
+    },
+    {
+      "id": 5,
+      "prompt": "给 SiaoCut 安装平衡模型，先说明从哪里下载、占多少空间；下载到一半我可能会暂停。",
+      "expected_output": "先用 model list 报告 Base 模型的来源、体积、许可证和哈希；获得确认后创建后台下载任务，并用 model status、model cancel 和 model verify 管理下载与校验。",
+      "files": []
+    }
+  ]
+}

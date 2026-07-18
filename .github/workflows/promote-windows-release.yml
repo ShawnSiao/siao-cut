@@ -1,0 +1,73 @@
+name: Verify and promote Windows release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing prerelease tag to verify and promote
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: promote-windows-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  verify-and-promote:
+    runs-on: windows-latest
+    steps:
+      - name: Verify prerelease assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          if ($env:RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+$') {
+            throw "Release tag must use the stable vMAJOR.MINOR.PATCH format."
+          }
+          $release = gh release view $env:RELEASE_TAG --json tagName,isDraft,isPrerelease | ConvertFrom-Json
+          if ($release.tagName -ne $env:RELEASE_TAG) { throw "GitHub returned the wrong release tag." }
+          if ($release.isDraft) { throw "Draft releases cannot be promoted." }
+          if (-not $release.isPrerelease) { throw "Release is not a prerelease." }
+
+          $download = Join-Path $env:RUNNER_TEMP "siaocut-release-$env:RELEASE_TAG"
+          New-Item -ItemType Directory -Path $download | Out-Null
+          gh release download $env:RELEASE_TAG --dir $download
+          if ($LASTEXITCODE -ne 0) { throw "Failed to download prerelease assets." }
+
+          $assets = @(Get-ChildItem -LiteralPath $download -File)
+          if ($assets.Count -ne 3) { throw "Expected exactly three prerelease assets." }
+          $installers = @(Get-ChildItem -LiteralPath $download -Filter '*-setup.exe')
+          if ($installers.Count -ne 1) { throw "Expected exactly one NSIS installer." }
+          $installer = $installers[0]
+          $signature = Get-Item -LiteralPath ($installer.FullName + '.sig') -ErrorAction Stop
+          $manifestPath = Get-Item -LiteralPath (Join-Path $download 'latest.json') -ErrorAction Stop
+
+          $authenticode = Get-AuthenticodeSignature -LiteralPath $installer.FullName
+          if ($authenticode.Status -ne 'Valid') {
+            throw "Installer Authenticode status is $($authenticode.Status)."
+          }
+
+          $manifest = Get-Content -Raw $manifestPath | ConvertFrom-Json
+          $entry = $manifest.platforms.'windows-x86_64-nsis'
+          if (-not $entry) { throw "latest.json does not contain windows-x86_64-nsis." }
+          $version = $env:RELEASE_TAG.Substring(1)
+          if ($manifest.version -ne $version) { throw "Manifest version does not match the release tag." }
+          if ([long]$entry.size -ne $installer.Length) { throw "Manifest size does not match the installer." }
+          $sha256 = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($entry.sha256 -ne $sha256) { throw "Manifest SHA-256 does not match the installer." }
+          if ($entry.signature -ne ([IO.File]::ReadAllText($signature.FullName).Trim())) {
+            throw "Manifest Tauri signature does not match the detached signature."
+          }
+          $expectedUrl = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:RELEASE_TAG/$($installer.Name)"
+          if ($entry.url -ne $expectedUrl) { throw "Manifest download URL does not match the release asset." }
+
+      - name: Promote verified release to Latest
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: gh release edit $env:RELEASE_TAG --prerelease=false --latest

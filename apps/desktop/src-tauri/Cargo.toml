@@ -1,0 +1,30 @@
+[package]
+name = "siaocut-desktop"
+version = "0.2.0"
+description = "SiaoCut Windows transcript review workbench"
+authors = ["SiaoCut contributors"]
+edition = "2024"
+license = "Apache-2.0"
+
+[lib]
+name = "siaocut_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.5.3", features = [] }
+
+[dependencies]
+chrono = "0.4"
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tauri = { version = "2.11.5", features = ["protocol-asset"] }
+tauri-plugin-dialog = "2.7.1"
+tauri-plugin-updater = "=2.10.1"
+tempfile = "3.23"
+tokio = { version = "1.48", features = ["process"] }
+windows-sys = { version = "0.61", features = ["Win32_System_Threading"] }
+
+[dev-dependencies]
+tempfile = "3.23"

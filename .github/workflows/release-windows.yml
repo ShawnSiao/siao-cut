@@ -1,0 +1,97 @@
+name: Build signed Windows prerelease
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-windows-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Verify tag and application version
+        shell: pwsh
+        run: |
+          $version = (Get-Content -Raw apps/desktop/src-tauri/tauri.conf.json | ConvertFrom-Json).version
+          if ($env:GITHUB_REF_NAME -ne "v$version") {
+            throw "Tag $env:GITHUB_REF_NAME does not match application version v$version."
+          }
+
+      - name: Install build dependencies
+        shell: pwsh
+        run: |
+          rustup update stable
+          npm ci --prefix apps/desktop
+
+      - name: Import Authenticode certificate
+        id: certificate
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $certificatePath = Join-Path $env:RUNNER_TEMP 'siaocut-release.pfx'
+          [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_BASE64))
+          $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+          $certificate = Import-PfxCertificate -FilePath $certificatePath -CertStoreLocation Cert:\CurrentUser\My -Password $password
+          "thumbprint=$($certificate.Thumbprint)" >> $env:GITHUB_OUTPUT
+          Remove-Item -LiteralPath $certificatePath -Force
+
+      - name: Build and verify signed update
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
+        run: |
+          $privateKeyPath = Join-Path $env:RUNNER_TEMP 'siaocut-updater.key'
+          $publicKeyPath = Join-Path $env:RUNNER_TEMP 'siaocut-updater.key.pub'
+          try {
+            [IO.File]::WriteAllText($privateKeyPath, $env:TAURI_SIGNING_PRIVATE_KEY, [Text.UTF8Encoding]::new($false))
+            [IO.File]::WriteAllText($publicKeyPath, $env:TAURI_SIGNING_PUBLIC_KEY, [Text.UTF8Encoding]::new($false))
+            $releaseBase = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:GITHUB_REF_NAME"
+            powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-signed-release.ps1 `
+              -CertificateThumbprint '${{ steps.certificate.outputs.thumbprint }}' `
+              -UpdaterPrivateKeyPath $privateKeyPath `
+              -UpdaterPublicKeyPath $publicKeyPath `
+              -UpdateEndpoint "https://github.com/$env:GITHUB_REPOSITORY/releases/latest/download/latest.json" `
+              -DownloadBaseUrl $releaseBase `
+              -ReleaseNotes "SiaoCut $env:GITHUB_REF_NAME"
+            if ($LASTEXITCODE -ne 0) { throw "Signed release build failed with exit code $LASTEXITCODE." }
+          } finally {
+            Remove-Item -LiteralPath $privateKeyPath, $publicKeyPath -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Publish GitHub prerelease
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $bundle = Resolve-Path apps/desktop/src-tauri/target/release/bundle/nsis
+          $installer = Get-ChildItem $bundle -Filter '*-setup.exe' | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+          if (-not $installer) { throw 'Signed NSIS installer was not produced.' }
+          $signature = Get-Item -LiteralPath ($installer.FullName + '.sig')
+          $manifest = Get-Item -LiteralPath (Join-Path $bundle 'latest.json')
+          gh release create $env:GITHUB_REF_NAME $installer.FullName $signature.FullName $manifest.FullName `
+            --verify-tag --prerelease --generate-notes --title "SiaoCut $env:GITHUB_REF_NAME"
+
+      - name: Remove imported certificate
+        if: always() && steps.certificate.outputs.thumbprint != ''
+        shell: pwsh
+        run: Remove-Item -LiteralPath 'Cert:\CurrentUser\My\${{ steps.certificate.outputs.thumbprint }}' -Force -ErrorAction SilentlyContinue
