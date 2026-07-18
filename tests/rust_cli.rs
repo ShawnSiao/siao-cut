@@ -363,7 +363,7 @@ fn audio_analysis_cli_is_local_cancellable_and_explicitly_resumable() {
             "audio-start",
             project_id,
             "--start-delay-ms",
-            "5000",
+            "30000",
         ],
     );
     let job_id = started["audioAnalysisJob"]["id"].as_str().unwrap();
@@ -375,7 +375,16 @@ fn audio_analysis_cli_is_local_cancellable_and_explicitly_resumable() {
     assert_eq!(cancelled["audioAnalysisJob"]["status"], "cancelled");
     assert!(cancelled["audioAnalysisJob"]["cancelRequestedAt"].is_string());
 
-    let resumed = run_direct(temp.path(), &["speech", "audio-resume", job_id]);
+    let resumed = run_direct(
+        temp.path(),
+        &[
+            "speech",
+            "audio-resume",
+            job_id,
+            "--start-delay-ms",
+            "30000",
+        ],
+    );
     assert_eq!(resumed["audioAnalysisJob"]["status"], "queued");
     assert_eq!(resumed["audioAnalysisJob"]["attemptCount"], 2);
     let latest = run_direct(temp.path(), &["speech", "audio-latest", project_id]);

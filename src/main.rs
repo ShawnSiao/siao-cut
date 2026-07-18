@@ -155,6 +155,8 @@ enum SpeechCommand {
     },
     AudioResume {
         job_id: String,
+        #[arg(long, hide = true)]
+        start_delay_ms: Option<u64>,
     },
 }
 
@@ -684,8 +686,11 @@ fn run(cli: Cli) -> Result<Value> {
                 "audioAnalysisJob": audio_analysis::cancel(&database, &job_id)?,
                 "message": "已请求取消本地音频分析。"
             }))),
-            SpeechCommand::AudioResume { job_id } => Ok(envelope(json!({
-                "audioAnalysisJob": audio_analysis::resume(&database, &job_id)?,
+            SpeechCommand::AudioResume {
+                job_id,
+                start_delay_ms,
+            } => Ok(envelope(json!({
+                "audioAnalysisJob": audio_analysis::resume(&database, &job_id, start_delay_ms)?,
                 "message": "已显式继续本地音频分析。"
             }))),
         },

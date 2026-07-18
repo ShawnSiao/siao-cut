@@ -1,0 +1,33 @@
+name: 文档问题
+description: 报告缺失、错误、过期或难以理解的文档
+title: "docs: "
+body:
+  - type: input
+    id: location
+    attributes:
+      label: 文档位置
+      description: 填写文件路径、章节名称或公开页面地址。
+      placeholder: README.md 的「边界」章节
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: 当前问题
+      description: 说明内容错误、缺失、过期或产生歧义的位置。
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建议修改
+      description: 可提供建议结构或准确资料来源，不必提交完整文案。
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前检查
+      options:
+        - label: 已确认问题仍存在于当前 `main`。
+          required: true
+        - label: 内容不包含内部规划、个人信息或私有链接。
+          required: true

@@ -1,0 +1,122 @@
+name: Pull request CI
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust / format, clippy, test
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Rust stable
+        shell: pwsh
+        run: |
+          rustup update stable
+          rustup component add rustfmt clippy
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Run Rust tests
+        run: cargo test --all-targets --all-features
+
+  node-core:
+    name: Node.js Core / test
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Run Node.js Core tests
+        run: node --test tests/core.test.mjs tests/cli.test.mjs
+
+  desktop:
+    name: Desktop / build, UI, E2E
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Install Desktop dependencies
+        run: npm ci --prefix apps/desktop
+
+      - name: Build Desktop web application
+        run: npm --prefix apps/desktop run build
+
+      - name: Run UI tests
+        run: npm --prefix apps/desktop run test:ui
+
+      - name: Install Playwright Chromium
+        run: npx --prefix apps/desktop playwright install chromium
+
+      - name: Run Playwright E2E tests
+        run: npm --prefix apps/desktop run test:e2e
+
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: apps/desktop/playwright-report/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  repository-policy:
+    name: Repository / artifact policy
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Check tracked artifacts
+        shell: pwsh
+        run: ./tools/check-repository-artifacts.ps1
+
+  dependency-review:
+    name: Security / dependency review
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@v4
