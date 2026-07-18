@@ -9,7 +9,16 @@ $root = Split-Path -Parent $PSScriptRoot
 $commit = '080bbbe85230f624f0b52127f1ae1218247989f9'
 if (-not $Destination) { $Destination = Join-Path $root 'apps\desktop\src-tauri\runtime\whisper-vulkan' }
 if (-not $SourceDirectory) { $SourceDirectory = Join-Path $root 'third_party\whisper.cpp' }
-if (-not $BuildDirectory) { $BuildDirectory = Join-Path ([IO.Path]::GetTempPath()) 'siaocut-whisper-vulkan' }
+if (-not $BuildDirectory) {
+    $sourcePath = [IO.Path]::GetFullPath($SourceDirectory).ToLowerInvariant()
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        $sourceHash = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($sourcePath)))).Replace('-', '').Substring(0, 12).ToLowerInvariant()
+    } finally {
+        $sha.Dispose()
+    }
+    $BuildDirectory = Join-Path ([IO.Path]::GetTempPath()) "siaocut-whisper-vulkan-$sourceHash"
+}
 
 $sdk = Get-ChildItem 'C:\VulkanSDK' -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
 if (-not $sdk) { throw 'Vulkan SDK not found. Install KhronosGroup.VulkanSDK before building the optional runtime.' }
