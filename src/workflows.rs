@@ -6,11 +6,22 @@ use crate::{
 use anyhow::{Result, anyhow, bail};
 use rusqlite::{Connection, OptionalExtension, params};
 
+#[cfg(test)]
 pub fn create(
     db: &mut Connection,
     project_id: &str,
     kind: &str,
     language: Option<String>,
+) -> Result<Workflow> {
+    create_with_locale(db, project_id, kind, language, "zh-CN")
+}
+
+pub fn create_with_locale(
+    db: &mut Connection,
+    project_id: &str,
+    kind: &str,
+    language: Option<String>,
+    instruction_locale: &str,
 ) -> Result<Workflow> {
     if !["polish", "translate", "proofread", "edit", "cut", "summary"].contains(&kind) {
         bail!("工作流类型必须为 polish、translate、proofread、edit、cut 或 summary")
@@ -19,19 +30,25 @@ pub fn create(
         bail!("翻译工作流需要 --lang")
     }
     let workflow_id = new_id("wf");
-    let task =
-        tasks::create_for_workflow(db, project_id, kind, language.clone(), Some(&workflow_id))?;
+    let task = tasks::create_for_workflow(
+        db,
+        project_id,
+        kind,
+        language.clone(),
+        Some(&workflow_id),
+        instruction_locale,
+    )?;
     let created_at = now();
     db.execute(
-        "INSERT INTO workflows(id,project_id,kind,language,status,task_id,created_at,updated_at) VALUES(?1,?2,?3,?4,'waiting_agent',?5,?6,?6)",
-        params![&workflow_id, project_id, kind, &language, &task.id, &created_at],
+        "INSERT INTO workflows(id,project_id,kind,language,status,task_id,created_at,updated_at,instruction_locale) VALUES(?1,?2,?3,?4,'waiting_agent',?5,?6,?6,?7)",
+        params![&workflow_id, project_id, kind, &language, &task.id, &created_at, instruction_locale],
     )?;
     load(db, &workflow_id)
 }
 
 pub fn load(db: &Connection, workflow_id: &str) -> Result<Workflow> {
     db.query_row(
-        "SELECT id,kind,language,status,task_id,created_at,updated_at FROM workflows WHERE id=?1",
+        "SELECT id,kind,language,status,task_id,created_at,updated_at,instruction_locale FROM workflows WHERE id=?1",
         [workflow_id],
         |row| {
             Ok(Workflow {
@@ -42,6 +59,7 @@ pub fn load(db: &Connection, workflow_id: &str) -> Result<Workflow> {
                 task_id: row.get(4)?,
                 created_at: row.get(5)?,
                 updated_at: row.get(6)?,
+                instruction_locale: row.get(7)?,
             })
         },
     )

@@ -272,7 +272,11 @@ pub fn inspect_file(
 ) -> Result<SubtitleImportPreview> {
     let project = project::load(db, project_id)?;
     let (format, segments) = parse(path)?;
-    let quality = subtitle_quality::inspect(&segments, project.media.duration_seconds);
+    let quality = subtitle_quality::inspect_with_language(
+        &segments,
+        project.media.duration_seconds,
+        &project.transcript.source_language,
+    );
     Ok(SubtitleImportPreview {
         format,
         source_path: path.to_string_lossy().into_owned(),

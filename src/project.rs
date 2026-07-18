@@ -122,7 +122,7 @@ pub fn load(db: &Connection, id: &str) -> Result<Project> {
             }),
         })
     })?.collect::<rusqlite::Result<Vec<_>>>()?;
-    let tasks = db.prepare("SELECT id,kind,language,status,created_at,completed_at,lease_worker,lease_id,lease_expires_at,base_version_id,progress,error_message,attempt_count,cancel_requested_at,workflow_id FROM tasks WHERE project_id=?1 ORDER BY created_at")?.query_map([id],|row| { let worker:Option<String>=row.get(6)?; Ok(Task{id:row.get(0)?,kind:row.get(1)?,language:row.get(2)?,status:row.get(3)?,created_at:row.get(4)?,completed_at:row.get(5)?,lease:worker.map(|worker| Lease { worker, id:row.get(7).unwrap_or_default(), expires_at:row.get(8).unwrap_or_default()}),base_version_id:row.get(9)?,progress:row.get(10)?,error_message:row.get(11)?,attempt_count:row.get(12)?,cancel_requested_at:row.get(13)?,workflow_id:row.get(14)?})})?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let tasks = db.prepare("SELECT id,kind,language,status,created_at,completed_at,lease_worker,lease_id,lease_expires_at,base_version_id,progress,error_message,attempt_count,cancel_requested_at,workflow_id,instruction_locale FROM tasks WHERE project_id=?1 ORDER BY created_at")?.query_map([id],|row| { let worker:Option<String>=row.get(6)?; Ok(Task{id:row.get(0)?,kind:row.get(1)?,language:row.get(2)?,status:row.get(3)?,created_at:row.get(4)?,completed_at:row.get(5)?,lease:worker.map(|worker| Lease { worker, id:row.get(7).unwrap_or_default(), expires_at:row.get(8).unwrap_or_default()}),base_version_id:row.get(9)?,progress:row.get(10)?,error_message:row.get(11)?,attempt_count:row.get(12)?,cancel_requested_at:row.get(13)?,workflow_id:row.get(14)?,instruction_locale:row.get(15)?})})?.collect::<rusqlite::Result<Vec<_>>>()?;
     let versions = db
         .prepare(
             "SELECT id,reason,created_at FROM versions WHERE project_id=?1 ORDER BY history_index",
@@ -166,8 +166,11 @@ pub fn load(db: &Connection, id: &str) -> Result<Project> {
         workflows: workflows::for_project(db, id)?,
     };
     project.speech_insights = speech::analyze(&project.transcript);
-    project.subtitle_quality =
-        subtitle_quality::inspect(&project.transcript.segments, project.media.duration_seconds);
+    project.subtitle_quality = subtitle_quality::inspect_with_language(
+        &project.transcript.segments,
+        project.media.duration_seconds,
+        &project.transcript.source_language,
+    );
     project.timeline = timeline::build(&project);
     Ok(project)
 }

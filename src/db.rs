@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 18;
+pub const CURRENT_SCHEMA_VERSION: i64 = 19;
 
 struct Migration {
     version: i64,
@@ -85,6 +85,10 @@ const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 18,
         apply: migration_18_subtitle_style_snapshots,
+    },
+    Migration {
+        version: 19,
+        apply: migration_19_instruction_locales,
     },
 ];
 
@@ -649,6 +653,15 @@ fn migration_18_subtitle_style_snapshots(tx: &Transaction<'_>) -> Result<()> {
     Ok(())
 }
 
+fn migration_19_instruction_locales(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute_batch(
+        "ALTER TABLE tasks ADD COLUMN instruction_locale TEXT NOT NULL DEFAULT 'zh-CN';
+         ALTER TABLE workflows ADD COLUMN instruction_locale TEXT NOT NULL DEFAULT 'zh-CN';
+         ALTER TABLE auto_workflows ADD COLUMN instruction_locale TEXT NOT NULL DEFAULT 'zh-CN';",
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -690,6 +703,26 @@ mod tests {
             )
             .unwrap();
         assert!(history_table);
+        second
+            .execute(
+                "INSERT INTO projects(id,title,created_at,updated_at) VALUES('p-locale','Legacy','now','now')",
+                [],
+            )
+            .unwrap();
+        second
+            .execute(
+                "INSERT INTO tasks(id,project_id,kind,status,created_at) VALUES('t-locale','p-locale','polish','queued','now')",
+                [],
+            )
+            .unwrap();
+        let locale: String = second
+            .query_row(
+                "SELECT instruction_locale FROM tasks WHERE id='t-locale'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(locale, "zh-CN");
         let suggestion_table: bool = second
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='cut_suggestions')",

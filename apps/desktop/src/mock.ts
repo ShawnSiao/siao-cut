@@ -50,7 +50,7 @@ export const sampleProject: Project = {
     issueCount: 3,
     errorCount: 0,
     warningCount: 3,
-    thresholds: { maxDurationSeconds: 8, maxLineCharacters: 42, maxCharactersPerSecond: 20, minGapSeconds: 0.12 },
+    thresholds: { maxDurationSeconds: 8, maxLineCharacters: 42, maxCharactersPerSecond: 20, minGapSeconds: 0.12, maxLines: 2 },
     issues: [
       { id: "quality-gap-s2", kind: "gap_too_short", severity: "warning", segmentId: "s2", relatedSegmentId: "s1", start: 13.2, end: 18.6, message: "与上一条字幕间隔过短", measuredValue: 0, threshold: 0.12 },
       { id: "quality-gap-s3", kind: "gap_too_short", severity: "warning", segmentId: "s3", relatedSegmentId: "s2", start: 18.6, end: 24.4, message: "与上一条字幕间隔过短", measuredValue: 0, threshold: 0.12 },
@@ -91,8 +91,8 @@ export const sampleProject: Project = {
     { id: "e1", kind: "word_cut", status: "proposed", segmentId: "s1", start: 12.4, end: 13.1, reason: "句内口头语：嗯", cutRange: { fromWordId: "w1", toWordId: "w1", selectedStart: 12.4, selectedEnd: 13.0, paddingMs: 100, transcriptHash: "demo", stale: false }, suggestion: { suggestionType: "standalone_filler", confidence: 0.99, detectorVersion: "heuristic-v1" } },
   ],
   tasks: [
-    { id: "t1", kind: "polish", language: null, status: "queued", progress: 0, errorMessage: null },
-    { id: "t2", kind: "proofread", language: null, status: "review", progress: 1, errorMessage: null },
+    { id: "t1", kind: "polish", language: null, status: "queued", progress: 0, errorMessage: null, instructionLocale: "zh-CN" },
+    { id: "t2", kind: "proofread", language: null, status: "review", progress: 1, errorMessage: null, instructionLocale: "zh-CN" },
   ],
   patchSets: [{
     id: "patch1", taskId: "t2", kind: "proofread", language: null, status: "pending_review",

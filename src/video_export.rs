@@ -59,7 +59,13 @@ pub fn create(
         bail!("视频导出路径必须使用 .mp4 扩展名")
     }
     let project = project::load(db, project_id)?;
-    let report = export::audit(&project);
+    let quality_options = ExportOptions {
+        format: "ass",
+        language: language.as_deref(),
+        subtitle_mode,
+        include_cuts: false,
+    };
+    let report = export::audit_for_options(&project, &quality_options);
     if report["ready"] != true {
         bail!("导出前审计未通过，请先处理媒体或字幕问题")
     }
@@ -67,15 +73,7 @@ pub fn create(
         bail!("全部内容都被软剪辑移除，无法导出空视频")
     }
     if burn_subtitles {
-        export::validate_subtitle_mode(
-            &project,
-            &ExportOptions {
-                format: "ass",
-                language: language.as_deref(),
-                subtitle_mode,
-                include_cuts: false,
-            },
-        )?;
+        export::validate_subtitle_mode(&project, &quality_options)?;
     }
     let source = Path::new(&project.media.source_path).canonicalize()?;
     let parent = output
@@ -110,6 +108,7 @@ pub fn create(
         project_id: project_id.to_owned(),
         output_path: output_absolute.to_string_lossy().to_string(),
         status: "queued".into(),
+        stage_code: Some("queued".into()),
         progress: 0.0,
         burn_subtitles,
         language,
@@ -119,6 +118,7 @@ pub fn create(
         subtitle_style: project.subtitle_style.clone(),
         cancel_requested_at: None,
         error_message: None,
+        error_code: None,
         manifest_path: None,
         created_at: created_at.clone(),
         updated_at: created_at.clone(),
@@ -138,11 +138,14 @@ pub fn load(db: &Connection, job_id: &str) -> Result<ExportJob> {
         "SELECT id,project_id,output_path,status,progress,burn_subtitles,language,bilingual,subtitle_mode,canvas_aspect_ratio,canvas_framing,subtitle_style_json,cancel_requested_at,error_message,manifest_path,created_at,updated_at,completed_at,worker_pid FROM export_jobs WHERE id=?1",
         [job_id],
         |row| {
+            let status = row.get::<_, String>(3)?;
+            let error_message = row.get::<_, Option<String>>(13)?;
             Ok(ExportJob {
                 id: row.get(0)?,
                 project_id: row.get(1)?,
                 output_path: row.get(2)?,
-                status: row.get(3)?,
+                stage_code: Some(status.clone()),
+                status: status.clone(),
                 progress: row.get(4)?,
                 burn_subtitles: row.get(5)?,
                 language: row.get(6)?,
@@ -160,7 +163,11 @@ pub fn load(db: &Connection, job_id: &str) -> Result<ExportJob> {
                 subtitle_style: subtitle_style::from_storage(&row.get::<_, String>(11)?)
                     .map_err(|_| rusqlite::Error::InvalidQuery)?,
                 cancel_requested_at: row.get(12)?,
-                error_message: row.get(13)?,
+                error_code: crate::model::background_error_code(
+                    &status,
+                    error_message.as_deref(),
+                ),
+                error_message,
                 manifest_path: row.get(14)?,
                 created_at: row.get(15)?,
                 updated_at: row.get(16)?,

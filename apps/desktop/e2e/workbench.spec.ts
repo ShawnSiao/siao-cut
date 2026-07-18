@@ -1,5 +1,26 @@
 import { expect, test } from "@playwright/test";
 
+test("switches the application chrome to English without reloading the project", async ({ page }) => {
+  await page.goto("/");
+  const projectHeading = page.getByRole("heading", { name: "发布口播 · 草稿" });
+  await expect(projectHeading).toBeVisible();
+
+  await page.getByRole("combobox", { name: "界面语言" }).selectOption("en-US");
+
+  await expect(page.getByRole("button", { name: "New project" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Transcribe" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Send to Agent" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Export video" })).toBeVisible();
+  await page.getByRole("combobox", { name: "Source language" }).selectOption("en");
+  await expect(page.getByRole("combobox", { name: "Source language" })).toHaveValue("en");
+  await page.getByRole("combobox", { name: "Agent workflow" }).selectOption("edit");
+  await page.getByRole("button", { name: "Send to Agent" }).click();
+  await expect(page.getByRole("region", { name: "Waiting for Codex Worker" })).toContainText("Media files and paths are never included");
+  await expect(page.locator(".task-item.processing strong").filter({ hasText: "edit" })).toBeVisible();
+  await expect(projectHeading).toHaveText("发布口播 · 草稿");
+  await expect(page.locator("html")).toHaveAttribute("lang", "en-US");
+});
+
 test("uses a compact command bar without horizontal overflow", async ({ page }) => {
   await page.setViewportSize({ width: 1444, height: 972 });
   await page.goto("/");

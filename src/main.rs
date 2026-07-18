@@ -326,6 +326,8 @@ enum TaskCommand {
         kind: String,
         #[arg(long)]
         lang: Option<String>,
+        #[arg(long, default_value = "zh-CN")]
+        locale: String,
     },
     Claim {
         #[arg(long)]
@@ -388,6 +390,8 @@ enum WorkflowCommand {
         kind: String,
         #[arg(long)]
         lang: Option<String>,
+        #[arg(long, default_value = "zh-CN")]
+        locale: String,
     },
     Status {
         workflow_id: String,
@@ -431,6 +435,8 @@ struct AutoWorkflowStartArgs {
     model: PathBuf,
     #[arg(long)]
     language: Option<String>,
+    #[arg(long, default_value = "zh-CN")]
+    locale: String,
     #[arg(long)]
     translate: Option<String>,
     #[arg(short = 'o', long)]
@@ -936,16 +942,16 @@ fn run(cli: Cli) -> Result<Value> {
                     arguments.lang.as_deref(),
                     arguments.bilingual,
                 )?;
-                let report = export::audit(&project);
-                if report["ready"] != Value::Bool(true) {
-                    bail!("导出前审计未通过，请先处理无效字幕或媒体问题")
-                }
                 let options = export::ExportOptions {
                     format: &arguments.format,
                     language: arguments.lang.as_deref(),
                     subtitle_mode,
                     include_cuts: arguments.include_cuts,
                 };
+                let report = export::audit_for_options(&project, &options);
+                if report["ready"] != Value::Bool(true) {
+                    bail!("导出前审计未通过，请先处理无效字幕或媒体问题")
+                }
                 fs::write(&arguments.output, export::render(&project, &options)?)?;
                 Ok(envelope(json!({
                     "projectId": project.id,
@@ -961,8 +967,10 @@ fn run(cli: Cli) -> Result<Value> {
                 project_id,
                 kind,
                 lang,
+                locale,
             } => {
-                let task = tasks::create(&mut database, &project_id, &kind, lang)?;
+                let task =
+                    tasks::create_with_locale(&mut database, &project_id, &kind, lang, &locale)?;
                 Ok(envelope(json!({
                     "projectId":project_id,
                     "taskId":task.id,
@@ -974,6 +982,9 @@ fn run(cli: Cli) -> Result<Value> {
                 Some((project, task, payload)) => Ok(envelope(json!({
                     "projectId":project.id,
                     "taskId":task.id,
+                    "language":task.language,
+                    "instructionLocale":task.instruction_locale,
+                    "contentLanguage":project.transcript.source_language,
                     "task":task,
                     "payload":payload
                 }))),
@@ -1084,8 +1095,15 @@ fn run(cli: Cli) -> Result<Value> {
                 project_id,
                 kind,
                 lang,
+                locale,
             } => {
-                let workflow = workflows::create(&mut database, &project_id, &kind, lang)?;
+                let workflow = workflows::create_with_locale(
+                    &mut database,
+                    &project_id,
+                    &kind,
+                    lang,
+                    &locale,
+                )?;
                 Ok(envelope(json!({
                     "projectId":project_id,
                     "workflowId":workflow.id,
@@ -1120,6 +1138,7 @@ fn run(cli: Cli) -> Result<Value> {
                     confirm_media_id,
                     model,
                     language,
+                    locale,
                     translate,
                     output,
                     burn_subtitles,
@@ -1156,6 +1175,7 @@ fn run(cli: Cli) -> Result<Value> {
                         input,
                         model,
                         transcribe_language: language,
+                        instruction_locale: locale,
                         translation_language: translate,
                         output,
                         burn_subtitles,

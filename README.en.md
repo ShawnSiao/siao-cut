@@ -66,6 +66,8 @@ The default data directory is `%LOCALAPPDATA%\SiaoCut`. Development and tests ca
 
 See [`skills/siaocut/SKILL.md`](skills/siaocut/SKILL.md) for the complete CLI workflow.
 
+Invitation-only English creators should follow the [English Creator Source Beta guide](docs/english-creator-beta.md), including its Codex Worker, recovery, privacy, and feedback requirements.
+
 ## Development and verification
 
 ```powershell
@@ -98,6 +100,7 @@ tools/                Build, release, and repository-checking tools
 
 - [Architecture](ARCHITECTURE.md)
 - [Voice intelligence 0.3](docs/voice-intelligence-0.3.md)
+- [English Creator Source Beta](docs/english-creator-beta.md)
 - [Release and updates](docs/release-updates.md)
 - [Repository artifact policy](docs/repository-artifact-policy.md)
 - [Contributing](CONTRIBUTING.md)

@@ -61,14 +61,20 @@ export type Translation = {
   segments: Array<{ segmentId: string; text: string }>;
 };
 
+export type UiLocale = "zh-CN" | "en-US";
+export type TranscriptionLanguage = "auto" | "en" | "zh";
+
 export type Task = {
   id: string;
   kind: string;
   language: string | null;
   status: string;
+  stageCode?: string | null;
   progress: number;
   errorMessage: string | null;
+  errorCode?: string | null;
   workflowId?: string | null;
+  instructionLocale: UiLocale;
 };
 
 export type AgentPatchItem = {
@@ -102,6 +108,7 @@ export type Workflow = {
   taskId: string;
   createdAt: string;
   updatedAt: string;
+  instructionLocale: UiLocale;
 };
 
 export type Version = { id: string; reason: string; createdAt: string };
@@ -161,6 +168,7 @@ export type ExportJob = {
   projectId: string;
   outputPath: string;
   status: string;
+  stageCode?: string | null;
   progress: number;
   burnSubtitles: boolean;
   language: string | null;
@@ -170,6 +178,7 @@ export type ExportJob = {
   subtitleStyle: SubtitleStyle;
   cancelRequestedAt: string | null;
   errorMessage: string | null;
+  errorCode?: string | null;
   manifestPath: string | null;
   createdAt: string;
   updatedAt: string;
@@ -227,12 +236,14 @@ export type ModelDownloadJob = {
   id: string;
   modelId: string;
   status: string;
+  stageCode?: string | null;
   progress: number;
   bytesDownloaded: number;
   totalBytes: number;
   targetPath: string;
   cancelRequestedAt: string | null;
   errorMessage: string | null;
+  errorCode?: string | null;
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
@@ -265,6 +276,7 @@ export type SourceImportJob = {
   durationSeconds: number;
   fileSizeBytes: number | null;
   status: string;
+  stageCode?: string | null;
   progress: number;
   bytesDownloaded: number;
   totalBytes: number | null;
@@ -275,6 +287,7 @@ export type SourceImportJob = {
   toolSha256: string;
   cancelRequestedAt: string | null;
   errorMessage: string | null;
+  errorCode?: string | null;
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
@@ -313,10 +326,12 @@ export type AudioAnalysisJob = {
   id: string;
   projectId: string;
   status: string;
+  stageCode?: string | null;
   progress: number;
   report: AudioAnalysisReport | null;
   cancelRequestedAt: string | null;
   errorMessage: string | null;
+  errorCode?: string | null;
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
@@ -393,11 +408,13 @@ export type SpeakerJob = {
   projectId: string | null;
   status: string;
   stage: string;
+  stageCode?: string | null;
   progress: number;
   bytesDownloaded: number;
   totalBytes: number;
   cancelRequestedAt: string | null;
   errorMessage: string | null;
+  errorCode?: string | null;
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
@@ -421,6 +438,7 @@ export type AutoWorkflow = {
   subtitleMode: "source" | "translated" | "bilingual";
   status: string;
   currentStage: string;
+  stageCode?: string | null;
   progress: number;
   transcriptVersionId: string | null;
   agentTaskId: string | null;
@@ -428,11 +446,13 @@ export type AutoWorkflow = {
   audit: Record<string, unknown> | null;
   cancelRequestedAt: string | null;
   errorMessage: string | null;
+  errorCode?: string | null;
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
   workerPid?: number | null;
   attemptCount: number;
+  instructionLocale: UiLocale;
 };
 
 export type AutoWorkflowEvent = {
@@ -471,7 +491,7 @@ export type Project = {
   workflows: Workflow[];
 };
 
-export type SubtitleIssueKind = "empty_text" | "invalid_timing" | "out_of_bounds" | "overlap" | "duration_too_long" | "line_too_long" | "reading_speed_high" | "gap_too_short";
+export type SubtitleIssueKind = "empty_text" | "invalid_timing" | "out_of_bounds" | "overlap" | "duration_too_long" | "line_too_long" | "too_many_lines" | "reading_speed_high" | "gap_too_short";
 
 export type SubtitleQualityIssue = {
   id: string;
@@ -497,6 +517,7 @@ export type SubtitleQualityReport = {
     maxLineCharacters: number;
     maxCharactersPerSecond: number;
     minGapSeconds: number;
+    maxLines: number;
   };
   issues: SubtitleQualityIssue[];
 };

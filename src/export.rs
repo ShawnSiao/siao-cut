@@ -1,8 +1,10 @@
 use crate::{
     media::hash_file,
-    model::{Project, SubtitleMode},
-    subtitle_style, timeline,
+    model::{Project, Segment, SubtitleMode},
+    subtitle_quality, subtitle_style, timeline,
 };
+
+const BILINGUAL_SEPARATOR: char = '\u{001e}';
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
 use std::{
@@ -76,6 +78,77 @@ pub fn validate_subtitle_mode(project: &Project, options: &ExportOptions<'_>) ->
         )
     }
     Ok(())
+}
+
+pub fn quality_reports(project: &Project, options: &ExportOptions<'_>) -> Value {
+    let source_report = || {
+        subtitle_quality::inspect_with_language(
+            &project.transcript.segments,
+            project.media.duration_seconds,
+            &project.transcript.source_language,
+        )
+    };
+    let translated_report = || {
+        let language = options.language.unwrap_or("");
+        let translated = project
+            .translations
+            .get(language)
+            .map(|translation| {
+                translation
+                    .segments
+                    .iter()
+                    .map(|segment| (segment.segment_id.as_str(), segment.text.as_str()))
+                    .collect::<HashMap<_, _>>()
+            })
+            .unwrap_or_default();
+        let segments = project
+            .transcript
+            .segments
+            .iter()
+            .map(|segment| Segment {
+                id: segment.id.clone(),
+                start: segment.start,
+                end: segment.end,
+                text: translated
+                    .get(segment.id.as_str())
+                    .copied()
+                    .unwrap_or("")
+                    .to_owned(),
+                confidence: segment.confidence,
+            })
+            .collect::<Vec<_>>();
+        subtitle_quality::inspect_with_language(&segments, project.media.duration_seconds, language)
+    };
+    match options.subtitle_mode {
+        SubtitleMode::Source => json!([{
+            "track": "source",
+            "language": project.transcript.source_language,
+            "report": source_report(),
+        }]),
+        SubtitleMode::Translated => json!([{
+            "track": "translated",
+            "language": options.language,
+            "report": translated_report(),
+        }]),
+        SubtitleMode::Bilingual => json!([
+            {
+                "track": "source",
+                "language": project.transcript.source_language,
+                "report": source_report(),
+            },
+            {
+                "track": "translated",
+                "language": options.language,
+                "report": translated_report(),
+            }
+        ]),
+    }
+}
+
+pub fn audit_for_options(project: &Project, options: &ExportOptions<'_>) -> Value {
+    let mut report = audit(project);
+    report["subtitleQuality"] = quality_reports(project, options);
+    report
 }
 
 pub fn audit(project: &Project) -> Value {
@@ -226,9 +299,55 @@ fn escape_ass_text(text: &str) -> String {
         .replace('\n', "\\N")
 }
 
+pub fn wrap_subtitle_text(text: &str, language: &str) -> String {
+    if !language.to_ascii_lowercase().starts_with("en") {
+        return text.to_owned();
+    }
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let visible = |value: &str| {
+        value
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .count()
+    };
+    if normalized.lines().count() <= 2 && visible(&normalized) <= 42 {
+        return normalized;
+    }
+    let mut candidates = Vec::new();
+    for (index, character) in normalized.char_indices() {
+        if character.is_whitespace() {
+            candidates.push(index);
+        } else if matches!(character, '.' | ',' | '!' | '?' | ';' | ':' | '—' | '-') {
+            candidates.push(index + character.len_utf8());
+        }
+    }
+    candidates
+        .into_iter()
+        .filter_map(|index| {
+            let (left, right) = normalized.split_at(index);
+            let left = left.trim();
+            let right = right.trim();
+            if left.is_empty() || right.is_empty() {
+                return None;
+            }
+            let left_visible = visible(left);
+            let right_visible = visible(right);
+            let overflow = left_visible.max(right_visible).saturating_sub(42);
+            let imbalance = left_visible.abs_diff(right_visible);
+            Some(((overflow, imbalance), format!("{left}\n{right}")))
+        })
+        .min_by_key(|(score, _)| *score)
+        .map(|(_, wrapped)| wrapped)
+        .unwrap_or(normalized)
+}
+
+fn display_subtitle_text(text: &str) -> String {
+    text.replace(BILINGUAL_SEPARATOR, "\n")
+}
+
 fn ass_dialogue_text(text: &str, subtitle_mode: SubtitleMode) -> String {
     if subtitle_mode == SubtitleMode::Bilingual
-        && let Some((primary, secondary)) = text.split_once('\n')
+        && let Some((primary, secondary)) = text.split_once(BILINGUAL_SEPARATOR)
     {
         return format!(
             "{}\\N{{\\rSecondary}}{}",
@@ -343,7 +462,11 @@ pub fn render(project: &Project, options: &ExportOptions<'_>) -> Result<String> 
                 if let Some((start, end)) =
                     timeline::retime_interval(&timeline, source_start, source_end)
                 {
-                    segments.push((start, end, text));
+                    segments.push((
+                        start,
+                        end,
+                        wrap_subtitle_text(&text, &project.transcript.source_language),
+                    ));
                 }
             }
             continue;
@@ -359,10 +482,23 @@ pub fn render(project: &Project, options: &ExportOptions<'_>) -> Result<String> 
         };
         let target = translated.get(&segment.id);
         let text = match options.subtitle_mode {
-            SubtitleMode::Source => segment.text.clone(),
-            SubtitleMode::Translated => target.cloned().unwrap_or_default(),
+            SubtitleMode::Source => {
+                wrap_subtitle_text(&segment.text, &project.transcript.source_language)
+            }
+            SubtitleMode::Translated => wrap_subtitle_text(
+                target.cloned().unwrap_or_default().as_str(),
+                options.language.unwrap_or(""),
+            ),
             SubtitleMode::Bilingual => {
-                format!("{}\n{}", segment.text, target.cloned().unwrap_or_default())
+                format!(
+                    "{}{}{}",
+                    wrap_subtitle_text(&segment.text, &project.transcript.source_language),
+                    BILINGUAL_SEPARATOR,
+                    wrap_subtitle_text(
+                        target.cloned().unwrap_or_default().as_str(),
+                        options.language.unwrap_or("")
+                    )
+                )
             }
         };
         segments.push((start, end, text));
@@ -373,7 +509,11 @@ pub fn render(project: &Project, options: &ExportOptions<'_>) -> Result<String> 
             project.title,
             segments
                 .iter()
-                .map(|(start, _, text)| format!("- **{}** {}", &timestamp(*start, '.')[..8], text))
+                .map(|(start, _, text)| format!(
+                    "- **{}** {}",
+                    &timestamp(*start, '.')[..8],
+                    display_subtitle_text(text)
+                ))
                 .collect::<Vec<_>>()
                 .join("\n")
         ),
@@ -385,7 +525,7 @@ pub fn render(project: &Project, options: &ExportOptions<'_>) -> Result<String> 
                     "{} --> {}\n{}\n",
                     timestamp(*start, '.'),
                     timestamp(*end, '.'),
-                    text
+                    display_subtitle_text(text)
                 ))
                 .collect::<Vec<_>>()
                 .join("\n")
@@ -417,7 +557,7 @@ pub fn render(project: &Project, options: &ExportOptions<'_>) -> Result<String> 
                     index + 1,
                     timestamp(*start, ','),
                     timestamp(*end, ','),
-                    text
+                    display_subtitle_text(text)
                 )
             })
             .collect(),
@@ -432,6 +572,33 @@ mod tests {
         TranslationSegment, Word,
     };
     use std::collections::BTreeMap;
+
+    #[test]
+    fn english_wrapping_uses_only_word_or_punctuation_boundaries() {
+        let text = "This is a practical English subtitle that should wrap cleanly without splitting any word.";
+        let wrapped = wrap_subtitle_text(text, "en-US");
+        let lines = wrapped.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines.join(" "), text);
+        assert!(
+            lines
+                .iter()
+                .all(|line| !line.starts_with(' ') && !line.ends_with(' '))
+        );
+        assert!(lines.iter().all(|line| {
+            line.chars()
+                .filter(|character| !character.is_whitespace())
+                .count()
+                <= 42
+        }));
+
+        let unbreakable = "SupercalifragilisticexpialidociousSupercalifragilisticexpialidocious";
+        assert_eq!(wrap_subtitle_text(unbreakable, "en"), unbreakable);
+        assert_eq!(
+            wrap_subtitle_text("中文不会按英文空格断行", "zh"),
+            "中文不会按英文空格断行"
+        );
+    }
 
     #[test]
     fn applied_cut_retimes_following_caption() {
@@ -613,6 +780,27 @@ mod tests {
         )
         .unwrap();
         assert!(bilingual.contains("原文\nTranslation"));
+
+        project.translations.get_mut("en").unwrap().segments[0].text = "one\ntwo\nthree".into();
+        let reports = quality_reports(
+            &project,
+            &ExportOptions {
+                format: "srt",
+                language: Some("en"),
+                subtitle_mode: SubtitleMode::Bilingual,
+                include_cuts: false,
+            },
+        );
+        assert_eq!(reports.as_array().unwrap().len(), 2);
+        assert!(
+            reports[1]["report"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| issue["kind"] == "too_many_lines")
+        );
+
+        project.translations.get_mut("en").unwrap().segments[0].text = "Translation".into();
 
         project.subtitle_style = crate::subtitle_style::resolve(
             crate::model::SubtitleStylePreset::Emphasis,

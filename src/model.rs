@@ -207,6 +207,7 @@ pub enum SubtitleIssueKind {
     Overlap,
     DurationTooLong,
     LineTooLong,
+    TooManyLines,
     ReadingSpeedHigh,
     GapTooShort,
 }
@@ -220,6 +221,7 @@ impl SubtitleIssueKind {
             Self::Overlap => "overlap",
             Self::DurationTooLong => "duration_too_long",
             Self::LineTooLong => "line_too_long",
+            Self::TooManyLines => "too_many_lines",
             Self::ReadingSpeedHigh => "reading_speed_high",
             Self::GapTooShort => "gap_too_short",
         }
@@ -233,6 +235,7 @@ pub struct SubtitleQualityThresholds {
     pub max_line_characters: usize,
     pub max_characters_per_second: f64,
     pub min_gap_seconds: f64,
+    pub max_lines: usize,
 }
 
 impl Default for SubtitleQualityThresholds {
@@ -242,6 +245,7 @@ impl Default for SubtitleQualityThresholds {
             max_line_characters: 42,
             max_characters_per_second: 20.0,
             min_gap_seconds: 0.12,
+            max_lines: 2,
         }
     }
 }
@@ -414,6 +418,7 @@ pub struct ExportJob {
     pub project_id: String,
     pub output_path: String,
     pub status: String,
+    pub stage_code: Option<String>,
     pub progress: f64,
     pub burn_subtitles: bool,
     pub language: Option<String>,
@@ -423,6 +428,7 @@ pub struct ExportJob {
     pub subtitle_style: SubtitleStyle,
     pub cancel_requested_at: Option<String>,
     pub error_message: Option<String>,
+    pub error_code: Option<String>,
     pub manifest_path: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -499,6 +505,8 @@ pub struct Task {
     pub cancel_requested_at: Option<String>,
     #[serde(default)]
     pub workflow_id: Option<String>,
+    #[serde(default = "default_instruction_locale")]
+    pub instruction_locale: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -538,6 +546,8 @@ pub struct Workflow {
     pub task_id: String,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default = "default_instruction_locale")]
+    pub instruction_locale: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -570,6 +580,29 @@ pub struct AutoWorkflow {
     pub completed_at: Option<String>,
     pub worker_pid: Option<u32>,
     pub attempt_count: u32,
+    #[serde(default = "default_instruction_locale")]
+    pub instruction_locale: String,
+}
+
+pub fn background_error_code(status: &str, error_message: Option<&str>) -> Option<String> {
+    if status == "interrupted" {
+        return Some("job_interrupted".to_owned());
+    }
+    if let Some(prefix) = error_message
+        .and_then(|message| message.split_once(':'))
+        .map(|(value, _)| value.trim())
+        && !prefix.is_empty()
+        && prefix.chars().all(|character| {
+            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_'
+        })
+    {
+        return Some(prefix.to_owned());
+    }
+    (status == "failed").then(|| "job_failed".to_owned())
+}
+
+fn default_instruction_locale() -> String {
+    "zh-CN".to_owned()
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -660,4 +693,26 @@ pub struct Transcript {
     pub segments: Vec<Segment>,
     #[serde(default)]
     pub words: Vec<Word>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::background_error_code;
+
+    #[test]
+    fn background_error_codes_preserve_machine_prefixes_and_hide_raw_messages() {
+        assert_eq!(
+            background_error_code("failed", Some("source_download_failed: download failed")),
+            Some("source_download_failed".to_owned())
+        );
+        assert_eq!(
+            background_error_code("failed", Some("无法启动外部进程")),
+            Some("job_failed".to_owned())
+        );
+        assert_eq!(
+            background_error_code("interrupted", Some("human readable detail")),
+            Some("job_interrupted".to_owned())
+        );
+        assert_eq!(background_error_code("running", None), None);
+    }
 }

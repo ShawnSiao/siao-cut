@@ -57,6 +57,7 @@ pub struct SourceImportJob {
     pub duration_seconds: f64,
     pub file_size_bytes: Option<u64>,
     pub status: String,
+    pub stage_code: Option<String>,
     pub progress: f64,
     pub bytes_downloaded: u64,
     pub total_bytes: Option<u64>,
@@ -67,6 +68,7 @@ pub struct SourceImportJob {
     pub tool_sha256: String,
     pub cancel_requested_at: Option<String>,
     pub error_message: Option<String>,
+    pub error_code: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub completed_at: Option<String>,
@@ -219,6 +221,7 @@ fn insert_job_with_id_at(
         duration_seconds: preview.duration_seconds,
         file_size_bytes: preview.file_size_bytes,
         status: "queued".into(),
+        stage_code: Some("queued".into()),
         progress: 0.0,
         bytes_downloaded: 0,
         total_bytes: preview.file_size_bytes,
@@ -232,6 +235,7 @@ fn insert_job_with_id_at(
         tool_sha256: preview.tool_sha256.clone(),
         cancel_requested_at: None,
         error_message: None,
+        error_code: None,
         created_at: timestamp.clone(),
         updated_at: timestamp,
         completed_at: None,
@@ -282,6 +286,8 @@ pub fn load(db: &Connection, job_id: &str) -> Result<SourceImportJob> {
          FROM source_imports WHERE id=?1",
         [job_id],
         |row| {
+            let status = row.get::<_, String>(9)?;
+            let error_message = row.get::<_, Option<String>>(19)?;
             Ok(SourceImportJob {
                 id: row.get(0)?,
                 project_id: row.get(1)?,
@@ -292,7 +298,8 @@ pub fn load(db: &Connection, job_id: &str) -> Result<SourceImportJob> {
                 title: row.get(6)?,
                 duration_seconds: row.get(7)?,
                 file_size_bytes: row.get(8)?,
-                status: row.get(9)?,
+                stage_code: Some(status.clone()),
+                status: status.clone(),
                 progress: row.get(10)?,
                 bytes_downloaded: row.get(11)?,
                 total_bytes: row.get(12)?,
@@ -302,7 +309,11 @@ pub fn load(db: &Connection, job_id: &str) -> Result<SourceImportJob> {
                 tool_version: row.get(16)?,
                 tool_sha256: row.get(17)?,
                 cancel_requested_at: row.get(18)?,
-                error_message: row.get(19)?,
+                error_code: crate::model::background_error_code(
+                    &status,
+                    error_message.as_deref(),
+                ),
+                error_message,
                 created_at: row.get(20)?,
                 updated_at: row.get(21)?,
                 completed_at: row.get(22)?,

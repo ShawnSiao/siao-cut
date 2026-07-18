@@ -21,13 +21,24 @@ type SubmissionRow = (
 
 const LEASE_MINUTES: i64 = 10;
 
+#[cfg(test)]
 pub fn create(
     db: &mut Connection,
     project_id: &str,
     kind: &str,
     language: Option<String>,
 ) -> Result<Task> {
-    create_for_workflow(db, project_id, kind, language, None)
+    create_with_locale(db, project_id, kind, language, "zh-CN")
+}
+
+pub fn create_with_locale(
+    db: &mut Connection,
+    project_id: &str,
+    kind: &str,
+    language: Option<String>,
+    instruction_locale: &str,
+) -> Result<Task> {
+    create_for_workflow(db, project_id, kind, language, None, instruction_locale)
 }
 
 pub(crate) fn create_for_workflow(
@@ -36,12 +47,16 @@ pub(crate) fn create_for_workflow(
     kind: &str,
     language: Option<String>,
     workflow_id: Option<&str>,
+    instruction_locale: &str,
 ) -> Result<Task> {
     if !["polish", "translate", "summary", "proofread", "edit", "cut"].contains(&kind) {
         bail!("任务类型必须为 polish、translate、summary、proofread、edit 或 cut")
     }
     if kind == "translate" && language.is_none() {
         bail!("翻译任务需要 --lang")
+    }
+    if !["zh-CN", "en-US"].contains(&instruction_locale) {
+        bail!("instruction_locale_invalid: --locale 必须为 zh-CN 或 en-US")
     }
     let project = project::load(db, project_id)?;
     let task = Task {
@@ -58,10 +73,11 @@ pub(crate) fn create_for_workflow(
         attempt_count: 0,
         cancel_requested_at: None,
         workflow_id: workflow_id.map(str::to_owned),
+        instruction_locale: instruction_locale.to_owned(),
     };
     db.execute(
-        "INSERT INTO tasks(id,project_id,kind,language,status,created_at,base_version_id,progress,attempt_count,workflow_id) VALUES(?1,?2,?3,?4,?5,?6,?7,0,0,?8)",
-        params![&task.id, project_id, &task.kind, &task.language, &task.status, &task.created_at, &task.base_version_id, &task.workflow_id],
+        "INSERT INTO tasks(id,project_id,kind,language,status,created_at,base_version_id,progress,attempt_count,workflow_id,instruction_locale) VALUES(?1,?2,?3,?4,?5,?6,?7,0,0,?8,?9)",
+        params![&task.id, project_id, &task.kind, &task.language, &task.status, &task.created_at, &task.base_version_id, &task.workflow_id, &task.instruction_locale],
     )?;
     append_event(db, &task.id, project_id, "queued", Some(0.0), "任务已创建")?;
     Ok(task)
@@ -135,14 +151,7 @@ pub fn claim(db: &mut Connection, worker: &str) -> Result<Option<(Project, Task,
     )?;
     let project = project::load(db, &project_id)?;
     let task = find_task(&project, &task_id)?;
-    let instructions = match task.kind.as_str() {
-        "translate" => "逐段翻译，保留原意与术语。",
-        "polish" => "逐段润色，纠正明显转写错误，不删改事实。",
-        "proofread" => "逐段校对，修正错别字、标点和明显转写错误。",
-        "edit" => "识别重复、跑题和失败重录，给出可审阅的文本修改。",
-        "cut" => "识别应删除的完整语义片段，禁止切入词中。",
-        _ => "用中文给出短摘要，不捏造事实。",
-    };
+    let instructions = task_instructions(&task.kind, &task.instruction_locale);
     let segments = project
         .transcript
         .segments
@@ -158,15 +167,19 @@ pub fn claim(db: &mut Connection, worker: &str) -> Result<Option<(Project, Task,
             json!({"id":segment.id,"text":segment.text,"start":segment.start,"end":segment.end,"confidence":segment.confidence,"words":words})
         })
         .collect::<Vec<_>>();
-    let payload = json!({
-        "taskId": task.id,
-        "projectId": project.id,
-        "kind": task.kind,
-        "language": task.language,
-        "baseVersionId": task.base_version_id,
-        "instructions": instructions,
-        "segments": segments,
-        "responseSchema": {
+    let response_schema = if task.instruction_locale == "en-US" {
+        json!({
+            "baseVersionId": "Original version ID returned with the task",
+            "patches": [{
+                "segmentId": "Subtitle segment ID",
+                "before": "Original text from the task baseline",
+                "after": "Proposed text; may be empty for cut tasks",
+                "reason": "Verifiable reason for the change",
+                "confidence": "0 to 1"
+            }]
+        })
+    } else {
+        json!({
             "baseVersionId": "任务返回的原始版本 ID",
             "patches": [{
                 "segmentId": "字幕段 ID",
@@ -175,9 +188,50 @@ pub fn claim(db: &mut Connection, worker: &str) -> Result<Option<(Project, Task,
                 "reason": "可验证的修改原因",
                 "confidence": "0 到 1"
             }]
-        }
+        })
+    };
+    let payload = json!({
+        "taskId": task.id,
+        "projectId": project.id,
+        "kind": task.kind,
+        "language": task.language,
+        "instructionLocale": task.instruction_locale,
+        "contentLanguage": project.transcript.source_language,
+        "baseVersionId": task.base_version_id,
+        "instructions": instructions,
+        "segments": segments,
+        "responseSchema": response_schema
     });
     Ok(Some((project, task, payload)))
+}
+
+fn task_instructions(kind: &str, instruction_locale: &str) -> &'static str {
+    if instruction_locale == "en-US" {
+        return match kind {
+            "translate" => "Translate each segment while preserving meaning and terminology.",
+            "polish" => {
+                "Polish each segment and correct clear transcription errors without changing facts."
+            }
+            "proofread" => {
+                "Proofread each segment and correct spelling, punctuation, and clear transcription errors."
+            }
+            "edit" => {
+                "Identify repetition, tangents, and failed takes, then propose reviewable text changes."
+            }
+            "cut" => {
+                "Identify complete semantic spans that could be removed. Never cut inside a word."
+            }
+            _ => "Provide a concise summary without inventing facts.",
+        };
+    }
+    match kind {
+        "translate" => "逐段翻译，保留原意与术语。",
+        "polish" => "逐段润色，纠正明显转写错误，不删改事实。",
+        "proofread" => "逐段校对，修正错别字、标点和明显转写错误。",
+        "edit" => "识别重复、跑题和失败重录，给出可审阅的文本修改。",
+        "cut" => "识别应删除的完整语义片段，禁止切入词中。",
+        _ => "用中文给出短摘要，不捏造事实。",
+    }
 }
 
 pub fn heartbeat(
@@ -440,6 +494,28 @@ mod tests {
         let segment =
             project::add_segment(&mut db, &project.id, 0.0, 1.0, "你好".into(), None).unwrap();
         (temp, db, project, segment.id)
+    }
+
+    #[test]
+    fn english_instruction_locale_is_persisted_and_localizes_claim_contract() {
+        let (_temp, mut db, project, _segment_id) = fixture();
+        let task = create_with_locale(&mut db, &project.id, "proofread", None, "en-US").unwrap();
+        assert_eq!(task.instruction_locale, "en-US");
+
+        let claimed = claim(&mut db, "english-worker").unwrap().unwrap();
+        assert_eq!(claimed.1.instruction_locale, "en-US");
+        assert_eq!(claimed.2["instructionLocale"], "en-US");
+        assert_eq!(claimed.2["contentLanguage"], "auto");
+        assert!(
+            claimed.2["instructions"]
+                .as_str()
+                .unwrap()
+                .starts_with("Proofread each segment")
+        );
+        assert_eq!(
+            claimed.2["responseSchema"]["patches"][0]["segmentId"],
+            "Subtitle segment ID"
+        );
     }
 
     #[test]

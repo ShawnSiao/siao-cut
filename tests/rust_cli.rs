@@ -409,12 +409,15 @@ fn auto_workflow_cli_starts_deduplicates_queries_and_cancels() {
         model.to_str().unwrap(),
         "--output",
         output.to_str().unwrap(),
+        "--locale",
+        "en-US",
         "--start-delay-ms",
         "5000",
     ];
     let started = run_direct(temp.path(), &arguments);
     let workflow_id = started["workflowId"].as_str().unwrap();
     assert_eq!(started["workflow"]["currentStage"], "import");
+    assert_eq!(started["workflow"]["instructionLocale"], "en-US");
 
     let mut status = Value::Null;
     for _ in 0..40 {
@@ -513,14 +516,25 @@ fn project_agent_and_export_contract_remain_compatible() {
             "translate",
             "--lang",
             "en",
+            "--locale",
+            "en-US",
         ],
     );
+    assert_eq!(task["task"]["instructionLocale"], "en-US");
     let task_id = task["taskId"].as_str().unwrap();
     let claim = run(
         temp.path(),
         &["task", "claim", "--worker", "integration-agent"],
     );
     assert_eq!(claim["taskId"], task_id);
+    assert_eq!(claim["instructionLocale"], "en-US");
+    assert_eq!(claim["contentLanguage"], "auto");
+    assert!(
+        claim["payload"]["instructions"]
+            .as_str()
+            .unwrap()
+            .starts_with("Translate each segment")
+    );
     assert!(claim["payload"]["baseVersionId"].is_string());
     let base_version_id = claim["payload"]["baseVersionId"].as_str().unwrap();
     let heartbeat = run(
@@ -938,13 +952,17 @@ fn voice_subtitle_agent_and_style_changes_share_one_recoverable_time_map() {
 
     let workflow = run_direct(
         temp.path(),
-        &["workflow", "create", project_id, "--kind", "polish"],
+        &[
+            "workflow", "create", project_id, "--kind", "polish", "--locale", "en-US",
+        ],
     );
+    assert_eq!(workflow["workflow"]["instructionLocale"], "en-US");
     let claim = run_direct(
         temp.path(),
         &["task", "claim", "--worker", "combined-acceptance"],
     );
     let task_id = claim["taskId"].as_str().unwrap();
+    assert_eq!(claim["instructionLocale"], "en-US");
     let response = temp.path().join("combined-agent-response.json");
     fs::write(
         &response,
