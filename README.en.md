@@ -71,7 +71,7 @@ Invitation-only English creators should follow the [English Creator Source Beta 
 ## Development and verification
 
 ```powershell
-# Rust Core and Node.js contract tests
+# Rust Core tests
 npm test
 
 # Desktop build, component tests, and browser end-to-end tests

@@ -256,7 +256,7 @@ pub fn audit(project: &Project) -> Value {
 fn blocks_export(issue: &Value) -> bool {
     !matches!(
         issue["code"].as_str(),
-        Some("stale-translation" | "caption-too-long")
+        Some("stale-translation" | "caption-too-long" | "overlapping-caption")
     )
 }
 
@@ -687,6 +687,14 @@ mod tests {
         );
         assert_eq!(audit(&long)["warnings"][0]["code"], "caption-too-long");
         assert!(!blocks_export(&json!({"code":"caption-too-long"})));
+
+        let mut overlapping = long.clone();
+        overlapping.transcript.segments[1].start = 0.5;
+        assert_eq!(
+            audit(&overlapping)["warnings"][0]["code"],
+            "overlapping-caption"
+        );
+        assert!(!blocks_export(&json!({"code":"overlapping-caption"})));
 
         let mut misaligned = long;
         misaligned.transcript.words.push(Word {

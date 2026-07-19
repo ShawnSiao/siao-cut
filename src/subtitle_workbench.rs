@@ -199,10 +199,8 @@ fn merge_speaker_associations(
 fn finish(
     db: &mut Connection,
     project_id: &str,
-    reason: &str,
     change: StructureEditChange,
 ) -> Result<StructureEditResult> {
-    project::snapshot(db, project_id, reason)?;
     Ok(StructureEditResult {
         operation: change.operation.to_owned(),
         affected_segment_ids: change.affected_segment_ids,
@@ -240,6 +238,11 @@ pub fn split(
         .ok_or_else(|| anyhow!("subtitle_split_text_invalid: 无法解析文字拆分位置"))?;
     let left_text = segment.text[..byte_offset].trim().to_owned();
     let right_text = segment.text[byte_offset..].trim().to_owned();
+    if !left_text.chars().any(char::is_alphanumeric)
+        || !right_text.chars().any(char::is_alphanumeric)
+    {
+        bail!("subtitle_split_text_invalid: 拆分后的两段字幕都必须包含文字或数字")
+    }
     project::assert_segment(segment.start, at_seconds, &left_text)?;
     project::assert_segment(at_seconds, segment.end, &right_text)?;
     let words = loaded
@@ -280,11 +283,11 @@ pub fn split(
     invalidate_translations(&tx, project_id, &[segment_id], &mut impact)?;
     invalidate_edits(&tx, project_id, &[segment_id], &mut impact)?;
     copy_speaker_association(&tx, project_id, segment_id, &right_id, &mut impact)?;
+    project::snapshot_in_transaction(&tx, project_id, "拆分字幕段")?;
     tx.commit()?;
     finish(
         db,
         project_id,
-        "拆分字幕段",
         StructureEditChange {
             operation: "split",
             affected_segment_ids: vec![segment_id.to_owned(), right_id.clone()],
@@ -370,11 +373,11 @@ pub fn merge(
         "DELETE FROM segments WHERE project_id=?1 AND id=?2",
         params![project_id, &right.id],
     )?;
+    project::snapshot_in_transaction(&tx, project_id, "合并相邻字幕段")?;
     tx.commit()?;
     finish(
         db,
         project_id,
-        "合并相邻字幕段",
         StructureEditChange {
             operation: "merge",
             affected_segment_ids: vec![left.id.clone()],
@@ -418,11 +421,11 @@ pub fn adjust_timing(
         "UPDATE segments SET start_seconds=?3,end_seconds=?4 WHERE project_id=?1 AND id=?2",
         params![project_id, segment_id, start, end],
     )?;
+    project::snapshot_in_transaction(&tx, project_id, "调整字幕时间")?;
     tx.commit()?;
     finish(
         db,
         project_id,
-        "调整字幕时间",
         StructureEditChange {
             operation: "timing",
             affected_segment_ids: vec![segment_id.to_owned()],
@@ -497,11 +500,12 @@ pub fn offset(
             params![project_id, segment_id, delta_seconds],
         )?;
     }
+    let reason = format!("批量偏移字幕 {delta_seconds:+.3} 秒");
+    project::snapshot_in_transaction(&tx, project_id, &reason)?;
     tx.commit()?;
     finish(
         db,
         project_id,
-        &format!("批量偏移字幕 {delta_seconds:+.3} 秒"),
         StructureEditChange {
             operation: "offset",
             affected_segment_ids: ordered_ids,
@@ -689,6 +693,20 @@ mod tests {
         assert_eq!(redone.transcript.segments.len(), 4);
         assert_eq!(redone.transcript.segments[1].id, right_id);
         assert_files_unchanged(&fixture);
+    }
+
+    #[test]
+    fn split_rejects_a_punctuation_only_segment() {
+        let mut fixture = fixture();
+        fixture
+            .db
+            .execute(
+                "UPDATE segments SET text='嗯，' WHERE project_id=?1 AND id='s1'",
+                params![&fixture.project_id],
+            )
+            .unwrap();
+        let error = split(&mut fixture.db, &fixture.project_id, "s1", 1, 1.0).unwrap_err();
+        assert!(error.to_string().contains("subtitle_split_text_invalid"));
     }
 
     #[test]

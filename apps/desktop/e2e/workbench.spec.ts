@@ -1,12 +1,20 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
+
+async function bindMockMedia(page: Page) {
+  await page.getByRole("button", { name: "更多命令" }).click();
+  await page.getByRole("menuitem", { name: "重新定位原片" }).click();
+  await expect(page.getByText("已重新定位原片；内容哈希与项目记录一致。")).toBeVisible();
+}
 
 test("switches the application chrome to English without reloading the project", async ({ page }) => {
   await page.goto("/");
   const projectHeading = page.getByRole("heading", { name: "发布口播 · 草稿" });
   await expect(projectHeading).toBeVisible();
+  await bindMockMedia(page);
 
   await page.getByRole("combobox", { name: "界面语言" }).selectOption("en-US");
 
+  await expect(page.getByText("已重新定位原片；内容哈希与项目记录一致。")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "New project" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Transcribe" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Send to Agent" })).toBeVisible();
@@ -113,13 +121,14 @@ test("selects subtitle ranges and confirms recoverable structure edits", async (
   await expect(page.getByText(/已将 3 段字幕批量偏移 \+0.250 秒/)).toBeVisible();
   await expect(page.getByLabel("项目命令").getByRole("button", { name: "撤销" })).toBeEnabled();
 
-  await page.getByLabel("字幕段 00:12 至 00:13").click();
-  const editor = page.getByLabel("00:12 字幕文本");
+  await page.getByRole("button", { name: "定位到 00:13" }).click();
+  await expect(toolbar.getByText(/^1 段/)).toBeVisible();
+  const editor = page.getByLabel("00:13 字幕文本");
   await editor.focus();
   await page.keyboard.press("Control+Shift+S");
   await expect(page.getByRole("dialog", { name: "拆分字幕" })).toBeHidden();
   await editor.evaluate((element) => element.blur());
-  await page.keyboard.press("Control+Shift+S");
+  await toolbar.getByRole("button", { name: "拆分" }).click();
   const splitDialog = page.getByRole("dialog", { name: "拆分字幕" });
   await expect(splitDialog.getByRole("region", { name: "拆分预览" })).toBeVisible();
   await splitDialog.getByRole("button", { name: "确认拆分当前段" }).click();
@@ -160,6 +169,7 @@ test("expands the editing workbench on a maximized 27-inch display", async ({ pa
 test("shows local speech rhythm evidence and locates a finding", async ({ page }) => {
   await page.setViewportSize({ width: 1444, height: 972 });
   await page.goto("/");
+  await page.getByRole("tab", { name: "本地分析" }).click();
 
   const insights = page.getByRole("region", { name: "语音节奏" });
   await expect(insights).toBeVisible();
@@ -168,6 +178,7 @@ test("shows local speech rhythm evidence and locates a finding", async ({ page }
   await expect(insights).toContainText("不会自动剪辑");
 
   await insights.getByRole("button", { name: /定位长停顿/ }).click();
+  await page.getByRole("tab", { name: "当前字幕" }).click();
   await expect(page.locator(".context-panel").getByRole("heading", { name: "你可以，你可以先看建议，再决定是否删除。" })).toBeVisible();
   await expect(page.getByText("成片 04:38 · 原片 04:38")).toBeVisible();
 });
@@ -175,6 +186,8 @@ test("shows local speech rhythm evidence and locates a finding", async ({ page }
 test("analyzes audio locally and sends measurable risks to the review queue", async ({ page }) => {
   await page.setViewportSize({ width: 1444, height: 972 });
   await page.goto("/");
+  await bindMockMedia(page);
+  await page.getByRole("tab", { name: "本地分析" }).click();
 
   const quality = page.getByRole("region", { name: "音频质量" });
   await expect(quality).toBeVisible();
@@ -184,6 +197,53 @@ test("analyzes audio locally and sends measurable risks to the review queue", as
   await expect(page.getByText("音频质量 · 等待确认")).toHaveCount(3);
   await expect(page.locator(".audio-risk-strip")).toContainText("3 项音频风险");
   await expect(page.getByText(/媒体不会上传，也不阻断编辑和导出/)).toBeVisible();
+});
+
+test("keeps core controls usable across supported desktop viewports", async ({ page }) => {
+  const viewports = [
+    { width: 1280, height: 720 },
+    { width: 1440, height: 900 },
+    { width: 1920, height: 1080 },
+    { width: 2209, height: 1290 },
+  ];
+
+  for (const viewport of viewports) {
+    await page.setViewportSize(viewport);
+    await page.goto("/");
+
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    const commands = await page.locator(".command-bar").boundingBox();
+    const workflow = page.locator(".agent-command select").first();
+    const oneClick = page.locator(".new-project.auto");
+    expect(commands).not.toBeNull();
+    expect(commands!.x).toBeGreaterThanOrEqual(0);
+    expect(commands!.x + commands!.width).toBeLessThanOrEqual(viewport.width);
+    await expect(workflow).toBeVisible();
+    expect(await workflow.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+    expect((await oneClick.boundingBox())!.height).toBeGreaterThanOrEqual(40);
+
+    await page.locator(".export-settings").click();
+    const drawer = await page.locator(".export-panel").boundingBox();
+    const drawerHeader = await page.locator(".export-panel-header").boundingBox();
+    expect(drawer).not.toBeNull();
+    expect(drawerHeader).not.toBeNull();
+    expect(drawer!.y).toBeGreaterThanOrEqual(0);
+    expect(drawer!.y + drawer!.height).toBeLessThanOrEqual(viewport.height + 1);
+    expect(drawerHeader!.y).toBeGreaterThanOrEqual(0);
+    await page.locator(".export-panel-header .ui-icon-button").click();
+
+    await page.locator(".runtime-link").click();
+    const runtime = await page.locator(".runtime-settings-dialog").boundingBox();
+    expect(runtime).not.toBeNull();
+    expect(runtime!.y).toBeGreaterThanOrEqual(0);
+    expect(runtime!.y + runtime!.height).toBeLessThanOrEqual(viewport.height + 1);
+    await page.locator(".runtime-dialog-header .dialog-close").click();
+
+    await page.locator(".command-more .ui-icon-button").click();
+    await expect(page.locator(".command-menu")).toBeVisible();
+    await page.locator(".topbar-heading").click();
+    await expect(page.locator(".command-menu")).toBeHidden();
+  }
 });
 
 test("previews and explicitly replaces local subtitle files", async ({ page }) => {
@@ -254,6 +314,7 @@ test("separates runtime status cards from the transcription model control", asyn
 test("reviews and edits a transcript from the workbench", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "发布口播 · 草稿" })).toBeVisible();
+  await bindMockMedia(page);
   await page.getByRole("button", { name: "运行环境" }).click();
   await expect(page.getByRole("dialog", { name: "运行环境" })).toBeVisible();
   await expect(page.getByText("API 0.1")).toBeVisible();
@@ -338,7 +399,9 @@ test("runs a resumable one-click workflow through the human review gate", async 
   const status = page.getByRole("region", { name: "一键工作流状态" });
   await expect(status.getByText(/需要你确认 · 等待人工确认/)).toBeVisible({ timeout: 5000 });
   await status.getByRole("button", { name: "确认完成并继续" }).click();
-  await expect(status.getByText("仍有 Agent 修改或粗剪建议等待人工处理")).toBeVisible();
+  await expect(status.getByText("一键工作流未完成，可以继续或重试。")).toBeVisible();
+  await expect(status.getByText("技术详情")).toBeVisible();
+  await expect(status.getByText("仍有 Agent 修改或粗剪建议等待人工处理")).toBeHidden();
   await page.getByRole("button", { name: "应用软剪辑" }).click();
   await expect(page.getByText(/已应用软剪辑/)).toBeVisible();
   await status.getByRole("button", { name: "确认完成并继续" }).click();

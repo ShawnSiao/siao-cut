@@ -10,7 +10,7 @@ use crate::{
     workflows,
 };
 use anyhow::{Result, anyhow, bail};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, path::Path};
 
@@ -122,7 +122,7 @@ pub fn load(db: &Connection, id: &str) -> Result<Project> {
             }),
         })
     })?.collect::<rusqlite::Result<Vec<_>>>()?;
-    let tasks = db.prepare("SELECT id,kind,language,status,created_at,completed_at,lease_worker,lease_id,lease_expires_at,base_version_id,progress,error_message,attempt_count,cancel_requested_at,workflow_id,instruction_locale FROM tasks WHERE project_id=?1 ORDER BY created_at")?.query_map([id],|row| { let worker:Option<String>=row.get(6)?; Ok(Task{id:row.get(0)?,kind:row.get(1)?,language:row.get(2)?,status:row.get(3)?,created_at:row.get(4)?,completed_at:row.get(5)?,lease:worker.map(|worker| Lease { worker, id:row.get(7).unwrap_or_default(), expires_at:row.get(8).unwrap_or_default()}),base_version_id:row.get(9)?,progress:row.get(10)?,error_message:row.get(11)?,attempt_count:row.get(12)?,cancel_requested_at:row.get(13)?,workflow_id:row.get(14)?,instruction_locale:row.get(15)?})})?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let tasks = db.prepare("SELECT id,kind,language,status,created_at,completed_at,lease_worker,lease_id,lease_expires_at,base_version_id,progress,error_message,attempt_count,cancel_requested_at,workflow_id,instruction_locale FROM tasks WHERE project_id=?1 ORDER BY created_at")?.query_map([id],|row| { let worker:Option<String>=row.get(6)?; let status:String=row.get(3)?; let error_message:Option<String>=row.get(11)?; Ok(Task{id:row.get(0)?,kind:row.get(1)?,language:row.get(2)?,error_code:crate::model::background_error_code(&status,error_message.as_deref()),status,created_at:row.get(4)?,completed_at:row.get(5)?,lease:worker.map(|worker| Lease { worker, id:row.get(7).unwrap_or_default(), expires_at:row.get(8).unwrap_or_default()}),base_version_id:row.get(9)?,progress:row.get(10)?,error_message,attempt_count:row.get(12)?,cancel_requested_at:row.get(13)?,workflow_id:row.get(14)?,instruction_locale:row.get(15)?})})?.collect::<rusqlite::Result<Vec<_>>>()?;
     let versions = db
         .prepare(
             "SELECT id,reason,created_at FROM versions WHERE project_id=?1 ORDER BY history_index",
@@ -151,7 +151,10 @@ pub fn load(db: &Connection, id: &str) -> Result<Project> {
         media_artifacts,
         timeline: TimelineMap::default(),
         transcript: Transcript {
-            source_language: base.4,
+            source_language: crate::model::reconcile_source_language(
+                &base.4,
+                segments.iter().map(|segment| segment.text.as_str()),
+            ),
             segments,
             words,
         },
@@ -261,21 +264,25 @@ pub fn current_version_id(db: &Connection, project_id: &str) -> Result<Option<St
     Ok(history_status(db, project_id)?.current_version_id)
 }
 
-pub(crate) fn snapshot(db: &Connection, project_id: &str, reason: &str) -> Result<Version> {
+pub(crate) fn snapshot_in_transaction(
+    tx: &Transaction<'_>,
+    project_id: &str,
+    reason: &str,
+) -> Result<Version> {
     let version = Version {
         id: new_id("v"),
         reason: reason.to_owned(),
         created_at: now(),
     };
-    let mut snapshot = serde_json::to_value(load(db, project_id)?)?;
+    let mut snapshot = serde_json::to_value(load(tx, project_id)?)?;
     if let Value::Object(object) = &mut snapshot {
         object.insert(
             "speakerTrack".into(),
-            serde_json::to_value(speaker::load_track(db, project_id)?)?,
+            serde_json::to_value(speaker::load_track(tx, project_id)?)?,
         );
     }
     let raw = serde_json::to_string(&snapshot)?;
-    let cursor = db
+    let cursor = tx
         .query_row(
             "SELECT cursor_index FROM project_history WHERE project_id=?1",
             [project_id],
@@ -284,7 +291,6 @@ pub(crate) fn snapshot(db: &Connection, project_id: &str, reason: &str) -> Resul
         .optional()?
         .unwrap_or(0);
     let next = cursor + 1;
-    let tx = db.unchecked_transaction()?;
     tx.execute(
         "DELETE FROM versions WHERE project_id=?1 AND history_index > ?2",
         params![project_id, cursor],
@@ -309,8 +315,28 @@ pub(crate) fn snapshot(db: &Connection, project_id: &str, reason: &str) -> Resul
             json!({"versionId":version.id}).to_string()
         ],
     )?;
+    Ok(version)
+}
+
+#[cfg(test)]
+pub(crate) fn snapshot(db: &Connection, project_id: &str, reason: &str) -> Result<Version> {
+    let tx = db.unchecked_transaction()?;
+    let version = snapshot_in_transaction(&tx, project_id, reason)?;
     tx.commit()?;
     Ok(version)
+}
+
+pub(crate) fn mutate_with_snapshot<T>(
+    db: &mut Connection,
+    project_id: &str,
+    reason: &str,
+    mutate: impl FnOnce(&Transaction<'_>) -> Result<T>,
+) -> Result<T> {
+    let tx = db.transaction()?;
+    let result = mutate(&tx)?;
+    snapshot_in_transaction(&tx, project_id, reason)?;
+    tx.commit()?;
+    Ok(result)
 }
 
 pub fn assert_segment(start: f64, end: f64, text: &str) -> Result<()> {
@@ -356,17 +382,19 @@ pub(crate) fn create_with_id(
             .to_owned()
     });
     let source_path = media_path.canonicalize()?.to_string_lossy().to_string();
-    let tx = db.transaction()?;
-    tx.execute(
-        "INSERT INTO projects(id,title,created_at,updated_at) VALUES(?1,?2,?3,?3)",
-        params![id, title, created_at],
-    )?;
-    tx.execute(
-        "INSERT INTO media(project_id,source_path,sha256,extension,duration_seconds) VALUES(?1,?2,?3,?4,?5)",
-        params![id, source_path, hash_file(media_path)?, extension, ffprobe_duration(media_path)],
-    )?;
-    tx.commit()?;
-    snapshot(db, id, "项目创建")?;
+    let sha256 = hash_file(media_path)?;
+    let duration = ffprobe_duration(media_path);
+    mutate_with_snapshot(db, id, "项目创建", |tx| {
+        tx.execute(
+            "INSERT INTO projects(id,title,created_at,updated_at) VALUES(?1,?2,?3,?3)",
+            params![id, title, created_at],
+        )?;
+        tx.execute(
+            "INSERT INTO media(project_id,source_path,sha256,extension,duration_seconds) VALUES(?1,?2,?3,?4,?5)",
+            params![id, source_path, sha256, extension, duration],
+        )?;
+        Ok(())
+    })?;
     load(db, id)
 }
 
@@ -380,11 +408,14 @@ pub fn relink_media(db: &mut Connection, project_id: &str, media_path: &Path) ->
         bail!("media_hash_changed: 所选文件与项目记录的原片不一致，已拒绝重连")
     }
     let source_path = media_path.canonicalize()?.to_string_lossy().to_string();
-    db.execute(
-        "UPDATE media SET source_path=?2,duration_seconds=?3 WHERE project_id=?1",
-        params![project_id, source_path, ffprobe_duration(media_path)],
-    )?;
-    snapshot(db, project_id, "重新定位原片")?;
+    let duration = ffprobe_duration(media_path);
+    mutate_with_snapshot(db, project_id, "重新定位原片", |tx| {
+        tx.execute(
+            "UPDATE media SET source_path=?2,duration_seconds=?3 WHERE project_id=?1",
+            params![project_id, source_path, duration],
+        )?;
+        Ok(())
+    })?;
     load(db, project_id)
 }
 
@@ -398,18 +429,20 @@ pub fn set_canvas(
         .ok_or_else(|| anyhow!("画布比例只支持 source 或 9:16"))?;
     let framing = CanvasFraming::parse(framing)
         .ok_or_else(|| anyhow!("竖屏构图只支持 contain-blur 或 cover-center"))?;
-    let changed = db.execute(
-        "UPDATE projects SET canvas_aspect_ratio=?2,canvas_framing=?3 WHERE id=?1",
-        params![project_id, aspect_ratio.as_str(), framing.as_str()],
-    )?;
-    if changed == 0 {
-        bail!("项目不存在：{project_id}")
-    }
-    db.execute(
-        "UPDATE media_artifacts SET status='stale',updated_at=?2 WHERE project_id=?1",
-        params![project_id, now()],
-    )?;
-    snapshot(db, project_id, "更新画布设置")?;
+    mutate_with_snapshot(db, project_id, "更新画布设置", |tx| {
+        let changed = tx.execute(
+            "UPDATE projects SET canvas_aspect_ratio=?2,canvas_framing=?3 WHERE id=?1",
+            params![project_id, aspect_ratio.as_str(), framing.as_str()],
+        )?;
+        if changed == 0 {
+            bail!("项目不存在：{project_id}")
+        }
+        tx.execute(
+            "UPDATE media_artifacts SET status='stale',updated_at=?2 WHERE project_id=?1",
+            params![project_id, now()],
+        )?;
+        Ok(())
+    })?;
     load(db, project_id)
 }
 
@@ -429,8 +462,10 @@ pub fn add_segment(
         text,
         confidence,
     };
-    db.execute("INSERT INTO segments(id,project_id,start_seconds,end_seconds,text,confidence) VALUES(?1,?2,?3,?4,?5,?6)",params![&segment.id,project_id,segment.start,segment.end,&segment.text,segment.confidence])?;
-    snapshot(db, project_id, "新增字幕段")?;
+    mutate_with_snapshot(db, project_id, "新增字幕段", |tx| {
+        tx.execute("INSERT INTO segments(id,project_id,start_seconds,end_seconds,text,confidence) VALUES(?1,?2,?3,?4,?5,?6)",params![&segment.id,project_id,segment.start,segment.end,&segment.text,segment.confidence])?;
+        Ok(())
+    })?;
     Ok(segment)
 }
 
@@ -443,26 +478,28 @@ pub fn edit_segment(
     if text.trim().is_empty() {
         bail!("字幕文本不能为空")
     }
-    let count = db.execute(
-        "UPDATE segments SET text=?3 WHERE id=?1 AND project_id=?2",
-        params![segment_id, project_id, &text],
-    )?;
-    if count == 0 {
-        bail!("字幕段不存在：{segment_id}")
-    }
-    db.execute(
-        "UPDATE translations SET status='stale' WHERE project_id=?1",
-        [project_id],
-    )?;
-    db.execute(
-        "UPDATE word_range_cuts SET stale=1 WHERE edit_id IN (SELECT id FROM edits WHERE project_id=?1 AND segment_id=?2)",
-        params![project_id, segment_id],
-    )?;
-    db.execute(
-        "UPDATE edits SET status='restored' WHERE project_id=?1 AND segment_id=?2 AND kind='word_cut' AND status='applied'",
-        params![project_id, segment_id],
-    )?;
-    snapshot(db, project_id, "编辑原文")?;
+    mutate_with_snapshot(db, project_id, "编辑原文", |tx| {
+        let count = tx.execute(
+            "UPDATE segments SET text=?3 WHERE id=?1 AND project_id=?2",
+            params![segment_id, project_id, &text],
+        )?;
+        if count == 0 {
+            bail!("字幕段不存在：{segment_id}")
+        }
+        tx.execute(
+            "UPDATE translations SET status='stale' WHERE project_id=?1",
+            [project_id],
+        )?;
+        tx.execute(
+            "UPDATE word_range_cuts SET stale=1 WHERE edit_id IN (SELECT id FROM edits WHERE project_id=?1 AND segment_id=?2)",
+            params![project_id, segment_id],
+        )?;
+        tx.execute(
+            "UPDATE edits SET status='restored' WHERE project_id=?1 AND segment_id=?2 AND kind='word_cut' AND status='applied'",
+            params![project_id, segment_id],
+        )?;
+        Ok(())
+    })?;
     select_segments(db, project_id)?
         .into_iter()
         .find(|segment| segment.id == segment_id)
@@ -489,30 +526,30 @@ pub fn replace_all(
     if changes.is_empty() {
         return Ok((load(db, project_id)?, 0));
     }
-    let tx = db.transaction()?;
-    for (segment_id, text) in &changes {
-        if text.trim().is_empty() {
-            bail!("批量替换会生成空字幕，已取消操作")
+    mutate_with_snapshot(db, project_id, &format!("批量替换「{find}」"), |tx| {
+        for (segment_id, text) in &changes {
+            if text.trim().is_empty() {
+                bail!("批量替换会生成空字幕，已取消操作")
+            }
+            tx.execute(
+                "UPDATE segments SET text=?3 WHERE id=?1 AND project_id=?2",
+                params![segment_id, project_id, text],
+            )?;
+            tx.execute(
+                "UPDATE word_range_cuts SET stale=1 WHERE edit_id IN (SELECT id FROM edits WHERE project_id=?1 AND segment_id=?2)",
+                params![project_id, segment_id],
+            )?;
+            tx.execute(
+                "UPDATE edits SET status='restored' WHERE project_id=?1 AND segment_id=?2 AND kind='word_cut' AND status='applied'",
+                params![project_id, segment_id],
+            )?;
         }
         tx.execute(
-            "UPDATE segments SET text=?3 WHERE id=?1 AND project_id=?2",
-            params![segment_id, project_id, text],
+            "UPDATE translations SET status='stale' WHERE project_id=?1",
+            [project_id],
         )?;
-        tx.execute(
-            "UPDATE word_range_cuts SET stale=1 WHERE edit_id IN (SELECT id FROM edits WHERE project_id=?1 AND segment_id=?2)",
-            params![project_id, segment_id],
-        )?;
-        tx.execute(
-            "UPDATE edits SET status='restored' WHERE project_id=?1 AND segment_id=?2 AND kind='word_cut' AND status='applied'",
-            params![project_id, segment_id],
-        )?;
-    }
-    tx.execute(
-        "UPDATE translations SET status='stale' WHERE project_id=?1",
-        [project_id],
-    )?;
-    tx.commit()?;
-    snapshot(db, project_id, &format!("批量替换「{find}」"))?;
+        Ok(())
+    })?;
     Ok((load(db, project_id)?, changes.len()))
 }
 
@@ -525,12 +562,16 @@ pub fn restore_version(db: &mut Connection, project_id: &str, version_id: &str) 
         )
         .optional()?
         .ok_or_else(|| anyhow!("版本不存在：{version_id}"))?;
-    apply_snapshot(db, project_id, &snapshot_json, None)?;
-    snapshot(db, project_id, &format!("恢复 {version_id}"))
+    let reason = format!("恢复 {version_id}");
+    let tx = db.transaction()?;
+    apply_snapshot_in_transaction(&tx, project_id, &snapshot_json, None)?;
+    let version = snapshot_in_transaction(&tx, project_id, &reason)?;
+    tx.commit()?;
+    Ok(version)
 }
 
-fn apply_snapshot(
-    db: &mut Connection,
+fn apply_snapshot_in_transaction(
+    tx: &Transaction<'_>,
     project_id: &str,
     snapshot_json: &str,
     history_move: Option<(i64, &str)>,
@@ -541,8 +582,7 @@ fn apply_snapshot(
         .get("speakerTrack")
         .map(|value| serde_json::from_value::<speaker::SpeakerTrack>(value.clone()))
         .transpose()?;
-    let tx = db.transaction()?;
-    speaker::clear_track_tx(&tx, project_id)?;
+    speaker::clear_track_tx(tx, project_id)?;
     tx.execute(
         "UPDATE projects SET canvas_aspect_ratio=?2,canvas_framing=?3,subtitle_style_json=?4 WHERE id=?1",
         params![
@@ -622,7 +662,7 @@ fn apply_snapshot(
             )?;
         }
     }
-    speaker::replace_track_tx(&tx, project_id, speaker_track.as_ref())?;
+    speaker::replace_track_tx(tx, project_id, speaker_track.as_ref())?;
     if let Some((cursor, action)) = history_move {
         let changed_at = now();
         tx.execute(
@@ -643,12 +683,12 @@ fn apply_snapshot(
             ],
         )?;
     }
-    tx.commit()?;
     Ok(())
 }
 
 fn move_history(db: &mut Connection, project_id: &str, undo: bool) -> Result<Project> {
-    let cursor = db
+    let tx = db.transaction()?;
+    let cursor = tx
         .query_row(
             "SELECT cursor_index FROM project_history WHERE project_id=?1",
             [project_id],
@@ -663,7 +703,7 @@ fn move_history(db: &mut Connection, project_id: &str, undo: bool) -> Result<Pro
          WHERE project_id=?1 AND history_index {comparison} ?2
          ORDER BY history_index {direction} LIMIT 1"
     );
-    let target = db
+    let target = tx
         .query_row(&query, params![project_id, cursor], |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
         })
@@ -675,12 +715,13 @@ fn move_history(db: &mut Connection, project_id: &str, undo: bool) -> Result<Pro
                 "history_redo_empty: 没有可重做版本"
             })
         })?;
-    apply_snapshot(
-        db,
+    apply_snapshot_in_transaction(
+        &tx,
         project_id,
         &target.1,
         Some((target.0, if undo { "撤销" } else { "重做" })),
     )?;
+    tx.commit()?;
     load(db, project_id)
 }
 
@@ -701,6 +742,69 @@ mod tests {
     fn rejects_invalid_segments() {
         assert!(assert_segment(1.0, 1.0, "x").is_err());
         assert!(assert_segment(0.0, 1.0, " ").is_err());
+    }
+
+    #[test]
+    fn rolls_back_business_change_when_snapshot_write_fails() {
+        let temp = tempdir().unwrap();
+        let media = temp.path().join("atomic.wav");
+        std::fs::write(&media, b"audio").unwrap();
+        let mut db = crate::db::open_at(&temp.path().join("atomic.db")).unwrap();
+        let project = create(&mut db, &media, Some("Atomic".into())).unwrap();
+        let version_count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM versions WHERE project_id=?1",
+                [&project.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let cursor: i64 = db
+            .query_row(
+                "SELECT cursor_index FROM project_history WHERE project_id=?1",
+                [&project.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        db.execute_batch(
+            "CREATE TRIGGER reject_version_snapshot
+             BEFORE INSERT ON versions
+             BEGIN
+               SELECT RAISE(ABORT, 'forced snapshot failure');
+             END;",
+        )
+        .unwrap();
+
+        let error =
+            add_segment(&mut db, &project.id, 0.0, 1.0, "transient".into(), None).unwrap_err();
+
+        assert!(error.to_string().contains("forced snapshot failure"));
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM segments WHERE project_id=?1",
+                [&project.id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM versions WHERE project_id=?1",
+                [&project.id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            version_count
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT cursor_index FROM project_history WHERE project_id=?1",
+                [&project.id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            cursor
+        );
     }
 
     #[test]
@@ -743,6 +847,52 @@ mod tests {
                 .to_string()
                 .contains("history_redo_empty")
         );
+    }
+
+    #[test]
+    fn restores_and_moves_through_legacy_snapshots_without_max_lines() {
+        let temp = tempdir().unwrap();
+        let media = temp.path().join("legacy-history.wav");
+        std::fs::write(&media, b"audio").unwrap();
+        let mut db = crate::db::open_at(&temp.path().join("legacy-history.db")).unwrap();
+        let created = create(&mut db, &media, Some("Legacy history".into())).unwrap();
+        let segment = add_segment(&mut db, &created.id, 0.0, 1.0, "first".into(), None).unwrap();
+        let legacy_version_id = current_version_id(&db, &created.id).unwrap().unwrap();
+        edit_segment(&mut db, &created.id, &segment.id, "second".into()).unwrap();
+
+        let snapshot_json: String = db
+            .query_row(
+                "SELECT snapshot_json FROM versions WHERE id=?1",
+                [&legacy_version_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let mut snapshot: Value = serde_json::from_str(&snapshot_json).unwrap();
+        snapshot["subtitleQuality"]["thresholds"]
+            .as_object_mut()
+            .unwrap()
+            .remove("maxLines");
+        db.execute(
+            "UPDATE versions SET snapshot_json=?2 WHERE id=?1",
+            params![
+                &legacy_version_id,
+                serde_json::to_string(&snapshot).unwrap()
+            ],
+        )
+        .unwrap();
+
+        let undone = undo(&mut db, &created.id).unwrap();
+        assert_eq!(undone.transcript.segments[0].text, "first");
+        assert_eq!(undone.subtitle_quality.thresholds.max_lines, 2);
+
+        let redone = redo(&mut db, &created.id).unwrap();
+        assert_eq!(redone.transcript.segments[0].text, "second");
+        assert_eq!(redone.subtitle_quality.thresholds.max_lines, 2);
+
+        restore_version(&mut db, &created.id, &legacy_version_id).unwrap();
+        let restored = load(&db, &created.id).unwrap();
+        assert_eq!(restored.transcript.segments[0].text, "first");
+        assert_eq!(restored.subtitle_quality.thresholds.max_lines, 2);
     }
 
     #[test]

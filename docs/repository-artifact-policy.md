@@ -64,7 +64,7 @@
 
 ## 自动检查
 
-`tools/check-repository-artifacts.ps1` 检查：
+`tools/check-repository-artifacts.ps1` 按当前工作树预期提交内容检查；已删除但尚未暂存的文件不会被误判为缺失。检查范围包括：
 
 - 禁止目录和扩展名。
 - 超过 5 MiB 的已跟踪文件。

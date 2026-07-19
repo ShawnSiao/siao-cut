@@ -7,6 +7,7 @@ mod artifacts;
 mod audio_analysis;
 mod auto_workflow;
 mod canvas;
+mod contracts;
 mod cuts;
 mod db;
 mod export;
@@ -45,6 +46,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     Health,
+    Contract,
     Import {
         media: PathBuf,
         #[arg(long)]
@@ -583,6 +585,9 @@ fn envelope(payload: Value) -> Value {
 }
 
 fn run(cli: Cli) -> Result<Value> {
+    if matches!(&cli.command, Commands::Contract) {
+        return Ok(envelope(contracts::contract()));
+    }
     let mut database = db::open()?;
     tasks::reconcile_expired(&mut database)?;
     models::reconcile_interrupted(&database)?;
@@ -592,6 +597,9 @@ fn run(cli: Cli) -> Result<Value> {
     audio_analysis::reconcile_interrupted(&database)?;
     speaker::reconcile_interrupted(&database)?;
     match cli.command {
+        Commands::Contract => {
+            unreachable!("contract command returns before database initialization")
+        }
         Commands::Health => Ok(envelope(json!({
             "home": db::home_dir(),
             "database": db::database_path(),
@@ -1515,135 +1523,16 @@ fn run(cli: Cli) -> Result<Value> {
     }
 }
 
-fn error_code(error: &anyhow::Error) -> &'static str {
-    let message = error.to_string();
-    for code in [
-        "database_version_unsupported",
-        "database_migration_failed",
-        "project_version_conflict",
-        "task_base_version_mismatch",
-        "task_cancel_requested",
-        "task_patch_already_submitted",
-        "patch_before_mismatch",
-        "core_service_unavailable",
-        "core_service_no_response",
-        "core_request_timeout",
-        "media_hash_changed",
-        "disk_space_low",
-        "model_hash_mismatch",
-        "translation_missing",
-        "translation_stale",
-        "translation_incomplete",
-        "word_range_invalid",
-        "word_alignment_stale",
-        "history_undo_empty",
-        "history_redo_empty",
-        "subtitle_segment_not_found",
-        "subtitle_split_time_invalid",
-        "subtitle_split_text_invalid",
-        "subtitle_split_crosses_word",
-        "subtitle_merge_same",
-        "subtitle_merge_separator_invalid",
-        "subtitle_merge_not_adjacent",
-        "subtitle_time_invalid",
-        "subtitle_time_out_of_bounds",
-        "subtitle_timing_unchanged",
-        "subtitle_offset_invalid",
-        "subtitle_offset_empty",
-        "subtitle_offset_out_of_bounds",
-        "subtitle_offset_word_out_of_bounds",
-        "subtitle_import_format_unsupported",
-        "subtitle_import_file_unreadable",
-        "subtitle_import_encoding_unsupported",
-        "subtitle_import_parse_failed",
-        "subtitle_import_confirmation_required",
-        "subtitle_import_hash_invalid",
-        "subtitle_import_file_changed",
-        "subtitle_import_quality_blocked",
-        "subtitle_style_snapshot_invalid",
-        "subtitle_style_preset_invalid",
-        "subtitle_style_position_invalid",
-        "subtitle_style_content_changed",
-        "subtitle_style_color_invalid",
-        "source_url_invalid",
-        "source_https_required",
-        "source_credentials_not_allowed",
-        "source_private_network",
-        "source_dns_failed",
-        "source_tool_not_configured",
-        "source_tool_hash_mismatch",
-        "source_tool_version_mismatch",
-        "source_inspection_failed",
-        "source_metadata_invalid",
-        "source_playlist_not_allowed",
-        "source_auth_not_allowed",
-        "source_duration_unknown",
-        "source_duration_limit",
-        "source_size_limit",
-        "source_confirmation_mismatch",
-        "source_job_not_found",
-        "source_job_not_cancellable",
-        "source_job_not_resumable",
-        "source_tool_changed",
-        "source_preflight_failed",
-        "source_redirect_invalid",
-        "source_redirect_limit",
-        "source_selected_url_invalid",
-        "source_download_failed",
-        "source_output_invalid",
-        "source_media_probe_failed",
-        "auto_workflow_not_found",
-        "auto_workflow_not_cancellable",
-        "auto_workflow_not_resumable",
-        "auto_workflow_input_invalid",
-        "auto_workflow_model_missing",
-        "speaker_package_installed",
-        "speaker_package_missing",
-        "speaker_package_hash_mismatch",
-        "speaker_job_not_found",
-        "speaker_job_not_cancellable",
-        "speaker_job_not_resumable",
-        "speaker_source_missing",
-        "speaker_runtime_failed",
-        "speaker_audio_prepare_failed",
-        "speaker_label_invalid",
-        "speaker_not_found",
-        "speaker_merge_same",
-        "speaker_assignment_invalid",
-        "auto_workflow_media_missing",
-        "auto_workflow_output_invalid",
-        "auto_workflow_confirmation_required",
-        "auto_workflow_translation_required",
-        "auto_workflow_subtitle_mode_invalid",
-        "auto_workflow_review_pending",
-        "auto_workflow_state_invalid",
-        "auto_workflow_source_failed",
-        "auto_workflow_agent_cancelled",
-        "auto_workflow_audit_failed",
-        "auto_workflow_export_failed",
-        "audio_source_missing",
-        "audio_job_not_found",
-        "audio_job_not_cancellable",
-        "audio_job_not_resumable",
-        "audio_analysis_unavailable",
-        "audio_analysis_failed",
-        "audio_analysis_invalid_output",
-        "audio_duration_unavailable",
-    ] {
-        if message.contains(code) {
-            return code;
-        }
-    }
-    "invalid_request"
-}
-
 fn ipc_error(arguments: &[String], error: &anyhow::Error) -> ipc::Response {
+    let code = contracts::error_code(error);
+    let message = error.to_string();
     let output = if arguments.iter().any(|argument| argument == "--json") {
         serde_json::to_string_pretty(&json!({
             "apiVersion": API_VERSION,
             "status": "error",
-            "code": error_code(error),
-            "message": error.to_string()
+            "error": { "code": code, "message": message },
+            "code": code,
+            "message": message
         }))
         .unwrap()
     } else {
@@ -1685,11 +1574,14 @@ pub(crate) fn execute_args(arguments: Vec<String>) -> ipc::Response {
             }
         }
         Err(error) => {
+            let code = contracts::error_code(&error);
+            let message = error.to_string();
             let value = json!({
                 "apiVersion":API_VERSION,
                 "status":"error",
-                "code":error_code(&error),
-                "message":error.to_string()
+                "error": { "code": code, "message": message },
+                "code":code,
+                "message":message
             });
             let output = if json_mode {
                 serde_json::to_string_pretty(&value).unwrap()

@@ -397,49 +397,56 @@ fn import_whisper_json(
     let language = raw
         .pointer("/result/language")
         .and_then(Value::as_str)
-        .map(str::to_owned);
-    let tx = db.transaction()?;
-    tx.execute("DELETE FROM segments WHERE project_id=?1", [project_id])?;
-    let mut count = 0;
-    for item in entries {
-        for imported in whisper_item_segments(item)? {
-            let confidence = if imported.words.is_empty() {
-                None
-            } else {
-                let values = imported
-                    .words
+        .map(|reported| {
+            crate::model::reconcile_source_language(
+                reported,
+                entries
                     .iter()
-                    .filter_map(|word| word.confidence)
-                    .collect::<Vec<_>>();
-                (!values.is_empty()).then(|| values.iter().sum::<f64>() / values.len() as f64)
-            };
-            let segment = Segment {
-                id: new_id("s"),
-                start: imported.start,
-                end: imported.end,
-                text: imported.text,
-                confidence,
-            };
-            tx.execute("INSERT INTO segments(id,project_id,start_seconds,end_seconds,text,confidence) VALUES(?1,?2,?3,?4,?5,?6)",params![&segment.id,project_id,segment.start,segment.end,&segment.text,segment.confidence])?;
-            for (ordinal, mut word) in imported.words.into_iter().enumerate() {
-                word.segment_id.clone_from(&segment.id);
-                tx.execute("INSERT INTO words(id,project_id,segment_id,start_seconds,end_seconds,text,confidence,ordinal) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",params![&word.id,project_id,&word.segment_id,word.start,word.end,&word.text,word.confidence,ordinal as i64])?;
+                    .filter_map(|item| item.get("text").and_then(Value::as_str)),
+            )
+        });
+    let mut count = 0;
+    project::mutate_with_snapshot(db, project_id, "whisper.cpp 本地转录", |tx| {
+        tx.execute("DELETE FROM segments WHERE project_id=?1", [project_id])?;
+        for item in entries {
+            for imported in whisper_item_segments(item)? {
+                let confidence = if imported.words.is_empty() {
+                    None
+                } else {
+                    let values = imported
+                        .words
+                        .iter()
+                        .filter_map(|word| word.confidence)
+                        .collect::<Vec<_>>();
+                    (!values.is_empty()).then(|| values.iter().sum::<f64>() / values.len() as f64)
+                };
+                let segment = Segment {
+                    id: new_id("s"),
+                    start: imported.start,
+                    end: imported.end,
+                    text: imported.text,
+                    confidence,
+                };
+                tx.execute("INSERT INTO segments(id,project_id,start_seconds,end_seconds,text,confidence) VALUES(?1,?2,?3,?4,?5,?6)",params![&segment.id,project_id,segment.start,segment.end,&segment.text,segment.confidence])?;
+                for (ordinal, mut word) in imported.words.into_iter().enumerate() {
+                    word.segment_id.clone_from(&segment.id);
+                    tx.execute("INSERT INTO words(id,project_id,segment_id,start_seconds,end_seconds,text,confidence,ordinal) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",params![&word.id,project_id,&word.segment_id,word.start,word.end,&word.text,word.confidence,ordinal as i64])?;
+                }
+                count += 1;
             }
-            count += 1;
         }
-    }
-    if let Some(language) = language {
+        if let Some(language) = language {
+            tx.execute(
+                "UPDATE projects SET source_language=?2 WHERE id=?1",
+                params![project_id, language],
+            )?;
+        }
         tx.execute(
-            "UPDATE projects SET source_language=?2 WHERE id=?1",
-            params![project_id, language],
+            "UPDATE translations SET status='stale' WHERE project_id=?1",
+            [project_id],
         )?;
-    }
-    tx.execute(
-        "UPDATE translations SET status='stale' WHERE project_id=?1",
-        [project_id],
-    )?;
-    tx.commit()?;
-    project::snapshot(db, project_id, "whisper.cpp 本地转录")?;
+        Ok(())
+    })?;
     Ok((project::load(db, project_id)?, count))
 }
 
@@ -526,6 +533,25 @@ mod tests {
                 && word.end <= updated.transcript.segments[0].end
         }));
         assert!((updated.transcript.segments[0].confidence.unwrap() - 0.7).abs() < 0.001);
+    }
+
+    #[test]
+    fn corrects_a_strong_english_transcript_mislabeled_as_chinese() {
+        let temp = tempdir().unwrap();
+        let mut db = db::open_at(&temp.path().join("language.db")).unwrap();
+        let media = temp.path().join("english.wav");
+        fs::write(&media, b"audio").unwrap();
+        let project = project::create(&mut db, &media, None).unwrap();
+        let result = temp.path().join("language.json");
+        fs::write(
+            &result,
+            r#"{"result":{"language":"zh"},"transcription":[{"timestamps":{"from":"00:00:00,000","to":"00:00:04,000"},"text":"What racing reveals about working with artificial intelligence and how teams use data to improve performance."}]}"#,
+        )
+        .unwrap();
+
+        let (updated, _) = import_whisper_json(&mut db, &project.id, &result).unwrap();
+
+        assert_eq!(updated.transcript.source_language, "en");
     }
 
     #[test]

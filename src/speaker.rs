@@ -131,6 +131,7 @@ pub struct SpeakerAssetStatus {
     pub sha256: String,
     pub installed: bool,
     pub verified: Option<bool>,
+    pub verification_status: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -146,6 +147,7 @@ pub struct SpeakerPackageStatus {
     pub installed_size: u64,
     pub installed: bool,
     pub verified: Option<bool>,
+    pub verification_status: String,
     pub assets: Vec<SpeakerAssetStatus>,
 }
 
@@ -223,6 +225,7 @@ pub struct SpeakerJob {
     pub total_bytes: u64,
     pub cancel_requested_at: Option<String>,
     pub error_message: Option<String>,
+    pub error_code: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub completed_at: Option<String>,
@@ -269,8 +272,23 @@ pub fn package_status(verify: bool) -> Result<SpeakerPackageStatus> {
             sha256: spec.sha256.into(),
             installed,
             verified,
+            verification_status: if !installed {
+                "not_installed"
+            } else {
+                match verified {
+                    Some(true) => "verified",
+                    Some(false) => "failed",
+                    None => "not_checked",
+                }
+            }
+            .to_owned(),
         });
     }
+    let verified = if verify && any_installed {
+        Some(all_verified)
+    } else {
+        None
+    };
     Ok(SpeakerPackageStatus {
         id: PACKAGE_ID.into(),
         name: "本地说话人分离（中英）".into(),
@@ -281,11 +299,17 @@ pub fn package_status(verify: bool) -> Result<SpeakerPackageStatus> {
         download_size: DOWNLOAD_SIZE,
         installed_size: INSTALLED_ASSETS.iter().map(|item| item.size).sum(),
         installed: all_installed,
-        verified: if verify && any_installed {
-            Some(all_verified)
+        verified,
+        verification_status: if !all_installed {
+            "not_installed"
         } else {
-            None
-        },
+            match verified {
+                Some(true) => "verified",
+                Some(false) => "failed",
+                None => "not_checked",
+            }
+        }
+        .to_owned(),
         assets,
     })
 }
@@ -380,17 +404,23 @@ pub fn load_job(db: &Connection, job_id: &str) -> Result<SpeakerJob> {
         "SELECT id,kind,project_id,status,stage,progress,bytes_downloaded,total_bytes,cancel_requested_at,error_message,created_at,updated_at,completed_at,worker_pid,attempt_count FROM speaker_jobs WHERE id=?1",
         [job_id],
         |row| {
+            let status = row.get::<_, String>(3)?;
+            let error_message = row.get::<_, Option<String>>(9)?;
             Ok(SpeakerJob {
                 id: row.get(0)?,
                 kind: row.get(1)?,
                 project_id: row.get(2)?,
-                status: row.get(3)?,
+                error_code: crate::model::background_error_code(
+                    &status,
+                    error_message.as_deref(),
+                ),
+                status,
                 stage: row.get(4)?,
                 progress: row.get(5)?,
                 bytes_downloaded: row.get(6)?,
                 total_bytes: row.get(7)?,
                 cancel_requested_at: row.get(8)?,
-                error_message: row.get(9)?,
+                error_message,
                 created_at: row.get(10)?,
                 updated_at: row.get(11)?,
                 completed_at: row.get(12)?,
@@ -814,8 +844,9 @@ fn analyze_project(db: &mut Connection, job_id: &str) -> Result<()> {
     update_job(db, job_id, "建立字幕关联", Some(0.88), None)?;
     let parsed = parse_runtime_output(&String::from_utf8_lossy(&output.stdout))?;
     let track = build_track(&loaded.transcript.segments, &parsed);
-    replace_track(db, project_id, &track)?;
-    project::snapshot(db, project_id, "生成说话人轨")?;
+    project::mutate_with_snapshot(db, project_id, "生成说话人轨", |tx| {
+        replace_track_tx(tx, project_id, Some(&track))
+    })?;
     if work_dir.exists() {
         fs::remove_dir_all(work_dir)?;
     }
@@ -1000,6 +1031,7 @@ pub fn load_track(db: &Connection, project_id: &str) -> Result<SpeakerTrack> {
     })
 }
 
+#[cfg(test)]
 fn replace_track(db: &mut Connection, project_id: &str, track: &SpeakerTrack) -> Result<()> {
     let tx = db.transaction()?;
     replace_track_tx(&tx, project_id, Some(track))?;
@@ -1075,14 +1107,16 @@ pub fn rename(
     if label.is_empty() || label.chars().count() > 40 {
         bail!("speaker_label_invalid: 说话人名称需要 1 至 40 个字符")
     }
-    let changed = db.execute(
-        "UPDATE speakers SET label=?3 WHERE id=?1 AND project_id=?2",
-        params![speaker_id, project_id, label],
-    )?;
-    if changed == 0 {
-        bail!("speaker_not_found: 说话人不存在")
-    }
-    project::snapshot(db, project_id, "重命名说话人")?;
+    project::mutate_with_snapshot(db, project_id, "重命名说话人", |tx| {
+        let changed = tx.execute(
+            "UPDATE speakers SET label=?3 WHERE id=?1 AND project_id=?2",
+            params![speaker_id, project_id, label],
+        )?;
+        if changed == 0 {
+            bail!("speaker_not_found: 说话人不存在")
+        }
+        Ok(())
+    })?;
     load_track(db, project_id)
 }
 
@@ -1116,8 +1150,8 @@ pub fn merge(
         "DELETE FROM speakers WHERE project_id=?1 AND id=?2",
         params![project_id, from_id],
     )?;
+    project::snapshot_in_transaction(&tx, project_id, "合并说话人")?;
     tx.commit()?;
-    project::snapshot(db, project_id, "合并说话人")?;
     load_track(db, project_id)
 }
 
@@ -1135,11 +1169,13 @@ pub fn assign(
     if valid == 0 {
         bail!("speaker_assignment_invalid: 字幕段或说话人不存在")
     }
-    db.execute(
-        "INSERT INTO segment_speakers(project_id,segment_id,speaker_id,source,confidence,updated_at) VALUES(?1,?2,?3,'manual',NULL,?4) ON CONFLICT(project_id,segment_id) DO UPDATE SET speaker_id=excluded.speaker_id,source='manual',confidence=NULL,updated_at=excluded.updated_at",
-        params![project_id, segment_id, speaker_id, now()],
-    )?;
-    project::snapshot(db, project_id, "重新分配说话人")?;
+    project::mutate_with_snapshot(db, project_id, "重新分配说话人", |tx| {
+        tx.execute(
+            "INSERT INTO segment_speakers(project_id,segment_id,speaker_id,source,confidence,updated_at) VALUES(?1,?2,?3,'manual',NULL,?4) ON CONFLICT(project_id,segment_id) DO UPDATE SET speaker_id=excluded.speaker_id,source='manual',confidence=NULL,updated_at=excluded.updated_at",
+            params![project_id, segment_id, speaker_id, now()],
+        )?;
+        Ok(())
+    })?;
     load_track(db, project_id)
 }
 

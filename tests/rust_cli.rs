@@ -118,6 +118,7 @@ fn subtitle_structure_cli_is_explicit_atomic_and_recoverable() {
         ],
     );
     assert_eq!(invalid["code"], "subtitle_merge_not_adjacent");
+    assert_eq!(invalid["error"]["code"], "subtitle_merge_not_adjacent");
     let unchanged = run_direct(temp.path(), &["project", "show", project_id]);
     assert_eq!(
         unchanged["project"]["transcript"]["segments"]

@@ -31,7 +31,7 @@
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --all-features
-node --test tests/core.test.mjs tests/cli.test.mjs
+node tools/generate-core-contract.mjs --check
 npm ci --prefix apps/desktop
 npm --prefix apps/desktop run build
 npm --prefix apps/desktop run test:ui

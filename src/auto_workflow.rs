@@ -179,6 +179,8 @@ pub fn load(db: &Connection, workflow_id: &str) -> Result<AutoWorkflow> {
         [workflow_id],
         |row| {
             let audit: Option<String> = row.get(19)?;
+            let status = row.get::<_, String>(13)?;
+            let error_message = row.get::<_, Option<String>>(21)?;
             Ok(AutoWorkflow {
                 id: row.get(0)?,
                 input_kind: row.get(1)?,
@@ -194,7 +196,8 @@ pub fn load(db: &Connection, workflow_id: &str) -> Result<AutoWorkflow> {
                 burn_subtitles: row.get(11)?,
                 subtitle_mode: SubtitleMode::parse(&row.get::<_, String>(12)?)
                     .ok_or(rusqlite::Error::InvalidQuery)?,
-                status: row.get(13)?,
+                error_code: crate::model::background_error_code(&status, error_message.as_deref()),
+                status,
                 current_stage: row.get(14)?,
                 progress: row.get(15)?,
                 transcript_version_id: row.get(16)?,
@@ -202,7 +205,7 @@ pub fn load(db: &Connection, workflow_id: &str) -> Result<AutoWorkflow> {
                 export_job_id: row.get(18)?,
                 audit: audit.and_then(|value| serde_json::from_str(&value).ok()),
                 cancel_requested_at: row.get(20)?,
-                error_message: row.get(21)?,
+                error_message,
                 created_at: row.get(22)?,
                 updated_at: row.get(23)?,
                 completed_at: row.get(24)?,

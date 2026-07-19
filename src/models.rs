@@ -79,6 +79,7 @@ pub struct ModelStatus {
     pub installed: bool,
     pub bytes_on_disk: u64,
     pub verified: Option<bool>,
+    pub verification_status: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -142,6 +143,16 @@ pub fn catalog(verify: bool) -> Result<Vec<ModelStatus>> {
                 installed,
                 bytes_on_disk: bytes,
                 verified,
+                verification_status: if !installed {
+                    "not_installed"
+                } else {
+                    match verified {
+                        Some(true) => "verified",
+                        Some(false) => "failed",
+                        None => "not_checked",
+                    }
+                }
+                .to_owned(),
             })
         })
         .collect()
