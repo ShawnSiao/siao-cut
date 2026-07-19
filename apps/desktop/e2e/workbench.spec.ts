@@ -82,10 +82,19 @@ test("keeps subtitle styling in export settings and previews the saved bilingual
   await page.setViewportSize({ width: 1444, height: 972 });
   await page.goto("/");
   const original = await page.getByLabel("00:13 字幕文本").inputValue();
+  const transcriptList = page.getByLabel("字幕文稿列表");
+  const transcriptListLayout = await transcriptList.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return { overflowY: style.overflowY, height: element.getBoundingClientRect().height };
+  });
+  expect(transcriptListLayout.overflowY).toBe("auto");
+  expect(transcriptListLayout.height).toBeLessThanOrEqual(560);
   await page.getByRole("checkbox", { name: "选择字幕 00:13 至 00:18" }).click();
   await page.getByRole("button", { name: "打开导出设置" }).click();
   const panel = page.getByLabel("导出设置");
   await panel.getByLabel("字幕模式").selectOption("bilingual");
+  await expect(panel.getByLabel("字幕模式")).toHaveValue("bilingual");
+  await expect(panel.getByLabel("译文语言")).toHaveValue("en");
   await panel.getByLabel("字幕样式预设").selectOption("emphasis");
   await expect(page.getByText("字幕样式已更新；正文和时间未修改，可撤销。")).toBeVisible();
   await panel.getByLabel("字幕位置").selectOption("center");

@@ -587,8 +587,12 @@ function App() {
     useEffect(() => {
         if (!project || subtitleMode === "source")
             return;
-        if (!translationLanguageOptions.includes(subtitleLanguage))
+        if (!translationLanguageOptions.length) {
             setSubtitleMode("source");
+            return;
+        }
+        if (!translationLanguageOptions.includes(subtitleLanguage))
+            setSubtitleLanguage(translationLanguageOptions[0]);
     }, [project, subtitleLanguage, subtitleMode, translationLanguageOptions]);
     useEffect(() => {
         if (!showExportPanel)
