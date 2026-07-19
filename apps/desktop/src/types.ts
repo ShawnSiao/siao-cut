@@ -1,3 +1,6 @@
+import type { AutoWorkflowStage, AutoWorkflowStatus, BackgroundJobStatus, CoreErrorCode, TaskStatus, WorkflowStatus } from "./generated/core-contract";
+export type { AutoWorkflowStage, AutoWorkflowStatus, BackgroundJobStatus, CoreErrorCode, KnownCoreErrorCode, TaskStatus, WorkflowStatus } from "./generated/core-contract";
+
 export type Segment = {
   id: string;
   start: number;
@@ -68,11 +71,11 @@ export type Task = {
   id: string;
   kind: string;
   language: string | null;
-  status: string;
+  status: TaskStatus;
   stageCode?: string | null;
   progress: number;
   errorMessage: string | null;
-  errorCode?: string | null;
+  errorCode?: CoreErrorCode | null;
   workflowId?: string | null;
   instructionLocale: UiLocale;
 };
@@ -104,7 +107,7 @@ export type Workflow = {
   id: string;
   kind: string;
   language: string | null;
-  status: string;
+  status: WorkflowStatus;
   taskId: string;
   createdAt: string;
   updatedAt: string;
@@ -167,7 +170,7 @@ export type ExportJob = {
   id: string;
   projectId: string;
   outputPath: string;
-  status: string;
+  status: BackgroundJobStatus;
   stageCode?: string | null;
   progress: number;
   burnSubtitles: boolean;
@@ -178,7 +181,7 @@ export type ExportJob = {
   subtitleStyle: SubtitleStyle;
   cancelRequestedAt: string | null;
   errorMessage: string | null;
-  errorCode?: string | null;
+  errorCode?: CoreErrorCode | null;
   manifestPath: string | null;
   createdAt: string;
   updatedAt: string;
@@ -230,12 +233,13 @@ export type ModelStatus = {
   installed: boolean;
   bytesOnDisk: number;
   verified: boolean | null;
+  verificationStatus: "verified" | "failed" | "not_checked" | "not_installed";
 };
 
 export type ModelDownloadJob = {
   id: string;
   modelId: string;
-  status: string;
+  status: BackgroundJobStatus;
   stageCode?: string | null;
   progress: number;
   bytesDownloaded: number;
@@ -243,7 +247,7 @@ export type ModelDownloadJob = {
   targetPath: string;
   cancelRequestedAt: string | null;
   errorMessage: string | null;
-  errorCode?: string | null;
+  errorCode?: CoreErrorCode | null;
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
@@ -275,7 +279,7 @@ export type SourceImportJob = {
   title: string;
   durationSeconds: number;
   fileSizeBytes: number | null;
-  status: string;
+  status: BackgroundJobStatus;
   stageCode?: string | null;
   progress: number;
   bytesDownloaded: number;
@@ -287,7 +291,7 @@ export type SourceImportJob = {
   toolSha256: string;
   cancelRequestedAt: string | null;
   errorMessage: string | null;
-  errorCode?: string | null;
+  errorCode?: CoreErrorCode | null;
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
@@ -325,13 +329,13 @@ export type AudioAnalysisReport = {
 export type AudioAnalysisJob = {
   id: string;
   projectId: string;
-  status: string;
+  status: BackgroundJobStatus;
   stageCode?: string | null;
   progress: number;
   report: AudioAnalysisReport | null;
   cancelRequestedAt: string | null;
   errorMessage: string | null;
-  errorCode?: string | null;
+  errorCode?: CoreErrorCode | null;
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
@@ -348,6 +352,7 @@ export type SpeakerAssetStatus = {
   sha256: string;
   installed: boolean;
   verified: boolean | null;
+  verificationStatus: "verified" | "failed" | "not_checked" | "not_installed";
 };
 
 export type SpeakerPackageStatus = {
@@ -361,6 +366,7 @@ export type SpeakerPackageStatus = {
   installedSize: number;
   installed: boolean;
   verified: boolean | null;
+  verificationStatus: "verified" | "failed" | "not_checked" | "not_installed";
   assets: SpeakerAssetStatus[];
 };
 
@@ -406,7 +412,7 @@ export type SpeakerJob = {
   id: string;
   kind: "install" | "analyze";
   projectId: string | null;
-  status: string;
+  status: BackgroundJobStatus;
   stage: string;
   stageCode?: string | null;
   progress: number;
@@ -414,7 +420,7 @@ export type SpeakerJob = {
   totalBytes: number;
   cancelRequestedAt: string | null;
   errorMessage: string | null;
-  errorCode?: string | null;
+  errorCode?: CoreErrorCode | null;
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
@@ -436,8 +442,8 @@ export type AutoWorkflow = {
   outputPath: string;
   burnSubtitles: boolean;
   subtitleMode: "source" | "translated" | "bilingual";
-  status: string;
-  currentStage: string;
+  status: AutoWorkflowStatus;
+  currentStage: AutoWorkflowStage;
   stageCode?: string | null;
   progress: number;
   transcriptVersionId: string | null;
@@ -446,7 +452,7 @@ export type AutoWorkflow = {
   audit: Record<string, unknown> | null;
   cancelRequestedAt: string | null;
   errorMessage: string | null;
-  errorCode?: string | null;
+  errorCode?: CoreErrorCode | null;
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
@@ -458,8 +464,8 @@ export type AutoWorkflow = {
 export type AutoWorkflowEvent = {
   id: number;
   workflowId: string;
-  stage: string;
-  status: string;
+  stage: AutoWorkflowStage;
+  status: AutoWorkflowStatus;
   progress: number;
   message: string;
   createdAt: string;
@@ -556,7 +562,8 @@ export type SubtitleStructureEdit = {
 export type CoreEnvelope = {
   apiVersion: string;
   status: "ok" | "error";
-  error?: { code: string; message: string };
+  error?: { code: CoreErrorCode; message: string; technicalDetails?: string | null };
+  code?: CoreErrorCode;
   message?: string;
   project?: Project;
   projects?: Project[];

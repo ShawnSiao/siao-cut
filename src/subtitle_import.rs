@@ -313,51 +313,56 @@ pub fn import_file(
 
     let inserted_segments = preview.segments.len();
     let mut impact = SubtitleImportImpact::default();
-    let tx = db.transaction()?;
-    impact.replaced_segments = tx.query_row(
-        "SELECT COUNT(*) FROM segments WHERE project_id=?1",
-        [project_id],
-        |row| row.get(0),
+    project::mutate_with_snapshot(
+        db,
+        project_id,
+        &format!("导入 {:?} 字幕", preview.format),
+        |tx| {
+            impact.replaced_segments = tx.query_row(
+                "SELECT COUNT(*) FROM segments WHERE project_id=?1",
+                [project_id],
+                |row| row.get(0),
+            )?;
+            impact.removed_words = tx.query_row(
+                "SELECT COUNT(*) FROM words WHERE project_id=?1",
+                [project_id],
+                |row| row.get(0),
+            )?;
+            impact.removed_edits = tx.query_row(
+                "SELECT COUNT(*) FROM edits WHERE project_id=?1",
+                [project_id],
+                |row| row.get(0),
+            )?;
+            impact.speaker_associations_removed = tx.query_row(
+                "SELECT COUNT(*) FROM segment_speakers WHERE project_id=?1",
+                [project_id],
+                |row| row.get(0),
+            )?;
+            impact.translation_segments_removed = tx.execute(
+                "DELETE FROM translation_segments WHERE project_id=?1",
+                [project_id],
+            )?;
+            impact.translations_marked_stale = tx.execute(
+                "UPDATE translations SET status='stale',updated_at=?2 WHERE project_id=?1 AND status!='stale'",
+                params![project_id, now()],
+            )?;
+            tx.execute("DELETE FROM edits WHERE project_id=?1", [project_id])?;
+            impact.agent_patch_items_detached = tx.execute(
+                "UPDATE agent_patch_items SET segment_id=NULL WHERE patch_set_id IN (
+                     SELECT id FROM agent_patch_sets WHERE project_id=?1
+                 ) AND segment_id IS NOT NULL",
+                [project_id],
+            )?;
+            tx.execute("DELETE FROM segments WHERE project_id=?1", [project_id])?;
+            for item in &preview.segments {
+                tx.execute(
+                    "INSERT INTO segments(id,project_id,start_seconds,end_seconds,text,confidence) VALUES(?1,?2,?3,?4,?5,NULL)",
+                    params![new_id("s"), project_id, item.start, item.end, &item.text],
+                )?;
+            }
+            Ok(())
+        },
     )?;
-    impact.removed_words = tx.query_row(
-        "SELECT COUNT(*) FROM words WHERE project_id=?1",
-        [project_id],
-        |row| row.get(0),
-    )?;
-    impact.removed_edits = tx.query_row(
-        "SELECT COUNT(*) FROM edits WHERE project_id=?1",
-        [project_id],
-        |row| row.get(0),
-    )?;
-    impact.speaker_associations_removed = tx.query_row(
-        "SELECT COUNT(*) FROM segment_speakers WHERE project_id=?1",
-        [project_id],
-        |row| row.get(0),
-    )?;
-    impact.translation_segments_removed = tx.execute(
-        "DELETE FROM translation_segments WHERE project_id=?1",
-        [project_id],
-    )?;
-    impact.translations_marked_stale = tx.execute(
-        "UPDATE translations SET status='stale',updated_at=?2 WHERE project_id=?1 AND status!='stale'",
-        params![project_id, now()],
-    )?;
-    tx.execute("DELETE FROM edits WHERE project_id=?1", [project_id])?;
-    impact.agent_patch_items_detached = tx.execute(
-        "UPDATE agent_patch_items SET segment_id=NULL WHERE patch_set_id IN (
-             SELECT id FROM agent_patch_sets WHERE project_id=?1
-         ) AND segment_id IS NOT NULL",
-        [project_id],
-    )?;
-    tx.execute("DELETE FROM segments WHERE project_id=?1", [project_id])?;
-    for item in &preview.segments {
-        tx.execute(
-            "INSERT INTO segments(id,project_id,start_seconds,end_seconds,text,confidence) VALUES(?1,?2,?3,?4,?5,NULL)",
-            params![new_id("s"), project_id, item.start, item.end, &item.text],
-        )?;
-    }
-    tx.commit()?;
-    project::snapshot(db, project_id, &format!("导入 {:?} 字幕", preview.format))?;
     let project = project::load(db, project_id)?;
     Ok(SubtitleImportResult {
         format: preview.format,

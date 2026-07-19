@@ -1,182 +1,49 @@
 import { changeUiLocale, getUiLocale, tr, type UiLocale } from "./i18n";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type SyntheticEvent } from "react";
 import { Activity, Bot, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Clock3, Cpu, Database, Download, FileVideo2, FileText, Film, FolderOpen, FolderPlus, HardDrive, History, Link2, LoaderCircle, Play, RefreshCw, RotateCcw, Search, Scissors, Settings2, ShieldCheck, Sparkles, Trash2, Undo2, Redo2, Headphones, ListChecks, MoreHorizontal, MoveHorizontal, Users, X, } from "lucide-react";
 import { authorizeArtifact, authorizeMedia, checkForUpdate, installUpdate, listProjects, loadProject, openLogDirectory, pickMedia, pickModel, pickSubtitleFile, pickTranscriptPath, pickVideoPath, runCore, runtimeInfo, selectAsrBackend, updaterPolicy } from "./core";
 import type { AudioAnalysisJob, AudioRisk, AutoWorkflow, CanvasSettings, CutPreview, ExportJob, ModelDownloadJob, ModelStatus, Project, RuntimeInfo, Segment, SourceImportJob, SourcePreview, SpeakerIdentity, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SpeechEvidence, SpeechInsights, SpeechPause, SubtitleImportPreview, SubtitleQualityIssue, TranscriptionLanguage, UpdateMetadata, UpdatePolicy } from "./types";
 import { Button, Dialog, IconButton, StatusBadge } from "./components/ui";
-type HumanState = string;
-type SegmentSelectionMode = "replace" | "toggle" | "range";
-type StructureEditMode = "split" | "merge" | "timing" | "offset";
-const structureEditLabel = (mode: StructureEditMode) => ({ split: tr("app.s0005"), merge: tr("app.s0006"), timing: tr("app.s0007"), offset: tr("app.s0008") })[mode];
-export type ExportPreferencesV1 = {
-    version: 1;
-    subtitleMode: "source" | "translated" | "bilingual";
-    subtitleLanguage: string;
-    transcriptFormat: "srt" | "vtt" | "ass" | "markdown";
-};
-export const DEFAULT_EXPORT_PREFERENCES: ExportPreferencesV1 = {
-    version: 1,
-    subtitleMode: "source",
-    subtitleLanguage: "en",
-    transcriptFormat: "srt",
-};
-export const TRANSCRIPTION_LANGUAGE_STORAGE_KEY = "siaocut.transcriptionLanguage.v1";
-export const parseTranscriptionLanguage = (raw: string | null): TranscriptionLanguage => ["auto", "en", "zh"].includes(raw ?? "") ? raw as TranscriptionLanguage : "auto";
-export const parseExportPreferences = (raw: string | null): ExportPreferencesV1 => {
-    if (!raw)
-        return DEFAULT_EXPORT_PREFERENCES;
+import { JobFailureDetails } from "./components/job-failure";
+import { AsrBackendPicker, AudioQualityPanel, DiagnosticsPanel, ModelManager, PatchReviewCard, RuntimeChecklist, SegmentRow, SpeakerPackageManager, SpeakerTrackPanel, SpeechInsightsPanel, UpdatePanel } from "./components/workbench-panels";
+export { AudioQualityPanel, PatchReviewCard, SpeakerPackageManager, SpeakerTrackPanel, SpeechInsightsPanel } from "./components/workbench-panels";
+import { audioRiskLabel, audioUnitLabel, autoStageLabel, autoStatusLabel, clearTransientCoreError, cutSuggestionLabel, DEFAULT_EXPORT_PREFERENCES, editReasonLabel, formatBytes, formatTime, getProjectCapabilities, hasMeaningfulSubtitleText, isHttpsSourceUrl, modelDescription, modelName, parseExportPreferences, parseTranscriptionLanguage, patchReasonLabel, segmentCountLabel, shouldCheckForUpdates, sourceStatusLabel, startSerialPolling, structureEditLabel, subtitleCountLabel, subtitleIssueLabel, subtitleQualityStatusLabel, taskLabel, TRANSCRIPTION_LANGUAGE_STORAGE_KEY, versionReasonLabel, wordCountLabel, type ExportPreferencesV1, type SegmentSelectionMode, type StructureEditMode } from "./app-view-model";
+export * from "./app-view-model";
+
+export async function resolveCanvasMedia(
+    projectId: string,
+    authorizePreview: typeof authorizeArtifact = authorizeArtifact,
+    authorizeSource: typeof authorizeMedia = authorizeMedia,
+) {
+    let warning: string | null = null;
     try {
-        const candidate = JSON.parse(raw) as Partial<ExportPreferencesV1>;
-        const subtitleModes = ["source", "translated", "bilingual"];
-        const transcriptFormats = ["srt", "vtt", "ass", "markdown"];
-        if (candidate.version !== 1 || !subtitleModes.includes(candidate.subtitleMode ?? "") || !transcriptFormats.includes(candidate.transcriptFormat ?? ""))
-            return DEFAULT_EXPORT_PREFERENCES;
-        return {
-            version: 1,
-            subtitleMode: candidate.subtitleMode as ExportPreferencesV1["subtitleMode"],
-            subtitleLanguage: typeof candidate.subtitleLanguage === "string" ? candidate.subtitleLanguage : "en",
-            transcriptFormat: candidate.transcriptFormat as ExportPreferencesV1["transcriptFormat"],
-        };
+        const preview = await authorizePreview(projectId, "preview");
+        if (preview)
+            return { mediaUrl: preview, warning: null };
     }
-    catch {
-        return DEFAULT_EXPORT_PREFERENCES;
+    catch (cause) {
+        warning = cause instanceof Error ? cause.message : String(cause);
     }
-};
-const formatTime = (seconds: number) => {
-    const minutes = Math.floor(seconds / 60);
-    const rest = Math.floor(seconds % 60);
-    return `${String(minutes).padStart(2, "0")}:${String(rest).padStart(2, "0")}`;
-};
-const formatBytes = (bytes: number | null) => {
-    if (bytes == null)
-        return tr("app.s0009");
-    if (bytes >= 1024 ** 3)
-        return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
-    return `${Math.max(0.1, bytes / 1024 ** 2).toFixed(1)} MB`;
-};
-export const taskLabel = (project: Project | null): HumanState => {
-    if (!project)
-        return tr("app.s0004");
-    if (project.patchSets.some((set) => set.items.some((item) => ["pending", "conflict"].includes(item.status))))
-        return tr("app.s0003");
-    if (project.edits.some((edit) => ["suggested", "proposed"].includes(edit.status)))
-        return tr("app.s0003");
-    if (project.tasks.some((task) => ["queued", "failed", "interrupted"].includes(task.status)))
-        return tr("app.s0002");
-    if (project.tasks.some((task) => ["claimed", "running"].includes(task.status)))
-        return tr("app.s0001");
-    return tr("app.s0004");
-};
-export const cutSuggestionLabel = (type: string | undefined) => ({
-    standalone_filler: tr("app.s0010"),
-    adjacent_repetition: tr("app.s0011"),
-    speech_restart: tr("app.s0012"),
-}[type ?? ""] ?? tr("app.s0013"));
-export const sourceStatusLabel = (status: string) => ({
-    queued: tr("app.s0014"),
-    running: tr("app.s0015"),
-    finalizing: tr("app.s0016"),
-    cancelled: tr("app.s0017"),
-    interrupted: tr("app.s0018"),
-    failed: tr("app.s0019"),
-    completed: tr("app.s0020"),
-}[status] ?? status);
-export const autoStageLabel = (stage: string) => ({
-    import: tr("app.s0021"),
-    transcribe: tr("app.s0022"),
-    suggestions: tr("app.s0023"),
-    translate: tr("app.s0024"),
-    review: tr("app.s0025"),
-    audit: tr("app.s0026"),
-    export: tr("app.s0027"),
-    complete: tr("app.s0028"),
-}[stage] ?? stage);
-export const autoStatusLabel = (status: string) => ({
-    queued: tr("app.s0029"),
-    running: tr("app.s0001"),
-    needs_agent: tr("app.s0002"),
-    needs_review: tr("app.s0003"),
-    interrupted: tr("app.s0030"),
-    failed: tr("app.s0031"),
-    cancelled: tr("app.s0017"),
-    completed: tr("app.s0032"),
-}[status] ?? status);
-export const audioRiskLabel = (kind: AudioRisk["kind"]) => ({
-    silence: tr("app.s0033"),
-    suspected_clipping: tr("app.s0034"),
-    loudness_low: tr("app.s0035"),
-    loudness_high: tr("app.s0036"),
-}[kind]);
-export const audioUnitLabel = (unit: string) => unit === "seconds" ? tr("app.s0037") : unit;
-const subtitleIssueLabel = (kind: SubtitleQualityIssue["kind"]) => ({
-    empty_text: tr("app.issue.empty_text"),
-    invalid_timing: tr("app.issue.invalid_timing"),
-    out_of_bounds: tr("app.issue.out_of_bounds"),
-    overlap: tr("app.issue.overlap"),
-    duration_too_long: tr("app.issue.duration_too_long"),
-    line_too_long: tr("app.issue.line_too_long"),
-    too_many_lines: tr("app.issue.too_many_lines"),
-    reading_speed_high: tr("app.issue.reading_speed_high"),
-    gap_too_short: tr("app.issue.gap_too_short"),
-})[kind];
-const editReasonLabel = (edit: Project["edits"][number]) => {
-    if (edit.suggestion?.suggestionType === "standalone_filler")
-        return tr("app.reason.filler", { text: edit.reason.split(/[：:]/).at(-1)?.trim() ?? "" });
-    return edit.reason;
-};
-const patchReasonLabel = (reason: string) => reason === "删除不影响含义的口语冗余" ? tr("app.reason.removeRedundancy") : reason;
-const versionReasonLabel = (reason: string) => ({
-    "项目创建": tr("app.reason.projectCreated"),
-    "编辑原文": tr("app.reason.transcriptEdited"),
-}[reason] ?? reason);
-const modelName = (model: ModelStatus) => ({
-    tiny: tr("app.model.tiny.name"),
-    base: tr("app.model.base.name"),
-    small: tr("app.model.small.name"),
-}[model.id] ?? model.name);
-const modelDescription = (model: ModelStatus) => ({
-    tiny: tr("app.model.tiny.description"),
-    base: tr("app.model.base.description"),
-    small: tr("app.model.small.description"),
-}[model.id] ?? model.description);
-const subtitleQualityStatusLabel = (quality: { status: string; errorCount: number; warningCount: number }) => {
-    if (quality.errorCount > 0)
-        return tr("app.composite.qualityErrors", { count: quality.errorCount });
-    if (quality.warningCount > 0)
-        return tr("app.composite.qualityWarnings", { count: quality.warningCount });
-    return tr("app.composite.qualityGood");
-};
-export const shouldCheckForUpdates = (lastCheck: string | null, now: number, enabled: boolean) => {
-    if (!enabled)
-        return false;
-    if (!lastCheck)
-        return true;
-    const checkedAt = Date.parse(lastCheck);
-    return !Number.isFinite(checkedAt) || now - checkedAt >= 24 * 60 * 60 * 1000;
-};
-export const startSerialPolling = (poll: () => Promise<unknown>, intervalMs: number) => {
-    let cancelled = false;
-    let timer: number | null = null;
-    const schedule = () => {
-        if (cancelled)
-            return;
-        timer = window.setTimeout(() => {
-            void poll().catch(() => undefined).finally(schedule);
-        }, intervalMs);
-    };
-    schedule();
-    return () => {
-        cancelled = true;
-        if (timer != null)
-            window.clearTimeout(timer);
-    };
-};
-export const clearTransientCoreError = (message: string | null) => message && /core_service_(?:unavailable|no_response)/.test(message) ? null : message;
+    try {
+        return { mediaUrl: await authorizeSource(projectId), warning };
+    }
+    catch (cause) {
+        const sourceWarning = cause instanceof Error ? cause.message : String(cause);
+        return { mediaUrl: null, warning: warning ? `${warning}; ${sourceWarning}` : sourceWarning };
+    }
+}
+
+export function resolvePlaybackDuration(mediaDuration: number, fallbackDuration: number | null | undefined) {
+    return Number.isFinite(mediaDuration) && mediaDuration > 0 ? mediaDuration : fallbackDuration ?? 0;
+}
+
 function App() {
     const [uiLocale, setUiLocale] = useState<UiLocale>(() => getUiLocale());
     const selectUiLocale = (locale: UiLocale) => {
         changeUiLocale(locale);
         setUiLocale(locale);
+        setNotice(null);
+        setError(null);
     };
     const selectTranscriptionLanguage = (language: TranscriptionLanguage) => {
         localStorage.setItem(TRANSCRIPTION_LANGUAGE_STORAGE_KEY, language);
@@ -233,6 +100,8 @@ function App() {
     const [showMoreMenu, setShowMoreMenu] = useState(false);
     const [search, setSearch] = useState("");
     const [replacement, setReplacement] = useState("");
+    const [emptyReplacementConfirmed, setEmptyReplacementConfirmed] = useState(false);
+    const [inspectorTab, setInspectorTab] = useState<"segment" | "analysis" | "history">("segment");
     const [qualityFilter, setQualityFilter] = useState<"all" | "warning" | "error">("all");
     const [showSubtitleImport, setShowSubtitleImport] = useState(false);
     const [subtitleImportPath, setSubtitleImportPath] = useState("");
@@ -257,6 +126,7 @@ function App() {
     } | null>(null);
     const [cutPadding, setCutPadding] = useState<30 | 100 | 200>(100);
     const [cutPreview, setCutPreview] = useState<CutPreview | null>(null);
+    const [playback, setPlayback] = useState({ playing: false, currentTime: 0, duration: 0 });
     const [deleteCandidate, setDeleteCandidate] = useState<Project | null>(null);
     const [deleteBusy, setDeleteBusy] = useState(false);
     const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -266,6 +136,7 @@ function App() {
     const autoButtonRef = useRef<HTMLButtonElement>(null);
     const exportButtonRef = useRef<HTMLButtonElement>(null);
     const exportPanelRef = useRef<HTMLElement>(null);
+    const commandMoreRef = useRef<HTMLDivElement>(null);
     const searchInputRef = useRef<HTMLInputElement>(null);
     const replacementInputRef = useRef<HTMLInputElement>(null);
     const subtitleImportButtonRef = useRef<HTMLButtonElement>(null);
@@ -291,6 +162,7 @@ function App() {
             : [null, null];
         if (refreshMedia) {
             videoRef.current?.pause();
+            setPlayback({ playing: false, currentTime: 0, duration: next.media.durationSeconds ?? 0 });
             setMediaUrl(nextMediaUrl);
             setWaveformUrl(nextWaveformUrl);
             setActiveExport(null);
@@ -308,7 +180,7 @@ function App() {
         const [projectsResult, runtimeResult, modelsResult, modelJobsResult, sourceJobsResult, autoWorkflowsResult, updatePolicyResult, speakerPackageResult, speakerJobsResult] = await Promise.allSettled([
             listProjects(),
             runtimeInfo(),
-            runCore(["model", "list"]),
+            runCore(["model", "list", "--verify"]),
             runCore(["model", "jobs"]),
             runCore(["source", "jobs"]),
             runCore(["auto", "list"]),
@@ -491,7 +363,7 @@ function App() {
                 return;
             setModelJob(envelope.modelJob);
             if (envelope.modelJob.status === "completed") {
-                const catalog = await runCore(["model", "list"]);
+                const catalog = await runCore(["model", "list", "--verify"]);
                 const available = catalog.models ?? [];
                 setModels(available);
                 const installed = available.find((item) => item.id === envelope.modelJob?.modelId);
@@ -605,6 +477,32 @@ function App() {
     const firstSelectedIndex = project?.transcript.segments.findIndex((segment) => segment.id === selectedSegments[0]?.id) ?? -1;
     const secondSelectedIndex = project?.transcript.segments.findIndex((segment) => segment.id === selectedSegments[1]?.id) ?? -1;
     const mergeCandidatesAdjacent = selectedSegments.length === 2 && firstSelectedIndex >= 0 && secondSelectedIndex === firstSelectedIndex + 1;
+    const replaceMatchCount = useMemo(() => search && project
+        ? project.transcript.segments.reduce((count, segment) => count + (segment.text.split(search).length - 1), 0)
+        : 0, [project, search]);
+    const splitTextOffset = Number(structureTextOffset);
+    const splitCharacters = Array.from(selectedSegments[0]?.text ?? "");
+    const splitLeftText = splitCharacters.slice(0, Number.isInteger(splitTextOffset) ? splitTextOffset : 0).join("").trim();
+    const splitRightText = splitCharacters.slice(Number.isInteger(splitTextOffset) ? splitTextOffset : 0).join("").trim();
+    const splitInputsValid = Number.isInteger(splitTextOffset)
+        && splitTextOffset > 0
+        && splitTextOffset < splitCharacters.length
+        && Number(structureStart) > (selectedSegments[0]?.start ?? Number.POSITIVE_INFINITY)
+        && Number(structureStart) < (selectedSegments[0]?.end ?? Number.NEGATIVE_INFINITY)
+        && hasMeaningfulSubtitleText(splitLeftText)
+        && hasMeaningfulSubtitleText(splitRightText);
+    const timingStart = Number(structureStart);
+    const timingEnd = Number(structureEnd);
+    const timingInputsValid = Number.isFinite(timingStart)
+        && Number.isFinite(timingEnd)
+        && timingStart >= 0
+        && timingEnd > timingStart;
+    const timingChanged = Boolean(selectedSegments[0])
+        && (Math.abs(timingStart - selectedSegments[0].start) >= 0.0005 || Math.abs(timingEnd - selectedSegments[0].end) >= 0.0005);
+    const structureSubmitDisabled = structureBusy || (structureEditMode === "split" && !splitInputsValid)
+        || (structureEditMode === "merge" && !mergeCandidatesAdjacent)
+        || (structureEditMode === "timing" && (!timingInputsValid || !timingChanged))
+        || (structureEditMode === "offset" && (!Number.isFinite(Number(structureDelta)) || Number(structureDelta) === 0));
     useEffect(() => {
         const segmentIds = new Set(project?.transcript.segments.map((segment) => segment.id) ?? []);
         setSelectedSegmentIds((current) => {
@@ -624,6 +522,22 @@ function App() {
     const selectedTranslation = selectedSubtitleLanguage ? project?.translations[selectedSubtitleLanguage] : undefined;
     const translation = selectedTranslation ? [selectedSubtitleLanguage, selectedTranslation] as const : undefined;
     const selectedTranslationPending = Boolean(selectedSubtitleLanguage && !selectedTranslation);
+    const capabilities = useMemo(() => getProjectCapabilities(project, {
+        mediaUrl,
+        modelPath,
+        translationTarget: subtitleLanguage,
+        agentWorkflowKind,
+    }), [agentWorkflowKind, mediaUrl, modelPath, project, subtitleLanguage]);
+    const mediaCapabilityTitle = capabilities.hasBoundMedia ? undefined : tr("app.capability.mediaRequired");
+    const transcribeCapabilityTitle = !capabilities.hasBoundMedia
+        ? tr("app.capability.mediaRequired")
+        : !capabilities.hasModel ? tr("app.capability.modelRequired") : undefined;
+    const agentCapabilityTitle = !capabilities.hasBoundMedia
+        ? tr("app.capability.mediaRequired")
+        : !capabilities.hasTranscript
+            ? tr("app.capability.transcriptRequired")
+            : agentWorkflowKind === "translate" && !capabilities.hasTranslationTarget
+                ? tr("app.capability.translationTargetRequired") : undefined;
     const selectedTranslationText = selectedTranslation?.segments.find((segment) => segment.segmentId === selected?.id)?.text ?? "";
     const captionPrimaryText = subtitleMode === "translated" ? selectedTranslationText : selected?.text ?? "";
     const captionSecondaryText = subtitleMode === "bilingual" ? selectedTranslationText : "";
@@ -787,6 +701,7 @@ function App() {
         if (!envelope.project)
             throw new Error(tr("app.s0079"));
         videoRef.current?.pause();
+        setPlayback({ playing: false, currentTime: 0, duration: envelope.project.media.durationSeconds ?? 0 });
         setProjects((current) => [envelope.project!, ...current.filter((item) => item.id !== envelope.project!.id)]);
         setProject(envelope.project);
         setSelectedId(null);
@@ -804,6 +719,8 @@ function App() {
     const switchProject = (projectId: string) => {
         if (project?.id === projectId)
             return;
+        setNotice(null);
+        setError(null);
         void withBusy(tr("app.s0081"), async () => {
             await refreshProject(projectId, true);
         });
@@ -831,6 +748,7 @@ function App() {
             setDeleteCandidate(null);
             if (project?.id === deleting.id) {
                 videoRef.current?.pause();
+                setPlayback({ playing: false, currentTime: 0, duration: 0 });
                 setProject(null);
                 setSelectedId(null);
                 setMediaUrl(null);
@@ -870,7 +788,7 @@ function App() {
         const url = sourceUrl.trim();
         if (!runtime?.ytDlpConfigured)
             throw new Error(tr("app.s0084"));
-        if (!url)
+        if (!isHttpsSourceUrl(url))
             throw new Error(tr("app.s0085"));
         const envelope = await runCore(["source", "inspect", url]);
         if (!envelope.source)
@@ -1005,6 +923,8 @@ function App() {
         setNotice(tr("app.s0119"));
     });
     const transcribe = () => project && withBusy(tr("app.s0120"), async () => {
+        if (!capabilities.hasBoundMedia)
+            throw new Error(tr("app.capability.mediaRequired"));
         if (!runtime?.ffmpegConfigured)
             throw new Error(tr("app.s0121"));
         if (!runtime?.asrConfigured)
@@ -1016,6 +936,8 @@ function App() {
         setNotice(Number(result.segments ?? 0) === 0 ? tr("app.s0124") : tr("app.s0125"));
     });
     const startAudioAnalysis = () => project && withBusy(tr("app.s0126"), async () => {
+        if (!capabilities.hasBoundMedia)
+            throw new Error(tr("app.capability.mediaRequired"));
         if (!runtime?.ffmpegConfigured)
             throw new Error(tr("app.s0121"));
         const envelope = await runCore(["speech", "audio-start", project.id]);
@@ -1106,9 +1028,10 @@ function App() {
         await refreshProject(project.id);
         setNotice(tr("app.s0154"));
     });
-    const replaceAll = () => project && search && withBusy(tr("app.s0155"), async () => {
+    const replaceAll = () => project && search && (replacement || emptyReplacementConfirmed) && withBusy(tr("app.s0155"), async () => {
         const result = await runCore(["transcript", "replace", project.id, "--find", search, "--replace", replacement]);
         await refreshProject(project.id);
+        setEmptyReplacementConfirmed(false);
         setNotice(Number(result.changedSegments ?? 0) === 0 ? tr("app.s0156") : tr("app.s0157", { "0": result.changedSegments }));
     });
     const openStructureEdit = (mode: StructureEditMode) => {
@@ -1150,6 +1073,8 @@ function App() {
                 const at = Number(structureStart);
                 if (!Number.isInteger(textOffset) || textOffset <= 0 || !Number.isFinite(at))
                     throw new Error(tr("app.s0158"));
+                if (!hasMeaningfulSubtitleText(splitLeftText) || !hasMeaningfulSubtitleText(splitRightText))
+                    throw new Error(tr("app.structure.splitMeaningful"));
                 args = ["transcript", "split", project.id, selectedSegments[0].id, "--text-offset", String(textOffset), "--at", String(at)];
             }
             else if (structureEditMode === "merge") {
@@ -1162,6 +1087,8 @@ function App() {
                 const end = Number(structureEnd);
                 if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start)
                     throw new Error(tr("app.s0160"));
+                if (!timingChanged)
+                    throw new Error(tr("app.structure.timingUnchanged"));
                 args = ["transcript", "timing", project.id, selectedSegments[0].id, "--start", String(start), "--end", String(end)];
             }
             else {
@@ -1282,10 +1209,15 @@ function App() {
         return ["--subtitle-mode", subtitleMode, "--lang", selectedSubtitleLanguage];
     };
     const changeCanvas = (settings: CanvasSettings) => project && withBusy(tr("app.s0178"), async () => {
-        await runCore(["canvas", "set", project.id, "--aspect-ratio", settings.aspectRatio, "--framing", settings.framing]);
-        await refreshProject(project.id);
-        setMediaUrl(await authorizeMedia(project.id));
-        setNotice(settings.aspectRatio === "9:16" ? tr("app.s0179") : tr("app.s0180"));
+        const envelope = await runCore(["canvas", "set", project.id, "--aspect-ratio", settings.aspectRatio, "--framing", settings.framing]);
+        if (!envelope.project)
+            throw new Error(tr("app.canvas.projectMissing"));
+        setProject(envelope.project);
+        setProjects((current) => current.map((item) => item.id === envelope.project!.id ? envelope.project! : item));
+        const authorization = await resolveCanvasMedia(project.id);
+        setMediaUrl(authorization.mediaUrl);
+        const savedNotice = settings.aspectRatio === "9:16" ? tr("app.s0179") : tr("app.s0180");
+        setNotice(authorization.warning ? `${savedNotice} ${tr("app.canvas.previewUnavailable")}` : savedNotice);
     });
     const changeSubtitleStyle = (preset: Project["subtitleStyle"]["preset"], position: Project["subtitleStyle"]["position"]) => project && withBusy(tr("app.s0181"), async () => {
         const envelope = await runCore(["transcript", "set-style", project.id, "--preset", preset, "--position", position]);
@@ -1296,11 +1228,15 @@ function App() {
         setNotice(tr("app.s0183"));
     });
     const preparePreview = () => project && withBusy(tr("app.s0184"), async () => {
+        if (!capabilities.hasBoundMedia)
+            throw new Error(tr("app.capability.mediaRequired"));
         await runCore(["media", "prepare", project.id]);
         await refreshProject(project.id, true);
         setNotice(tr("app.s0185"));
     });
     const exportVideo = () => project && withBusy(tr("app.s0186"), async () => {
+        if (!capabilities.hasBoundMedia)
+            throw new Error(tr("app.capability.mediaRequired"));
         const output = await pickVideoPath(project.title);
         if (!output)
             return;
@@ -1389,6 +1325,21 @@ function App() {
         const cut = project.timeline.cuts.find((candidate) => video.currentTime >= candidate.sourceStart && video.currentTime < candidate.sourceEnd - 0.01);
         if (cut)
             video.currentTime = cut.sourceEnd;
+        setPlayback((current) => ({
+            ...current,
+            currentTime: video.currentTime,
+            duration: Number.isFinite(video.duration) ? video.duration : current.duration,
+        }));
+    };
+    const handleVideoLoadedMetadata = (event: SyntheticEvent<HTMLVideoElement>) => {
+        // React clears SyntheticEvent.currentTarget after this callback returns. Capture the
+        // DOM value before entering a state updater, which React may invoke later.
+        const mediaDuration = event.currentTarget.duration;
+        const fallbackDuration = project?.media.durationSeconds;
+        setPlayback((current) => ({
+            ...current,
+            duration: resolvePlaybackDuration(mediaDuration, fallbackDuration),
+        }));
     };
     const restoreVersion = (versionId: string) => project && withBusy(tr("app.s0207"), async () => {
         await runCore(["project", "restore", project.id, versionId]);
@@ -1406,6 +1357,16 @@ function App() {
         setNotice(action === "undo" ? tr("app.s0212") : tr("app.s0213"));
     });
     useEffect(() => {
+        if (!showMoreMenu)
+            return;
+        const closeOnOutsidePointer = (event: PointerEvent) => {
+            if (!commandMoreRef.current?.contains(event.target as Node))
+                setShowMoreMenu(false);
+        };
+        document.addEventListener("pointerdown", closeOnOutsidePointer);
+        return () => document.removeEventListener("pointerdown", closeOnOutsidePointer);
+    }, [showMoreMenu]);
+    useEffect(() => {
         const handleShortcut = (event: KeyboardEvent) => {
             const target = event.target;
             const modifier = event.ctrlKey || event.metaKey;
@@ -1415,6 +1376,7 @@ function App() {
             if (event.key === "Escape" && showMoreMenu) {
                 event.preventDefault();
                 setShowMoreMenu(false);
+                commandMoreRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
                 return;
             }
             if (!dialogOpen && modifier && key === "f") {
@@ -1531,6 +1493,12 @@ function App() {
         setNotice(tr("app.s0221"));
     });
     const createAgentTask = () => project && withBusy(tr("app.s0222"), async () => {
+        if (!capabilities.hasBoundMedia)
+            throw new Error(tr("app.capability.mediaRequired"));
+        if (!capabilities.hasTranscript)
+            throw new Error(tr("app.capability.transcriptRequired"));
+        if (agentWorkflowKind === "translate" && !capabilities.hasTranslationTarget)
+            throw new Error(tr("app.capability.translationTargetRequired"));
         await runCore([
             "workflow", "create", project.id,
             "--kind", agentWorkflowKind,
@@ -1538,7 +1506,12 @@ function App() {
             ...(agentWorkflowKind === "translate" ? ["--lang", subtitleLanguage] : []),
         ]);
         await refreshProject(project.id);
-        setNotice(tr("app.s0223"));
+        setNotice({
+            polish: tr("app.workflow.created.polish"),
+            proofread: tr("app.workflow.created.proofread"),
+            edit: tr("app.workflow.created.edit"),
+            translate: tr("app.workflow.created.translate", { language: subtitleLanguage.toUpperCase() }),
+        }[agentWorkflowKind]);
     });
     const updateTask = (taskId: string, action: "retry" | "cancel") => project && withBusy(action === "retry" ? tr("app.s0224") : tr("app.s0225"), async () => {
         await runCore(["task", action, taskId]);
@@ -1555,6 +1528,17 @@ function App() {
         await refreshProject(project.id);
         setNotice(action === "apply" ? tr("app.s0234") : tr("app.s0235"));
     });
+    const inspectorTabs = ["segment", "analysis", "history"] as const;
+    const changeInspectorTabFromKeyboard = (event: ReactKeyboardEvent<HTMLButtonElement>, tab: typeof inspectorTabs[number]) => {
+        if (event.key !== "ArrowLeft" && event.key !== "ArrowRight")
+            return;
+        event.preventDefault();
+        const currentIndex = inspectorTabs.indexOf(tab);
+        const direction = event.key === "ArrowRight" ? 1 : -1;
+        const nextTab = inspectorTabs[(currentIndex + direction + inspectorTabs.length) % inspectorTabs.length];
+        setInspectorTab(nextTab);
+        requestAnimationFrame(() => document.getElementById(`inspector-tab-${nextTab}`)?.focus());
+    };
     return (<main className="app-shell">
       <aside className="rail">
         <div className="brand"><span className="brand-mark">S</span><span>SiaoCut</span></div>
@@ -1567,7 +1551,7 @@ function App() {
         <nav aria-label={tr("app.s0240")}>
           {projects.map((item) => (<div className={`project-entry ${project?.id === item.id ? "active" : ""}`} key={item.id}>
               <button className="project-link" onClick={() => switchProject(item.id)}>
-                <span className="project-dot"/><span><strong>{item.title}</strong><small>{item.transcript.segments.length}{tr("app.s0241")}</small></span><ChevronRight size={14}/>
+                <span className="project-dot"/><span><strong>{item.title}</strong><small>{subtitleCountLabel(item.transcript.segments.length)}</small></span><ChevronRight size={14}/>
               </button>
               <button className="project-delete" aria-label={tr("app.s0242", { "0": item.title })} title={tr("app.s0243")} onClick={() => openDeleteDialog(item)}><Trash2 size={14}/></button>
             </div>))}
@@ -1588,31 +1572,31 @@ function App() {
               <IconButton label={tr("app.s0252")} shortcut="Ctrl+Shift+Z" disabled={!project?.history.canRedo || Boolean(busy)} onClick={() => navigateHistory("redo")}><Redo2 size={15}/></IconButton>
             </div>
             <label className="command-select"><span>{tr("app.transcription.language")}</span><select aria-label={tr("app.transcription.language")} value={transcriptionLanguage} onChange={(event) => selectTranscriptionLanguage(event.target.value as TranscriptionLanguage)}><option value="auto">{tr("app.transcription.auto")}</option><option value="en">{tr("app.transcription.english")}</option><option value="zh">{tr("app.transcription.chinese")}</option></select></label>
-            <Button disabled={!project || Boolean(busy)} onClick={transcribe}><RefreshCw size={15}/>{tr("app.s0253")}</Button>
-            <Button className="rough-cut-command" disabled={!project?.transcript.words.length || Boolean(busy)} onClick={detectSuggestions}><Scissors size={15}/>{tr("app.s0254")}</Button>
-            <div className="agent-command"><select aria-label={tr("app.workflow.label")} value={agentWorkflowKind} onChange={(event) => setAgentWorkflowKind(event.target.value as typeof agentWorkflowKind)}><option value="polish">{tr("app.workflow.polish")}</option><option value="proofread">{tr("app.workflow.proofread")}</option><option value="edit">{tr("app.workflow.edit")}</option><option value="translate">{tr("app.workflow.translate")}</option></select><Button variant="agent" disabled={!project || Boolean(busy)} onClick={createAgentTask}><Bot size={15}/>{tr("app.s0255")}</Button></div>
-            <div className="command-more">
+            <Button disabled={!capabilities.canTranscribe || Boolean(busy)} title={transcribeCapabilityTitle} onClick={transcribe}><RefreshCw size={15}/>{tr("app.s0253")}</Button>
+            <div className="agent-command"><select aria-label={tr("app.workflow.label")} value={agentWorkflowKind} onChange={(event) => setAgentWorkflowKind(event.target.value as typeof agentWorkflowKind)}><option value="polish">{tr("app.workflow.polish")}</option><option value="proofread">{tr("app.workflow.proofread")}</option><option value="edit">{tr("app.workflow.edit")}</option><option value="translate">{tr("app.workflow.translate")}</option></select>{agentWorkflowKind === "translate" && <select className="agent-language" aria-label={tr("app.workflow.targetLanguage")} value={subtitleLanguage} onChange={(event) => setSubtitleLanguage(event.target.value)}><option value="en">EN</option><option value="zh">ZH</option><option value="ja">JA</option><option value="ko">KO</option></select>}<Button variant="agent" disabled={!capabilities.canCreateAgentTask || Boolean(busy)} title={agentCapabilityTitle} onClick={createAgentTask}><Bot size={15}/>{tr("app.s0255")}</Button></div>
+            <div className="command-more" ref={commandMoreRef}>
               <IconButton label={tr("app.s0256")} onClick={() => setShowMoreMenu((current) => !current)}><MoreHorizontal size={17}/></IconButton>
               {showMoreMenu && <div className="command-menu" role="menu">
-                <button role="menuitem" disabled={!project || Boolean(busy)} onClick={() => { setShowMoreMenu(false); void preparePreview(); }}><Film size={14}/>{tr("app.s0257")}</button>
-                <button role="menuitem" disabled={!project || Boolean(busy)} onClick={() => { setShowMoreMenu(false); void relinkMedia(); }}><Link2 size={14}/>{tr("app.s0258")}</button>
+                <button role="menuitem" disabled={!project?.transcript.words.length || Boolean(busy)} onClick={() => { setShowMoreMenu(false); void detectSuggestions(); }}><Scissors size={14}/>{tr("app.s0254")}</button>
+                <button role="menuitem" disabled={!capabilities.canPreparePreview || Boolean(busy)} title={mediaCapabilityTitle} onClick={() => { setShowMoreMenu(false); void preparePreview(); }}><Film size={14}/>{tr("app.s0257")}</button>
+                <button role="menuitem" disabled={!capabilities.canRelinkMedia || Boolean(busy)} onClick={() => { setShowMoreMenu(false); void relinkMedia(); }}><Link2 size={14}/>{tr("app.s0258")}</button>
               </div>}
             </div>
             <div className="export-split">
-              <Button ref={exportButtonRef} variant="primary" className="export-main" disabled={!project || Boolean(busy) || selectedTranslationPending || Boolean(activeExport && ["queued", "running"].includes(activeExport.status))} onClick={exportVideo}><Download size={15}/>{tr("app.s0259")}</Button>
+              <Button ref={exportButtonRef} variant="primary" className="export-main" disabled={!capabilities.canExportVideo || Boolean(busy) || selectedTranslationPending || Boolean(activeExport && ["queued", "running"].includes(activeExport.status))} title={mediaCapabilityTitle} onClick={exportVideo}><Download size={15}/>{tr("app.s0259")}</Button>
               <button className="export-settings" aria-label={tr("app.s0260")} title={tr("app.s0261")} disabled={!project} onClick={() => setShowExportPanel(true)}><ChevronDown size={15}/></button>
             </div>
           </div>
         </header>
 
-        {(notice || error) && <div className={`notice ${error ? "error" : ""}`} role="status">{error && <CircleAlert size={15}/>}<span>{error ? tr("app.error.unknownSummary") : notice}</span>{error && <details><summary>{tr("app.error.technicalDetails")}</summary><code>{error}</code></details>}{error && <button className="notice-action" onClick={() => void initialize()}>{tr("app.s0262")}</button>}<button aria-label={tr("app.s0263")} title={tr("app.s0263")} onClick={() => { setNotice(null); setError(null); }}>×</button></div>}
-        {busy && <div className="progress-strip"><LoaderCircle size={14} className="spin"/>{busy}</div>}
+        {(notice || error) && <div className={`notice ${error ? "error" : ""}`} role="status" aria-live="polite">{error && <CircleAlert size={15}/>}<span>{error ? tr("app.error.unknownSummary") : notice}</span>{error && <details><summary>{tr("app.error.technicalDetails")}</summary><code>{error}</code></details>}{error && <button className="notice-action" onClick={() => void initialize()}>{tr("app.s0262")}</button>}<button aria-label={tr("app.s0263")} title={tr("app.s0263")} onClick={() => { setNotice(null); setError(null); }}>×</button></div>}
+        {busy && <div className="progress-strip" role="status" aria-live="polite"><LoaderCircle size={14} className="spin"/>{busy}</div>}
         {activeExport && ["queued", "running"].includes(activeExport.status) && <div className="export-progress" role="status"><Film size={15}/><span>{tr("app.s0264") + " "}{Math.round(activeExport.progress * 100)}%</span><progress value={activeExport.progress} max={1}/><button onClick={cancelExport}>{tr("app.s0265")}</button></div>}
-        {activeExport && ["failed", "interrupted"].includes(activeExport.status) && <div className="export-progress interrupted" role="status"><CircleAlert size={15}/><span>{activeExport.status === "interrupted" ? tr("app.s0266") : tr("app.s0267")}</span><small>{activeExport.errorMessage ?? tr("app.s0268")}</small><button onClick={retryExport}>{tr("app.s0269")}</button></div>}
+        {activeExport && ["failed", "interrupted"].includes(activeExport.status) && <div className="export-progress interrupted" role="status"><CircleAlert size={15}/><span>{activeExport.status === "interrupted" ? tr("app.s0266") : tr("app.s0267")}</span><JobFailureDetails context="export" status={activeExport.status} errorCode={activeExport.errorCode} errorMessage={activeExport.errorMessage}/><button onClick={retryExport}>{tr("app.s0269")}</button></div>}
         {sourceJob && !showSourceImport && ["queued", "running", "finalizing"].includes(sourceJob.status) && <div className="source-progress" role="status"><Link2 size={15}/><span><strong>{sourceStatusLabel(sourceJob.status)} · {Math.round(sourceJob.progress * 100)}%</strong><small>{sourceJob.title}</small></span><progress value={sourceJob.progress} max={1}/><button onClick={() => setShowSourceImport(true)}>{tr("app.s0270")}</button></div>}
         {autoWorkflow && <section className={`auto-progress ${autoWorkflow.status}`} aria-label={tr("app.s0271")}>
           <Sparkles size={17}/>
-          <span className="auto-progress-copy"><strong>{autoStatusLabel(autoWorkflow.status)} · {autoStageLabel(autoWorkflow.currentStage)}</strong><small>{!autoWorkflow.projectId && ["needs_agent", "needs_review"].includes(autoWorkflow.status) ? tr("app.s0272") : autoWorkflow.status === "needs_agent" ? tr("app.s0273") : autoWorkflow.status === "needs_review" ? tr("app.s0274") : autoWorkflow.errorMessage ?? autoWorkflow.outputPath}</small></span>
+          <div className="auto-progress-copy"><strong>{autoStatusLabel(autoWorkflow.status)} · {autoStageLabel(autoWorkflow.currentStage)}</strong>{["failed", "interrupted"].includes(autoWorkflow.status) ? <JobFailureDetails context="auto" status={autoWorkflow.status} errorCode={autoWorkflow.errorCode} errorMessage={autoWorkflow.errorMessage}/> : <small>{!autoWorkflow.projectId && ["needs_agent", "needs_review"].includes(autoWorkflow.status) ? tr("app.s0272") : autoWorkflow.status === "needs_agent" ? tr("app.s0273") : autoWorkflow.status === "needs_review" ? tr("app.s0274") : autoWorkflow.outputPath}</small>}</div>
           <progress value={autoWorkflow.progress} max={1} aria-label={tr("app.s0275")}/>
           <span className="auto-progress-percent">{Math.round(autoWorkflow.progress * 100)}%</span>
           <div className="auto-progress-actions">
@@ -1622,7 +1606,7 @@ function App() {
             {["failed", "interrupted"].includes(autoWorkflow.status) && <button className="primary" disabled={Boolean(autoBusy)} onClick={() => void continueAutoWorkflow()}>{tr("app.s0279")}</button>}
             {["completed", "cancelled"].includes(autoWorkflow.status) && <button onClick={() => setShowAutoWorkflow(true)}>{tr("app.s0280")}</button>}
           </div>
-          {autoError && <p className="auto-progress-error" role="alert">{autoError}</p>}
+          {autoError && <JobFailureDetails className="auto-progress-error" context="auto" status="failed" errorMessage={autoError}/>}
         </section>}
 
         {!project ? (<section className="welcome-card">
@@ -1635,14 +1619,14 @@ function App() {
             <section className="stage-grid">
               <article className="video-panel">
                 <div className="video-frame">
-                  {mediaUrl ? <video key={project.id} ref={videoRef} src={mediaUrl} controls preload="metadata" onTimeUpdate={handleVideoTimeUpdate}/> : <div className="video-placeholder"><Play size={30}/><span>{tr("app.s0286")}</span></div>}
+                  {mediaUrl ? <video key={project.id} ref={videoRef} src={mediaUrl} controls preload="metadata" onLoadedMetadata={handleVideoLoadedMetadata} onPlay={() => setPlayback((current) => ({ ...current, playing: true }))} onPause={() => setPlayback((current) => ({ ...current, playing: false }))} onTimeUpdate={handleVideoTimeUpdate}/> : <div className="video-placeholder"><Play size={30}/><span>{tr("app.s0286")}</span></div>}
                   {showSubtitleSafeArea && <div className="subtitle-safe-area" aria-label={tr("app.s0287")} style={{ inset: `${project.subtitleStyle.safeMarginPercent}% 6%` }}/>}
                   {selected && captionPrimaryText && <div className={`caption-overlay ${project.subtitleStyle.position}`} data-preset={project.subtitleStyle.preset} data-position={project.subtitleStyle.position} data-outline-width={project.subtitleStyle.outlineWidth} style={captionPreviewStyle}>
                     <span className="caption-primary">{captionPrimaryText}</span>
                     {captionSecondaryText && <span className="caption-secondary" style={{ color: project.subtitleStyle.secondaryColor, fontSize: `${Math.max(12, Math.round(project.subtitleStyle.secondaryFontSize * 0.36))}px` }}>{captionSecondaryText}</span>}
                   </div>}
                 </div>
-                <div className="transport-summary"><Clock3 size={14}/><span>{selected ? `${formatTime(selected.start)} — ${formatTime(selected.end)}` : tr("app.s0288")}</span><button className="relink-media" onClick={relinkMedia}>{tr("app.s0258")}</button><span className="shortcut-hint">{tr("app.s0289")}</span><span className="spacer"/><span>{tr("app.composite.timelineSummary", { output: formatTime(project.timeline.outputDuration), source: formatTime(project.timeline.sourceDuration) })}</span></div>
+                <div className="transport-summary"><Clock3 size={14}/><span>{selected ? `${formatTime(selected.start)} — ${formatTime(selected.end)}` : tr("app.s0288")}</span><span className="playback-state" role="status" aria-live="polite" aria-label={tr("app.playback.status")}>{playback.playing ? tr("app.playback.playing") : tr("app.playback.paused")} · {formatTime(playback.currentTime)} / {formatTime(playback.duration || project.media.durationSeconds || 0)}</span><button className="relink-media" onClick={relinkMedia}>{tr("app.s0258")}</button><span className="shortcut-hint">{tr("app.s0289")}</span><span className="spacer"/><span>{tr("app.composite.timelineSummary", { output: formatTime(project.timeline.outputDuration), source: formatTime(project.timeline.sourceDuration) })}</span></div>
                 {audioRisks.length > 0 && <div className="audio-risk-strip" role="status"><CircleAlert size={14}/><strong>{tr("app.composite.audioRiskCount", { count: audioRisks.length })}</strong><span>{audioRiskLabel(audioRisks[0].kind)} · {formatTime(audioRisks[0].start)}</span><button onClick={() => locateAudioRisk(audioRisks[0])}>{tr("app.s0293")}</button></div>}
               </article>
 
@@ -1657,11 +1641,11 @@ function App() {
                   </section>)}
                   {pendingEdits.map((edit) => <article className="review-item" key={edit.id}><span className="review-tag">{tr("app.composite.reviewSuggestion", { kind: cutSuggestionLabel(edit.suggestion?.suggestionType) })}</span><strong>{editReasonLabel(edit)}</strong><p>{edit.suggestion ? tr("app.composite.suggestionEvidence", { range: `${formatTime(edit.start)} — ${formatTime(edit.end)}`, confidence: Math.round(edit.suggestion.confidence * 100) }) : `${formatTime(edit.start)} — ${formatTime(edit.end)} ${tr("app.s0302")}`}</p><div className="cut-actions"><button onClick={() => selectSegment(project.transcript.segments.find((segment) => segment.id === edit.segmentId)!)}>{tr("app.s0303")}</button>{edit.kind === "word_cut" && <button onClick={() => previewCut(edit.id)}><Headphones size={11}/>{tr("app.s0304")}</button>}<button onClick={() => updateCut(edit.id, "apply")}>{tr("app.s0305")}</button></div></article>)}
                   {audioRisks.map((risk, index) => <article className="review-item audio-risk-item" key={`${risk.kind}-${risk.start}-${index}`}><span className="review-tag warning"><CircleAlert size={12}/>{tr("app.s0306")}</span><strong>{audioRiskLabel(risk.kind)}</strong><p>{tr("app.composite.audioRiskEvidence", { range: `${formatTime(risk.start)} — ${formatTime(risk.end)}`, measured: risk.measuredValue, threshold: risk.threshold, unit: audioUnitLabel(risk.unit) })}</p><button onClick={() => locateAudioRisk(risk)}>{tr("app.s0309")}</button></article>)}
-                  {audioAnalysisJob && ["failed", "interrupted"].includes(audioAnalysisJob.status) && <article className="review-item task-item failure"><span className="review-tag failure"><CircleAlert size={12}/>{tr("app.s0310")}{audioAnalysisJob.status === "interrupted" ? tr("app.s0018") : tr("app.s0311")}</span><strong>{tr("app.s0312")}</strong><p>{audioAnalysisJob.errorMessage ?? tr("app.s0313")}</p><button onClick={resumeAudioAnalysis}><RefreshCw size={11}/>{tr("app.s0279")}</button></article>}
+                  {audioAnalysisJob && ["failed", "interrupted"].includes(audioAnalysisJob.status) && <article className="review-item task-item failure"><span className="review-tag failure"><CircleAlert size={12}/>{tr("app.s0310")}{audioAnalysisJob.status === "interrupted" ? tr("app.s0018") : tr("app.s0311")}</span><strong>{tr("app.s0312")}</strong><JobFailureDetails context="audio" status={audioAnalysisJob.status} errorCode={audioAnalysisJob.errorCode} errorMessage={audioAnalysisJob.errorMessage}/><button onClick={resumeAudioAnalysis}><RefreshCw size={11}/>{tr("app.s0279")}</button></article>}
                   {audioAnalysisJob && ["queued", "running"].includes(audioAnalysisJob.status) && <article className="review-item task-item processing"><span className="review-tag info"><Activity size={12}/>{tr("app.s0314")}</span><strong>{tr("app.s0315")}</strong><p>{Math.round(audioAnalysisJob.progress * 100)}{tr("app.s0316")}</p><button disabled={Boolean(audioAnalysisJob.cancelRequestedAt)} onClick={cancelAudioAnalysis}>{audioAnalysisJob.cancelRequestedAt ? tr("app.s0317") : tr("app.s0318")}</button></article>}
-                  {projectSpeakerJob && ["failed", "interrupted"].includes(projectSpeakerJob.status) && <article className="review-item task-item failure"><span className="review-tag failure"><CircleAlert size={12}/>{tr("app.s0319")}{projectSpeakerJob.status === "interrupted" ? tr("app.s0018") : tr("app.s0311")}</span><strong>{tr("app.s0320")}</strong><p>{projectSpeakerJob.errorMessage ?? tr("app.s0321")}</p><button onClick={resumeSpeakerJob}><RefreshCw size={11}/>{tr("app.s0279")}</button></article>}
+                  {projectSpeakerJob && ["failed", "interrupted"].includes(projectSpeakerJob.status) && <article className="review-item task-item failure"><span className="review-tag failure"><CircleAlert size={12}/>{tr("app.s0319")}{projectSpeakerJob.status === "interrupted" ? tr("app.s0018") : tr("app.s0311")}</span><strong>{tr("app.s0320")}</strong><JobFailureDetails context="speaker" status={projectSpeakerJob.status} errorCode={projectSpeakerJob.errorCode} errorMessage={projectSpeakerJob.errorMessage}/><button onClick={resumeSpeakerJob}><RefreshCw size={11}/>{tr("app.s0279")}</button></article>}
                   {projectSpeakerJob && ["queued", "running"].includes(projectSpeakerJob.status) && <article className="review-item task-item processing"><span className="review-tag info"><Users size={12}/>{tr("app.s0314")}</span><strong>{tr("app.s0322")}</strong><p>{projectSpeakerJob.stage} · {Math.round(projectSpeakerJob.progress * 100)}{tr("app.s0323")}</p><button onClick={cancelSpeakerJob}>{tr("app.s0318")}</button></article>}
-                  {failedTasks.map((task) => <article className="review-item task-item failure" key={task.id}><span className="review-tag failure"><CircleAlert size={12}/>Agent {task.status === "interrupted" ? tr("app.s0018") : tr("app.s0324")}</span><strong>{task.kind}</strong><p>{Math.round(task.progress * 100)}%{task.errorMessage ? ` · ${task.errorMessage}` : ""}</p><button onClick={() => updateTask(task.id, "retry")}><RefreshCw size={11}/>{tr("app.s0325")}</button></article>)}
+                  {failedTasks.map((task) => <article className="review-item task-item failure" key={task.id}><span className="review-tag failure"><CircleAlert size={12}/>Agent {task.status === "interrupted" ? tr("app.s0018") : tr("app.s0324")}</span><strong>{task.kind} · {Math.round(task.progress * 100)}%</strong><JobFailureDetails context="agent" status={task.status} errorCode={task.errorCode} errorMessage={task.errorMessage}/><button onClick={() => updateTask(task.id, "retry")}><RefreshCw size={11}/>{tr("app.s0325")}</button></article>)}
                   {processingTasks.map((task) => <article className="review-item task-item processing" key={task.id}><span className="review-tag agent"><Bot size={12}/>{task.status === "queued" ? tr("app.s0326") : tr("app.s0327")}</span><strong>{task.kind}</strong><p>{Math.round(task.progress * 100)}%</p><button onClick={() => updateTask(task.id, "cancel")}>{tr("app.s0328")}</button></article>)}
                   {actionableReviewCount === 0 && processingTasks.length === 0 && !audioAnalysisJob?.status.match(/queued|running|failed|interrupted/) && !projectSpeakerJob?.status.match(/queued|running|failed|interrupted/) && <div className="all-clear"><Check size={20}/><span>{tr("app.s0329")}</span></div>}
                   {recentTasks.length > 0 && <details className="review-history"><summary>{tr("app.s0330") + " "}{recentTasks.length}</summary><div>{recentTasks.map((task) => <article className="review-item recent" key={task.id}><span className="review-tag success"><Check size={12}/>{task.status === "completed" ? tr("app.s0032") : tr("app.s0017")}</span><strong>{task.kind}</strong><p>{Math.round(task.progress * 100)}%</p></article>)}</div></details>}
@@ -1672,8 +1656,8 @@ function App() {
 
             <section className="editor-grid">
               <article className="transcript-panel">
-                <header className="panel-header"><div><p className="eyebrow">{tr("app.s0332")}</p><h2>{tr("app.s0253")}</h2></div><div className="find-replace"><button ref={subtitleImportButtonRef} className="subtitle-import-command" disabled={Boolean(busy)} onClick={openSubtitleImport}><FileText size={12}/>{tr("app.s0333")}</button><button className="detect-suggestions" disabled={!project.transcript.words.length || Boolean(busy)} onClick={detectSuggestions}><Scissors size={12}/>{tr("app.s0334")}</button><label className="search"><Search size={14}/><input ref={searchInputRef} value={search} onChange={(event) => setSearch(event.target.value)} placeholder={tr("app.s0335")} title="Ctrl+F"/></label><input ref={replacementInputRef} aria-label={tr("app.s0336")} value={replacement} onChange={(event) => setReplacement(event.target.value)} placeholder={tr("app.s0336")} title="Ctrl+H"/><button disabled={!search || Boolean(busy)} onClick={replaceAll}>{tr("app.s0337")}</button></div></header>
-                <div className="transcript-meta"><span>{tr("app.s0338")}</span><span>{tr("app.composite.transcriptStats", { language: project.transcript.sourceLanguage.toUpperCase(), segments: project.transcript.segments.length, words: project.transcript.words.length })}</span></div>
+                <header className="panel-header"><div><p className="eyebrow">{tr("app.s0332")}</p><h2>{tr("app.s0253")}</h2></div><div className="find-replace"><button ref={subtitleImportButtonRef} className="subtitle-import-command" disabled={Boolean(busy)} onClick={openSubtitleImport}><FileText size={12}/>{tr("app.s0333")}</button><button className="detect-suggestions" disabled={!project.transcript.words.length || Boolean(busy)} onClick={detectSuggestions}><Scissors size={12}/>{tr("app.s0334")}</button><label className="search"><Search size={14}/><input ref={searchInputRef} value={search} onChange={(event) => { setSearch(event.target.value); setEmptyReplacementConfirmed(false); }} placeholder={tr("app.s0335")} title="Ctrl+F"/></label><input ref={replacementInputRef} aria-label={tr("app.s0336")} value={replacement} onChange={(event) => { setReplacement(event.target.value); setEmptyReplacementConfirmed(false); }} placeholder={tr("app.s0336")} title="Ctrl+H"/>{search && <span className="replace-match-count">{tr("app.replace.matches", { count: replaceMatchCount })}</span>}{search && !replacement && <label className="replace-empty-confirm"><input type="checkbox" checked={emptyReplacementConfirmed} onChange={(event) => setEmptyReplacementConfirmed(event.target.checked)}/><span>{tr("app.replace.confirmDelete")}</span></label>}<button disabled={!search || (!replacement && !emptyReplacementConfirmed) || Boolean(busy)} onClick={replaceAll}>{tr("app.s0337")}</button></div></header>
+                <div className="transcript-meta"><span>{tr("app.s0338")}</span><span>{tr("app.composite.transcriptStats", { language: project.transcript.sourceLanguage.toUpperCase(), segments: segmentCountLabel(project.transcript.segments.length), words: wordCountLabel(project.transcript.words.length) })}</span></div>
                 <section className="subtitle-workbench-toolbar" aria-label={tr("app.s0341")}>
                   <div className="subtitle-selection-summary"><ListChecks size={15}/><span><strong>{selectedScopeLabel}</strong><small>{tr("app.s0342")}</small></span></div>
                   <div className="subtitle-selection-controls">
@@ -1711,13 +1695,16 @@ function App() {
               </article>
 
               <aside className="context-panel">
-                <p className="eyebrow">{tr("app.s0368")}</p><h2>{selected?.text ?? tr("app.s0369")}</h2>
-                <dl><div><dt>{tr("app.s0354")}</dt><dd>{selected ? `${formatTime(selected.start)} — ${formatTime(selected.end)}` : "—"}</dd></div><div><dt>{tr("app.s0370")}</dt><dd>{selected?.confidence == null ? tr("app.s0371") : `${Math.round(selected.confidence * 100)}%`}</dd></div><div><dt>{tr("app.s0372")}</dt><dd className={translation?.[1].status === "stale" ? "stale" : ""}>{translation ? (translation[1].status === "stale" ? tr("app.s0373") : tr("app.s0374", { "0": translation[0].toUpperCase() })) : tr("app.s0375")}</dd></div></dl>
-                <SpeechInsightsPanel insights={project.speechInsights} onLocateEvidence={locateSpeechEvidence} onLocatePause={locateSpeechPause}/>
-                <AudioQualityPanel job={audioAnalysisJob} onStart={startAudioAnalysis} onCancel={cancelAudioAnalysis} onResume={resumeAudioAnalysis} onLocate={locateAudioRisk} disabled={Boolean(busy)}/>
-                <SpeakerTrackPanel packageStatus={speakerPackage} track={speakerTrack} job={projectSpeakerJob} selectedSegmentId={selectedId} disabled={Boolean(busy)} onOpenRuntime={() => setShowRuntime(true)} onAnalyze={startSpeakerAnalysis} onCancel={cancelSpeakerJob} onResume={resumeSpeakerJob} onRename={renameSpeaker} onMerge={mergeSpeaker} onAssign={assignSpeaker}/>
-                {selectedWords.length > 0 && <section className="word-evidence" aria-label={tr("app.s0376")}><div className="word-heading"><div><p className="eyebrow">{tr("app.s0376")}</p><small>{tr("app.s0377")}</small></div>{activeWordRange && <button className="clear-range" onClick={() => setWordRange(null)}>{tr("app.s0378")}</button>}</div><div className="word-tokens">{selectedWords.map((word, index) => <button className={activeWordRange && index >= activeWordRange.start && index <= activeWordRange.end ? "selected" : ""} key={word.id} onClick={() => selectWordForCut(index)} title={`${formatTime(word.start)} — ${formatTime(word.end)}${word.confidence == null ? "" : ` · ${Math.round(word.confidence * 100)}%`}`}>{word.text}</button>)}</div>{activeWordRange && <div className="word-cut-controls"><label>{tr("app.s0379")}<input aria-label={tr("app.s0380")} type="range" min="0" max={selectedWords.length - 1} value={activeWordRange.start} onChange={(event) => setWordRange({ ...activeWordRange, start: Math.min(Number(event.target.value), activeWordRange.end) })}/><small>{selectedWords[activeWordRange.start]?.text}</small></label><label>{tr("app.s0381")}<input aria-label={tr("app.s0382")} type="range" min="0" max={selectedWords.length - 1} value={activeWordRange.end} onChange={(event) => setWordRange({ ...activeWordRange, end: Math.max(Number(event.target.value), activeWordRange.start) })}/><small>{selectedWords[activeWordRange.end]?.text}</small></label><label className="padding-select">{tr("app.s0383")}<select aria-label={tr("app.s0383")} value={cutPadding} onChange={(event) => setCutPadding(Number(event.target.value) as 30 | 100 | 200)}><option value="30">30 ms</option><option value="100">100 ms</option><option value="200">200 ms</option></select></label><button className="create-word-cut" disabled={Boolean(busy)} onClick={createWordCut}><Scissors size={12}/>{tr("app.s0384")}</button></div>}</section>}
-                <div className="version-block"><div className="section-title"><div><p className="eyebrow">{tr("app.s0385")}</p><h2>{tr("app.s0386")}</h2></div><div className="history-controls"><button aria-label={tr("app.s0251")} title="Ctrl+Z" disabled={!project.history.canUndo || Boolean(busy)} onClick={() => navigateHistory("undo")}><Undo2 size={14}/></button><button aria-label={tr("app.s0252")} title="Ctrl+Shift+Z / Ctrl+Y" disabled={!project.history.canRedo || Boolean(busy)} onClick={() => navigateHistory("redo")}><Redo2 size={14}/></button><History size={16}/></div></div>{project.versions.slice().reverse().slice(0, 4).map((version) => <button className="version-row" key={version.id} onClick={() => restoreVersion(version.id)}><span><strong>{versionReasonLabel(version.reason)}</strong><small>{new Date(version.createdAt).toLocaleString(uiLocale)}</small></span><RotateCcw size={14}/></button>)}</div>
+                <div className="inspector-tabs" role="tablist" aria-label={tr("app.s0368")}>
+                  {inspectorTabs.map((tab) => <button id={`inspector-tab-${tab}`} key={tab} role="tab" aria-controls={`inspector-panel-${tab}`} aria-selected={inspectorTab === tab} tabIndex={inspectorTab === tab ? 0 : -1} className={inspectorTab === tab ? "active" : ""} onKeyDown={(event) => changeInspectorTabFromKeyboard(event, tab)} onClick={() => setInspectorTab(tab)}>{tr(`app.inspector.${tab}`)}</button>)}
+                </div>
+                {inspectorTab === "segment" && <div id="inspector-panel-segment" aria-labelledby="inspector-tab-segment" className="inspector-view" role="tabpanel">
+                  <p className="eyebrow">{tr("app.s0368")}</p><h2>{selected?.text ?? tr("app.s0369")}</h2>
+                  <dl><div><dt>{tr("app.s0354")}</dt><dd>{selected ? `${formatTime(selected.start)} — ${formatTime(selected.end)}` : "—"}</dd></div><div><dt>{tr("app.s0370")}</dt><dd>{selected?.confidence == null ? tr("app.s0371") : `${Math.round(selected.confidence * 100)}%`}</dd></div><div><dt>{tr("app.s0372")}</dt><dd className={translation?.[1].status === "stale" ? "stale" : ""}>{translation ? (translation[1].status === "stale" ? tr("app.s0373") : tr("app.s0374", { "0": translation[0].toUpperCase() })) : tr("app.s0375")}</dd></div></dl>
+                  {selectedWords.length > 0 && <section className="word-evidence" aria-label={tr("app.s0376")}><div className="word-heading"><div><p className="eyebrow">{tr("app.s0376")}</p><small>{tr("app.s0377")}</small></div>{activeWordRange && <button className="clear-range" onClick={() => setWordRange(null)}>{tr("app.s0378")}</button>}</div><div className="word-tokens">{selectedWords.map((word, index) => <button className={activeWordRange && index >= activeWordRange.start && index <= activeWordRange.end ? "selected" : ""} key={word.id} onClick={() => selectWordForCut(index)} title={`${formatTime(word.start)} — ${formatTime(word.end)}${word.confidence == null ? "" : ` · ${Math.round(word.confidence * 100)}%`}`}>{word.text}</button>)}</div>{activeWordRange && <div className="word-cut-controls"><label>{tr("app.s0379")}<input aria-label={tr("app.s0380")} type="range" min="0" max={selectedWords.length - 1} value={activeWordRange.start} onChange={(event) => setWordRange({ ...activeWordRange, start: Math.min(Number(event.target.value), activeWordRange.end) })}/><small>{selectedWords[activeWordRange.start]?.text}</small></label><label>{tr("app.s0381")}<input aria-label={tr("app.s0382")} type="range" min="0" max={selectedWords.length - 1} value={activeWordRange.end} onChange={(event) => setWordRange({ ...activeWordRange, end: Math.max(Number(event.target.value), activeWordRange.start) })}/><small>{selectedWords[activeWordRange.end]?.text}</small></label><label className="padding-select">{tr("app.s0383")}<select aria-label={tr("app.s0383")} value={cutPadding} onChange={(event) => setCutPadding(Number(event.target.value) as 30 | 100 | 200)}><option value="30">30 ms</option><option value="100">100 ms</option><option value="200">200 ms</option></select></label><button className="create-word-cut" disabled={Boolean(busy)} onClick={createWordCut}><Scissors size={12}/>{tr("app.s0384")}</button></div>}</section>}
+                </div>}
+                {inspectorTab === "analysis" && <div id="inspector-panel-analysis" aria-labelledby="inspector-tab-analysis" className="inspector-view" role="tabpanel"><SpeechInsightsPanel insights={project.speechInsights} onLocateEvidence={locateSpeechEvidence} onLocatePause={locateSpeechPause}/><AudioQualityPanel job={audioAnalysisJob} onStart={startAudioAnalysis} onCancel={cancelAudioAnalysis} onResume={resumeAudioAnalysis} onLocate={locateAudioRisk} disabled={!capabilities.canAnalyzeAudio || Boolean(busy)}/><SpeakerTrackPanel packageStatus={speakerPackage} track={speakerTrack} job={projectSpeakerJob} selectedSegmentId={selectedId} disabled={Boolean(busy)} onOpenRuntime={() => setShowRuntime(true)} onAnalyze={startSpeakerAnalysis} onCancel={cancelSpeakerJob} onResume={resumeSpeakerJob} onRename={renameSpeaker} onMerge={mergeSpeaker} onAssign={assignSpeaker}/></div>}
+                {inspectorTab === "history" && <div id="inspector-panel-history" aria-labelledby="inspector-tab-history" className="inspector-view" role="tabpanel"><div className="version-block"><div className="section-title"><div><p className="eyebrow">{tr("app.s0385")}</p><h2>{tr("app.s0386")}</h2></div><div className="history-controls"><button aria-label={tr("app.s0251")} title="Ctrl+Z" disabled={!project.history.canUndo || Boolean(busy)} onClick={() => navigateHistory("undo")}><Undo2 size={14}/></button><button aria-label={tr("app.s0252")} title="Ctrl+Shift+Z / Ctrl+Y" disabled={!project.history.canRedo || Boolean(busy)} onClick={() => navigateHistory("redo")}><Redo2 size={14}/></button><History size={16}/></div></div>{project.versions.slice().reverse().slice(0, 4).map((version) => <button className="version-row" key={version.id} onClick={() => restoreVersion(version.id)}><span><strong>{versionReasonLabel(version.reason)}</strong><small>{new Date(version.createdAt).toLocaleString(uiLocale)}</small></span><RotateCcw size={14}/></button>)}</div></div>}
               </aside>
             </section>
 
@@ -1754,7 +1741,7 @@ function App() {
         </div>
         <footer className="export-panel-actions">
           <Button disabled={Boolean(busy) || selectedTranslationPending} onClick={exportTranscript}><Download size={15}/>{tr("app.s0432")}</Button>
-          <Button variant="primary" disabled={Boolean(busy) || selectedTranslationPending || Boolean(activeExport && ["queued", "running"].includes(activeExport.status))} onClick={exportVideo}><Film size={15}/>{tr("app.s0259")}</Button>
+          <Button variant="primary" disabled={!capabilities.canExportVideo || Boolean(busy) || selectedTranslationPending || Boolean(activeExport && ["queued", "running"].includes(activeExport.status))} title={mediaCapabilityTitle} onClick={exportVideo}><Film size={15}/>{tr("app.s0259")}</Button>
         </footer>
       </aside>}
       {structureEditMode && project && <Dialog label={structureEditLabel(structureEditMode)} className="runtime-dialog subtitle-structure-dialog" onClose={() => { if (!structureBusy)
@@ -1769,11 +1756,13 @@ function App() {
           <label><span>{tr("app.s0440")}</span><input type="number" min="1" max={Math.max(1, Array.from(selectedSegments[0].text).length - 1)} step="1" value={structureTextOffset} onChange={(event) => setStructureTextOffset(event.target.value)}/><small>{tr("app.s0441")}</small></label>
           <label><span>{tr("app.s0442")}</span><input type="number" min={selectedSegments[0].start} max={selectedSegments[0].end} step="0.001" value={structureStart} onChange={(event) => setStructureStart(event.target.value)}/><small>{tr("app.s0443")}</small></label>
           <div className="subtitle-split-preview" role="region" aria-label={tr("app.s0444")}><span><small>{tr("app.s0445")}</small>{Array.from(selectedSegments[0].text).slice(0, Number(structureTextOffset) || 0).join("")}</span><span><small>{tr("app.s0446")}</small>{Array.from(selectedSegments[0].text).slice(Number(structureTextOffset) || 0).join("")}</span></div>
+          {!hasMeaningfulSubtitleText(splitLeftText) || !hasMeaningfulSubtitleText(splitRightText) ? <p className="source-error" role="alert">{tr("app.structure.splitMeaningful")}</p> : null}
         </div>}
         {structureEditMode === "merge" && <div className="subtitle-merge-preview" aria-label={tr("app.s0447")}><small>{tr("app.s0448")}</small><p>{selectedSegments.map((segment) => segment.text.trim()).join(" ")}</p></div>}
         {structureEditMode === "timing" && selectedSegments[0] && <div className="subtitle-structure-form timing">
           <label><span>{tr("app.s0449")}</span><input type="number" min="0" step="0.001" value={structureStart} onChange={(event) => setStructureStart(event.target.value)}/><small>{tr("app.s0450") + " "}{selectedSegments[0].start.toFixed(3)}{tr("app.s0037")}</small></label>
           <label><span>{tr("app.s0451")}</span><input type="number" min="0" max={project.media.durationSeconds ?? undefined} step="0.001" value={structureEnd} onChange={(event) => setStructureEnd(event.target.value)}/><small>{tr("app.s0450") + " "}{selectedSegments[0].end.toFixed(3)}{tr("app.s0037")}</small></label>
+          {!timingChanged && <p className="source-error" role="alert">{tr("app.structure.timingUnchanged")}</p>}
         </div>}
         {structureEditMode === "offset" && <div className="subtitle-structure-form offset">
           <label><span>{tr("app.s0452")}</span><input type="number" step="0.001" value={structureDelta} onChange={(event) => setStructureDelta(event.target.value)}/><small>{tr("app.s0453")}</small></label>
@@ -1781,7 +1770,7 @@ function App() {
         </div>}
         <p className="subtitle-structure-impact"><History size={14}/>{tr("app.s0455")}</p>
         {structureError && <div className="source-error" role="alert"><CircleAlert size={15}/>{structureError}</div>}
-        <button className="button primary full" disabled={structureBusy} onClick={() => void applyStructureEdit()}>{structureBusy ? <><LoaderCircle className="spin" size={14}/>{tr("app.s0456")}</> : tr("app.s0457", { "0": structureEditMode === "offset" ? tr("app.s0458", { "0": selectedSegments.length }) : structureEditMode === "merge" ? tr("app.s0459") : structureEditMode === "split" ? tr("app.s0460") : tr("app.s0461") })}</button>
+        <button className="button primary full" disabled={structureSubmitDisabled} onClick={() => void applyStructureEdit()}>{structureBusy ? <><LoaderCircle className="spin" size={14}/>{tr("app.s0456")}</> : tr("app.s0457", { "0": structureEditMode === "offset" ? tr("app.s0458", { "0": selectedSegments.length }) : structureEditMode === "merge" ? tr("app.s0459") : structureEditMode === "split" ? tr("app.s0460") : tr("app.s0461") })}</button>
       </Dialog>}
       {showSubtitleImport && project && <Dialog label={tr("app.s0333")} className="runtime-dialog subtitle-import-dialog" onClose={() => setShowSubtitleImport(false)} returnFocusRef={subtitleImportButtonRef}>
         <button autoFocus className="dialog-close" aria-label={tr("app.s0462")} title={tr("app.s0463")} onClick={() => setShowSubtitleImport(false)}><X size={18}/></button>
@@ -1790,7 +1779,7 @@ function App() {
         <div className="subtitle-import-file"><span><small>{tr("app.s0467")}</small><strong title={subtitleImportPath}>{subtitleImportPath ? subtitleImportPath.split(/[\\/]/).at(-1) : tr("app.s0468")}</strong></span><button className="button quiet" disabled={Boolean(subtitleImportBusy)} onClick={() => void inspectSubtitleFile()}><FolderOpen size={14}/>{subtitleImportPath ? tr("app.s0469") : tr("app.s0470")}</button></div>
         {subtitleImportBusy && <div className="subtitle-import-progress" role="status"><LoaderCircle className="spin" size={14}/>{subtitleImportBusy}</div>}
         {subtitleImportPreview && <section className={`subtitle-import-preview ${subtitleImportPreview.quality.status}`} aria-label={tr("app.s0471")}>
-          <header><span><small>{subtitleImportPreview.format.toUpperCase()} · SHA-256 {subtitleImportPreview.sha256.slice(0, 10)}…</small><strong>{tr("app.composite.subtitleSegments", { count: subtitleImportPreview.segmentCount })}</strong></span>{subtitleImportPreview.quality.status === "good" ? <Check size={18}/> : <CircleAlert size={18}/>}</header>
+          <header><span><small>{subtitleImportPreview.format.toUpperCase()} · SHA-256 {subtitleImportPreview.sha256.slice(0, 10)}…</small><strong>{tr("app.composite.subtitleSegments", { label: subtitleCountLabel(subtitleImportPreview.segmentCount) })}</strong></span>{subtitleImportPreview.quality.status === "good" ? <Check size={18}/> : <CircleAlert size={18}/>}</header>
           <div className="subtitle-import-quality"><strong>{subtitleQualityStatusLabel(subtitleImportPreview.quality)}</strong><span>{subtitleImportPreview.quality.errorCount}{tr("app.s0358") + " "}{subtitleImportPreview.quality.warningCount}{tr("app.s0359")}</span></div>
           {subtitleImportPreview.quality.issues.length > 0 && <div className="subtitle-import-issues">{subtitleImportPreview.quality.issues.slice(0, 5).map((issue) => <div className={issue.severity} key={issue.id}><CircleAlert size={12}/><span><strong>{subtitleIssueLabel(issue.kind)}</strong><small>{formatTime(issue.start)} — {formatTime(issue.end)}</small></span></div>)}</div>}
           <label className="subtitle-replace-confirm"><input type="checkbox" checked={subtitleReplaceConfirmed} disabled={!subtitleImportPreview.canImport || Boolean(subtitleImportBusy)} onChange={(event) => setSubtitleReplaceConfirmed(event.target.checked)}/><span>{tr("app.s0472")}</span></label>
@@ -1816,291 +1805,21 @@ function App() {
             <label className="auto-check"><input type="checkbox" checked={autoBurnSubtitles} onChange={(event) => setAutoBurnSubtitles(event.target.checked)}/><span>{tr("app.s0501")}</span></label>
           </div>
           <button className="button primary full" disabled={Boolean(autoBusy) || !modelPath || (autoTranslate && !autoTranslationLanguage.trim()) || (autoInputKind === "local" ? !autoMediaPath : !autoSourcePreview || !autoAuthorized)} onClick={() => void startAutoWorkflow()}>{autoBusy ? <LoaderCircle className="spin" size={14}/> : <Sparkles size={14}/>}{tr("app.s0502")}</button>
-          {autoError && <div className="source-error" role="alert"><CircleAlert size={15}/>{autoError}</div>}
+          {autoError && <div className="source-error" role="alert"><CircleAlert size={15}/><JobFailureDetails context="auto" status="failed" errorMessage={autoError}/></div>}
         </div>
       </Dialog>}
-      {showRuntime && <Dialog label={tr("app.s0245")} className="runtime-dialog" onClose={() => setShowRuntime(false)} returnFocusRef={runtimeButtonRef}><button autoFocus className="dialog-close" aria-label={tr("app.s0503")} title={tr("app.s0504")} onClick={() => setShowRuntime(false)}><X size={18}/></button><p className="eyebrow">{tr("app.s0505")}</p><h2>{tr("app.s0245")}</h2><p className="dialog-copy">{tr("app.s0506")}</p><RuntimeChecklist runtime={runtime} modelPath={modelPath} onChooseModel={chooseModel}/><AsrBackendPicker runtime={runtime} onSelect={changeAsrBackend}/><ModelManager models={models} selectedPath={modelPath} job={modelJob} onSelect={(path) => { localStorage.setItem("siaocut.modelPath", path); setModelPath(path); }} onInstall={installModel} onCancel={cancelModel} onRemove={removeModel}/><SpeakerPackageManager packageStatus={speakerPackage} job={speakerJob?.kind === "install" ? speakerJob : null} disabled={Boolean(busy)} onInstall={installSpeakerPackage} onCancel={cancelSpeakerJob} onResume={resumeSpeakerJob}/><DiagnosticsPanel runtime={runtime} onOpen={openDiagnostics}/><UpdatePanel policy={updatePolicy} update={availableUpdate} busy={updateBusy} error={updateError} onCheck={() => void checkUpdates()} onInstall={() => void confirmUpdateInstall()}/><button className="button quiet full" onClick={() => void initialize()}><RefreshCw size={14}/>{tr("app.s0507")}</button></Dialog>}
+      {showRuntime && <Dialog label={tr("app.s0245")} className="runtime-dialog runtime-settings-dialog" onClose={() => setShowRuntime(false)} returnFocusRef={runtimeButtonRef}>
+        <header className="runtime-dialog-header"><div><p className="eyebrow">{tr("app.s0505")}</p><h2>{tr("app.s0245")}</h2></div><button autoFocus className="dialog-close" aria-label={tr("app.s0503")} title={tr("app.s0504")} onClick={() => setShowRuntime(false)}><X size={18}/></button></header>
+        <div className="runtime-dialog-content"><p className="dialog-copy">{tr("app.s0506")}</p><RuntimeChecklist runtime={runtime} modelPath={modelPath} onChooseModel={chooseModel}/><AsrBackendPicker runtime={runtime} onSelect={changeAsrBackend}/><ModelManager models={models} selectedPath={modelPath} job={modelJob} onSelect={(path) => { localStorage.setItem("siaocut.modelPath", path); setModelPath(path); }} onInstall={installModel} onCancel={cancelModel} onRemove={removeModel}/><SpeakerPackageManager packageStatus={speakerPackage} job={speakerJob?.kind === "install" ? speakerJob : null} disabled={Boolean(busy)} onInstall={installSpeakerPackage} onCancel={cancelSpeakerJob} onResume={resumeSpeakerJob}/><DiagnosticsPanel runtime={runtime} onOpen={openDiagnostics}/><UpdatePanel policy={updatePolicy} update={availableUpdate} busy={updateBusy} error={updateError} onCheck={() => void checkUpdates()} onInstall={() => void confirmUpdateInstall()}/><button className="button quiet full" onClick={() => void initialize()}><RefreshCw size={14}/>{tr("app.s0507")}</button></div>
+      </Dialog>}
       {currentDeleteCandidate && <Dialog label={tr("app.s0243")} className="confirm-dialog" onClose={closeDeleteDialog}><div className="confirm-icon"><Trash2 size={20}/></div><p className="eyebrow">{tr("app.s0508")}</p><h2>{tr("app.s0509")}{currentDeleteCandidate.title}」？</h2><p className="dialog-copy">{tr("app.s0510")}</p>{(deleteBlockMessage || deleteError) && <div className="confirm-error" role="alert"><CircleAlert size={16}/><span>{deleteBlockMessage ?? deleteError}</span></div>}<div className="confirm-actions"><button className="button quiet" disabled={deleteBusy} onClick={closeDeleteDialog}>{tr("app.s0511")}</button><button className="button danger" disabled={deleteBusy || Boolean(deleteBlockMessage)} onClick={() => void deleteProject()}>{deleteBusy ? <LoaderCircle className="spin" size={14}/> : <Trash2 size={14}/>}{tr("app.s0512")}</button></div></Dialog>}
       {showSourceImport && <Dialog label={tr("app.s0513")} className="runtime-dialog source-dialog" onClose={() => setShowSourceImport(false)} returnFocusRef={sourceButtonRef}><button autoFocus className="dialog-close" aria-label={tr("app.s0514")} title={tr("app.s0515")} onClick={() => setShowSourceImport(false)}><X size={18}/></button><p className="eyebrow">{tr("app.s0516")}</p><h2>{tr("app.s0517")}</h2><p className="dialog-copy">{tr("app.s0518")}</p>
-        {!sourceJob && <form className="source-form" onSubmit={(event) => { event.preventDefault(); void inspectSource(); }}><label><span>{tr("app.s0487")}</span><input autoComplete="url" aria-label={tr("app.s0487")} placeholder="https://…" value={sourceUrl} disabled={Boolean(sourceBusy)} onChange={(event) => { setSourceUrl(event.target.value); setSourcePreview(null); setSourceAuthorized(false); setSourceError(null); }}/></label><button className="button primary" type="submit" disabled={Boolean(sourceBusy) || !sourceUrl.trim()}>{sourceBusy && !sourcePreview ? <LoaderCircle className="spin" size={14}/> : <Search size={14}/>}{tr("app.s0489")}</button></form>}
+        {!sourceJob && <form className="source-form" onSubmit={(event) => { event.preventDefault(); void inspectSource(); }}><label><span>{tr("app.s0487")}</span><input autoComplete="url" aria-label={tr("app.s0487")} placeholder="https://…" value={sourceUrl} disabled={Boolean(sourceBusy)} onChange={(event) => { setSourceUrl(event.target.value); setSourcePreview(null); setSourceAuthorized(false); setSourceError(null); }}/></label><button className="button primary" type="submit" disabled={Boolean(sourceBusy) || !isHttpsSourceUrl(sourceUrl)}>{sourceBusy && !sourcePreview ? <LoaderCircle className="spin" size={14}/> : <Search size={14}/>}{tr("app.s0489")}</button></form>}
         {sourcePreview && !sourceJob && <section className="source-preview" aria-label={tr("app.s0519")}><header><span><small>{sourcePreview.extractor}</small><strong>{sourcePreview.title}</strong></span><ShieldCheck size={19}/></header><dl><div><dt>{tr("app.s0491")}</dt><dd>{formatTime(sourcePreview.durationSeconds)}</dd></div><div><dt>{sourcePreview.fileSizeKnown ? tr("app.s0520") : tr("app.s0521")}</dt><dd>{formatBytes(sourcePreview.fileSizeBytes)}</dd></div><div><dt>{tr("app.s0492")}</dt><dd>{sourcePreview.siteMediaId}</dd></div><div><dt>{tr("app.s0522")}</dt><dd>yt-dlp {sourcePreview.toolVersion}</dd></div></dl><p className="source-url" title={sourcePreview.webpageUrl}>{sourcePreview.webpageUrl}</p><label className="source-consent"><input type="checkbox" checked={sourceAuthorized} onChange={(event) => setSourceAuthorized(event.target.checked)}/><span>{tr("app.s0523")}</span></label><button className="button primary full" disabled={!sourceAuthorized || Boolean(sourceBusy)} onClick={() => void startSourceImport()}>{sourceBusy ? <LoaderCircle className="spin" size={14}/> : <Download size={14}/>}{tr("app.s0524")}</button></section>}
-        {sourceJob && <section className="source-job" aria-label={tr("app.s0525")}><header><span className={`source-state ${sourceJob.status}`}><i />{sourceStatusLabel(sourceJob.status)}</span><strong>{sourceJob.title}</strong><small>{tr("app.composite.sourceAttempt", { attempt: sourceJob.attemptCount, mediaId: sourceJob.siteMediaId })}</small></header><div className="source-job-progress"><progress value={sourceJob.progress} max={1}/><span>{Math.round(sourceJob.progress * 100)}% · {formatBytes(sourceJob.bytesDownloaded)} / {formatBytes(sourceJob.totalBytes ?? sourceJob.fileSizeBytes)}</span></div><dl><div><dt>{tr("app.s0528")}</dt><dd>yt-dlp {sourceJob.toolVersion}</dd></div><div><dt>{tr("app.s0239")}</dt><dd>{sourceJob.projectId ?? tr("app.s0529")}</dd></div></dl>{sourceJob.errorMessage && <p className="source-job-error">{sourceJob.errorMessage}</p>}<div className="source-job-actions">{["queued", "running"].includes(sourceJob.status) && <button disabled={Boolean(sourceBusy) || Boolean(sourceJob.cancelRequestedAt)} onClick={() => void cancelSourceImport()}>{sourceJob.cancelRequestedAt ? tr("app.s0317") : tr("app.s0530")}</button>}{["cancelled", "failed", "interrupted"].includes(sourceJob.status) && <button className="primary" disabled={Boolean(sourceBusy)} onClick={() => void resumeSourceImport()}><RefreshCw size={13}/>{tr("app.s0279")}</button>}{!["queued", "running", "finalizing"].includes(sourceJob.status) && <button onClick={resetSourceImport}>{tr("app.s0531")}</button>}</div></section>}
-        {sourceError && <div className="source-error" role="alert"><CircleAlert size={15}/>{sourceError}</div>}
+        {sourceJob && <section className="source-job" aria-label={tr("app.s0525")}><header><span className={`source-state ${sourceJob.status}`}><i />{sourceStatusLabel(sourceJob.status)}</span><strong>{sourceJob.title}</strong><small>{tr("app.composite.sourceAttempt", { attempt: sourceJob.attemptCount, mediaId: sourceJob.siteMediaId })}</small></header><div className="source-job-progress"><progress value={sourceJob.progress} max={1}/><span>{Math.round(sourceJob.progress * 100)}% · {formatBytes(sourceJob.bytesDownloaded)} / {formatBytes(sourceJob.totalBytes ?? sourceJob.fileSizeBytes)}</span></div><dl><div><dt>{tr("app.s0528")}</dt><dd>yt-dlp {sourceJob.toolVersion}</dd></div><div><dt>{tr("app.s0239")}</dt><dd>{sourceJob.projectId ?? tr("app.s0529")}</dd></div></dl>{["failed", "interrupted"].includes(sourceJob.status) && <JobFailureDetails className="source-job-error" context="source" status={sourceJob.status} errorCode={sourceJob.errorCode} errorMessage={sourceJob.errorMessage}/>}<div className="source-job-actions">{["queued", "running"].includes(sourceJob.status) && <button disabled={Boolean(sourceBusy) || Boolean(sourceJob.cancelRequestedAt)} onClick={() => void cancelSourceImport()}>{sourceJob.cancelRequestedAt ? tr("app.s0317") : tr("app.s0530")}</button>}{["cancelled", "failed", "interrupted"].includes(sourceJob.status) && <button className="primary" disabled={Boolean(sourceBusy)} onClick={() => void resumeSourceImport()}><RefreshCw size={13}/>{tr("app.s0279")}</button>}{!["queued", "running", "finalizing"].includes(sourceJob.status) && <button onClick={resetSourceImport}>{tr("app.s0531")}</button>}</div></section>}
+        {sourceError && <div className="source-error" role="alert"><CircleAlert size={15}/><JobFailureDetails context="source" status="failed" errorMessage={sourceError}/></div>}
         <p className="runtime-disclosure">{tr("app.s0532")}</p>
       </Dialog>}
     </main>);
-}
-export function SpeechInsightsPanel({ insights, onLocateEvidence, onLocatePause }: {
-    insights: SpeechInsights;
-    onLocateEvidence: (evidence: SpeechEvidence) => void;
-    onLocatePause: (pause: SpeechPause) => void;
-}) {
-    return <section className="speech-insights" aria-label={tr("app.s0533")}>
-    <header><div><p className="eyebrow">{tr("app.s0534")}</p><h3><Activity size={15}/>{tr("app.s0533")}</h3></div><small>{insights.analyzerVersion}</small></header>
-    {insights.status === "insufficient_evidence" ? <p className="speech-empty">{tr("app.s0535")}</p> : <>
-      <div className="speech-metrics">
-        <span><strong>{insights.tokensPerMinute}</strong><small>{tr("app.s0536")}</small></span>
-        <span><strong>{insights.pauseCount}</strong><small>{tr("app.s0537")}</small></span>
-        <span><strong>{insights.fillerCount}</strong><small>{tr("app.s0010")}</small></span>
-        <span><strong>{insights.lowConfidenceCount}</strong><small>{tr("app.s0538")}</small></span>
-      </div>
-      {(insights.pauses.length > 0 || insights.evidence.length > 0) && <div className="speech-findings">
-        {insights.pauses.slice(0, 2).map((pause) => <button key={`${pause.previousWordId}-${pause.nextWordId}`} onClick={() => onLocatePause(pause)} aria-label={tr("app.s0539", { "0": pause.severity === "long_pause" ? tr("app.s0540") : tr("app.s0537"), "1": formatTime(pause.start), "2": formatTime(pause.end) })}><Clock3 size={12}/><span><strong>{pause.severity === "long_pause" ? tr("app.s0540") : tr("app.s0537")}</strong><small>{pause.duration.toFixed(1)}{tr("app.s0541") + " "}{formatTime(pause.start)}</small></span></button>)}
-        {insights.evidence.slice(0, 3).map((evidence, index) => <button key={`${evidence.kind}-${evidence.wordId}-${index}`} onClick={() => onLocateEvidence(evidence)} aria-label={tr("app.s0542", { "0": evidence.kind === "filler" ? tr("app.s0010") : tr("app.s0538"), "1": evidence.text, "2": formatTime(evidence.start) })}><CircleAlert size={12}/><span><strong>{evidence.kind === "filler" ? tr("app.s0010") : tr("app.s0538")} · {evidence.text}</strong><small>{formatTime(evidence.start)}{evidence.confidence == null ? "" : ` · ${Math.round(evidence.confidence * 100)}%`}</small></span></button>)}
-      </div>}
-      <p className="speech-disclosure">{tr("app.s0543")}</p>
-    </>}
-  </section>;
-}
-export function AudioQualityPanel({ job, onStart, onCancel, onResume, onLocate, disabled }: {
-    job: AudioAnalysisJob | null;
-    onStart: () => void;
-    onCancel: () => void;
-    onResume: () => void;
-    onLocate: (risk: AudioRisk) => void;
-    disabled: boolean;
-}) {
-    const active = job && ["queued", "running"].includes(job.status);
-    const resumable = job && ["cancelled", "failed", "interrupted"].includes(job.status);
-    return <section className="audio-quality" aria-label={tr("app.s0315")}>
-    <header><div><p className="eyebrow">{tr("app.s0544")}</p><h3><Headphones size={15}/>{tr("app.s0315")}</h3></div>{job?.report && <small>{job.report.analyzerVersion}</small>}</header>
-    {!job && <><p className="speech-empty">{tr("app.s0545")}</p><button className="audio-analysis-action" disabled={disabled} onClick={onStart}>{tr("app.s0546")}</button></>}
-    {active && <div className="audio-analysis-progress"><span><LoaderCircle className="spin" size={13}/>{tr("app.s0547") + " "}{Math.round(job.progress * 100)}%</span><progress max={1} value={job.progress}/><button disabled={disabled || Boolean(job.cancelRequestedAt)} onClick={onCancel}>{job.cancelRequestedAt ? tr("app.s0317") : tr("app.s0511")}</button></div>}
-    {resumable && <div className="audio-analysis-error"><p>{job.errorMessage ?? (job.status === "cancelled" ? tr("app.s0548") : tr("app.s0549"))}</p><button disabled={disabled} onClick={onResume}><RefreshCw size={12}/>{tr("app.s0279")}</button></div>}
-    {job?.status === "completed" && job.report && <>
-      <div className="speech-metrics">
-        <span><strong>{job.report.integratedLoudnessLufs ?? "—"}</strong><small>{tr("app.s0550")}</small></span>
-        <span><strong>{job.report.truePeakDbfs ?? "—"}</strong><small>{tr("app.s0551")}</small></span>
-        <span><strong>{job.report.risks.length}</strong><small>{tr("app.s0552")}</small></span>
-        <span><strong>{job.report.silenceDurationSeconds.toFixed(1)}</strong><small>{tr("app.s0553")}</small></span>
-      </div>
-      {job.report.risks.length > 0 ? <div className="speech-findings">{job.report.risks.slice(0, 3).map((risk, index) => <button key={`${risk.kind}-${risk.start}-${index}`} onClick={() => onLocate(risk)}><CircleAlert size={12}/><span><strong>{audioRiskLabel(risk.kind)}</strong><small>{formatTime(risk.start)} · {risk.measuredValue} {audioUnitLabel(risk.unit)}{tr("app.s0554") + " "}{risk.threshold}</small></span></button>)}</div> : <p className="audio-quality-ok"><Check size={13}/>{tr("app.s0555")}</p>}
-      <p className="speech-disclosure" title={job.report.toolVersion}>{tr("app.s0556")}</p>
-      <button className="audio-analysis-action quiet" disabled={disabled} onClick={onStart}>{tr("app.s0557")}</button>
-    </>}
-  </section>;
-}
-export function SpeakerTrackPanel({ packageStatus, track, job, selectedSegmentId, disabled, onOpenRuntime, onAnalyze, onCancel, onResume, onRename, onMerge, onAssign }: {
-    packageStatus: SpeakerPackageStatus | null;
-    track: SpeakerTrack | null;
-    job: SpeakerJob | null;
-    selectedSegmentId: string | null;
-    disabled: boolean;
-    onOpenRuntime: () => void;
-    onAnalyze: () => void;
-    onCancel: () => void;
-    onResume: () => void;
-    onRename: (speakerId: string, name: string) => void;
-    onMerge: (fromId: string, intoId: string) => void;
-    onAssign: (segmentId: string, speakerId: string) => void;
-}) {
-    const active = job && ["queued", "running"].includes(job.status);
-    const resumable = job && ["cancelled", "failed", "interrupted"].includes(job.status);
-    const association = track?.associations.find((item) => item.segmentId === selectedSegmentId);
-    return <section className="speaker-track-panel" aria-label={tr("app.s0322")}>
-    <header><div><p className="eyebrow">{tr("app.s0558")}</p><h3><Users size={15}/>{tr("app.s0322")}</h3></div>{track?.status === "ready" && <small>{track.speakers.length}{tr("app.s0559") + " "}{track.turns.length}{tr("app.s0560")}</small>}</header>
-    {!packageStatus?.installed || packageStatus.verified !== true ? <>
-      <p className="speech-empty">{tr("app.s0561")}</p>
-      <button className="audio-analysis-action quiet" disabled={disabled} onClick={onOpenRuntime}>{tr("app.s0562")}</button>
-    </> : null}
-    {packageStatus?.installed && packageStatus.verified === true && !active && !resumable && (!track || track.status === "not_analyzed") && <>
-      <p className="speech-empty">{tr("app.s0563")}</p>
-      <button className="audio-analysis-action" disabled={disabled} onClick={onAnalyze}>{tr("app.s0546")}</button>
-    </>}
-    {active && <div className="audio-analysis-progress"><span><LoaderCircle className="spin" size={13}/>{job.stage} · {Math.round(job.progress * 100)}%</span><progress max={1} value={job.progress}/><button disabled={disabled} onClick={onCancel}>{tr("app.s0511")}</button></div>}
-    {resumable && <div className="audio-analysis-error"><p>{job.errorMessage ?? tr("app.s0564")}</p><button disabled={disabled} onClick={onResume}><RefreshCw size={12}/>{tr("app.s0279")}</button></div>}
-    {track?.status === "no_speech" && <><p className="speech-empty">{tr("app.s0565")}</p><button className="audio-analysis-action quiet" disabled={disabled} onClick={onAnalyze}>{tr("app.s0557")}</button></>}
-    {track?.status === "ready" && <>
-      {selectedSegmentId && <label className="speaker-assignment"><span>{tr("app.s0566")}</span><select aria-label={tr("app.s0566")} value={association?.speakerId ?? ""} disabled={disabled} onChange={(event) => event.target.value && onAssign(selectedSegmentId, event.target.value)}><option value="">{tr("app.s0567")}</option>{track.speakers.map((speaker) => <option value={speaker.id} key={speaker.id}>{speaker.label}</option>)}</select>{association?.source === "manual" && <small>{tr("app.s0568")}</small>}</label>}
-      <div className="speaker-identities">{track.speakers.map((speaker) => <SpeakerIdentityRow key={speaker.id} speaker={speaker} allSpeakers={track.speakers} disabled={disabled} onRename={onRename} onMerge={onMerge}/>)}</div>
-      <p className="speech-disclosure">{track.runtimeVersion}{tr("app.s0569")}</p>
-      <button className="audio-analysis-action quiet" disabled={disabled} onClick={onAnalyze}>{tr("app.s0557")}</button>
-    </>}
-  </section>;
-}
-function SpeakerIdentityRow({ speaker, allSpeakers, disabled, onRename, onMerge }: {
-    speaker: SpeakerIdentity;
-    allSpeakers: SpeakerIdentity[];
-    disabled: boolean;
-    onRename: (speakerId: string, name: string) => void;
-    onMerge: (fromId: string, intoId: string) => void;
-}) {
-    const [name, setName] = useState(speaker.label);
-    const [mergeTarget, setMergeTarget] = useState("");
-    useEffect(() => setName(speaker.label), [speaker.label]);
-    const save = () => {
-        const next = name.trim();
-        if (next && next !== speaker.label)
-            onRename(speaker.id, next);
-        else
-            setName(speaker.label);
-    };
-    return <div className="speaker-identity-row">
-    <i className={`speaker-color speaker-${speaker.colorIndex % 6}`}/>
-    <input aria-label={tr("app.s0570", { "0": speaker.label })} value={name} maxLength={40} disabled={disabled} onChange={(event) => setName(event.target.value)} onBlur={save} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
-        event.preventDefault();
-        save();
-    } }} title={tr("app.s0571")}/>
-    {allSpeakers.length > 1 && <><select aria-label={tr("app.s0572", { "0": speaker.label })} value={mergeTarget} disabled={disabled} onChange={(event) => setMergeTarget(event.target.value)}><option value="">{tr("app.s0573")}</option>{allSpeakers.filter((item) => item.id !== speaker.id).map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select><button disabled={disabled || !mergeTarget} onClick={() => mergeTarget && onMerge(speaker.id, mergeTarget)}>{tr("app.s0352")}</button></>}
-  </div>;
-}
-export function PatchReviewCard({ item, onReview, onSelect }: {
-    item: Project["patchSets"][number]["items"][number];
-    onReview: (action: "apply" | "keep") => void;
-    onSelect: () => void;
-}) {
-    const conflict = item.status === "conflict";
-    return <article className={`review-item patch-review ${conflict ? "conflict" : ""}`}>
-    <span className={`review-tag ${conflict ? "conflict" : ""}`}>{conflict && <CircleAlert size={12}/>}{conflict ? tr("app.s0574") : tr("app.s0575")}</span>
-    <strong>{patchReasonLabel(item.reason)}</strong>
-    <div className="patch-diff">
-      <p><small>{tr("app.s0576")}</small>{item.beforeText || tr("app.s0577")}</p>
-      {conflict && <p className="current"><small>{tr("app.s0578")}</small>{item.currentText || tr("app.s0577")}</p>}
-      <p className="proposed"><small>{tr("app.s0579")}</small>{item.target === "cut" && !item.afterText ? tr("app.s0580") : item.afterText}</p>
-    </div>
-    <p className="patch-meta">{item.confidence == null ? tr("app.s0581") : tr("app.s0582", { "0": Math.round(item.confidence * 100) })}</p>
-    <div className="patch-actions"><button onClick={onSelect}>{tr("app.s0303")}</button><span /><button onClick={() => onReview("keep")}>{tr("app.s0583")}</button><button className="apply" onClick={() => onReview("apply")}>{tr("app.s0584")}</button></div>
-  </article>;
-}
-function RuntimeChecklist({ runtime, modelPath, onChooseModel, compact = false }: {
-    runtime: RuntimeInfo | null;
-    modelPath: string | null;
-    onChooseModel: () => void;
-    compact?: boolean;
-}) {
-    const items = [
-        { icon: Database, label: "Core", ok: Boolean(runtime), detail: runtime ? `API ${runtime.coreApiVersion}` : tr("app.s0585") },
-        { icon: HardDrive, label: "FFmpeg", ok: runtime?.ffmpegConfigured ?? false, detail: runtime?.ffmpegConfigured ? tr("app.s0586") : tr("app.s0587") },
-        { icon: Cpu, label: "whisper.cpp", ok: runtime?.asrConfigured ?? false, detail: runtime?.asrConfigured ? `${runtime.asrBackend.toUpperCase()}${runtime.asrDevice ? ` · ${runtime.asrDevice}` : ""}${runtime.vadConfigured ? " · VAD" : ""}` : tr("app.s0587") },
-        { icon: Download, label: tr("app.s0513"), ok: runtime?.ytDlpConfigured ?? false, detail: runtime?.ytDlpConfigured ? "yt-dlp 2026.06.09" : tr("app.s0587") },
-    ];
-    const modelName = modelPath ? modelPath.split(/[\\/]/).pop() : tr("app.s0468");
-    if (compact)
-        return <div className="runtime-checklist compact" aria-label={tr("app.s0588")}>
-    <div className="runtime-components">
-      {items.map(({ icon: Icon, label, ok, detail }) => <div className="runtime-row" key={label}>
-        <span className="runtime-component-icon"><Icon size={16}/></span>
-        <span><strong>{label}</strong><small>{detail}</small></span>
-        <i className={ok ? "ok" : "missing"} aria-label={`${label}${ok ? tr("app.s0589") : tr("app.s0590")}`}>{ok ? <Check size={13}/> : <CircleAlert size={13}/>}</i>
-      </div>)}
-    </div>
-    <div className="runtime-model-row">
-      <span className="runtime-component-icon"><FileVideo2 size={16}/></span>
-      <span><strong>{tr("app.s0591")}</strong><small>{modelName}</small></span>
-      <button onClick={onChooseModel}>{modelPath ? tr("app.s0592") : tr("app.s0593")}</button>
-    </div>
-  </div>;
-    return <div className="runtime-checklist">{items.map(({ icon: Icon, label, ok, detail }) => <div className="runtime-row" key={label}><Icon size={16}/><span><strong>{label}</strong><small>{detail}</small></span><i className={ok ? "ok" : "missing"}>{ok ? <Check size={13}/> : <CircleAlert size={13}/>}</i></div>)}<div className="runtime-row model"><FileVideo2 size={16}/><span><strong>{tr("app.s0591")}</strong><small title={modelPath ?? ""}>{modelName}</small></span><button onClick={onChooseModel}>{tr("app.s0593")}</button></div></div>;
-}
-function UpdatePanel({ policy, update, busy, error, onCheck, onInstall }: {
-    policy: UpdatePolicy | null;
-    update: UpdateMetadata | null;
-    busy: string | null;
-    error: string | null;
-    onCheck: () => void;
-    onInstall: () => void;
-}) {
-    return <section className="update-panel" aria-label={tr("app.s0594")}>
-    <header><span><strong>{tr("app.s0594")}</strong><small>{tr("app.composite.currentVersion", { version: policy?.currentVersion ?? tr("app.s0596") })}</small></span><ShieldCheck size={16}/></header>
-    {!policy?.enabled && <p>{policy ? tr("app.update.previewDisabled") : tr("app.s0598")}</p>}
-    {update && <div className="update-release">
-      <strong>SiaoCut {update.version}</strong>
-      <small>{formatBytes(update.sizeBytes)}{update.publishedAt ? ` · ${new Date(update.publishedAt).toLocaleDateString(getUiLocale())}` : ""}</small>
-      <p>{update.notes || tr("app.s0599")}</p>
-      <button className="button primary full" disabled={Boolean(busy)} onClick={onInstall}>{busy ? <LoaderCircle className="spin" size={14}/> : <Download size={14}/>}{busy ?? tr("app.s0600")}</button>
-      <em>{tr("app.s0601")}</em>
-    </div>}
-    {error && <p className="update-error" role="alert">{error}</p>}
-    <button className="button quiet full" disabled={!policy?.enabled || Boolean(busy)} onClick={onCheck}>{busy && !update ? <LoaderCircle className="spin" size={14}/> : <RefreshCw size={14}/>}{busy && !update ? busy : tr("app.s0602")}</button>
-  </section>;
-}
-function AsrBackendPicker({ runtime, onSelect }: {
-    runtime: RuntimeInfo | null;
-    onSelect: (backend: "cpu" | "vulkan") => void;
-}) {
-    if (!runtime || !runtime.availableAsrBackends.includes("vulkan"))
-        return null;
-    return <section className="backend-picker"><span><strong>{tr("app.s0603")}</strong><small>{tr("app.s0604")}</small></span><div>{(["cpu", "vulkan"] as const).map((backend) => <button key={backend} className={runtime.asrBackend === backend ? "active" : ""} onClick={() => onSelect(backend)} aria-pressed={runtime.asrBackend === backend}>{backend.toUpperCase()}</button>)}</div></section>;
-}
-function DiagnosticsPanel({ runtime, onOpen }: {
-    runtime: RuntimeInfo | null;
-    onOpen: () => void;
-}) {
-    const available = runtime?.diagnosticsAvailable ?? false;
-    return <section className="diagnostics-panel"><span><strong>{tr("app.s0605")}</strong><small title={runtime?.logDirectory ?? undefined}>{available ? tr("app.s0606") : tr("app.s0607")}</small></span><button disabled={!available} onClick={onOpen}><FolderOpen size={14}/>{tr("app.s0608")}</button></section>;
-}
-function ModelManager({ models, selectedPath, job, onSelect, onInstall, onCancel, onRemove }: {
-    models: ModelStatus[];
-    selectedPath: string | null;
-    job: ModelDownloadJob | null;
-    onSelect: (path: string) => void;
-    onInstall: (modelId: string) => void;
-    onCancel: () => void;
-    onRemove: (modelId: string) => void;
-}) {
-    const formatSize = (bytes: number) => `${Math.round(bytes / 1024 / 1024)} MB`;
-    return <section className="model-manager">
-    <div className="model-heading"><span><strong>{tr("app.s0609")}</strong><small>{tr("app.s0610")}</small></span><ShieldCheck size={17}/></div>
-    <div className="model-options">{models.map((model) => {
-            const currentJob = job?.modelId === model.id ? job : null;
-            const downloading = currentJob && ["queued", "running"].includes(currentJob.status);
-            const selected = model.installed && model.path === selectedPath;
-            return <article className={`model-option ${selected ? "selected" : ""}`} key={model.id}>
-        <header><span><strong>{model.recommended ? tr("app.composite.recommendedModel", { name: modelName(model) }) : modelName(model)}</strong><small>{formatSize(model.size)} · {model.license}</small></span>{selected && <i><Check size={12}/>{tr("app.s0612")}</i>}</header>
-        <p>{modelDescription(model)}</p>
-        <small className="model-source" title={model.source}>{tr("app.s0613")}</small>
-        {downloading && <div className="model-progress"><span style={{ width: `${Math.max(2, currentJob.progress * 100)}%` }}/><small>{Math.round(currentJob.progress * 100)}% · {formatSize(currentJob.bytesDownloaded)} / {formatSize(currentJob.totalBytes)}</small></div>}
-        <div className="model-actions">
-          {downloading ? <button onClick={onCancel}>{tr("app.s0614")}</button> : model.installed ? <><button className="primary" onClick={() => onSelect(model.path)}>{selected ? tr("app.s0615") : tr("app.s0616")}</button><button onClick={() => onRemove(model.id)}>{tr("app.s0617")}</button></> : <button className="primary" onClick={() => onInstall(model.id)}><Download size={13}/>{tr("app.s0618")}</button>}
-        </div>
-      </article>;
-        })}</div>
-    <p className="runtime-disclosure">{tr("app.s0619")}</p>
-  </section>;
-}
-export function SpeakerPackageManager({ packageStatus, job, disabled, onInstall, onCancel, onResume }: {
-    packageStatus: SpeakerPackageStatus | null;
-    job: SpeakerJob | null;
-    disabled: boolean;
-    onInstall: () => void;
-    onCancel: () => void;
-    onResume: () => void;
-}) {
-    const active = job && ["queued", "running"].includes(job.status);
-    const resumable = job && ["cancelled", "failed", "interrupted"].includes(job.status);
-    return <section className="speaker-package-manager" aria-label={tr("app.s0620")}>
-    <div className="model-heading"><span><strong>{tr("app.s0621")}</strong><small>{tr("app.composite.speakerRuntime", { version: packageStatus?.runtimeVersion ?? tr("app.s0622") })}</small></span><Users size={17}/></div>
-    <p>{packageStatus ? tr("app.speaker.packageDescription") : tr("app.s0624")}</p>
-    {packageStatus && <div className="speaker-package-summary"><span><strong>{formatBytes(packageStatus.downloadSize)}</strong><small>{tr("app.s0625")}</small></span><span><strong>{packageStatus.license}</strong><small>{tr("app.s0626")}</small></span><span className={packageStatus.verified === true ? "verified" : "optional"}>{packageStatus.verified === true ? <Check size={13}/> : <ShieldCheck size={13}/>}{packageStatus.verified === true ? tr("app.s0627") : tr("app.s0628")}</span></div>}
-    {packageStatus && <details><summary>{tr("app.s0629") + " "}{packageStatus.assets.length}{tr("app.s0630")}</summary><div className="speaker-asset-list">{packageStatus.assets.map((asset) => <article key={asset.id}><span><strong>{asset.name}</strong><small>{formatBytes(asset.size)} · {asset.license}</small></span><small title={asset.source}>{asset.source.replace(/^https?:\/\//, "")}</small><code title={asset.sha256}>SHA-256 {asset.sha256.slice(0, 12)}…</code></article>)}</div></details>}
-    {active && <div className="model-progress"><span style={{ width: `${Math.max(2, job.progress * 100)}%` }}/><small>{job.stage} · {Math.round(job.progress * 100)}% · {formatBytes(job.bytesDownloaded)} / {formatBytes(job.totalBytes)}</small></div>}
-    {job?.errorMessage && <p className="speaker-package-error" role="alert">{job.errorMessage}</p>}
-    <div className="model-actions">{active ? <button disabled={disabled} onClick={onCancel}>{tr("app.s0530")}</button> : resumable ? <button disabled={disabled} onClick={onResume}><RefreshCw size={13}/>{tr("app.s0279")}</button> : packageStatus?.installed && packageStatus.verified === true ? <span className="speaker-package-ready"><Check size={13}/>{tr("app.s0631")}</span> : <button className="primary" disabled={disabled || !packageStatus} onClick={onInstall}><Download size={13}/>{tr("app.s0632")}</button>}</div>
-    <p className="runtime-disclosure">{tr("app.s0633")}</p>
-  </section>;
-}
-function SegmentRow({ segment, speaker, speakerManual, selected, active, translation, onSelect, onSave }: {
-    segment: Segment;
-    speaker?: SpeakerIdentity;
-    speakerManual?: boolean;
-    selected: boolean;
-    active: boolean;
-    translation?: Project["translations"][string];
-    onSelect: (mode: SegmentSelectionMode) => void;
-    onSave: (text: string) => void;
-}) {
-    const [draft, setDraft] = useState(segment.text);
-    useEffect(() => setDraft(segment.text), [segment.text]);
-    const translated = translation?.segments.find((item) => item.segmentId === segment.id)?.text;
-    return <article className={`segment-row ${selected ? "selected" : ""} ${active ? "active" : ""}`} aria-label={tr("app.s0634", { "0": formatTime(segment.start), "1": formatTime(segment.end) })} onClick={(event) => onSelect(event.shiftKey ? "range" : event.ctrlKey || event.metaKey ? "toggle" : "replace")}>
-    <input className="segment-select" type="checkbox" aria-label={tr("app.s0635", { "0": formatTime(segment.start), "1": formatTime(segment.end) })} checked={selected} onClick={(event) => { event.stopPropagation(); onSelect(event.shiftKey ? "range" : "toggle"); }} onChange={() => undefined}/>
-    <button className="segment-time" aria-label={tr("app.s0636", { "0": formatTime(segment.start) })}>{formatTime(segment.start)}{speaker && <small><i className={`speaker-color speaker-${speaker.colorIndex % 6}`}/>{speaker.label}{speakerManual ? tr("app.s0637") : ""}</small>}</button>
-    <div><textarea value={draft} onChange={(event) => setDraft(event.target.value)} onFocus={() => { if (!active)
-        onSelect("replace"); }} onBlur={() => onSave(draft)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
-        event.preventDefault();
-        onSave(draft);
-    } }} onClick={(event) => event.stopPropagation()} aria-label={tr("app.s0638", { "0": formatTime(segment.start) })} title={tr("app.s0639")}/><p className={translation?.status === "stale" ? "translation stale" : "translation"}>{translated ?? ""}</p></div>
-    <span className={segment.confidence != null && segment.confidence < 0.8 ? "confidence low" : "confidence"}>{segment.confidence == null ? "—" : `${Math.round(segment.confidence * 100)}%`}</span>
-  </article>;
 }
 export default App;

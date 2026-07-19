@@ -41,13 +41,21 @@ jobs:
       - name: Run Rust tests
         run: cargo test --all-targets --all-features
 
-  node-core:
-    name: Node.js Core / test
+  tauri:
+    name: Tauri / format, clippy, test, IPC smoke
     runs-on: windows-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
+    env:
+      TAURI_CONFIG: '{"bundle":{"resources":[]}}'
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
+
+      - name: Set up Rust stable
+        shell: pwsh
+        run: |
+          rustup update stable
+          rustup component add rustfmt clippy
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
@@ -55,8 +63,29 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
-      - name: Run Node.js Core tests
-        run: node --test tests/core.test.mjs tests/cli.test.mjs
+      - name: Build Core executable for IPC tests
+        run: cargo build --bin siaocut-core
+
+      - name: Prepare Core sidecar for Tauri checks
+        run: node tools/prepare-sidecar.mjs --profile debug
+
+      - name: Check generated Core contract
+        run: node tools/generate-core-contract.mjs --check
+
+      - name: Build Desktop web assets
+        shell: pwsh
+        run: |
+          npm ci --prefix apps/desktop
+          npm --prefix apps/desktop run build
+
+      - name: Check Tauri formatting
+        run: cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --all -- --check
+
+      - name: Run Tauri Clippy
+        run: cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
+
+      - name: Run Tauri tests and named-pipe smoke
+        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets --all-features
 
   desktop:
     name: Desktop / build, UI, E2E

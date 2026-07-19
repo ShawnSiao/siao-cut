@@ -103,7 +103,7 @@ Run the local verification commands if the app does not start:
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --all-features
-node --test tests/core.test.mjs tests/cli.test.mjs
+cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets --all-features
 npm --prefix apps/desktop run build
 npm --prefix apps/desktop run test:ui
 npm --prefix apps/desktop run test:e2e

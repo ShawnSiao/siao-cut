@@ -97,12 +97,15 @@ Rust：
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --all-features
+node tools/generate-core-contract.mjs --check
 ```
 
-Node.js Core：
+Tauri：
 
 ```powershell
-node --test tests/core.test.mjs tests/cli.test.mjs
+cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --all -- --check
+cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
+cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets --all-features
 ```
 
 Desktop：

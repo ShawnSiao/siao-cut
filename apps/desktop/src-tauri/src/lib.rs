@@ -271,6 +271,24 @@ fn execute_core(args: &[String]) -> Result<Value, String> {
     parse_core_response(&output.stdout, &output.stderr)
 }
 
+#[cfg(test)]
+fn execute_core_over_named_pipe(args: &[String], home: &Path) -> Result<Value, String> {
+    validate_core_args(args)?;
+    let runtime = discover_runtime(None)?;
+    let mut command = Command::new(&runtime.core);
+    configure_sync_command(&mut command, &runtime);
+    let output = command
+        .env("SIAOCUT_HOME", home)
+        .env("SIAOCUT_SERVICE_IDLE_MS", "100")
+        .env_remove("SIAOCUT_DIRECT")
+        .arg("--json")
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| format!("无法启动 Core：{error}"))?;
+    parse_core_response(&output.stdout, &output.stderr)
+}
+
 async fn execute_core_async(args: Vec<String>, runtime: &RuntimePaths) -> Result<Value, String> {
     validate_core_args(&args)?;
     let command_name = diagnostic_command_name(&args).to_owned();
@@ -617,8 +635,9 @@ mod tests {
     }
 
     #[test]
-    fn reaches_core_health_contract() {
-        let response = execute_core(&["health".into()]).unwrap();
+    fn reaches_core_health_contract_over_named_pipe() {
+        let home = tempfile::tempdir().unwrap();
+        let response = execute_core_over_named_pipe(&["health".into()], home.path()).unwrap();
         assert_eq!(response["status"], "ok");
         assert_eq!(response["apiVersion"], "0.1");
     }

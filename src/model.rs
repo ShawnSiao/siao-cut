@@ -171,6 +171,38 @@ pub struct Segment {
     pub confidence: Option<f64>,
 }
 
+pub fn reconcile_source_language<'a>(
+    reported: &str,
+    texts: impl IntoIterator<Item = &'a str>,
+) -> String {
+    let mut latin_letters = 0usize;
+    let mut han_characters = 0usize;
+    for character in texts.into_iter().flat_map(str::chars) {
+        if character.is_ascii_alphabetic() {
+            latin_letters += 1;
+        } else if matches!(
+            character as u32,
+            0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF
+        ) {
+            han_characters += 1;
+        }
+    }
+    let normalized = reported.trim().to_ascii_lowercase();
+    if normalized.starts_with("zh")
+        && latin_letters >= 40
+        && latin_letters >= han_characters.saturating_mul(4).saturating_add(20)
+    {
+        "en".to_owned()
+    } else if normalized.starts_with("en")
+        && han_characters >= 20
+        && han_characters >= latin_letters.saturating_mul(2)
+    {
+        "zh".to_owned()
+    } else {
+        normalized
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Word {
@@ -229,7 +261,7 @@ impl SubtitleIssueKind {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase")]
 pub struct SubtitleQualityThresholds {
     pub max_duration_seconds: f64,
     pub max_line_characters: usize,
@@ -501,6 +533,8 @@ pub struct Task {
     pub base_version_id: Option<String>,
     pub progress: f64,
     pub error_message: Option<String>,
+    #[serde(default)]
+    pub error_code: Option<String>,
     pub attempt_count: i64,
     pub cancel_requested_at: Option<String>,
     #[serde(default)]
@@ -575,6 +609,8 @@ pub struct AutoWorkflow {
     pub audit: Option<serde_json::Value>,
     pub cancel_requested_at: Option<String>,
     pub error_message: Option<String>,
+    #[serde(default)]
+    pub error_code: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub completed_at: Option<String>,
@@ -591,10 +627,7 @@ pub fn background_error_code(status: &str, error_message: Option<&str>) -> Optio
     if let Some(prefix) = error_message
         .and_then(|message| message.split_once(':'))
         .map(|(value, _)| value.trim())
-        && !prefix.is_empty()
-        && prefix.chars().all(|character| {
-            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_'
-        })
+        && crate::contracts::CORE_ERROR_CODES.contains(&prefix)
     {
         return Some(prefix.to_owned());
     }
@@ -697,7 +730,25 @@ pub struct Transcript {
 
 #[cfg(test)]
 mod tests {
-    use super::background_error_code;
+    use super::{SubtitleQualityThresholds, background_error_code, reconcile_source_language};
+    use serde_json::json;
+
+    #[test]
+    fn legacy_subtitle_thresholds_keep_existing_values_and_default_max_lines() {
+        let thresholds: SubtitleQualityThresholds = serde_json::from_value(json!({
+            "maxDurationSeconds": 6.5,
+            "maxLineCharacters": 36,
+            "maxCharactersPerSecond": 18.0,
+            "minGapSeconds": 0.2
+        }))
+        .unwrap();
+
+        assert_eq!(thresholds.max_duration_seconds, 6.5);
+        assert_eq!(thresholds.max_line_characters, 36);
+        assert_eq!(thresholds.max_characters_per_second, 18.0);
+        assert_eq!(thresholds.min_gap_seconds, 0.2);
+        assert_eq!(thresholds.max_lines, 2);
+    }
 
     #[test]
     fn background_error_codes_preserve_machine_prefixes_and_hide_raw_messages() {
@@ -714,5 +765,26 @@ mod tests {
             Some("job_interrupted".to_owned())
         );
         assert_eq!(background_error_code("running", None), None);
+    }
+
+    #[test]
+    fn transcript_language_reconciliation_requires_strong_script_evidence() {
+        assert_eq!(
+            reconcile_source_language(
+                "ZH",
+                [
+                    "What racing reveals about working with artificial intelligence and how teams use data to improve performance."
+                ],
+            ),
+            "en"
+        );
+        assert_eq!(
+            reconcile_source_language(
+                "en",
+                ["今天讨论本地视频剪辑、字幕校对以及模型运行环境是否稳定可靠。"]
+            ),
+            "zh"
+        );
+        assert_eq!(reconcile_source_language("zh", ["OpenAI"]), "zh");
     }
 }

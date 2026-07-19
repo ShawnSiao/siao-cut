@@ -7,8 +7,10 @@
   "description": "Windows-local, agent-assisted transcript editing reference implementation.",
   "scripts": {
     "cli": "powershell -ExecutionPolicy Bypass -File skills/siaocut/bin/siaocut.ps1",
-    "test": "node --test tests/core.test.mjs tests/cli.test.mjs && cargo test",
+    "test": "cargo test --all-targets --all-features",
     "test:rust": "cargo test",
+    "contract:generate": "node tools/generate-core-contract.mjs",
+    "contract:check": "node tools/generate-core-contract.mjs --check",
     "prototype": "node tools/serve-prototype.mjs",
     "desktop:dev": "npm --prefix apps/desktop run tauri dev",
     "desktop:build": "npm --prefix apps/desktop run tauri build --",

@@ -340,6 +340,7 @@ pub fn review_item(
     if !["pending", "conflict"].contains(&status.as_str()) {
         bail!("补丁已经审阅：{patch_item_id}")
     }
+    let tx = db.transaction()?;
     let mut changed_project = false;
     if action == "apply" {
         match target.as_str() {
@@ -347,11 +348,11 @@ pub fn review_item(
                 let segment_id = segment_id
                     .as_deref()
                     .ok_or_else(|| anyhow!("补丁缺少字幕段"))?;
-                db.execute(
+                tx.execute(
                     "UPDATE segments SET text=?2 WHERE id=?1 AND project_id=?3",
                     params![segment_id, &after, &project_id],
                 )?;
-                db.execute(
+                tx.execute(
                     "UPDATE translations SET status='stale' WHERE project_id=?1",
                     [&project_id],
                 )?;
@@ -363,28 +364,28 @@ pub fn review_item(
                 let language = language
                     .as_deref()
                     .ok_or_else(|| anyhow!("补丁缺少目标语言"))?;
-                db.execute("INSERT INTO translations(project_id,language,status,updated_at) VALUES(?1,?2,'current',?3) ON CONFLICT(project_id,language) DO UPDATE SET status='current',updated_at=excluded.updated_at",params![&project_id,language,now()])?;
-                db.execute("INSERT INTO translation_segments(project_id,language,segment_id,text) VALUES(?1,?2,?3,?4) ON CONFLICT(project_id,language,segment_id) DO UPDATE SET text=excluded.text",params![&project_id,language,segment_id,&after])?;
+                tx.execute("INSERT INTO translations(project_id,language,status,updated_at) VALUES(?1,?2,'current',?3) ON CONFLICT(project_id,language) DO UPDATE SET status='current',updated_at=excluded.updated_at",params![&project_id,language,now()])?;
+                tx.execute("INSERT INTO translation_segments(project_id,language,segment_id,text) VALUES(?1,?2,?3,?4) ON CONFLICT(project_id,language,segment_id) DO UPDATE SET text=excluded.text",params![&project_id,language,segment_id,&after])?;
             }
             "summary" => {
-                db.execute("INSERT INTO summaries(project_id,text,updated_at) VALUES(?1,?2,?3) ON CONFLICT(project_id) DO UPDATE SET text=excluded.text,updated_at=excluded.updated_at",params![&project_id,&after,now()])?;
+                tx.execute("INSERT INTO summaries(project_id,text,updated_at) VALUES(?1,?2,?3) ON CONFLICT(project_id) DO UPDATE SET text=excluded.text,updated_at=excluded.updated_at",params![&project_id,&after,now()])?;
             }
             "cut" => {
                 let segment_id = segment_id
                     .as_deref()
                     .ok_or_else(|| anyhow!("补丁缺少字幕段"))?;
-                let (start, end): (f64, f64) = db.query_row(
+                let (start, end): (f64, f64) = tx.query_row(
                     "SELECT start_seconds,end_seconds FROM segments WHERE id=?1 AND project_id=?2",
                     params![segment_id, &project_id],
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )?;
-                db.execute("INSERT INTO edits(id,project_id,kind,status,segment_id,start_seconds,end_seconds,reason,created_at) VALUES(?1,?2,'semantic_cut','applied',?3,?4,?5,?6,?7)",params![new_id("e"),&project_id,segment_id,start,end,&reason,now()])?;
+                tx.execute("INSERT INTO edits(id,project_id,kind,status,segment_id,start_seconds,end_seconds,reason,created_at) VALUES(?1,?2,'semantic_cut','applied',?3,?4,?5,?6,?7)",params![new_id("e"),&project_id,segment_id,start,end,&reason,now()])?;
             }
             _ => bail!("未知补丁目标：{target}"),
         }
         changed_project = true;
     }
-    db.execute(
+    tx.execute(
         "UPDATE agent_patch_items SET status=?2 WHERE id=?1",
         params![
             patch_item_id,
@@ -392,9 +393,10 @@ pub fn review_item(
         ],
     )?;
     if changed_project {
-        project::snapshot(db, &project_id, &format!("应用 Agent 建议：{reason}"))?;
+        project::snapshot_in_transaction(&tx, &project_id, &format!("应用 Agent 建议：{reason}"))?;
     }
-    finalize_if_resolved(db, &set_id)?;
+    finalize_if_resolved(&tx, &set_id)?;
+    tx.commit()?;
     Ok((project_id, load_set(db, &set_id)?))
 }
 

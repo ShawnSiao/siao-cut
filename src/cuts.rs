@@ -105,16 +105,16 @@ pub fn detect(db: &mut Connection, project_id: &str) -> Result<Vec<Edit>> {
     if suggestions.is_empty() {
         return Ok(suggestions);
     }
-    let tx = db.transaction()?;
-    for edit in &suggestions {
-        if edit.kind == "word_cut" {
-            insert_word_range_edit(&tx, project_id, edit)?;
-        } else {
-            tx.execute("INSERT INTO edits(id,project_id,kind,status,segment_id,start_seconds,end_seconds,reason,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",params![&edit.id,project_id,&edit.kind,&edit.status,&edit.segment_id,edit.start,edit.end,&edit.reason,&edit.created_at])?;
+    project::mutate_with_snapshot(db, project_id, "检测粗剪建议", |tx| {
+        for edit in &suggestions {
+            if edit.kind == "word_cut" {
+                insert_word_range_edit(tx, project_id, edit)?;
+            } else {
+                tx.execute("INSERT INTO edits(id,project_id,kind,status,segment_id,start_seconds,end_seconds,reason,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",params![&edit.id,project_id,&edit.kind,&edit.status,&edit.segment_id,edit.start,edit.end,&edit.reason,&edit.created_at])?;
+            }
         }
-    }
-    tx.commit()?;
-    project::snapshot(db, project_id, "检测粗剪建议")?;
+        Ok(())
+    })?;
     Ok(suggestions)
 }
 
@@ -371,10 +371,9 @@ pub fn create_word_range(
         None,
         None,
     )?;
-    let tx = db.transaction()?;
-    insert_word_range_edit(&tx, project_id, &edit)?;
-    tx.commit()?;
-    project::snapshot(db, project_id, "创建词范围剪辑")?;
+    project::mutate_with_snapshot(db, project_id, "创建词范围剪辑", |tx| {
+        insert_word_range_edit(tx, project_id, &edit)
+    })?;
     Ok(edit)
 }
 
@@ -415,28 +414,27 @@ pub fn set_status(
     if status == "applied" && edit.cut_range.as_ref().is_some_and(|range| range.stale) {
         bail!("word_alignment_stale: 字幕文本已经变化，请重新创建词范围剪辑")
     }
-    let changed = db.execute(
-        "UPDATE edits SET status=?3 WHERE id=?1 AND project_id=?2 AND kind IN ('cut','word_cut','semantic_cut')",
-        params![cut_id, project_id, status],
-    )?;
-    if changed == 0 {
-        bail!("软剪辑不存在：{cut_id}")
-    }
-    if status == "applied" && edit.kind == "word_cut" {
-        db.execute(
-            "UPDATE translations SET status='stale' WHERE project_id=?1",
-            [project_id],
+    let reason = if status == "applied" {
+        "应用软剪辑"
+    } else {
+        "恢复软剪辑"
+    };
+    project::mutate_with_snapshot(db, project_id, reason, |tx| {
+        let changed = tx.execute(
+            "UPDATE edits SET status=?3 WHERE id=?1 AND project_id=?2 AND kind IN ('cut','word_cut','semantic_cut')",
+            params![cut_id, project_id, status],
         )?;
-    }
-    project::snapshot(
-        db,
-        project_id,
-        if status == "applied" {
-            "应用软剪辑"
-        } else {
-            "恢复软剪辑"
-        },
-    )?;
+        if changed == 0 {
+            bail!("软剪辑不存在：{cut_id}")
+        }
+        if status == "applied" && edit.kind == "word_cut" {
+            tx.execute(
+                "UPDATE translations SET status='stale' WHERE project_id=?1",
+                [project_id],
+            )?;
+        }
+        Ok(())
+    })?;
     project::load(db, project_id)?
         .edits
         .into_iter()
@@ -445,11 +443,12 @@ pub fn set_status(
 }
 
 pub fn restore_all(db: &mut Connection, project_id: &str) -> Result<usize> {
-    let count = db.execute(
-        "UPDATE edits SET status='restored' WHERE project_id=?1 AND kind IN ('cut','word_cut','semantic_cut') AND status='applied'",
-        [project_id],
-    )?;
-    project::snapshot(db, project_id, "恢复全部软剪辑")?;
+    let count = project::mutate_with_snapshot(db, project_id, "恢复全部软剪辑", |tx| {
+        Ok(tx.execute(
+            "UPDATE edits SET status='restored' WHERE project_id=?1 AND kind IN ('cut','word_cut','semantic_cut') AND status='applied'",
+            [project_id],
+        )?)
+    })?;
     Ok(count)
 }
 

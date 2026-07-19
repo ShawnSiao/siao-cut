@@ -71,7 +71,7 @@ npm run desktop:dev
 ## 开发与验证
 
 ```powershell
-# Rust Core 与 Node.js 合同测试
+# Rust Core 测试
 npm test
 
 # Desktop 构建、组件测试与浏览器端到端测试

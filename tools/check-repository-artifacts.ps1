@@ -12,7 +12,15 @@ if (-not $repositoryRoot) {
     throw 'The current directory is not inside a Git repository.'
 }
 
-$trackedFiles = @(git -C $repositoryRoot ls-files --cached --others --exclude-standard | Sort-Object -Unique)
+$deletedFiles = @(
+    git -C $repositoryRoot ls-files --deleted |
+        ForEach-Object { $_.Replace('\', '/') }
+)
+$trackedFiles = @(
+    git -C $repositoryRoot ls-files --cached --others --exclude-standard |
+        Where-Object { $deletedFiles -notcontains $_.Replace('\', '/') } |
+        Sort-Object -Unique
+)
 if ($LASTEXITCODE -ne 0) {
     throw 'Unable to list repository files.'
 }

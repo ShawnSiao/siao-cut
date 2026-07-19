@@ -70,6 +70,7 @@ pub(crate) fn create_for_workflow(
         base_version_id: project.history.current_version_id.clone(),
         progress: 0.0,
         error_message: None,
+        error_code: None,
         attempt_count: 0,
         cancel_requested_at: None,
         workflow_id: workflow_id.map(str::to_owned),

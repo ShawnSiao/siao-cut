@@ -25,6 +25,10 @@ describe("App locale switching", () => {
     expect(screen.getByRole("button", { name: "Transcribe" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Send to Agent" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Export video" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Undo" })).toBeInTheDocument();
+    expect(screen.getByText("4 subtitles")).toBeInTheDocument();
+    expect(screen.getByText("1 subtitle")).toBeInTheDocument();
+    expect(screen.getByText("ZH · 4 segments · 5 words")).toBeInTheDocument();
     expect(projectHeading).toHaveTextContent("发布口播 · 草稿");
     expect(document.documentElement.lang).toBe("en-US");
   });

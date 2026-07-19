@@ -96,11 +96,14 @@ pub fn set(db: &mut Connection, project_id: &str, preset: &str, position: &str) 
         return Ok(current);
     }
     let transcript = current.transcript.clone();
-    db.execute(
-        "UPDATE projects SET subtitle_style_json=?2,updated_at=?3 WHERE id=?1",
-        params![project_id, storage_json(&next)?, crate::util::now()],
-    )?;
-    project::snapshot(db, project_id, "更新字幕样式")?;
+    let style_json = storage_json(&next)?;
+    project::mutate_with_snapshot(db, project_id, "更新字幕样式", |tx| {
+        tx.execute(
+            "UPDATE projects SET subtitle_style_json=?2,updated_at=?3 WHERE id=?1",
+            params![project_id, style_json, crate::util::now()],
+        )?;
+        Ok(())
+    })?;
     let updated = project::load(db, project_id)?;
     if updated.transcript != transcript {
         bail!("subtitle_style_content_changed: 字幕样式设置不得修改正文或时间")
