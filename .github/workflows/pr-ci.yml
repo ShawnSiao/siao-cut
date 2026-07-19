@@ -64,6 +64,9 @@ jobs:
       - name: Build Core executable for IPC tests
         run: cargo build --bin siaocut-core
 
+      - name: Prepare Core sidecar for Tauri checks
+        run: node tools/prepare-sidecar.mjs --profile debug
+
       - name: Check generated Core contract
         run: node tools/generate-core-contract.mjs --check
 
