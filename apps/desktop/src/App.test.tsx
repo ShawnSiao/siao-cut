@@ -512,8 +512,13 @@ describe("SiaoCut review workbench", () => {
     fireEvent.change(canvas, { target: { value: "9:16" } });
     await waitFor(() => expect(screen.getByText("画布已改为 9:16；请重新生成预览以查看最终构图。")).toBeInTheDocument());
     expect(screen.getByLabelText("竖屏构图")).toBeEnabled();
-    fireEvent.change(screen.getByLabelText("字幕模式"), { target: { value: "translated" } });
+    const subtitleMode = screen.getByLabelText("字幕模式");
+    fireEvent.change(subtitleMode, { target: { value: "translated" } });
+    await waitFor(() => expect(subtitleMode).toHaveValue("translated"));
     expect(screen.getByLabelText("译文语言")).toBeEnabled();
+    expect(screen.getByLabelText("译文语言")).toHaveValue("en");
+    fireEvent.change(subtitleMode, { target: { value: "bilingual" } });
+    await waitFor(() => expect(subtitleMode).toHaveValue("bilingual"));
     expect(screen.getByText(/不会隐藏原片已烧录字幕/)).toBeInTheDocument();
   });
 

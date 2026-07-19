@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Activity, Check, CircleAlert, Clock3, Cpu, Database, Download, FileVideo2, FolderOpen, HardDrive, Headphones, LoaderCircle, RefreshCw, ShieldCheck, Users } from "lucide-react";
 import { getUiLocale, tr } from "../i18n";
 import type { AudioAnalysisJob, AudioRisk, ModelDownloadJob, ModelStatus, Project, RuntimeInfo, Segment, SpeakerIdentity, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SpeechEvidence, SpeechInsights, SpeechPause, UpdateMetadata, UpdatePolicy } from "../types";
@@ -265,12 +265,17 @@ export function SegmentRow({ segment, speaker, speakerManual, selected, active, 
     onSave: (text: string) => void;
 }) {
     const [draft, setDraft] = useState(segment.text);
+    const rowRef = useRef<HTMLElement>(null);
     useEffect(() => setDraft(segment.text), [segment.text]);
+    useEffect(() => {
+        if (active && typeof rowRef.current?.scrollIntoView === "function")
+            rowRef.current.scrollIntoView({ block: "nearest" });
+    }, [active]);
     const translated = translation?.segments.find((item) => item.segmentId === segment.id)?.text;
-    return <article className={`segment-row ${selected ? "selected" : ""} ${active ? "active" : ""}`} aria-label={tr("app.s0634", { "0": formatTime(segment.start), "1": formatTime(segment.end) })} onClick={(event) => onSelect(event.shiftKey ? "range" : event.ctrlKey || event.metaKey ? "toggle" : "replace")}>
+    return <article ref={rowRef} className={`segment-row ${selected ? "selected" : ""} ${active ? "active" : ""}`} data-segment-id={segment.id} aria-label={tr("app.s0634", { "0": formatTime(segment.start), "1": formatTime(segment.end) })} onClick={(event) => onSelect(event.shiftKey ? "range" : event.ctrlKey || event.metaKey ? "toggle" : "replace")}>
     <input className="segment-select" type="checkbox" aria-label={tr("app.s0635", { "0": formatTime(segment.start), "1": formatTime(segment.end) })} checked={selected} onClick={(event) => { event.stopPropagation(); onSelect(event.shiftKey ? "range" : "toggle"); }} onChange={() => undefined}/>
     <button className="segment-time" aria-label={tr("app.s0636", { "0": formatTime(segment.start) })}>{formatTime(segment.start)}{speaker && <small><i className={`speaker-color speaker-${speaker.colorIndex % 6}`}/>{speaker.label}{speakerManual ? tr("app.s0637") : ""}</small>}</button>
-    <div><textarea value={draft} onChange={(event) => setDraft(event.target.value)} onFocus={() => { if (!active)
+    <div><textarea rows={1} value={draft} onChange={(event) => setDraft(event.target.value)} onFocus={() => { if (!active)
         onSelect("replace"); }} onBlur={() => onSave(draft)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
         event.preventDefault();
         onSave(draft);
