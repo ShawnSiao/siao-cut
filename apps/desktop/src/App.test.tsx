@@ -429,9 +429,11 @@ describe("SiaoCut review workbench", () => {
     expect(within(mergeDialog).getByRole("region", { name: "字幕操作范围" })).toBeInTheDocument();
     fireEvent.click(within(mergeDialog).getByRole("button", { name: "确认合并 2 段" }));
 
-    await waitFor(() => expect(screen.getByText(/相邻字幕已合并.*Ctrl\+Z 撤销/)).toBeInTheDocument());
-    expect(screen.getAllByRole("textbox", { name: /字幕文本/ })).toHaveLength(3);
-    expect(screen.getByDisplayValue(/今天想和大家聊聊.*它不是替你决定内容/)).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText(/相邻字幕已合并.*Ctrl\+Z 撤销/)).toBeInTheDocument();
+      expect(screen.getAllByRole("textbox", { name: /字幕文本/ })).toHaveLength(3);
+      expect(screen.getByDisplayValue(/今天想和大家聊聊.*它不是替你决定内容/)).toBeInTheDocument();
+    });
   });
 
   it("batch replaces transcript text and exposes all export formats", async () => {
