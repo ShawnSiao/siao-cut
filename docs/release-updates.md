@@ -1,5 +1,20 @@
 # SiaoCut 签名更新发布
 
+[简体中文](release-updates.md) | [English](release-updates.en.md)
+
+## 发布状态与术语
+
+截至 2026 年 7 月 21 日，GitHub 仓库没有标签或 Release。源码可以构建，Windows 10 未签名候选包已经完成部分本地验收，但仍不属于公开发行版。
+
+| 状态 | 含义 | 当前情况 |
+| --- | --- | --- |
+| 源码 Beta | 从仓库构建，需要完整开发环境，只适合受邀测试 | 可用；外部 Creator Beta 验收仍未完成 |
+| 未签名候选包 | 本地生成、`NotSigned`，用于安装与恢复测试 | 已生成 Windows 10 候选包；不公开上传 |
+| GitHub prerelease | 经过正式签名并上传，仍需真实升级与恢复验收 | 尚未创建 |
+| 正式 Release | 签名、校验、SBOM、来源证明和 Windows 10/11 验收全部通过 | 尚不可用 |
+
+候选包证据见 [Windows 候选包验收记录](windows-candidate-acceptance.md)。未完成项不得通过改名、手工上传或取消 prerelease 标记来绕过。
+
 SiaoCut 的 Windows 更新同时使用 Tauri 更新签名和 Authenticode。发布构建还会在 `latest.json` 中记录安装包的 SHA-256 与大小。任一校验未通过时，桌面端不会执行安装器。
 
 ## 密钥边界
