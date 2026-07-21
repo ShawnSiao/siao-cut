@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 19;
+pub const CURRENT_SCHEMA_VERSION: i64 = 20;
 
 struct Migration {
     version: i64,
@@ -89,6 +89,10 @@ const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 19,
         apply: migration_19_instruction_locales,
+    },
+    Migration {
+        version: 20,
+        apply: migration_20_transcription_providers,
     },
 ];
 
@@ -658,6 +662,73 @@ fn migration_19_instruction_locales(tx: &Transaction<'_>) -> Result<()> {
         "ALTER TABLE tasks ADD COLUMN instruction_locale TEXT NOT NULL DEFAULT 'zh-CN';
          ALTER TABLE workflows ADD COLUMN instruction_locale TEXT NOT NULL DEFAULT 'zh-CN';
          ALTER TABLE auto_workflows ADD COLUMN instruction_locale TEXT NOT NULL DEFAULT 'zh-CN';",
+    )?;
+    Ok(())
+}
+
+fn migration_20_transcription_providers(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE transcription_provider_config (
+             provider_id TEXT PRIMARY KEY,
+             endpoint TEXT NOT NULL,
+             model_id TEXT NOT NULL,
+             updated_at TEXT NOT NULL
+         );
+         INSERT INTO transcription_provider_config(provider_id,endpoint,model_id,updated_at)
+         VALUES('moss_openai','http://127.0.0.1:8000','OpenMOSS-Team/MOSS-Transcribe-Diarize','migration');
+         CREATE TABLE transcription_jobs (
+             id TEXT PRIMARY KEY,
+             project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+             provider_id TEXT NOT NULL,
+             endpoint TEXT NOT NULL,
+             model_id TEXT NOT NULL,
+             language TEXT,
+             prompt TEXT,
+             hotwords_json TEXT NOT NULL DEFAULT '[]',
+             status TEXT NOT NULL CHECK(status IN ('queued','running','finalizing','cancelled','interrupted','failed','completed')),
+             stage TEXT NOT NULL,
+             result_run_id TEXT,
+             cancel_requested_at TEXT,
+             error_message TEXT,
+             created_at TEXT NOT NULL,
+             updated_at TEXT NOT NULL,
+             completed_at TEXT,
+             worker_pid INTEGER,
+             attempt_count INTEGER NOT NULL DEFAULT 1
+         );
+         CREATE INDEX idx_transcription_jobs_project ON transcription_jobs(project_id,created_at);
+         CREATE INDEX idx_transcription_jobs_status ON transcription_jobs(status,created_at);
+         CREATE TABLE transcription_runs (
+             id TEXT PRIMARY KEY,
+             project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+             job_id TEXT NOT NULL UNIQUE REFERENCES transcription_jobs(id) ON DELETE CASCADE,
+             provider_id TEXT NOT NULL,
+             model_id TEXT NOT NULL,
+             source_sha256 TEXT NOT NULL,
+             result_sha256 TEXT NOT NULL,
+             raw_result_path TEXT NOT NULL,
+             segment_count INTEGER NOT NULL,
+             speaker_count INTEGER NOT NULL,
+             has_word_timings INTEGER NOT NULL DEFAULT 0,
+             created_at TEXT NOT NULL
+         );
+         CREATE INDEX idx_transcription_runs_project ON transcription_runs(project_id,created_at);
+         CREATE TABLE transcription_review_items (
+             id TEXT PRIMARY KEY,
+             project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+             run_id TEXT NOT NULL REFERENCES transcription_runs(id) ON DELETE CASCADE,
+             segment_id TEXT REFERENCES segments(id) ON DELETE CASCADE,
+             severity TEXT NOT NULL CHECK(severity IN ('info','warning','error')),
+             kind TEXT NOT NULL,
+             message TEXT NOT NULL,
+             status TEXT NOT NULL CHECK(status IN ('open','resolved','ignored')),
+             created_at TEXT NOT NULL,
+             resolved_at TEXT
+         );
+         CREATE INDEX idx_transcription_review_project ON transcription_review_items(project_id,status,severity);
+         ALTER TABLE speaker_tracks ADD COLUMN provider_id TEXT NOT NULL DEFAULT 'legacy_diarization';
+         ALTER TABLE speaker_tracks ADD COLUMN model_id TEXT NOT NULL DEFAULT '';
+         ALTER TABLE speaker_tracks ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'cascade';",
     )?;
     Ok(())
 }

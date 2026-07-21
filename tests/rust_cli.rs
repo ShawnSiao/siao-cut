@@ -73,6 +73,38 @@ fn health_uses_stable_json_envelope() {
 }
 
 #[test]
+fn transcription_provider_is_loopback_only_and_capability_explicit() {
+    let temp = tempdir().unwrap();
+    let providers = run_direct(temp.path(), &["transcription", "providers"]);
+    assert_eq!(providers["providers"][0]["id"], "whisper_cpp");
+    assert_eq!(providers["providers"][1]["id"], "moss_openai");
+    assert_eq!(providers["providers"][1]["wordTimings"], false);
+    assert_eq!(providers["providers"][1]["integratedDiarization"], true);
+
+    let configured = run_direct(
+        temp.path(),
+        &[
+            "transcription",
+            "configure",
+            "--endpoint",
+            "http://localhost:8111",
+        ],
+    );
+    assert_eq!(configured["config"]["endpoint"], "http://localhost:8111");
+
+    let rejected = run_direct_error(
+        temp.path(),
+        &[
+            "transcription",
+            "configure",
+            "--endpoint",
+            "http://example.com:8000",
+        ],
+    );
+    assert_eq!(rejected["code"], "transcription_provider_invalid");
+}
+
+#[test]
 fn subtitle_structure_cli_is_explicit_atomic_and_recoverable() {
     let temp = tempdir().unwrap();
     let media = temp.path().join("subtitle-structure.wav");

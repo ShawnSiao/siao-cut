@@ -27,6 +27,7 @@ mod subtitle_style;
 mod subtitle_workbench;
 mod tasks;
 mod timeline;
+mod transcription;
 mod util;
 mod video_export;
 mod workflows;
@@ -80,6 +81,8 @@ enum Commands {
     Speech(SpeechCommand),
     #[command(subcommand)]
     Speaker(SpeakerCommand),
+    #[command(subcommand)]
+    Transcription(TranscriptionCommand),
     Audit {
         project_id: String,
     },
@@ -202,6 +205,56 @@ enum SpeakerCommand {
         project_id: String,
         segment_id: String,
         speaker_id: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum TranscriptionCommand {
+    Providers,
+    Configure {
+        #[arg(long)]
+        endpoint: String,
+        #[arg(long, default_value = transcription::DEFAULT_MODEL_ID)]
+        model: String,
+    },
+    Health,
+    Start {
+        project_id: String,
+        #[arg(long)]
+        language: Option<String>,
+        #[arg(long)]
+        prompt: Option<String>,
+        #[arg(long = "hotword")]
+        hotwords: Vec<String>,
+        #[arg(long, hide = true)]
+        start_delay_ms: Option<u64>,
+    },
+    Status {
+        job_id: String,
+    },
+    Latest {
+        project_id: String,
+    },
+    Jobs {
+        project_id: Option<String>,
+    },
+    Cancel {
+        job_id: String,
+    },
+    Resume {
+        job_id: String,
+        #[arg(long, hide = true)]
+        start_delay_ms: Option<u64>,
+    },
+    Review {
+        project_id: String,
+        #[arg(long)]
+        all: bool,
+    },
+    Resolve {
+        item_id: String,
+        #[arg(long)]
+        action: String,
     },
 }
 
@@ -596,6 +649,7 @@ fn run(cli: Cli) -> Result<Value> {
     auto_workflow::reconcile_interrupted(&database)?;
     audio_analysis::reconcile_interrupted(&database)?;
     speaker::reconcile_interrupted(&database)?;
+    transcription::reconcile_interrupted(&database)?;
     match cli.command {
         Commands::Contract => {
             unreachable!("contract command returns before database initialization")
@@ -1475,6 +1529,56 @@ fn run(cli: Cli) -> Result<Value> {
                 "message": "当前字幕段的说话人已重新分配，可从项目历史恢复。"
             }))),
         },
+        Commands::Transcription(command) => match command {
+            TranscriptionCommand::Providers => Ok(envelope(json!({
+                "providers": [
+                    {"id": "whisper_cpp", "role": "quick", "isDefault": true, "wordTimings": true, "integratedDiarization": false},
+                    {"id": transcription::PROVIDER_ID, "role": "multispeaker_longform", "isDefault": false, "wordTimings": false, "integratedDiarization": true,
+                     "defaultEndpoint": transcription::DEFAULT_ENDPOINT, "config": transcription::config(&database)?}
+                ]
+            }))),
+            TranscriptionCommand::Configure { endpoint, model } => Ok(envelope(json!({
+                "config": transcription::configure(&database, &endpoint, &model)?,
+                "message": "MOSS 本机服务配置已保存；不会发送 API 密钥或连接远程地址。"
+            }))),
+            TranscriptionCommand::Health => Ok(envelope(
+                json!({"providerHealth": transcription::health(&database)?}),
+            )),
+            TranscriptionCommand::Start {
+                project_id,
+                language,
+                prompt,
+                hotwords,
+                start_delay_ms,
+            } => Ok(envelope(json!({
+                "transcriptionJob": transcription::start(&database, &project_id, language.as_deref(), prompt.as_deref(), &hotwords, start_delay_ms)?,
+                "message": "多人长音频转写已进入后台队列；不会静默回退到快速转写。"
+            }))),
+            TranscriptionCommand::Status { job_id } => Ok(envelope(
+                json!({"transcriptionJob": transcription::load(&database, &job_id)?}),
+            )),
+            TranscriptionCommand::Latest { project_id } => Ok(envelope(
+                json!({"transcriptionJob": transcription::latest(&database, &project_id)?}),
+            )),
+            TranscriptionCommand::Jobs { project_id } => Ok(envelope(
+                json!({"transcriptionJobs": transcription::list(&database, project_id.as_deref())?}),
+            )),
+            TranscriptionCommand::Cancel { job_id } => Ok(envelope(
+                json!({"transcriptionJob": transcription::cancel(&database, &job_id)?, "message": "转写任务已取消；未完成结果不会修改项目。"}),
+            )),
+            TranscriptionCommand::Resume {
+                job_id,
+                start_delay_ms,
+            } => Ok(envelope(
+                json!({"transcriptionJob": transcription::resume(&database, &job_id, start_delay_ms)?, "message": "转写任务已显式继续。"}),
+            )),
+            TranscriptionCommand::Review { project_id, all } => Ok(envelope(
+                json!({"reviewItems": transcription::review_items(&database, &project_id, !all)?}),
+            )),
+            TranscriptionCommand::Resolve { item_id, action } => Ok(envelope(
+                json!({"reviewItem": transcription::resolve_review(&database, &item_id, &action)?}),
+            )),
+        },
         Commands::Runtime(command) => match command {
             RuntimeCommand::Status => Ok(envelope(json!({"runtime":runtime::status()?}))),
             RuntimeCommand::Select {
@@ -1665,6 +1769,18 @@ async fn main() {
         let start_delay_ms = arguments.get(2).and_then(|value| value.parse().ok());
         if let Err(error) = audio_analysis::run_worker(job_id, start_delay_ms) {
             eprintln!("SiaoCut audio analysis worker: {error}");
+            std::process::exit(1)
+        }
+        return;
+    }
+    if arguments.first().map(String::as_str) == Some("__transcription_worker") {
+        let Some(job_id) = arguments.get(1) else {
+            eprintln!("SiaoCut transcription worker: missing job id");
+            std::process::exit(2)
+        };
+        let start_delay_ms = arguments.get(2).and_then(|value| value.parse().ok());
+        if let Err(error) = transcription::run_worker(job_id, start_delay_ms) {
+            eprintln!("SiaoCut transcription worker: {error}");
             std::process::exit(1)
         }
         return;

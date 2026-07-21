@@ -228,6 +228,7 @@ fn validate_core_args(args: &[String]) -> Result<(), String> {
         "auto",
         "audit",
         "transcribe",
+        "transcription",
     ];
     if args.is_empty() || !ALLOWED.contains(&args[0].as_str()) {
         return Err("桌面应用拒绝了未知 Core 命令。".to_owned());
@@ -604,6 +605,7 @@ mod tests {
     fn allows_public_voice_intelligence_commands() {
         assert!(validate_core_args(&["speech".into(), "audio-latest".into()]).is_ok());
         assert!(validate_core_args(&["speaker".into(), "package".into()]).is_ok());
+        assert!(validate_core_args(&["transcription".into(), "providers".into()]).is_ok());
     }
 
     #[test]

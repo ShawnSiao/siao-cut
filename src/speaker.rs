@@ -191,6 +191,12 @@ pub struct SpeakerTrack {
     pub runtime_version: String,
     pub segmentation_model: String,
     pub embedding_model: String,
+    #[serde(default = "legacy_provider_id")]
+    pub provider_id: String,
+    #[serde(default)]
+    pub model_id: String,
+    #[serde(default = "cascade_source_kind")]
+    pub source_kind: String,
     pub generated_at: Option<String>,
     pub speakers: Vec<SpeakerIdentity>,
     pub turns: Vec<SpeakerTurn>,
@@ -204,12 +210,23 @@ impl Default for SpeakerTrack {
             runtime_version: RUNTIME_VERSION.into(),
             segmentation_model: SEGMENTATION_MODEL.into(),
             embedding_model: EMBEDDING_MODEL.into(),
+            provider_id: legacy_provider_id(),
+            model_id: String::new(),
+            source_kind: cascade_source_kind(),
             generated_at: None,
             speakers: Vec::new(),
             turns: Vec::new(),
             associations: Vec::new(),
         }
     }
+}
+
+fn legacy_provider_id() -> String {
+    "legacy_diarization".into()
+}
+
+fn cascade_source_kind() -> String {
+    "cascade".into()
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -925,6 +942,9 @@ fn build_track(segments: &[crate::model::Segment], parsed: &[ParsedTurn]) -> Spe
         runtime_version: RUNTIME_VERSION.into(),
         segmentation_model: SEGMENTATION_MODEL.into(),
         embedding_model: EMBEDDING_MODEL.into(),
+        provider_id: legacy_provider_id(),
+        model_id: String::new(),
+        source_kind: cascade_source_kind(),
         generated_at: Some(generated_at),
         speakers,
         turns,
@@ -964,7 +984,7 @@ fn associate_segments(
 pub fn load_track(db: &Connection, project_id: &str) -> Result<SpeakerTrack> {
     let metadata = db
         .query_row(
-            "SELECT status,runtime_version,segmentation_model,embedding_model,generated_at FROM speaker_tracks WHERE project_id=?1",
+            "SELECT status,runtime_version,segmentation_model,embedding_model,provider_id,model_id,source_kind,generated_at FROM speaker_tracks WHERE project_id=?1",
             [project_id],
             |row| {
                 Ok((
@@ -973,6 +993,9 @@ pub fn load_track(db: &Connection, project_id: &str) -> Result<SpeakerTrack> {
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
                     row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
                 ))
             },
         )
@@ -1024,7 +1047,10 @@ pub fn load_track(db: &Connection, project_id: &str) -> Result<SpeakerTrack> {
         runtime_version: metadata.1,
         segmentation_model: metadata.2,
         embedding_model: metadata.3,
-        generated_at: Some(metadata.4),
+        provider_id: metadata.4,
+        model_id: metadata.5,
+        source_kind: metadata.6,
+        generated_at: Some(metadata.7),
         speakers,
         turns,
         associations,
@@ -1066,13 +1092,16 @@ pub(crate) fn replace_track_tx(
         return Ok(());
     };
     tx.execute(
-        "INSERT INTO speaker_tracks(project_id,status,runtime_version,segmentation_model,embedding_model,generated_at) VALUES(?1,?2,?3,?4,?5,?6)",
+        "INSERT INTO speaker_tracks(project_id,status,runtime_version,segmentation_model,embedding_model,provider_id,model_id,source_kind,generated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
         params![
             project_id,
             track.status,
             track.runtime_version,
             track.segmentation_model,
             track.embedding_model,
+            track.provider_id,
+            track.model_id,
+            track.source_kind,
             track.generated_at.as_deref().unwrap_or_default()
         ],
     )?;
@@ -1259,6 +1288,9 @@ mod tests {
             runtime_version: RUNTIME_VERSION.into(),
             segmentation_model: SEGMENTATION_MODEL.into(),
             embedding_model: EMBEDDING_MODEL.into(),
+            provider_id: legacy_provider_id(),
+            model_id: String::new(),
+            source_kind: cascade_source_kind(),
             generated_at: Some(timestamp.clone()),
             speakers: vec![
                 SpeakerIdentity {

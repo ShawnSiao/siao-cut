@@ -1,0 +1,945 @@
+use crate::{
+    db,
+    media::tool_path,
+    project,
+    speaker::{SegmentSpeaker, SpeakerIdentity, SpeakerTrack, SpeakerTurn},
+    util::{hidden_command, new_id, now},
+};
+use anyhow::{Context, Result, anyhow, bail};
+use reqwest::{
+    Url,
+    blocking::{Client, multipart},
+};
+use rusqlite::{Connection, OptionalExtension, params};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use sha2::{Digest, Sha256};
+use std::{collections::BTreeMap, fs, path::Path, thread, time::Duration};
+
+pub const PROVIDER_ID: &str = "moss_openai";
+pub const DEFAULT_ENDPOINT: &str = "http://127.0.0.1:8000";
+pub const DEFAULT_MODEL_ID: &str = "OpenMOSS-Team/MOSS-Transcribe-Diarize";
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderConfig {
+    pub provider_id: String,
+    pub endpoint: String,
+    pub model_id: String,
+    pub updated_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderHealth {
+    pub provider_id: String,
+    pub endpoint: String,
+    pub model_id: String,
+    pub state: String,
+    pub detail: String,
+    pub checked_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptionJob {
+    pub id: String,
+    pub project_id: String,
+    pub provider_id: String,
+    pub endpoint: String,
+    pub model_id: String,
+    pub language: Option<String>,
+    pub prompt: Option<String>,
+    pub hotwords: Vec<String>,
+    pub status: String,
+    pub stage: String,
+    pub result_run_id: Option<String>,
+    pub cancel_requested_at: Option<String>,
+    pub error_message: Option<String>,
+    pub error_code: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub completed_at: Option<String>,
+    pub worker_pid: Option<u32>,
+    pub attempt_count: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewItem {
+    pub id: String,
+    pub project_id: String,
+    pub run_id: String,
+    pub segment_id: Option<String>,
+    pub severity: String,
+    pub kind: String,
+    pub message: String,
+    pub status: String,
+    pub created_at: String,
+    pub resolved_at: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ParsedSegment {
+    start: f64,
+    end: f64,
+    speaker: String,
+    text: String,
+}
+
+#[derive(Clone, Debug)]
+struct ImportedSegment {
+    id: String,
+    start: f64,
+    end: f64,
+    speaker: String,
+    text: String,
+}
+
+pub fn config(db: &Connection) -> Result<ProviderConfig> {
+    db.query_row(
+        "SELECT provider_id,endpoint,model_id,updated_at FROM transcription_provider_config WHERE provider_id=?1",
+        [PROVIDER_ID],
+        |row| Ok(ProviderConfig { provider_id: row.get(0)?, endpoint: row.get(1)?, model_id: row.get(2)?, updated_at: row.get(3)? }),
+    ).context("transcription_provider_invalid: MOSS 提供方配置不存在")
+}
+
+pub fn configure(db: &Connection, endpoint: &str, model_id: &str) -> Result<ProviderConfig> {
+    let endpoint = validate_loopback_endpoint(endpoint)?;
+    let model_id = model_id.trim();
+    if model_id.is_empty() || model_id.len() > 200 {
+        bail!("transcription_provider_invalid: 模型标识不能为空或超过 200 个字符")
+    }
+    db.execute(
+        "UPDATE transcription_provider_config SET endpoint=?2,model_id=?3,updated_at=?4 WHERE provider_id=?1",
+        params![PROVIDER_ID, endpoint, model_id, now()],
+    )?;
+    config(db)
+}
+
+pub fn validate_loopback_endpoint(endpoint: &str) -> Result<String> {
+    let mut url =
+        Url::parse(endpoint.trim()).context("transcription_provider_invalid: MOSS 服务地址无效")?;
+    if url.scheme() != "http"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        bail!("transcription_provider_invalid: 仅允许无凭据、无查询参数的本机 HTTP 地址")
+    }
+    let host = url
+        .host_str()
+        .unwrap_or_default()
+        .trim_matches(['[', ']'])
+        .to_ascii_lowercase();
+    if !matches!(host.as_str(), "127.0.0.1" | "localhost" | "::1") {
+        bail!("transcription_provider_invalid: MOSS 首版只允许连接本机回环地址")
+    }
+    if !matches!(url.path(), "" | "/") {
+        bail!("transcription_provider_invalid: 服务地址不能包含 API 路径")
+    }
+    url.set_path("");
+    Ok(url.as_str().trim_end_matches('/').to_owned())
+}
+
+pub fn health(db: &Connection) -> Result<ProviderHealth> {
+    let config = config(db)?;
+    let endpoint = validate_loopback_endpoint(&config.endpoint)?;
+    let url = format!("{endpoint}/v1/models");
+    let checked_at = now();
+    let result = Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()?
+        .get(url)
+        .send();
+    Ok(match result {
+        Ok(response) if response.status().is_success() => ProviderHealth {
+            provider_id: config.provider_id,
+            endpoint,
+            model_id: config.model_id,
+            state: "healthy".into(),
+            detail: "本机 MOSS 服务可用。".into(),
+            checked_at,
+        },
+        Ok(response) => ProviderHealth {
+            provider_id: config.provider_id,
+            endpoint,
+            model_id: config.model_id,
+            state: "unavailable".into(),
+            detail: format!("服务返回 HTTP {}。", response.status()),
+            checked_at,
+        },
+        Err(error) => ProviderHealth {
+            provider_id: config.provider_id,
+            endpoint,
+            model_id: config.model_id,
+            state: "unavailable".into(),
+            detail: format!("无法连接本机 MOSS 服务：{error}"),
+            checked_at,
+        },
+    })
+}
+
+pub fn start(
+    db: &Connection,
+    project_id: &str,
+    language: Option<&str>,
+    prompt: Option<&str>,
+    hotwords: &[String],
+    start_delay_ms: Option<u64>,
+) -> Result<TranscriptionJob> {
+    let project = project::load(db, project_id)?;
+    if !Path::new(&project.media.source_path).is_file() {
+        bail!("audio_source_missing: 项目关联的原始媒体不存在")
+    }
+    if let Some(job) = latest_active(db, project_id)? {
+        return Ok(job);
+    }
+    let provider = config(db)?;
+    let endpoint = validate_loopback_endpoint(&provider.endpoint)?;
+    let provider_health = health(db)?;
+    if provider_health.state != "healthy" {
+        bail!(
+            "transcription_provider_unavailable: {}",
+            provider_health.detail
+        )
+    }
+    let timestamp = now();
+    let id = new_id("transcription");
+    db.execute(
+        "INSERT INTO transcription_jobs(id,project_id,provider_id,endpoint,model_id,language,prompt,hotwords_json,status,stage,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'queued','queued',?9,?9)",
+        params![id, project_id, provider.provider_id, endpoint, provider.model_id, clean_optional(language), clean_optional(prompt), serde_json::to_string(hotwords)?, timestamp],
+    )?;
+    if let Err(error) = spawn_worker(&id, start_delay_ms) {
+        db.execute("UPDATE transcription_jobs SET status='failed',stage='failed',error_message=?2,completed_at=?3,updated_at=?3 WHERE id=?1", params![id, error.to_string(), now()])?;
+        return Err(error);
+    }
+    load(db, &id)
+}
+
+fn clean_optional(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+pub fn load(db: &Connection, job_id: &str) -> Result<TranscriptionJob> {
+    db.query_row(
+        "SELECT id,project_id,provider_id,endpoint,model_id,language,prompt,hotwords_json,status,stage,result_run_id,cancel_requested_at,error_message,created_at,updated_at,completed_at,worker_pid,attempt_count FROM transcription_jobs WHERE id=?1",
+        [job_id], |row| {
+            let status: String = row.get(8)?;
+            let error_message: Option<String> = row.get(12)?;
+            let hotwords_json: String = row.get(7)?;
+            Ok(TranscriptionJob {
+                id: row.get(0)?, project_id: row.get(1)?, provider_id: row.get(2)?, endpoint: row.get(3)?, model_id: row.get(4)?,
+                language: row.get(5)?, prompt: row.get(6)?, hotwords: serde_json::from_str(&hotwords_json).unwrap_or_default(),
+                status: status.clone(), stage: row.get(9)?, result_run_id: row.get(10)?, cancel_requested_at: row.get(11)?,
+                error_code: crate::model::background_error_code(&status, error_message.as_deref()), error_message,
+                created_at: row.get(13)?, updated_at: row.get(14)?, completed_at: row.get(15)?, worker_pid: row.get(16)?, attempt_count: row.get::<_, i64>(17)? as u32,
+            })
+        }
+    ).optional()?.ok_or_else(|| anyhow!("transcription_job_not_found: 转写任务不存在：{job_id}"))
+}
+
+pub fn list(db: &Connection, project_id: Option<&str>) -> Result<Vec<TranscriptionJob>> {
+    let ids = if let Some(project_id) = project_id {
+        db.prepare(
+            "SELECT id FROM transcription_jobs WHERE project_id=?1 ORDER BY created_at DESC",
+        )?
+        .query_map([project_id], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+    } else {
+        db.prepare("SELECT id FROM transcription_jobs ORDER BY created_at DESC")?
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    ids.into_iter().map(|id| load(db, &id)).collect()
+}
+
+pub fn latest(db: &Connection, project_id: &str) -> Result<Option<TranscriptionJob>> {
+    db.query_row(
+        "SELECT id FROM transcription_jobs WHERE project_id=?1 ORDER BY created_at DESC LIMIT 1",
+        [project_id],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()?
+    .map(|id| load(db, &id))
+    .transpose()
+}
+
+fn latest_active(db: &Connection, project_id: &str) -> Result<Option<TranscriptionJob>> {
+    db.query_row("SELECT id FROM transcription_jobs WHERE project_id=?1 AND status IN ('queued','running','finalizing') ORDER BY created_at DESC LIMIT 1", [project_id], |row| row.get::<_, String>(0))
+        .optional()?.map(|id| load(db, &id)).transpose()
+}
+
+pub fn cancel(db: &Connection, job_id: &str) -> Result<TranscriptionJob> {
+    let job = load(db, job_id)?;
+    if !matches!(job.status.as_str(), "queued" | "running" | "finalizing") {
+        bail!("transcription_job_not_cancellable: 当前转写任务不能取消")
+    }
+    if let Some(pid) = job.worker_pid
+        && pid != std::process::id()
+        && crate::util::process_is_active(pid)
+    {
+        let _ = crate::util::terminate_process_tree_by_id(pid);
+    }
+    let timestamp = now();
+    db.execute("UPDATE transcription_jobs SET status='cancelled',stage='cancelled',cancel_requested_at=?2,worker_pid=NULL,completed_at=?2,updated_at=?2 WHERE id=?1", params![job_id, timestamp])?;
+    load(db, job_id)
+}
+
+pub fn resume(
+    db: &Connection,
+    job_id: &str,
+    start_delay_ms: Option<u64>,
+) -> Result<TranscriptionJob> {
+    let job = load(db, job_id)?;
+    if !matches!(job.status.as_str(), "cancelled" | "failed" | "interrupted") {
+        bail!("transcription_job_not_resumable: 当前转写任务不能继续")
+    }
+    db.execute("UPDATE transcription_jobs SET status='queued',stage='queued',result_run_id=NULL,cancel_requested_at=NULL,error_message=NULL,completed_at=NULL,worker_pid=NULL,attempt_count=attempt_count+1,updated_at=?2 WHERE id=?1", params![job_id, now()])?;
+    spawn_worker(job_id, start_delay_ms).context("无法继续 MOSS 转写")?;
+    load(db, job_id)
+}
+
+pub fn reconcile_interrupted(db: &Connection) -> Result<()> {
+    let jobs = db.prepare("SELECT id,worker_pid,updated_at FROM transcription_jobs WHERE status IN ('queued','running','finalizing')")?
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<u32>>(1)?, row.get::<_, String>(2)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (id, pid, updated_at) in jobs {
+        let stale = chrono::DateTime::parse_from_rfc3339(&updated_at)
+            .map(|value| {
+                chrono::Utc::now()
+                    .signed_duration_since(value.with_timezone(&chrono::Utc))
+                    .num_seconds()
+                    >= 5
+            })
+            .unwrap_or(true);
+        if stale && !pid.is_some_and(crate::util::process_is_active) {
+            db.execute("UPDATE transcription_jobs SET status='interrupted',stage='interrupted',error_message='上次 MOSS 转写进程已中断，可以显式继续。',worker_pid=NULL,updated_at=?2 WHERE id=?1", params![id, now()])?;
+        }
+    }
+    Ok(())
+}
+
+fn spawn_worker(job_id: &str, start_delay_ms: Option<u64>) -> Result<()> {
+    let delay = start_delay_ms.map(|value| value.to_string());
+    let mut args = vec!["__transcription_worker", job_id];
+    if let Some(delay) = delay.as_deref() {
+        args.push(delay);
+    }
+    crate::util::spawn_detached_current(&args)?;
+    Ok(())
+}
+
+pub fn run_worker(job_id: &str, start_delay_ms: Option<u64>) -> Result<()> {
+    let mut database = db::open()?;
+    let claimed = database.execute(
+        "UPDATE transcription_jobs SET status='running',stage='preparing_audio',worker_pid=?2,updated_at=?3 WHERE id=?1 AND status='queued'",
+        params![job_id, std::process::id(), now()],
+    )?;
+    if claimed == 0 {
+        return Ok(());
+    }
+    if let Some(delay) = start_delay_ms {
+        thread::sleep(Duration::from_millis(delay));
+    }
+    let result = execute_job(&mut database, job_id);
+    match result {
+        Ok(run_id) => {
+            let completed_at = now();
+            database.execute(
+                "UPDATE transcription_jobs SET status='completed',stage='completed',result_run_id=?2,error_message=NULL,worker_pid=NULL,completed_at=?3,updated_at=?3 WHERE id=?1 AND status!='cancelled'",
+                params![job_id, run_id, completed_at],
+            )?;
+            Ok(())
+        }
+        Err(error) if error.to_string().starts_with("transcription_cancelled") => {
+            let timestamp = now();
+            database.execute(
+                "UPDATE transcription_jobs SET status='cancelled',stage='cancelled',worker_pid=NULL,completed_at=?2,updated_at=?2 WHERE id=?1 AND status!='cancelled'",
+                params![job_id, timestamp],
+            )?;
+            Ok(())
+        }
+        Err(error) => {
+            let timestamp = now();
+            database.execute(
+                "UPDATE transcription_jobs SET status='failed',stage='failed',error_message=?2,worker_pid=NULL,completed_at=?3,updated_at=?3 WHERE id=?1 AND status!='cancelled'",
+                params![job_id, error.to_string(), timestamp],
+            )?;
+            Err(error)
+        }
+    }
+}
+
+fn execute_job(db: &mut Connection, job_id: &str) -> Result<String> {
+    ensure_not_cancelled(db, job_id)?;
+    let job = load(db, job_id)?;
+    let project_value = project::load(db, &job.project_id)?;
+    let cache_dir = crate::db::home_dir().join("cache").join("transcription");
+    fs::create_dir_all(&cache_dir)?;
+    let wav_path = cache_dir.join(format!("{}.wav", job.id));
+    extract_audio(Path::new(&project_value.media.source_path), &wav_path)?;
+    ensure_not_cancelled(db, job_id)?;
+    db.execute(
+        "UPDATE transcription_jobs SET stage='requesting_model',updated_at=?2 WHERE id=?1",
+        params![job_id, now()],
+    )?;
+    let raw = request_moss(&job, &wav_path)?;
+    ensure_not_cancelled(db, job_id)?;
+    db.execute("UPDATE transcription_jobs SET status='finalizing',stage='validating_result',updated_at=?2 WHERE id=?1", params![job_id, now()])?;
+    let parsed = parse_response(&raw)?;
+    let imported = parsed
+        .into_iter()
+        .map(|segment| ImportedSegment {
+            id: new_id("s"),
+            start: segment.start,
+            end: segment.end,
+            speaker: segment.speaker,
+            text: segment.text,
+        })
+        .collect::<Vec<_>>();
+    let runs_dir = crate::db::home_dir().join("transcription-runs");
+    fs::create_dir_all(&runs_dir)?;
+    let run_id = new_id("trun");
+    let raw_path = runs_dir.join(format!("{run_id}.json"));
+    fs::write(&raw_path, raw.as_bytes())
+        .context("transcription_import_failed: 无法保存 MOSS 原始响应")?;
+    let result = import_result(
+        db,
+        &job,
+        &project_value,
+        &run_id,
+        &raw_path,
+        &raw,
+        &imported,
+    );
+    if result.is_err() {
+        let _ = fs::remove_file(&raw_path);
+    }
+    let _ = fs::remove_file(&wav_path);
+    result?;
+    Ok(run_id)
+}
+
+fn ensure_not_cancelled(db: &Connection, job_id: &str) -> Result<()> {
+    let cancelled: bool = db.query_row(
+        "SELECT status='cancelled' OR cancel_requested_at IS NOT NULL FROM transcription_jobs WHERE id=?1",
+        [job_id], |row| row.get(0),
+    )?;
+    if cancelled {
+        bail!("transcription_cancelled: 转写任务已取消")
+    }
+    Ok(())
+}
+
+fn extract_audio(source: &Path, wav: &Path) -> Result<()> {
+    let ffmpeg = tool_path("SIAOCUT_FFMPEG", "ffmpeg");
+    let output = hidden_command(&ffmpeg)
+        .args(["-y", "-i"])
+        .arg(source)
+        .args(["-vn", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le"])
+        .arg(wav)
+        .output()
+        .with_context(|| format!("无法启动 FFmpeg：{ffmpeg}"))?;
+    if !output.status.success() {
+        bail!(
+            "transcription_import_failed: FFmpeg 音频提取失败：{}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )
+    }
+    Ok(())
+}
+
+fn request_moss(job: &TranscriptionJob, wav: &Path) -> Result<String> {
+    validate_loopback_endpoint(&job.endpoint)?;
+    let mut prompt = job.prompt.clone();
+    if !job.hotwords.is_empty() {
+        let suffix = format!("热词提示：{}", job.hotwords.join(", "));
+        prompt = Some(match prompt {
+            Some(value) => format!("{value}\n{suffix}"),
+            None => suffix,
+        });
+    }
+    let mut form = multipart::Form::new()
+        .text("model", job.model_id.clone())
+        .text("response_format", "verbose_json")
+        .text("temperature", "0")
+        .text("max_new_tokens", "65536")
+        .file("file", wav)
+        .context("transcription_import_failed: 无法读取待转写音频")?;
+    if let Some(language) = &job.language {
+        form = form.text("language", language.clone());
+    }
+    if let Some(prompt) = prompt {
+        form = form.text("prompt", prompt);
+    }
+    let response = Client::builder()
+        .timeout(Duration::from_secs(2 * 60 * 60))
+        .build()?
+        .post(format!(
+            "{}/v1/audio/transcriptions",
+            job.endpoint.trim_end_matches('/')
+        ))
+        .multipart(form)
+        .send()
+        .context("transcription_provider_unavailable: MOSS 请求失败")?;
+    let status = response.status();
+    let body = response
+        .text()
+        .context("transcription_response_invalid: 无法读取 MOSS 响应")?;
+    if !status.is_success() {
+        let detail = body.chars().take(500).collect::<String>();
+        bail!("transcription_provider_unavailable: MOSS 返回 HTTP {status}：{detail}")
+    }
+    Ok(body)
+}
+
+fn parse_response(raw: &str) -> Result<Vec<ParsedSegment>> {
+    let payload: Value = serde_json::from_str(raw)
+        .context("transcription_response_invalid: MOSS 未返回有效 JSON")?;
+    if let Some(text) = payload.get("text").and_then(Value::as_str)
+        && let Ok(segments) = parse_compact_transcript(text)
+        && !segments.is_empty()
+    {
+        return Ok(segments);
+    }
+    let entries = payload
+        .get("segments")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            anyhow!("transcription_response_invalid: MOSS 响应缺少可解析的 text 或 segments")
+        })?;
+    let mut result = Vec::new();
+    for entry in entries {
+        let start = entry
+            .get("start")
+            .and_then(Value::as_f64)
+            .ok_or_else(|| anyhow!("transcription_response_invalid: 分段缺少 start"))?;
+        let end = entry
+            .get("end")
+            .and_then(Value::as_f64)
+            .ok_or_else(|| anyhow!("transcription_response_invalid: 分段缺少 end"))?;
+        let mut text = entry
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_owned();
+        let mut speaker = ["speaker", "speaker_id", "speaker_label"]
+            .into_iter()
+            .find_map(|key| entry.get(key).and_then(Value::as_str))
+            .map(normalize_speaker);
+        if speaker.is_none()
+            && text.starts_with("[S")
+            && let Some(end_index) = text.find(']')
+        {
+            speaker = Some(normalize_speaker(&text[1..end_index]));
+            text = text[end_index + 1..].trim().to_owned();
+        }
+        let speaker =
+            speaker.ok_or_else(|| anyhow!("transcription_response_invalid: 分段缺少说话人标签"))?;
+        result.push(ParsedSegment {
+            start,
+            end,
+            speaker,
+            text,
+        });
+    }
+    validate_parsed(&result, None)?;
+    Ok(result)
+}
+
+fn parse_compact_transcript(input: &str) -> Result<Vec<ParsedSegment>> {
+    let mut cursor = 0usize;
+    let mut result = Vec::new();
+    while let Some(start_open_rel) = input[cursor..].find('[') {
+        let start_open = cursor + start_open_rel;
+        let (start_token, after_start) = bracket_token(input, start_open)?;
+        let start = start_token
+            .trim()
+            .parse::<f64>()
+            .context("transcription_response_invalid: 起始时间戳无效")?;
+        let speaker_open = input[after_start..]
+            .find('[')
+            .map(|value| after_start + value)
+            .ok_or_else(|| anyhow!("transcription_response_invalid: 缺少说话人标签"))?;
+        if !input[after_start..speaker_open].trim().is_empty() {
+            bail!("transcription_response_invalid: 时间戳与说话人标签之间存在未知内容")
+        }
+        let (speaker_token, text_start) = bracket_token(input, speaker_open)?;
+        let speaker = normalize_speaker(speaker_token);
+        if !speaker.starts_with('S') || speaker.len() < 2 {
+            bail!("transcription_response_invalid: 说话人标签无效")
+        }
+        let mut search = text_start;
+        let (end, text_end, after_end) = loop {
+            let end_open = input[search..]
+                .find('[')
+                .map(|value| search + value)
+                .ok_or_else(|| anyhow!("transcription_response_invalid: 分段缺少结束时间戳"))?;
+            let (token, after) = bracket_token(input, end_open)?;
+            if let Ok(value) = token.trim().parse::<f64>() {
+                break (value, end_open, after);
+            }
+            search = after;
+        };
+        result.push(ParsedSegment {
+            start,
+            end,
+            speaker,
+            text: input[text_start..text_end].trim().to_owned(),
+        });
+        cursor = after_end;
+    }
+    validate_parsed(&result, None)?;
+    Ok(result)
+}
+
+fn bracket_token(input: &str, open: usize) -> Result<(&str, usize)> {
+    if input.as_bytes().get(open) != Some(&b'[') {
+        bail!("transcription_response_invalid: 标记格式无效")
+    }
+    let close = input[open + 1..]
+        .find(']')
+        .map(|value| open + 1 + value)
+        .ok_or_else(|| anyhow!("transcription_response_invalid: 标记缺少右括号"))?;
+    Ok((&input[open + 1..close], close + 1))
+}
+
+fn normalize_speaker(value: &str) -> String {
+    let value = value.trim().trim_matches(['[', ']']).to_ascii_uppercase();
+    if let Some(number) = value.strip_prefix("SPEAKER_") {
+        return format!("S{:02}", number.parse::<u32>().unwrap_or_default() + 1);
+    }
+    value
+}
+
+fn validate_parsed(segments: &[ParsedSegment], duration: Option<f64>) -> Result<()> {
+    if segments.is_empty() {
+        bail!("transcription_response_invalid: MOSS 没有返回转写分段")
+    }
+    let mut previous_start = -1.0;
+    for segment in segments {
+        if !segment.start.is_finite()
+            || !segment.end.is_finite()
+            || segment.start < 0.0
+            || segment.end <= segment.start
+        {
+            bail!("transcription_timing_invalid: MOSS 返回了无效时间范围")
+        }
+        if segment.start + 0.001 < previous_start {
+            bail!("transcription_timing_invalid: MOSS 分段未按时间排序")
+        }
+        if duration.is_some_and(|duration| segment.end > duration + 2.0) {
+            bail!("transcription_timing_invalid: MOSS 分段超出媒体时长")
+        }
+        if segment.text.trim().is_empty() {
+            bail!("transcription_response_invalid: MOSS 返回了空字幕段")
+        }
+        previous_start = segment.start;
+    }
+    Ok(())
+}
+
+fn import_result(
+    db: &mut Connection,
+    job: &TranscriptionJob,
+    project_value: &crate::model::Project,
+    run_id: &str,
+    raw_path: &Path,
+    raw: &str,
+    segments: &[ImportedSegment],
+) -> Result<()> {
+    let parsed = segments
+        .iter()
+        .map(|segment| ParsedSegment {
+            start: segment.start,
+            end: segment.end,
+            speaker: segment.speaker.clone(),
+            text: segment.text.clone(),
+        })
+        .collect::<Vec<_>>();
+    validate_parsed(&parsed, project_value.media.duration_seconds)?;
+    let generated_at = now();
+    let track = build_track(segments, &job.model_id, &generated_at);
+    let reviews = build_review_items(&job.project_id, run_id, segments, &generated_at);
+    let raw_hash = format!("{:x}", Sha256::digest(raw.as_bytes()));
+    project::mutate_with_snapshot(db, &job.project_id, "MOSS 多人长音频转写", |tx| {
+        tx.execute("DELETE FROM segments WHERE project_id=?1", [&job.project_id])?;
+        for segment in segments {
+            project::assert_segment(segment.start, segment.end, &segment.text)
+                .context("transcription_import_failed: 无法导入 MOSS 字幕段")?;
+            tx.execute(
+                "INSERT INTO segments(id,project_id,start_seconds,end_seconds,text,confidence) VALUES(?1,?2,?3,?4,?5,NULL)",
+                params![segment.id, job.project_id, segment.start, segment.end, segment.text],
+            )?;
+        }
+        tx.execute("UPDATE translations SET status='stale' WHERE project_id=?1", [&job.project_id])?;
+        crate::speaker::replace_track_tx(tx, &job.project_id, Some(&track))?;
+        tx.execute(
+            "INSERT INTO transcription_runs(id,project_id,job_id,provider_id,model_id,source_sha256,result_sha256,raw_result_path,segment_count,speaker_count,has_word_timings,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,0,?11)",
+            params![run_id, job.project_id, job.id, job.provider_id, job.model_id, project_value.media.sha256, raw_hash, raw_path.to_string_lossy(), segments.len() as i64, track.speakers.len() as i64, generated_at],
+        )?;
+        for item in &reviews {
+            tx.execute(
+                "INSERT INTO transcription_review_items(id,project_id,run_id,segment_id,severity,kind,message,status,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,'open',?8)",
+                params![item.id, item.project_id, item.run_id, item.segment_id, item.severity, item.kind, item.message, item.created_at],
+            )?;
+        }
+        Ok(())
+    }).context("transcription_import_failed: MOSS 结果未写入项目")
+}
+
+fn build_track(segments: &[ImportedSegment], model_id: &str, timestamp: &str) -> SpeakerTrack {
+    let mut labels = Vec::<String>::new();
+    for segment in segments {
+        if !labels.contains(&segment.speaker) {
+            labels.push(segment.speaker.clone());
+        }
+    }
+    let speakers = labels
+        .iter()
+        .enumerate()
+        .map(|(index, label)| SpeakerIdentity {
+            id: new_id("speaker"),
+            source_label: label.clone(),
+            label: format!("说话人 {}", index + 1),
+            color_index: index as u32,
+            created_at: timestamp.into(),
+        })
+        .collect::<Vec<_>>();
+    let ids = speakers
+        .iter()
+        .map(|speaker| (speaker.source_label.clone(), speaker.id.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let turns = segments
+        .iter()
+        .map(|segment| SpeakerTurn {
+            id: new_id("turn"),
+            speaker_id: ids[&segment.speaker].clone(),
+            start: segment.start,
+            end: segment.end,
+            confidence: None,
+            source: "moss_end_to_end".into(),
+            model_version: model_id.into(),
+            created_at: timestamp.into(),
+        })
+        .collect::<Vec<_>>();
+    let associations = segments
+        .iter()
+        .map(|segment| SegmentSpeaker {
+            segment_id: segment.id.clone(),
+            speaker_id: ids[&segment.speaker].clone(),
+            source: "moss_end_to_end".into(),
+            confidence: None,
+            updated_at: timestamp.into(),
+        })
+        .collect::<Vec<_>>();
+    SpeakerTrack {
+        status: if segments.is_empty() {
+            "no_speech"
+        } else {
+            "ready"
+        }
+        .into(),
+        runtime_version: "openai-compatible-loopback-v1".into(),
+        segmentation_model: "end-to-end".into(),
+        embedding_model: "end-to-end".into(),
+        provider_id: PROVIDER_ID.into(),
+        model_id: model_id.into(),
+        source_kind: "end_to_end".into(),
+        generated_at: Some(timestamp.into()),
+        speakers,
+        turns,
+        associations,
+    }
+}
+
+fn build_review_items(
+    project_id: &str,
+    run_id: &str,
+    segments: &[ImportedSegment],
+    timestamp: &str,
+) -> Vec<ReviewItem> {
+    let mut items = Vec::new();
+    let punctuation = ['。', '！', '？', '.', '!', '?', '…'];
+    for (index, segment) in segments.iter().enumerate() {
+        if segment.end - segment.start < 0.35 {
+            items.push(review_item(
+                project_id,
+                run_id,
+                Some(&segment.id),
+                "warning",
+                "short_fragment",
+                "该分段很短，请检查是否为插话或错误切分。",
+                timestamp,
+            ));
+        }
+        if !segment.text.trim_end().ends_with(punctuation) {
+            items.push(review_item(
+                project_id,
+                run_id,
+                Some(&segment.id),
+                "info",
+                "missing_punctuation",
+                "模型未输出句末标点，可提交 Agent 标点建议。",
+                timestamp,
+            ));
+        }
+        if let Some(previous) = index.checked_sub(1).and_then(|value| segments.get(value))
+            && previous.speaker != segment.speaker
+            && segment.start - previous.end < 0.25
+        {
+            items.push(review_item(
+                project_id,
+                run_id,
+                Some(&segment.id),
+                "warning",
+                "rapid_speaker_switch",
+                "这里发生快速说话人切换，请人工确认人物归属。",
+                timestamp,
+            ));
+        }
+    }
+    items
+}
+
+fn review_item(
+    project_id: &str,
+    run_id: &str,
+    segment_id: Option<&str>,
+    severity: &str,
+    kind: &str,
+    message: &str,
+    timestamp: &str,
+) -> ReviewItem {
+    ReviewItem {
+        id: new_id("review"),
+        project_id: project_id.into(),
+        run_id: run_id.into(),
+        segment_id: segment_id.map(str::to_owned),
+        severity: severity.into(),
+        kind: kind.into(),
+        message: message.into(),
+        status: "open".into(),
+        created_at: timestamp.into(),
+        resolved_at: None,
+    }
+}
+
+pub fn review_items(db: &Connection, project_id: &str, only_open: bool) -> Result<Vec<ReviewItem>> {
+    let sql = if only_open {
+        "SELECT id,project_id,run_id,segment_id,severity,kind,message,status,created_at,resolved_at FROM transcription_review_items WHERE project_id=?1 AND status='open' ORDER BY CASE severity WHEN 'error' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END,created_at,id"
+    } else {
+        "SELECT id,project_id,run_id,segment_id,severity,kind,message,status,created_at,resolved_at FROM transcription_review_items WHERE project_id=?1 ORDER BY created_at,id"
+    };
+    Ok(db
+        .prepare(sql)?
+        .query_map([project_id], |row| {
+            Ok(ReviewItem {
+                id: row.get(0)?,
+                project_id: row.get(1)?,
+                run_id: row.get(2)?,
+                segment_id: row.get(3)?,
+                severity: row.get(4)?,
+                kind: row.get(5)?,
+                message: row.get(6)?,
+                status: row.get(7)?,
+                created_at: row.get(8)?,
+                resolved_at: row.get(9)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+pub fn resolve_review(db: &Connection, item_id: &str, action: &str) -> Result<ReviewItem> {
+    if !matches!(action, "resolved" | "ignored") {
+        bail!("transcription_response_invalid: 复核操作只能是 resolved 或 ignored")
+    }
+    let timestamp = now();
+    let changed = db.execute("UPDATE transcription_review_items SET status=?2,resolved_at=?3 WHERE id=?1 AND status='open'", params![item_id, action, timestamp])?;
+    if changed == 0 {
+        bail!("transcription_response_invalid: 复核项不存在或已经处理")
+    }
+    db.query_row("SELECT id,project_id,run_id,segment_id,severity,kind,message,status,created_at,resolved_at FROM transcription_review_items WHERE id=?1", [item_id], |row| Ok(ReviewItem {
+        id: row.get(0)?, project_id: row.get(1)?, run_id: row.get(2)?, segment_id: row.get(3)?, severity: row.get(4)?, kind: row.get(5)?, message: row.get(6)?, status: row.get(7)?, created_at: row.get(8)?, resolved_at: row.get(9)?,
+    })).map_err(Into::into)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn loopback_validation_rejects_remote_and_credentials() {
+        assert_eq!(
+            validate_loopback_endpoint("http://localhost:8000/").unwrap(),
+            "http://localhost:8000"
+        );
+        assert!(validate_loopback_endpoint("https://127.0.0.1:8000").is_err());
+        assert!(validate_loopback_endpoint("http://example.com:8000").is_err());
+        assert!(validate_loopback_endpoint("http://user@127.0.0.1:8000").is_err());
+        assert!(validate_loopback_endpoint("http://127.0.0.1:8000/v1").is_err());
+    }
+
+    #[test]
+    fn parses_official_compact_transcript_shape() {
+        let value = r#"{"text":"[0.48][S01]Welcome everyone[1.66][12.26][S02]The pipeline is ready[13.81]"}"#;
+        let segments = parse_response(value).unwrap();
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].speaker, "S01");
+        assert_eq!(segments[1].start, 12.26);
+        assert_eq!(segments[1].text, "The pipeline is ready");
+    }
+
+    #[test]
+    fn imports_transcript_and_speakers_atomically() {
+        let temp = tempdir().unwrap();
+        let media = temp.path().join("sample.wav");
+        fs::write(&media, b"media").unwrap();
+        let mut database = crate::db::open_at(&temp.path().join("test.db")).unwrap();
+        let project_value =
+            crate::project::create(&mut database, &media, Some("sample".into())).unwrap();
+        let timestamp = now();
+        database.execute("INSERT INTO transcription_jobs(id,project_id,provider_id,endpoint,model_id,hotwords_json,status,stage,created_at,updated_at) VALUES('job',?1,?2,?3,?4,'[]','finalizing','validating_result',?5,?5)", params![project_value.id, PROVIDER_ID, DEFAULT_ENDPOINT, DEFAULT_MODEL_ID, timestamp]).unwrap();
+        let job = load(&database, "job").unwrap();
+        let raw_path = temp.path().join("run.json");
+        let segments = vec![
+            ImportedSegment {
+                id: "s-one".into(),
+                start: 0.0,
+                end: 1.0,
+                speaker: "S01".into(),
+                text: "你好".into(),
+            },
+            ImportedSegment {
+                id: "s-two".into(),
+                start: 1.0,
+                end: 2.0,
+                speaker: "S02".into(),
+                text: "你好。".into(),
+            },
+        ];
+        import_result(
+            &mut database,
+            &job,
+            &project_value,
+            "run",
+            &raw_path,
+            "{}",
+            &segments,
+        )
+        .unwrap();
+        let loaded = crate::project::load(&database, &project_value.id).unwrap();
+        assert_eq!(loaded.transcript.segments.len(), 2);
+        let track = crate::speaker::load_track(&database, &project_value.id).unwrap();
+        assert_eq!(track.provider_id, PROVIDER_ID);
+        assert_eq!(track.speakers.len(), 2);
+        assert_eq!(track.associations.len(), 2);
+    }
+}
