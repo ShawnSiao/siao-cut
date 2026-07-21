@@ -8,6 +8,7 @@ afterEach(() => {
   cleanup();
   localStorage.removeItem("siaocut.exportPreferences.v1");
   localStorage.removeItem(TRANSCRIPTION_LANGUAGE_STORAGE_KEY);
+  localStorage.removeItem("siaocut.transcriptionMode");
   vi.useRealTimers();
 });
 
@@ -37,8 +38,12 @@ describe("SiaoCut review workbench", () => {
 
     fireEvent.change(screen.getByRole("combobox", { name: "Agent 工作流" }), { target: { value: "edit" } });
     fireEvent.click(screen.getByRole("button", { name: "交给 Agent" }));
+    expect(screen.getByRole("dialog", { name: "交给外部 Agent" })).toHaveTextContent("普通网页聊天不会自动执行任务");
+    fireEvent.click(screen.getByRole("checkbox", { name: "我会在可访问本机 SiaoCut Core 的外部 Agent 工具中继续执行。" }));
+    fireEvent.click(screen.getByRole("button", { name: "创建交接任务" }));
     await waitFor(() => expect(screen.getAllByText("edit").length).toBeGreaterThan(0));
-    expect(screen.getByRole("region", { name: "等待 Codex Worker" })).toHaveTextContent("不包含媒体文件或路径");
+    expect(screen.getByText("等待外部 Agent 领取")).toBeInTheDocument();
+    expect((screen.getByRole("textbox", { name: "复制给外部 Agent 的完整说明" }) as HTMLTextAreaElement).value).toContain("task claim");
 
     fireEvent.click(screen.getByRole("button", { name: "一键成片" }));
     expect(screen.getByRole("combobox", { name: "素材语言 · 一键成片" })).toHaveValue("en");
@@ -88,7 +93,7 @@ describe("SiaoCut review workbench", () => {
     render(<App />);
     const more = await screen.findByRole("button", { name: "更多命令" });
     fireEvent.click(more);
-    expect(screen.getByRole("menu")).toBeInTheDocument();
+    expect(await screen.findByRole("menu")).toBeInTheDocument();
     fireEvent.pointerDown(document.body);
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
 
@@ -108,6 +113,8 @@ describe("SiaoCut review workbench", () => {
     expect(target).toHaveValue("en");
     fireEvent.change(target, { target: { value: "ja" } });
     fireEvent.click(screen.getByRole("button", { name: "交给 Agent" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "我会在可访问本机 SiaoCut Core 的外部 Agent 工具中继续执行。" }));
+    fireEvent.click(screen.getByRole("button", { name: "创建交接任务" }));
     await waitFor(() => expect(screen.getByText(/翻译工作流已创建，目标语言为 JA/)).toBeInTheDocument());
     expect(screen.getAllByText("JA").length).toBeGreaterThan(0);
   });
@@ -200,8 +207,9 @@ describe("SiaoCut review workbench", () => {
     await screen.findByRole("heading", { name: "发布口播 · 草稿" });
 
     fireEvent.click(screen.getByRole("button", { name: "删除项目 第二个本地项目" }));
-    const dialog = screen.getByRole("dialog", { name: "删除项目" });
+    const dialog = await screen.findByRole("dialog", { name: "删除项目" });
     expect(within(dialog).getByText(/原始音视频文件不会删除或修改/)).toBeInTheDocument();
+    await waitFor(() => expect(within(dialog).getByRole("button", { name: "确认删除" })).toBeEnabled());
     fireEvent.click(within(dialog).getByRole("button", { name: "确认删除" }));
 
     await waitFor(() => expect(screen.queryByRole("button", { name: /第二个本地项目/ })).not.toBeInTheDocument());
@@ -213,9 +221,9 @@ describe("SiaoCut review workbench", () => {
     await screen.findByRole("heading", { name: "发布口播 · 草稿" });
 
     fireEvent.click(screen.getByRole("button", { name: "删除项目 发布口播 · 草稿" }));
-    const dialog = screen.getByRole("dialog", { name: "删除项目" });
+    const dialog = await screen.findByRole("dialog", { name: "删除项目" });
 
-    expect(within(dialog).getByRole("alert")).toHaveTextContent("该项目有 1 项正在运行或等待 Agent 处理的任务");
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("仍有 Agent 任务正在运行或等待处理");
     expect(within(dialog).getByRole("button", { name: "确认删除" })).toBeDisabled();
     expect(screen.queryByText(/project_busy/)).not.toBeInTheDocument();
   });
@@ -421,9 +429,11 @@ describe("SiaoCut review workbench", () => {
     expect(within(mergeDialog).getByRole("region", { name: "字幕操作范围" })).toBeInTheDocument();
     fireEvent.click(within(mergeDialog).getByRole("button", { name: "确认合并 2 段" }));
 
-    await waitFor(() => expect(screen.getByText(/相邻字幕已合并.*Ctrl\+Z 撤销/)).toBeInTheDocument());
-    expect(screen.getAllByRole("textbox", { name: /字幕文本/ })).toHaveLength(3);
-    expect(screen.getByDisplayValue(/今天想和大家聊聊.*它不是替你决定内容/)).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText(/相邻字幕已合并.*Ctrl\+Z 撤销/)).toBeInTheDocument();
+      expect(screen.getAllByRole("textbox", { name: /字幕文本/ })).toHaveLength(3);
+      expect(screen.getByDisplayValue(/今天想和大家聊聊.*它不是替你决定内容/)).toBeInTheDocument();
+    });
   });
 
   it("batch replaces transcript text and exposes all export formats", async () => {
@@ -734,6 +744,75 @@ describe("SiaoCut review workbench", () => {
   it("maps interrupted tasks to an actionable Agent state", () => {
     const project = structuredClone(sampleProject);
     project.tasks = [{ ...project.tasks[0], status: "interrupted" }];
+    project.patchSets = [];
+    project.edits = [];
+    expect(taskLabel(project)).toBe("需要 Agent 继续");
+  });
+
+  it("runs the explicit MOSS mode and exposes speaker review without word-cut claims", async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "新建项目" }));
+    const mode = screen.getByRole("combobox", { name: "转写模式" });
+    fireEvent.change(mode, { target: { value: "multispeaker" } });
+    expect(localStorage.getItem("siaocut.transcriptionMode")).toBe("multispeaker");
+    const start = screen.getByRole("button", { name: "开始多人转写" });
+    await waitFor(() => expect(start).toBeEnabled());
+    fireEvent.click(start);
+    await waitFor(() => expect(screen.getByText(/字幕和说话人轨已作为一个版本写入/)).toBeInTheDocument());
+    expect(await screen.findByRole("region", { name: "多人转写复核" })).toHaveTextContent("快速人物切换");
+    expect(screen.getByText("当前结果没有词级时间戳")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "创建词范围软剪辑" })).not.toBeInTheDocument();
+    fireEvent.change(screen.getByRole("combobox", { name: "Agent 工作流" }), { target: { value: "speaker_names" } });
+    expect(screen.getByRole("button", { name: "交给 Agent" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "打开导出设置" }));
+    const exportPanel = screen.getByLabelText("导出设置");
+    fireEvent.change(within(exportPanel).getByLabelText("导出格式"), { target: { value: "json" } });
+    expect(within(exportPanel).getByText(/始终保留模型、人物轨、段落关联和复核状态/)).toBeInTheDocument();
+    const exportButton = within(exportPanel).getByRole("button", { name: "导出字幕" });
+    expect(exportButton).toBeDisabled();
+    fireEvent.click(within(exportPanel).getByRole("checkbox", { name: /确认带着 1 个未处理警告/ }));
+    expect(exportButton).toBeEnabled();
+  });
+
+  it("preserves a conflicting MOSS result until replacement is explicitly confirmed", async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "新建项目" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "转写模式" }), { target: { value: "multispeaker" } });
+    fireEvent.click(screen.getByText("高级实验项：Prompt 与热词"));
+    fireEvent.change(screen.getByRole("textbox", { name: "自定义 Prompt" }), { target: { value: "simulate-conflict" } });
+
+    const start = screen.getByRole("button", { name: "开始多人转写" });
+    await waitFor(() => expect(start).toBeEnabled());
+    fireEvent.click(start);
+
+    expect(await screen.findByText("候选结果等待确认")).toBeInTheDocument();
+    expect(screen.getByText("18 段 · 3 位说话人 · 2 项提醒")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "查看影响" }));
+    const dialog = await screen.findByRole("dialog", { name: "确认多人转写候选结果" });
+    const apply = within(dialog).getByRole("button", { name: "应用并替换" });
+    expect(apply).toBeDisabled();
+    fireEvent.click(within(dialog).getByRole("checkbox", { name: /确认用候选结果替换/ }));
+    expect(apply).toBeEnabled();
+    fireEvent.click(apply);
+
+    expect(await screen.findByText("候选结果已应用为可撤销的新版本。")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("这是经过明确确认后应用的多人转写候选结果。")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "撤销" })).toBeEnabled();
+  });
+
+  it("shows MOSS loopback configuration and health in runtime settings", async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "运行环境" }));
+    const dialog = screen.getByRole("dialog", { name: "运行环境" });
+    const provider = within(dialog).getByRole("region", { name: "MOSS 多人长音频服务" });
+    expect(within(provider).getByDisplayValue("http://127.0.0.1:8000")).toBeInTheDocument();
+    expect(within(provider).getByText("服务可用")).toBeInTheDocument();
+    expect(within(provider).getByText(/不会连接远程地址，也不会静默回退到 Whisper/)).toBeInTheDocument();
+  });
+
+  it("does not present a claimed Agent task as active processing before its first heartbeat", () => {
+    const project = structuredClone(sampleProject);
+    project.tasks = [{ ...project.tasks[0], status: "claimed", progress: 0, lastActivity: { kind: "claimed", progress: null, message: "Agent 已领取任务", createdAt: new Date().toISOString() } }];
     project.patchSets = [];
     project.edits = [];
     expect(taskLabel(project)).toBe("需要 Agent 继续");

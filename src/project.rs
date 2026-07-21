@@ -3,14 +3,15 @@ use crate::{
     model::{
         CanvasAspectRatio, CanvasFraming, CanvasSettings, CutRange, CutSuggestion, Edit,
         HistoryState, Lease, Media, MediaArtifacts, Project, Segment, SpeechInsights, Task,
-        TimelineMap, Transcript, Translation, TranslationSegment, Version, Word,
+        TaskActivity, TimelineMap, Transcript, Translation, TranslationSegment, Version, Word,
     },
     patches, speaker, speech, subtitle_quality, subtitle_style, timeline,
     util::{new_id, now},
     workflows,
 };
 use anyhow::{Result, anyhow, bail};
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use serde::Serialize;
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, path::Path};
 
@@ -122,7 +123,7 @@ pub fn load(db: &Connection, id: &str) -> Result<Project> {
             }),
         })
     })?.collect::<rusqlite::Result<Vec<_>>>()?;
-    let tasks = db.prepare("SELECT id,kind,language,status,created_at,completed_at,lease_worker,lease_id,lease_expires_at,base_version_id,progress,error_message,attempt_count,cancel_requested_at,workflow_id,instruction_locale FROM tasks WHERE project_id=?1 ORDER BY created_at")?.query_map([id],|row| { let worker:Option<String>=row.get(6)?; let status:String=row.get(3)?; let error_message:Option<String>=row.get(11)?; Ok(Task{id:row.get(0)?,kind:row.get(1)?,language:row.get(2)?,error_code:crate::model::background_error_code(&status,error_message.as_deref()),status,created_at:row.get(4)?,completed_at:row.get(5)?,lease:worker.map(|worker| Lease { worker, id:row.get(7).unwrap_or_default(), expires_at:row.get(8).unwrap_or_default()}),base_version_id:row.get(9)?,progress:row.get(10)?,error_message,attempt_count:row.get(12)?,cancel_requested_at:row.get(13)?,workflow_id:row.get(14)?,instruction_locale:row.get(15)?})})?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let tasks = db.prepare("SELECT id,kind,language,status,created_at,completed_at,lease_worker,lease_id,lease_expires_at,base_version_id,progress,error_message,attempt_count,cancel_requested_at,workflow_id,instruction_locale,(SELECT kind FROM task_events WHERE task_id=tasks.id ORDER BY id DESC LIMIT 1),(SELECT progress FROM task_events WHERE task_id=tasks.id ORDER BY id DESC LIMIT 1),(SELECT message FROM task_events WHERE task_id=tasks.id ORDER BY id DESC LIMIT 1),(SELECT created_at FROM task_events WHERE task_id=tasks.id ORDER BY id DESC LIMIT 1) FROM tasks WHERE project_id=?1 ORDER BY created_at")?.query_map([id],|row| { let worker:Option<String>=row.get(6)?; let status:String=row.get(3)?; let error_message:Option<String>=row.get(11)?; let activity_kind:Option<String>=row.get(16)?; Ok(Task{id:row.get(0)?,kind:row.get(1)?,language:row.get(2)?,error_code:crate::model::background_error_code(&status,error_message.as_deref()),status,created_at:row.get(4)?,completed_at:row.get(5)?,lease:worker.map(|worker| Lease { worker, id:row.get(7).unwrap_or_default(), expires_at:row.get(8).unwrap_or_default()}),last_activity:activity_kind.map(|kind| TaskActivity { kind, progress:row.get(17).unwrap_or(None), message:row.get(18).unwrap_or_default(), created_at:row.get(19).unwrap_or_default() }),base_version_id:row.get(9)?,progress:row.get(10)?,error_message,attempt_count:row.get(12)?,cancel_requested_at:row.get(13)?,workflow_id:row.get(14)?,instruction_locale:row.get(15)?})})?.collect::<rusqlite::Result<Vec<_>>>()?;
     let versions = db
         .prepare(
             "SELECT id,reason,created_at FROM versions WHERE project_id=?1 ORDER BY history_index",
@@ -188,27 +189,74 @@ pub fn list(db: &Connection) -> Result<Vec<Project>> {
         .collect()
 }
 
-pub fn delete(db: &mut Connection, project_id: &str) -> Result<()> {
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectDeletionBlocker {
+    pub kind: String,
+    pub id: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectDeletionPreflight {
+    pub project_id: String,
+    pub deletable: bool,
+    pub blockers: Vec<ProjectDeletionBlocker>,
+}
+
+pub fn deletion_preflight(db: &Connection, project_id: &str) -> Result<ProjectDeletionPreflight> {
     db.query_row("SELECT 1 FROM projects WHERE id=?1", [project_id], |row| {
         row.get::<_, i64>(0)
     })
     .optional()?
     .ok_or_else(|| anyhow!("project_not_found: 项目不存在：{project_id}"))?;
-    let active_operations: i64 = db.query_row(
-        "SELECT
-            EXISTS(SELECT 1 FROM tasks WHERE project_id=?1 AND status IN ('queued','claimed','running'))
-          + EXISTS(SELECT 1 FROM export_jobs WHERE project_id=?1 AND status IN ('queued','running'))
-          + EXISTS(SELECT 1 FROM audio_analysis_jobs WHERE project_id=?1 AND status IN ('queued','running'))
-          + EXISTS(SELECT 1 FROM speaker_jobs WHERE project_id=?1 AND status IN ('queued','running'))
-          + EXISTS(SELECT 1 FROM auto_workflows WHERE project_id=?1 AND status IN ('queued','running','needs_agent','needs_review','failed','interrupted'))",
-        [project_id],
-        |row| row.get(0),
-    )?;
-    if active_operations > 0 {
+
+    let blockers = db
+        .prepare(
+            "SELECT kind,id,status FROM (
+                SELECT 'agent_task' AS kind,id,status FROM tasks
+                    WHERE project_id=?1 AND status IN ('queued','claimed','running')
+                UNION ALL
+                SELECT 'export',id,status FROM export_jobs
+                    WHERE project_id=?1 AND status IN ('queued','running')
+                UNION ALL
+                SELECT 'audio_analysis',id,status FROM audio_analysis_jobs
+                    WHERE project_id=?1 AND status IN ('queued','running')
+                UNION ALL
+                SELECT 'speaker_analysis',id,status FROM speaker_jobs
+                    WHERE project_id=?1 AND status IN ('queued','running')
+                UNION ALL
+                SELECT 'auto_workflow',id,status FROM auto_workflows
+                    WHERE project_id=?1 AND status IN ('queued','running','needs_agent','needs_review','failed','interrupted')
+                UNION ALL
+                SELECT 'transcription',id,status FROM transcription_jobs
+                    WHERE project_id=?1 AND status IN ('queued','running','finalizing','awaiting_apply')
+             ) ORDER BY kind,id",
+        )?
+        .query_map([project_id], |row| {
+            Ok(ProjectDeletionBlocker {
+                kind: row.get(0)?,
+                id: row.get(1)?,
+                status: row.get(2)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    Ok(ProjectDeletionPreflight {
+        project_id: project_id.to_owned(),
+        deletable: blockers.is_empty(),
+        blockers,
+    })
+}
+
+pub fn delete(db: &mut Connection, project_id: &str) -> Result<()> {
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let preflight = deletion_preflight(&tx, project_id)?;
+    if !preflight.deletable {
         bail!("project_busy: 项目仍有正在运行或等待处理的任务，请先取消后再删除")
     }
 
-    let tx = db.transaction()?;
     let changed = tx.execute("DELETE FROM projects WHERE id=?1", [project_id])?;
     if changed != 1 {
         bail!("project_delete_failed: 无法删除项目：{project_id}")
@@ -1071,6 +1119,32 @@ mod tests {
         )
         .unwrap();
 
+        let error = delete(&mut db, &project.id).unwrap_err().to_string();
+
+        assert!(error.contains("project_busy"));
+        assert!(load(&db, &project.id).is_ok());
+        assert!(media.exists());
+    }
+
+    #[test]
+    fn refuses_to_delete_a_project_with_active_or_pending_transcription() {
+        let temp = tempdir().unwrap();
+        let database = temp.path().join("busy-transcription-delete.db");
+        let media = temp.path().join("keep-me.mp4");
+        std::fs::write(&media, b"original media bytes").unwrap();
+        let mut db = crate::db::open_at(&database).unwrap();
+        let project = create(&mut db, &media, Some("Busy transcription".into())).unwrap();
+        db.execute(
+            "INSERT INTO transcription_jobs(
+                id,project_id,provider_id,endpoint,model_id,status,stage,created_at,updated_at
+             ) VALUES('transcription-busy',?1,'moss_openai','http://127.0.0.1:8000','moss','awaiting_apply','awaiting_apply','now','now')",
+            [&project.id],
+        )
+        .unwrap();
+
+        let preflight = deletion_preflight(&db, &project.id).unwrap();
+        assert!(!preflight.deletable);
+        assert_eq!(preflight.blockers[0].kind, "transcription");
         let error = delete(&mut db, &project.id).unwrap_err().to_string();
 
         assert!(error.contains("project_busy"));

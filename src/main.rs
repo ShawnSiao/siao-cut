@@ -27,6 +27,7 @@ mod subtitle_style;
 mod subtitle_workbench;
 mod tasks;
 mod timeline;
+mod transcription;
 mod util;
 mod video_export;
 mod workflows;
@@ -80,6 +81,8 @@ enum Commands {
     Speech(SpeechCommand),
     #[command(subcommand)]
     Speaker(SpeakerCommand),
+    #[command(subcommand)]
+    Transcription(TranscriptionCommand),
     Audit {
         project_id: String,
     },
@@ -91,6 +94,9 @@ enum Commands {
 enum ProjectCommand {
     List,
     Show {
+        project_id: String,
+    },
+    DeletePreflight {
         project_id: String,
     },
     Delete {
@@ -202,6 +208,77 @@ enum SpeakerCommand {
         project_id: String,
         segment_id: String,
         speaker_id: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum TranscriptionCommand {
+    Providers,
+    Configure {
+        #[arg(long)]
+        endpoint: String,
+        #[arg(long, default_value = transcription::DEFAULT_MODEL_ID)]
+        model: String,
+    },
+    Health,
+    Start {
+        project_id: String,
+        #[arg(long)]
+        language: Option<String>,
+        #[arg(long)]
+        prompt: Option<String>,
+        #[arg(long = "hotword")]
+        hotwords: Vec<String>,
+        #[arg(long, hide = true)]
+        start_delay_ms: Option<u64>,
+    },
+    Status {
+        job_id: String,
+    },
+    Latest {
+        project_id: String,
+    },
+    Jobs {
+        project_id: Option<String>,
+    },
+    Cancel {
+        job_id: String,
+    },
+    Resume {
+        job_id: String,
+        #[arg(long, hide = true)]
+        start_delay_ms: Option<u64>,
+    },
+    Apply {
+        job_id: String,
+        #[arg(long)]
+        expected_version: String,
+        #[arg(long)]
+        confirm_replace: bool,
+    },
+    Discard {
+        job_id: String,
+    },
+    Review {
+        project_id: String,
+        #[arg(long)]
+        all: bool,
+    },
+    Resolve {
+        item_id: String,
+        #[arg(long)]
+        action: String,
+    },
+    Export {
+        project_id: String,
+        #[arg(long, default_value = "json")]
+        format: String,
+        #[arg(short = 'o', long)]
+        output: PathBuf,
+        #[arg(long)]
+        include_speaker_labels: bool,
+        #[arg(long)]
+        confirm_warnings: bool,
     },
 }
 
@@ -332,6 +409,7 @@ enum TaskCommand {
         locale: String,
     },
     Claim {
+        task_id: Option<String>,
         #[arg(long)]
         worker: String,
     },
@@ -596,6 +674,7 @@ fn run(cli: Cli) -> Result<Value> {
     auto_workflow::reconcile_interrupted(&database)?;
     audio_analysis::reconcile_interrupted(&database)?;
     speaker::reconcile_interrupted(&database)?;
+    transcription::reconcile_interrupted(&database)?;
     match cli.command {
         Commands::Contract => {
             unreachable!("contract command returns before database initialization")
@@ -714,6 +793,9 @@ fn run(cli: Cli) -> Result<Value> {
                 let project = project::load(&database, &project_id)?;
                 Ok(envelope(json!({"projectId":project.id,"project":project})))
             }
+            ProjectCommand::DeletePreflight { project_id } => Ok(envelope(json!({
+                "deletionPreflight": project::deletion_preflight(&database, &project_id)?
+            }))),
             ProjectCommand::Delete { project_id } => {
                 project::delete(&mut database, &project_id)?;
                 Ok(envelope(json!({
@@ -986,20 +1068,22 @@ fn run(cli: Cli) -> Result<Value> {
                     "message":"任务已创建，等待 Agent 领取。"
                 })))
             }
-            TaskCommand::Claim { worker } => match tasks::claim(&mut database, &worker)? {
-                Some((project, task, payload)) => Ok(envelope(json!({
-                    "projectId":project.id,
-                    "taskId":task.id,
-                    "language":task.language,
-                    "instructionLocale":task.instruction_locale,
-                    "contentLanguage":project.transcript.source_language,
-                    "task":task,
-                    "payload":payload
-                }))),
-                None => Ok(envelope(
-                    json!({"task":null,"message":"当前没有待领取任务。"}),
-                )),
-            },
+            TaskCommand::Claim { task_id, worker } => {
+                match tasks::claim(&mut database, &worker, task_id.as_deref())? {
+                    Some((project, task, payload)) => Ok(envelope(json!({
+                        "projectId":project.id,
+                        "taskId":task.id,
+                        "language":task.language,
+                        "instructionLocale":task.instruction_locale,
+                        "contentLanguage":project.transcript.source_language,
+                        "task":task,
+                        "payload":payload
+                    }))),
+                    None => Ok(envelope(
+                        json!({"task":null,"message":"当前没有待领取任务。"}),
+                    )),
+                }
+            }
             TaskCommand::Submit {
                 task_id,
                 worker,
@@ -1115,6 +1199,7 @@ fn run(cli: Cli) -> Result<Value> {
                 Ok(envelope(json!({
                     "projectId":project_id,
                     "workflowId":workflow.id,
+                    "taskId":workflow.task_id,
                     "workflow":workflow,
                     "message":"工作流已创建，需要 Agent 继续。"
                 })))
@@ -1475,6 +1560,96 @@ fn run(cli: Cli) -> Result<Value> {
                 "message": "当前字幕段的说话人已重新分配，可从项目历史恢复。"
             }))),
         },
+        Commands::Transcription(command) => match command {
+            TranscriptionCommand::Providers => Ok(envelope(json!({
+                "providers": [
+                    {"id": "whisper_cpp", "role": "quick", "isDefault": true, "wordTimings": true, "integratedDiarization": false},
+                    {"id": transcription::PROVIDER_ID, "role": "multispeaker_longform", "isDefault": false, "wordTimings": false, "integratedDiarization": true,
+                     "defaultEndpoint": transcription::DEFAULT_ENDPOINT, "config": transcription::config(&database)?}
+                ]
+            }))),
+            TranscriptionCommand::Configure { endpoint, model } => Ok(envelope(json!({
+                "config": transcription::configure(&database, &endpoint, &model)?,
+                "message": "MOSS 本机服务配置已保存；不会发送 API 密钥或连接远程地址。"
+            }))),
+            TranscriptionCommand::Health => Ok(envelope(
+                json!({"providerHealth": transcription::health(&database)?}),
+            )),
+            TranscriptionCommand::Start {
+                project_id,
+                language,
+                prompt,
+                hotwords,
+                start_delay_ms,
+            } => Ok(envelope(json!({
+                "transcriptionJob": transcription::start(&mut database, &project_id, language.as_deref(), prompt.as_deref(), &hotwords, start_delay_ms)?,
+                "message": "多人长音频转写已进入后台队列；不会静默回退到快速转写。"
+            }))),
+            TranscriptionCommand::Status { job_id } => Ok(envelope(
+                json!({"transcriptionJob": transcription::load(&database, &job_id)?}),
+            )),
+            TranscriptionCommand::Latest { project_id } => Ok(envelope(
+                json!({"transcriptionJob": transcription::latest(&database, &project_id)?}),
+            )),
+            TranscriptionCommand::Jobs { project_id } => Ok(envelope(
+                json!({"transcriptionJobs": transcription::list(&database, project_id.as_deref())?}),
+            )),
+            TranscriptionCommand::Cancel { job_id } => Ok(envelope(
+                json!({"transcriptionJob": transcription::cancel(&database, &job_id)?, "message": "转写任务已取消；未完成结果不会修改项目。"}),
+            )),
+            TranscriptionCommand::Resume {
+                job_id,
+                start_delay_ms,
+            } => Ok(envelope(
+                json!({"transcriptionJob": transcription::resume(&mut database, &job_id, start_delay_ms)?, "message": "转写任务已显式继续。"}),
+            )),
+            TranscriptionCommand::Apply {
+                job_id,
+                expected_version,
+                confirm_replace,
+            } => Ok(envelope(json!({
+                "transcriptionJob": transcription::apply_candidate(
+                    &mut database,
+                    &job_id,
+                    &expected_version,
+                    confirm_replace,
+                )?,
+                "message": "转写结果已替换字幕和说话人轨；可以通过项目历史撤销。"
+            }))),
+            TranscriptionCommand::Discard { job_id } => Ok(envelope(json!({
+                "transcriptionJob": transcription::discard_candidate(&mut database, &job_id)?,
+                "message": "待应用的转写结果已丢弃。"
+            }))),
+            TranscriptionCommand::Review { project_id, all } => Ok(envelope(
+                json!({"reviewItems": transcription::review_items(&database, &project_id, !all)?}),
+            )),
+            TranscriptionCommand::Resolve { item_id, action } => Ok(envelope(
+                json!({"reviewItem": transcription::resolve_review(&database, &item_id, &action)?}),
+            )),
+            TranscriptionCommand::Export {
+                project_id,
+                format,
+                output,
+                include_speaker_labels,
+                confirm_warnings,
+            } => {
+                let (content, audit) = transcription::render_structured_export(
+                    &database,
+                    &project_id,
+                    &format,
+                    include_speaker_labels,
+                    confirm_warnings,
+                )?;
+                fs::write(&output, content)?;
+                Ok(envelope(json!({
+                    "projectId": project_id,
+                    "output": output,
+                    "format": format,
+                    "audit": audit,
+                    "message": "结构化多人转写已导出；JSON/Markdown 保留说话人证据。"
+                })))
+            }
+        },
         Commands::Runtime(command) => match command {
             RuntimeCommand::Status => Ok(envelope(json!({"runtime":runtime::status()?}))),
             RuntimeCommand::Select {
@@ -1665,6 +1840,18 @@ async fn main() {
         let start_delay_ms = arguments.get(2).and_then(|value| value.parse().ok());
         if let Err(error) = audio_analysis::run_worker(job_id, start_delay_ms) {
             eprintln!("SiaoCut audio analysis worker: {error}");
+            std::process::exit(1)
+        }
+        return;
+    }
+    if arguments.first().map(String::as_str) == Some("__transcription_worker") {
+        let Some(job_id) = arguments.get(1) else {
+            eprintln!("SiaoCut transcription worker: missing job id");
+            std::process::exit(2)
+        };
+        let start_delay_ms = arguments.get(2).and_then(|value| value.parse().ok());
+        if let Err(error) = transcription::run_worker(job_id, start_delay_ms) {
+            eprintln!("SiaoCut transcription worker: {error}");
             std::process::exit(1)
         }
         return;

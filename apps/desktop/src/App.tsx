@@ -1,11 +1,11 @@
 import { changeUiLocale, getUiLocale, tr, type UiLocale } from "./i18n";
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type SyntheticEvent } from "react";
-import { Activity, Bot, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Clock3, Cpu, Database, Download, FileVideo2, FileText, Film, FolderOpen, FolderPlus, HardDrive, History, Link2, LoaderCircle, Play, RefreshCw, RotateCcw, Search, Scissors, Settings2, ShieldCheck, Sparkles, Trash2, Undo2, Redo2, Headphones, ListChecks, MoreHorizontal, MoveHorizontal, Users, X, } from "lucide-react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type SyntheticEvent } from "react";
+import { Activity, Bot, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Clock3, Copy, Cpu, Database, Download, FileVideo2, FileText, Film, FolderOpen, FolderPlus, HardDrive, History, Link2, LoaderCircle, Play, RefreshCw, RotateCcw, Search, Scissors, Settings2, ShieldCheck, Sparkles, Trash2, Undo2, Redo2, Headphones, ListChecks, MoreHorizontal, MoveHorizontal, Users, X, } from "lucide-react";
 import { authorizeArtifact, authorizeMedia, checkForUpdate, installUpdate, listProjects, loadProject, openLogDirectory, pickMedia, pickModel, pickSubtitleFile, pickTranscriptPath, pickVideoPath, runCore, runtimeInfo, selectAsrBackend, updaterPolicy } from "./core";
-import type { AudioAnalysisJob, AudioRisk, AutoWorkflow, CanvasSettings, CutPreview, ExportJob, ModelDownloadJob, ModelStatus, Project, RuntimeInfo, Segment, SourceImportJob, SourcePreview, SpeakerIdentity, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SpeechEvidence, SpeechInsights, SpeechPause, SubtitleImportPreview, SubtitleQualityIssue, TranscriptionLanguage, UpdateMetadata, UpdatePolicy } from "./types";
+import type { AudioAnalysisJob, AudioRisk, AutoWorkflow, CanvasSettings, CutPreview, ExportJob, ModelDownloadJob, ModelStatus, Project, ProjectDeletionPreflight, RuntimeInfo, Segment, SourceImportJob, SourcePreview, SpeakerIdentity, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SpeechEvidence, SpeechInsights, SpeechPause, SubtitleImportPreview, SubtitleQualityIssue, TranscriptionJob, TranscriptionLanguage, TranscriptionProviderConfig, TranscriptionProviderHealth, TranscriptionReviewItem, UpdateMetadata, UpdatePolicy } from "./types";
 import { Button, Dialog, IconButton, StatusBadge } from "./components/ui";
 import { JobFailureDetails } from "./components/job-failure";
-import { AsrBackendPicker, AudioQualityPanel, DiagnosticsPanel, ModelManager, PatchReviewCard, RuntimeChecklist, SegmentRow, SpeakerPackageManager, SpeakerTrackPanel, SpeechInsightsPanel, UpdatePanel } from "./components/workbench-panels";
+import { AsrBackendPicker, AudioQualityPanel, DiagnosticsPanel, ModelManager, PatchReviewCard, RuntimeChecklist, SegmentRow, SpeakerPackageManager, SpeakerTrackPanel, SpeechInsightsPanel, TranscriptionProviderSettings, TranscriptionReviewPanel, UpdatePanel } from "./components/workbench-panels";
 export { AudioQualityPanel, PatchReviewCard, SpeakerPackageManager, SpeakerTrackPanel, SpeechInsightsPanel } from "./components/workbench-panels";
 import { audioRiskLabel, audioUnitLabel, autoStageLabel, autoStatusLabel, clearTransientCoreError, cutSuggestionLabel, DEFAULT_EXPORT_PREFERENCES, editReasonLabel, formatBytes, formatTime, getProjectCapabilities, hasMeaningfulSubtitleText, isHttpsSourceUrl, modelDescription, modelName, parseExportPreferences, parseTranscriptionLanguage, patchReasonLabel, segmentCountLabel, shouldCheckForUpdates, sourceStatusLabel, startSerialPolling, structureEditLabel, subtitleCountLabel, subtitleIssueLabel, subtitleQualityStatusLabel, taskLabel, TRANSCRIPTION_LANGUAGE_STORAGE_KEY, versionReasonLabel, wordCountLabel, type ExportPreferencesV1, type SegmentSelectionMode, type StructureEditMode } from "./app-view-model";
 export * from "./app-view-model";
@@ -37,6 +37,13 @@ export function resolvePlaybackDuration(mediaDuration: number, fallbackDuration:
     return Number.isFinite(mediaDuration) && mediaDuration > 0 ? mediaDuration : fallbackDuration ?? 0;
 }
 
+const isValidAgentIdentity = (value: string) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value);
+const TranscriptionCandidateDialog = lazy(() => import("./components/transcription-candidate-dialog"));
+const ExportPanel = lazy(() => import("./components/export-panel"));
+const TranscriptionJobBar = lazy(() => import("./components/transcription-job-bar"));
+const ProjectDeleteDialog = lazy(() => import("./components/project-delete-dialog"));
+const AppCommandMenu = lazy(() => import("./components/app-command-menu"));
+
 function App() {
     const [uiLocale, setUiLocale] = useState<UiLocale>(() => getUiLocale());
     const selectUiLocale = (locale: UiLocale) => {
@@ -48,6 +55,10 @@ function App() {
     const selectTranscriptionLanguage = (language: TranscriptionLanguage) => {
         localStorage.setItem(TRANSCRIPTION_LANGUAGE_STORAGE_KEY, language);
         setTranscriptionLanguage(language);
+    };
+    const selectTranscriptionMode = (mode: "quick" | "multispeaker") => {
+        localStorage.setItem("siaocut.transcriptionMode", mode);
+        setTranscriptionMode(mode);
     };
     const [projects, setProjects] = useState<Project[]>([]);
     const [project, setProject] = useState<Project | null>(null);
@@ -61,6 +72,15 @@ function App() {
     const [speakerPackage, setSpeakerPackage] = useState<SpeakerPackageStatus | null>(null);
     const [speakerTrack, setSpeakerTrack] = useState<SpeakerTrack | null>(null);
     const [speakerJob, setSpeakerJob] = useState<SpeakerJob | null>(null);
+    const [transcriptionMode, setTranscriptionMode] = useState<"quick" | "multispeaker">(() => localStorage.getItem("siaocut.transcriptionMode") === "multispeaker" ? "multispeaker" : "quick");
+    const [transcriptionConfig, setTranscriptionConfig] = useState<TranscriptionProviderConfig | null>(null);
+    const [transcriptionHealth, setTranscriptionHealth] = useState<TranscriptionProviderHealth | null>(null);
+    const [transcriptionJob, setTranscriptionJob] = useState<TranscriptionJob | null>(null);
+    const [showTranscriptionCandidate, setShowTranscriptionCandidate] = useState(false);
+    const [transcriptionApplyConfirmed, setTranscriptionApplyConfirmed] = useState(false);
+    const [transcriptionReviews, setTranscriptionReviews] = useState<TranscriptionReviewItem[]>([]);
+    const [transcriptionPrompt, setTranscriptionPrompt] = useState("");
+    const [transcriptionHotwords, setTranscriptionHotwords] = useState("");
     const [busy, setBusy] = useState<string | null>(tr("app.s0038"));
     const [notice, setNotice] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
@@ -88,7 +108,12 @@ function App() {
     const [autoTranslate, setAutoTranslate] = useState(false);
     const [autoTranslationLanguage, setAutoTranslationLanguage] = useState("en");
     const [transcriptionLanguage, setTranscriptionLanguage] = useState<TranscriptionLanguage>(() => parseTranscriptionLanguage(localStorage.getItem(TRANSCRIPTION_LANGUAGE_STORAGE_KEY)));
-    const [agentWorkflowKind, setAgentWorkflowKind] = useState<"polish" | "proofread" | "edit" | "translate">("polish");
+    const [agentWorkflowKind, setAgentWorkflowKind] = useState<"polish" | "proofread" | "edit" | "translate" | "punctuate" | "speaker_names">("polish");
+    const [showAgentHandoff, setShowAgentHandoff] = useState(false);
+    const [agentHandoffTaskId, setAgentHandoffTaskId] = useState<string | null>(null);
+    const [agentIdentity, setAgentIdentity] = useState("external-agent");
+    const [agentHandoffReady, setAgentHandoffReady] = useState(false);
+    const [agentHandoffCopied, setAgentHandoffCopied] = useState(false);
     const [autoBurnSubtitles, setAutoBurnSubtitles] = useState(true);
     const [autoSubtitleMode, setAutoSubtitleMode] = useState<"source" | "translated" | "bilingual">("source");
     const [autoBusy, setAutoBusy] = useState<string | null>(null);
@@ -116,7 +141,9 @@ function App() {
     const [structureDelta, setStructureDelta] = useState("0.100");
     const [structureBusy, setStructureBusy] = useState(false);
     const [structureError, setStructureError] = useState<string | null>(null);
-    const [exportFormat, setExportFormat] = useState<"srt" | "vtt" | "ass" | "markdown">(() => parseExportPreferences(localStorage.getItem("siaocut.exportPreferences.v1")).transcriptFormat);
+    const [exportFormat, setExportFormat] = useState<"srt" | "vtt" | "ass" | "markdown" | "json">(() => parseExportPreferences(localStorage.getItem("siaocut.exportPreferences.v1")).transcriptFormat);
+    const [includeSpeakerLabels, setIncludeSpeakerLabels] = useState(true);
+    const [confirmTranscriptionWarnings, setConfirmTranscriptionWarnings] = useState(false);
     const [subtitleMode, setSubtitleMode] = useState<"source" | "translated" | "bilingual">(() => parseExportPreferences(localStorage.getItem("siaocut.exportPreferences.v1")).subtitleMode);
     const [subtitleLanguage, setSubtitleLanguage] = useState(() => parseExportPreferences(localStorage.getItem("siaocut.exportPreferences.v1")).subtitleLanguage);
     const [wordRange, setWordRange] = useState<{
@@ -130,10 +157,13 @@ function App() {
     const [deleteCandidate, setDeleteCandidate] = useState<Project | null>(null);
     const [deleteBusy, setDeleteBusy] = useState(false);
     const [deleteError, setDeleteError] = useState<string | null>(null);
+    const [deletionPreflight, setDeletionPreflight] = useState<ProjectDeletionPreflight | null>(null);
+    const [deletePreflightBusy, setDeletePreflightBusy] = useState(false);
     const videoRef = useRef<HTMLVideoElement>(null);
     const runtimeButtonRef = useRef<HTMLButtonElement>(null);
     const sourceButtonRef = useRef<HTMLButtonElement>(null);
     const autoButtonRef = useRef<HTMLButtonElement>(null);
+    const agentButtonRef = useRef<HTMLButtonElement>(null);
     const exportButtonRef = useRef<HTMLButtonElement>(null);
     const exportPanelRef = useRef<HTMLElement>(null);
     const commandMoreRef = useRef<HTMLDivElement>(null);
@@ -151,6 +181,14 @@ function App() {
     const refreshSpeakerTrack = useCallback(async (projectId: string) => {
         const envelope = await runCore(["speaker", "track", projectId]);
         setSpeakerTrack(envelope.speakerTrack ?? null);
+    }, []);
+    const refreshTranscription = useCallback(async (projectId: string) => {
+        const [latest, reviews] = await Promise.all([
+            runCore(["transcription", "latest", projectId]),
+            runCore(["transcription", "review", projectId]),
+        ]);
+        setTranscriptionJob(latest.transcriptionJob ?? null);
+        setTranscriptionReviews(reviews.reviewItems ?? []);
     }, []);
     const refreshProject = useCallback(async (projectId: string, refreshMedia = false) => {
         const next = await loadProject(projectId);
@@ -172,12 +210,12 @@ function App() {
         setProject(next);
         setProjects((current) => current.map((item) => item.id === next.id ? next : item));
         setSelectedId((current) => next.transcript.segments.some((segment) => segment.id === current) ? current : next.transcript.segments[0]?.id ?? null);
-        await Promise.all([refreshLatestExport(next.id), refreshLatestAudioAnalysis(next.id), refreshSpeakerTrack(next.id)]);
-    }, [refreshLatestAudioAnalysis, refreshLatestExport, refreshSpeakerTrack]);
+        await Promise.all([refreshLatestExport(next.id), refreshLatestAudioAnalysis(next.id), refreshSpeakerTrack(next.id), refreshTranscription(next.id)]);
+    }, [refreshLatestAudioAnalysis, refreshLatestExport, refreshSpeakerTrack, refreshTranscription]);
     const initialize = useCallback(async () => {
         setBusy(tr("app.s0039"));
         setError(null);
-        const [projectsResult, runtimeResult, modelsResult, modelJobsResult, sourceJobsResult, autoWorkflowsResult, updatePolicyResult, speakerPackageResult, speakerJobsResult] = await Promise.allSettled([
+        const [projectsResult, runtimeResult, modelsResult, modelJobsResult, sourceJobsResult, autoWorkflowsResult, updatePolicyResult, speakerPackageResult, speakerJobsResult, transcriptionHealthResult] = await Promise.allSettled([
             listProjects(),
             runtimeInfo(),
             runCore(["model", "list", "--verify"]),
@@ -187,6 +225,7 @@ function App() {
             updaterPolicy(),
             runCore(["speaker", "package", "--verify"]),
             runCore(["speaker", "jobs"]),
+            runCore(["transcription", "health"]),
         ]);
         const errors: string[] = [];
         let activeAutoWorkflow: AutoWorkflow | null = null;
@@ -224,6 +263,11 @@ function App() {
             const jobs = speakerJobsResult.value.speakerJobs ?? [];
             setSpeakerJob(jobs.find((item) => ["queued", "running"].includes(item.status)) ?? jobs[0] ?? null);
         }
+        if (transcriptionHealthResult.status === "fulfilled" && transcriptionHealthResult.value.providerHealth) {
+            const next = transcriptionHealthResult.value.providerHealth;
+            setTranscriptionHealth(next);
+            setTranscriptionConfig({ providerId: next.providerId, endpoint: next.endpoint, modelId: next.modelId, updatedAt: next.checkedAt });
+        }
         if (sourceJobsResult.status === "fulfilled") {
             const jobs = (sourceJobsResult.value.sourceJobs ?? []).filter((item) => item.id !== activeAutoWorkflow?.sourceImportId);
             setSourceJob(jobs.find((item) => ["queued", "running", "finalizing"].includes(item.status)) ?? jobs[0] ?? null);
@@ -255,7 +299,7 @@ function App() {
                 try {
                     setMediaUrl(await authorizeArtifact(first.id, "preview") ?? await authorizeMedia(first.id));
                     setWaveformUrl(await authorizeArtifact(first.id, "waveform"));
-                    await Promise.all([refreshLatestExport(first.id), refreshLatestAudioAnalysis(first.id), refreshSpeakerTrack(first.id)]);
+                    await Promise.all([refreshLatestExport(first.id), refreshLatestAudioAnalysis(first.id), refreshSpeakerTrack(first.id), refreshTranscription(first.id)]);
                 }
                 catch (cause) {
                     errors.push(tr("app.s0045", { "0": cause instanceof Error ? cause.message : String(cause) }));
@@ -267,7 +311,7 @@ function App() {
         }
         setError(errors.length ? errors.join(" ") : null);
         setBusy(null);
-    }, [refreshLatestAudioAnalysis, refreshLatestExport, refreshSpeakerTrack]);
+    }, [refreshLatestAudioAnalysis, refreshLatestExport, refreshSpeakerTrack, refreshTranscription]);
     useEffect(() => {
         void initialize();
     }, [initialize]);
@@ -404,6 +448,25 @@ function App() {
         }).catch((cause) => setError(cause instanceof Error ? cause.message : String(cause))), 800);
     }, [refreshProject, refreshSpeakerTrack, speakerJob?.id, speakerJob?.status]);
     useEffect(() => {
+        if (!transcriptionJob || !["queued", "running", "finalizing"].includes(transcriptionJob.status))
+            return;
+        return startSerialPolling(() => runCore(["transcription", "status", transcriptionJob.id]).then(async (envelope) => {
+            setError(clearTransientCoreError);
+            if (!envelope.transcriptionJob)
+                return;
+            const next = envelope.transcriptionJob;
+            setTranscriptionJob(next);
+            if (next.status === "completed") {
+                await Promise.all([refreshProject(next.projectId, true), refreshSpeakerTrack(next.projectId), refreshTranscription(next.projectId)]);
+                setNotice(tr("app.moss.job.completed"));
+            }
+            if (["failed", "interrupted"].includes(next.status))
+                setError(next.errorMessage ?? tr("app.moss.job.failed"));
+            if (next.status === "cancelled")
+                setNotice(tr("app.moss.job.cancelled"));
+        }).catch((cause) => setError(cause instanceof Error ? cause.message : String(cause))), 1000);
+    }, [refreshProject, refreshSpeakerTrack, refreshTranscription, transcriptionJob?.id, transcriptionJob?.status]);
+    useEffect(() => {
         if (!sourceJob || !["queued", "running", "finalizing"].includes(sourceJob.status))
             return;
         return startSerialPolling(() => runCore(["source", "status", sourceJob.id]).then(async (envelope) => {
@@ -531,7 +594,11 @@ function App() {
     const mediaCapabilityTitle = capabilities.hasBoundMedia ? undefined : tr("app.capability.mediaRequired");
     const transcribeCapabilityTitle = !capabilities.hasBoundMedia
         ? tr("app.capability.mediaRequired")
-        : !capabilities.hasModel ? tr("app.capability.modelRequired") : undefined;
+        : transcriptionMode === "multispeaker"
+            ? transcriptionHealth?.state !== "healthy" ? tr("app.moss.health.required") : undefined
+            : !capabilities.hasModel ? tr("app.capability.modelRequired") : undefined;
+    const transcriptionActive = Boolean(transcriptionJob && ["queued", "running", "finalizing"].includes(transcriptionJob.status));
+    const canStartTranscription = capabilities.hasBoundMedia && (transcriptionMode === "multispeaker" ? transcriptionHealth?.state === "healthy" : capabilities.hasModel);
     const agentCapabilityTitle = !capabilities.hasBoundMedia
         ? tr("app.capability.mediaRequired")
         : !capabilities.hasTranscript
@@ -550,13 +617,16 @@ function App() {
         textShadow: `0 ${project.subtitleStyle.shadowDepth}px ${Math.max(1, project.subtitleStyle.shadowDepth * 2)}px ${project.subtitleStyle.outlineColor}, 0 0 ${project.subtitleStyle.outlineWidth * 2}px ${project.subtitleStyle.outlineColor}`,
     } : undefined;
     const currentDeleteCandidate = deleteCandidate ? projects.find((item) => item.id === deleteCandidate.id) ?? deleteCandidate : null;
-    const deleteActiveTaskCount = currentDeleteCandidate?.tasks.filter((task) => ["queued", "claimed", "running"].includes(task.status)).length ?? 0;
-    const deleteBlockMessage = deleteActiveTaskCount > 0
-        ? tr("app.s0073", { "0": deleteActiveTaskCount }) : currentDeleteCandidate && activeExport?.projectId === currentDeleteCandidate.id && ["queued", "running"].includes(activeExport.status)
-        ? tr("app.s0074") : currentDeleteCandidate && audioAnalysisJob?.projectId === currentDeleteCandidate.id && ["queued", "running"].includes(audioAnalysisJob.status)
-        ? tr("app.s0075") : currentDeleteCandidate && speakerJob?.projectId === currentDeleteCandidate.id && ["queued", "running"].includes(speakerJob.status)
-        ? tr("app.s0076") : currentDeleteCandidate && autoWorkflow?.projectId === currentDeleteCandidate.id && ["queued", "running", "needs_agent", "needs_review", "failed", "interrupted"].includes(autoWorkflow.status)
-        ? tr("app.s0077") : null;
+    const deleteBlockMessage = deletionPreflight?.blockers.length
+        ? deletionPreflight.blockers.map((blocker) => ({
+            agent_task: tr("app.delete.blocker.agent"),
+            export: tr("app.delete.blocker.export"),
+            audio_analysis: tr("app.delete.blocker.audio"),
+            speaker_analysis: tr("app.delete.blocker.speaker"),
+            auto_workflow: tr("app.delete.blocker.workflow"),
+            transcription: blocker.status === "awaiting_apply" ? tr("app.delete.blocker.transcriptionCandidate") : tr("app.delete.blocker.transcription"),
+        }[blocker.kind] ?? tr("app.delete.blocker.unknown", { kind: blocker.kind, status: blocker.status }))).join(" ")
+        : null;
     const humanState = busy ? tr("app.s0001") : taskLabel(project);
     const humanStateTone = humanState === tr("app.s0003") ? "warning" : humanState === tr("app.s0002") ? "agent" : humanState === tr("app.s0001") ? "info" : "success";
     const orderedPatchSets = project?.patchSets
@@ -566,16 +636,21 @@ function App() {
     const pendingEdits = project?.edits.filter((edit) => ["suggested", "proposed"].includes(edit.status)) ?? [];
     const failedTasks = project?.tasks.filter((task) => ["failed", "interrupted"].includes(task.status)) ?? [];
     const processingTasks = project?.tasks.filter((task) => ["queued", "claimed", "running"].includes(task.status)) ?? [];
-    const workerTask = processingTasks[0];
-    const workerWorkflow = workerTask ? project?.workflows.find((workflow) => workflow.taskId === workerTask.id) : undefined;
-    const workerClaimCommand = "siaocut-core task claim --worker codex-worker";
-    const workerContinueCommand = workerWorkflow ? `siaocut-core workflow continue ${workerWorkflow.id}` : workerTask ? `siaocut-core task retry ${workerTask.id}` : "";
+    const agentTask = processingTasks[0];
+    const agentActivityAgeMs = agentTask?.lastActivity?.createdAt ? Date.now() - new Date(agentTask.lastActivity.createdAt).getTime() : null;
+    const agentActivityStale = agentTask?.status === "running" && agentActivityAgeMs != null && Number.isFinite(agentActivityAgeMs) && agentActivityAgeMs > 5 * 60 * 1000;
+    const agentStatus = !agentTask ? null : agentTask.status === "queued" ? tr("app.agent.status.queued") : agentTask.status === "claimed" ? tr("app.agent.status.claimed") : agentActivityStale ? tr("app.agent.status.stale") : tr("app.agent.status.running");
     const recentTasks = project?.tasks.filter((task) => ["completed", "cancelled", "canceled"].includes(task.status)).slice(-5).reverse() ?? [];
     const audioRisks = audioAnalysisJob?.status === "completed" ? audioAnalysisJob.report?.risks ?? [] : [];
     const projectSpeakerJob = speakerJob?.projectId === project?.id ? speakerJob : null;
     const speakerById = new Map(speakerTrack?.speakers.map((speaker) => [speaker.id, speaker]) ?? []);
     const associationBySegment = new Map(speakerTrack?.associations.map((association) => [association.segmentId, association]) ?? []);
-    const actionableReviewCount = orderedPatchSets.reduce((count, set) => count + set.items.length, 0) + pendingEdits.length + failedTasks.length + audioRisks.length + Number(Boolean(projectSpeakerJob && ["failed", "interrupted"].includes(projectSpeakerJob.status)));
+    const actionableReviewCount = orderedPatchSets.reduce((count, set) => count + set.items.length, 0) + pendingEdits.length + failedTasks.length + audioRisks.length + transcriptionReviews.length + Number(Boolean(projectSpeakerJob && ["failed", "interrupted"].includes(projectSpeakerJob.status)));
+    const mossWordTimingUnavailable = speakerTrack?.providerId === "moss_openai" && speakerTrack.sourceKind === "end_to_end";
+    const transcriptionExportErrors = transcriptionReviews.filter((item) => item.status === "open" && item.severity === "error");
+    const transcriptionExportWarnings = transcriptionReviews.filter((item) => item.status === "open" && item.severity === "warning");
+    const structuredExport = exportFormat === "json" || (exportFormat === "markdown" && speakerTrack?.status === "ready");
+    const transcriptionExportBlocked = structuredExport && (transcriptionExportErrors.length > 0 || (transcriptionExportWarnings.length > 0 && !confirmTranscriptionWarnings));
     useEffect(() => {
         localStorage.setItem("siaocut.exportPreferences.v1", JSON.stringify({
             version: 1,
@@ -729,23 +804,39 @@ function App() {
             await refreshProject(projectId, true);
         });
     };
+    const refreshDeletionPreflight = async (projectId: string) => {
+        const envelope = await runCore(["project", "delete-preflight", projectId]);
+        if (!envelope.deletionPreflight)
+            throw new Error(tr("app.delete.preflightMissing"));
+        setDeletionPreflight(envelope.deletionPreflight);
+        return envelope.deletionPreflight;
+    };
     const openDeleteDialog = (candidate: Project) => {
         setDeleteError(null);
+        setDeletionPreflight(null);
         setDeleteCandidate(candidate);
+        setDeletePreflightBusy(true);
+        void refreshDeletionPreflight(candidate.id).catch((cause) => {
+            setDeleteError(cause instanceof Error ? cause.message : String(cause));
+        }).finally(() => setDeletePreflightBusy(false));
     };
     const closeDeleteDialog = () => {
-        if (deleteBusy)
+        if (deleteBusy || deletePreflightBusy)
             return;
         setDeleteCandidate(null);
         setDeleteError(null);
+        setDeletionPreflight(null);
     };
     const deleteProject = async () => {
-        if (!currentDeleteCandidate || deleteBlockMessage)
+        if (!currentDeleteCandidate || deletePreflightBusy)
             return;
         const deleting = currentDeleteCandidate;
         setDeleteBusy(true);
         setDeleteError(null);
         try {
+            const latestPreflight = await refreshDeletionPreflight(deleting.id);
+            if (!latestPreflight.deletable)
+                return;
             await runCore(["project", "delete", deleting.id]);
             const remaining = projects.filter((item) => item.id !== deleting.id);
             setProjects(remaining);
@@ -770,6 +861,7 @@ function App() {
         catch (cause) {
             const message = cause instanceof Error ? cause.message : String(cause);
             setDeleteError(message.replace(/^project_busy:\s*/, ""));
+            await refreshDeletionPreflight(deleting.id).catch(() => undefined);
         }
         finally {
             setDeleteBusy(false);
@@ -931,6 +1023,30 @@ function App() {
             throw new Error(tr("app.capability.mediaRequired"));
         if (!runtime?.ffmpegConfigured)
             throw new Error(tr("app.s0121"));
+        if (transcriptionMode === "multispeaker") {
+            if (transcriptionHealth?.state !== "healthy")
+                throw new Error(tr("app.moss.health.required"));
+            const args = ["transcription", "start", project.id, "--language", transcriptionLanguage];
+            if (transcriptionPrompt.trim())
+                args.push("--prompt", transcriptionPrompt.trim());
+            for (const hotword of transcriptionHotwords.split(/[,，\n]/).map((value) => value.trim()).filter(Boolean))
+                args.push("--hotword", hotword);
+            const envelope = await runCore(args);
+            if (!envelope.transcriptionJob)
+                throw new Error(tr("app.moss.job.missing"));
+            setTranscriptionJob(envelope.transcriptionJob);
+            if (envelope.transcriptionJob.status === "completed") {
+                await Promise.all([refreshProject(project.id, true), refreshSpeakerTrack(project.id), refreshTranscription(project.id)]);
+                setNotice(tr("app.moss.job.completed"));
+            }
+            else if (envelope.transcriptionJob.status === "awaiting_apply") {
+                setNotice(tr("app.moss.job.awaitingApply"));
+            }
+            else {
+                setNotice(tr("app.moss.job.started"));
+            }
+            return;
+        }
         if (!runtime?.asrConfigured)
             throw new Error(tr("app.s0122"));
         if (!modelPath)
@@ -938,6 +1054,52 @@ function App() {
         const result = await runCore(["transcribe", project.id, "--model", modelPath, "--language", transcriptionLanguage]);
         await refreshProject(project.id);
         setNotice(Number(result.segments ?? 0) === 0 ? tr("app.s0124") : tr("app.s0125"));
+    });
+    const saveTranscriptionProvider = (endpoint: string, modelId: string) => withBusy(tr("app.moss.settings.saving"), async () => {
+        const envelope = await runCore(["transcription", "configure", "--endpoint", endpoint, "--model", modelId]);
+        if (!envelope.config)
+            throw new Error(tr("app.moss.settings.missing"));
+        setTranscriptionConfig(envelope.config);
+        const checked = await runCore(["transcription", "health"]);
+        setTranscriptionHealth(checked.providerHealth ?? null);
+        setNotice(tr("app.moss.settings.saved"));
+    });
+    const checkTranscriptionProvider = () => withBusy(tr("app.moss.health.checking"), async () => {
+        const envelope = await runCore(["transcription", "health"]);
+        setTranscriptionHealth(envelope.providerHealth ?? null);
+    });
+    const cancelTranscription = () => transcriptionJob && withBusy(tr("app.moss.job.cancelling"), async () => {
+        const envelope = await runCore(["transcription", "cancel", transcriptionJob.id]);
+        setTranscriptionJob(envelope.transcriptionJob ?? null);
+    });
+    const resumeTranscription = () => transcriptionJob && withBusy(tr("app.moss.job.resuming"), async () => {
+        const envelope = await runCore(["transcription", "resume", transcriptionJob.id]);
+        if (!envelope.transcriptionJob)
+            throw new Error(tr("app.moss.job.missing"));
+        setTranscriptionJob(envelope.transcriptionJob);
+    });
+    const applyTranscriptionCandidate = () => transcriptionJob?.candidate && project && withBusy(tr("app.moss.candidate.applying"), async () => {
+        const envelope = await runCore(["transcription", "apply", transcriptionJob.id, "--expected-version", transcriptionJob.candidate!.currentVersionId ?? "", "--confirm-replace"]);
+        if (!envelope.transcriptionJob)
+            throw new Error(tr("app.moss.job.missing"));
+        setShowTranscriptionCandidate(false);
+        setTranscriptionApplyConfirmed(false);
+        await refreshProject(project.id);
+        setNotice(tr("app.moss.candidate.applied"));
+    });
+    const discardTranscriptionCandidate = () => transcriptionJob && withBusy(tr("app.moss.candidate.discarding"), async () => {
+        const envelope = await runCore(["transcription", "discard", transcriptionJob.id]);
+        if (!envelope.transcriptionJob)
+            throw new Error(tr("app.moss.job.missing"));
+        setTranscriptionJob(envelope.transcriptionJob);
+        setShowTranscriptionCandidate(false);
+        setTranscriptionApplyConfirmed(false);
+        setNotice(tr("app.moss.candidate.discarded"));
+    });
+    const resolveTranscriptionReview = (itemId: string, action: "resolved" | "ignored") => withBusy(tr("app.moss.review.saving"), async () => {
+        await runCore(["transcription", "resolve", itemId, "--action", action]);
+        if (project)
+            await refreshTranscription(project.id);
     });
     const startAudioAnalysis = () => project && withBusy(tr("app.s0126"), async () => {
         if (!capabilities.hasBoundMedia)
@@ -1200,8 +1362,19 @@ function App() {
         const output = await pickTranscriptPath(project.title, exportFormat);
         if (!output)
             return;
-        await runCore(["transcript", "export", project.id, "--format", exportFormat, "--output", output, ...subtitleArgs()]);
-        setNotice(tr("app.s0173", { "0": exportFormat === "markdown" ? tr("app.s0174") : tr("app.s0175"), "1": output }));
+        if (structuredExport) {
+            await runCore([
+                "transcription", "export", project.id,
+                "--format", exportFormat,
+                "--output", output,
+                ...(includeSpeakerLabels ? ["--include-speaker-labels"] : []),
+                ...(confirmTranscriptionWarnings ? ["--confirm-warnings"] : []),
+            ]);
+        }
+        else {
+            await runCore(["transcript", "export", project.id, "--format", exportFormat, "--output", output, ...subtitleArgs()]);
+        }
+        setNotice(tr("app.s0173", { "0": exportFormat === "markdown" ? tr("app.s0174") : exportFormat === "json" ? tr("app.moss.export.json") : tr("app.s0175"), "1": output }));
     });
     const subtitleArgs = () => {
         if (subtitleMode === "source")
@@ -1375,7 +1548,7 @@ function App() {
             const target = event.target;
             const modifier = event.ctrlKey || event.metaKey;
             const key = event.key.toLowerCase();
-            const dialogOpen = showRuntime || showSourceImport || showAutoWorkflow || showSubtitleImport || Boolean(structureEditMode) || Boolean(currentDeleteCandidate);
+            const dialogOpen = showRuntime || showSourceImport || showAutoWorkflow || showSubtitleImport || showAgentHandoff || Boolean(structureEditMode) || Boolean(currentDeleteCandidate);
             const editingTarget = target instanceof HTMLElement && (target.isContentEditable || target.matches("input, textarea, select"));
             if (event.key === "Escape" && showMoreMenu) {
                 event.preventDefault();
@@ -1496,6 +1669,18 @@ function App() {
         }
         setNotice(tr("app.s0221"));
     });
+    const openAgentHandoff = () => {
+        setAgentHandoffTaskId(null);
+        setAgentHandoffReady(false);
+        setAgentHandoffCopied(false);
+        setShowAgentHandoff(true);
+    };
+    const openExistingAgentHandoff = (taskId: string) => {
+        setAgentHandoffTaskId(taskId);
+        setAgentHandoffReady(true);
+        setAgentHandoffCopied(false);
+        setShowAgentHandoff(true);
+    };
     const createAgentTask = () => project && withBusy(tr("app.s0222"), async () => {
         if (!capabilities.hasBoundMedia)
             throw new Error(tr("app.capability.mediaRequired"));
@@ -1503,20 +1688,45 @@ function App() {
             throw new Error(tr("app.capability.transcriptRequired"));
         if (agentWorkflowKind === "translate" && !capabilities.hasTranslationTarget)
             throw new Error(tr("app.capability.translationTargetRequired"));
-        await runCore([
+        const envelope = await runCore([
             "workflow", "create", project.id,
             "--kind", agentWorkflowKind,
             "--locale", uiLocale,
             ...(agentWorkflowKind === "translate" ? ["--lang", subtitleLanguage] : []),
         ]);
         await refreshProject(project.id);
+        setAgentHandoffTaskId(envelope.taskId ?? null);
         setNotice({
             polish: tr("app.workflow.created.polish"),
             proofread: tr("app.workflow.created.proofread"),
             edit: tr("app.workflow.created.edit"),
             translate: tr("app.workflow.created.translate", { language: subtitleLanguage.toUpperCase() }),
+            punctuate: tr("app.workflow.created.punctuate"),
+            speaker_names: tr("app.workflow.created.speakerNames"),
         }[agentWorkflowKind]);
     });
+    const handoffTask = agentHandoffTaskId ? project?.tasks.find((task) => task.id === agentHandoffTaskId) ?? null : null;
+    const handoffIdentity = agentIdentity.trim();
+    const handoffText = handoffTask && isValidAgentIdentity(handoffIdentity) ? [
+        tr("app.agent.handoff.prompt.title", { taskId: handoffTask.id }),
+        tr("app.agent.handoff.prompt.context", { worker: handoffIdentity }),
+        tr("app.agent.handoff.prompt.claim", { taskId: handoffTask.id, worker: handoffIdentity }),
+        tr("app.agent.handoff.prompt.verify", { taskId: handoffTask.id }),
+        tr("app.agent.handoff.prompt.heartbeat", { taskId: handoffTask.id, worker: handoffIdentity }),
+        tr("app.agent.handoff.prompt.process"),
+        tr("app.agent.handoff.prompt.submit", { taskId: handoffTask.id, worker: handoffIdentity }),
+        tr("app.agent.handoff.prompt.review", { taskId: handoffTask.id }),
+    ].join("\n\n") : "";
+    const copyAgentHandoff = async () => {
+        if (!handoffText) return;
+        try {
+            await navigator.clipboard.writeText(handoffText);
+            setAgentHandoffCopied(true);
+        }
+        catch {
+            setError(tr("app.agent.handoff.copyFailed"));
+        }
+    };
     const updateTask = (taskId: string, action: "retry" | "cancel") => project && withBusy(action === "retry" ? tr("app.s0224") : tr("app.s0225"), async () => {
         await runCore(["task", action, taskId]);
         await refreshProject(project.id);
@@ -1570,31 +1780,33 @@ function App() {
         <header className="topbar">
           <div className="topbar-heading"><p className="eyebrow">{tr("app.s0247")}</p><h1>{project?.title ?? tr("app.s0248")}</h1></div>
           <div className="command-bar" aria-label={tr("app.s0249")}>
-            <StatusBadge tone={humanStateTone}>{humanState}</StatusBadge>
-            <div className="command-history" aria-label={tr("app.s0250")}>
-              <IconButton label={tr("app.s0251")} shortcut="Ctrl+Z" disabled={!project?.history.canUndo || Boolean(busy)} onClick={() => navigateHistory("undo")}><Undo2 size={15}/></IconButton>
-              <IconButton label={tr("app.s0252")} shortcut="Ctrl+Shift+Z" disabled={!project?.history.canRedo || Boolean(busy)} onClick={() => navigateHistory("redo")}><Redo2 size={15}/></IconButton>
+            <div className="command-primary">
+              <StatusBadge tone={humanStateTone}>{humanState}</StatusBadge>
+              <div className="command-history" aria-label={tr("app.s0250")}>
+                <IconButton label={tr("app.s0251")} shortcut="Ctrl+Z" disabled={!project?.history.canUndo || Boolean(busy)} onClick={() => navigateHistory("undo")}><Undo2 size={15}/></IconButton>
+                <IconButton label={tr("app.s0252")} shortcut="Ctrl+Shift+Z" disabled={!project?.history.canRedo || Boolean(busy)} onClick={() => navigateHistory("redo")}><Redo2 size={15}/></IconButton>
+              </div>
+              <label className="command-select transcription-mode"><span>{tr("app.moss.mode.label")}</span><select aria-label={tr("app.moss.mode.label")} value={transcriptionMode} onChange={(event) => selectTranscriptionMode(event.target.value as "quick" | "multispeaker")}><option value="quick">{tr("app.moss.mode.quick")}</option><option value="multispeaker">{tr("app.moss.mode.multispeaker")}</option></select></label>
+              <label className="command-select"><span>{tr("app.transcription.language")}</span><select aria-label={tr("app.transcription.language")} value={transcriptionLanguage} onChange={(event) => selectTranscriptionLanguage(event.target.value as TranscriptionLanguage)}><option value="auto">{tr("app.transcription.auto")}</option><option value="en">{tr("app.transcription.english")}</option><option value="zh">{tr("app.transcription.chinese")}</option></select></label>
+              <Button disabled={!canStartTranscription || transcriptionActive || Boolean(busy)} title={transcribeCapabilityTitle} onClick={transcribe}><RefreshCw size={15}/>{transcriptionMode === "multispeaker" ? tr("app.moss.action.start") : tr("app.s0253")}</Button>
             </div>
-            <label className="command-select"><span>{tr("app.transcription.language")}</span><select aria-label={tr("app.transcription.language")} value={transcriptionLanguage} onChange={(event) => selectTranscriptionLanguage(event.target.value as TranscriptionLanguage)}><option value="auto">{tr("app.transcription.auto")}</option><option value="en">{tr("app.transcription.english")}</option><option value="zh">{tr("app.transcription.chinese")}</option></select></label>
-            <Button disabled={!capabilities.canTranscribe || Boolean(busy)} title={transcribeCapabilityTitle} onClick={transcribe}><RefreshCw size={15}/>{tr("app.s0253")}</Button>
-            <div className="agent-command"><select aria-label={tr("app.workflow.label")} value={agentWorkflowKind} onChange={(event) => setAgentWorkflowKind(event.target.value as typeof agentWorkflowKind)}><option value="polish">{tr("app.workflow.polish")}</option><option value="proofread">{tr("app.workflow.proofread")}</option><option value="edit">{tr("app.workflow.edit")}</option><option value="translate">{tr("app.workflow.translate")}</option></select>{agentWorkflowKind === "translate" && <select className="agent-language" aria-label={tr("app.workflow.targetLanguage")} value={subtitleLanguage} onChange={(event) => setSubtitleLanguage(event.target.value)}><option value="en">EN</option><option value="zh">ZH</option><option value="ja">JA</option><option value="ko">KO</option></select>}<Button variant="agent" disabled={!capabilities.canCreateAgentTask || Boolean(busy)} title={agentCapabilityTitle} onClick={createAgentTask}><Bot size={15}/>{tr("app.s0255")}</Button></div>
-            <div className="command-more" ref={commandMoreRef}>
+            <div className="command-secondary">
+              <div className="agent-command"><select aria-label={tr("app.workflow.label")} value={agentWorkflowKind} onChange={(event) => setAgentWorkflowKind(event.target.value as typeof agentWorkflowKind)}><option value="polish">{tr("app.workflow.polish")}</option><option value="proofread">{tr("app.workflow.proofread")}</option><option value="punctuate">{tr("app.workflow.punctuate")}</option><option value="speaker_names">{tr("app.workflow.speakerNames")}</option><option value="edit">{tr("app.workflow.edit")}</option><option value="translate">{tr("app.workflow.translate")}</option></select>{agentWorkflowKind === "translate" && <select className="agent-language" aria-label={tr("app.workflow.targetLanguage")} value={subtitleLanguage} onChange={(event) => setSubtitleLanguage(event.target.value)}><option value="en">EN</option><option value="zh">ZH</option><option value="ja">JA</option><option value="ko">KO</option></select>}<Button ref={agentButtonRef} variant="agent" disabled={!capabilities.canCreateAgentTask || Boolean(busy) || (agentWorkflowKind === "speaker_names" && speakerTrack?.status !== "ready")} title={agentWorkflowKind === "speaker_names" && speakerTrack?.status !== "ready" ? tr("app.workflow.speakerNamesUnavailable") : agentCapabilityTitle} onClick={openAgentHandoff}><Bot size={15}/>{tr("app.agent.handoff.open")}</Button></div>
+              <div className="command-more" ref={commandMoreRef}>
               <IconButton label={tr("app.s0256")} onClick={() => setShowMoreMenu((current) => !current)}><MoreHorizontal size={17}/></IconButton>
-              {showMoreMenu && <div className="command-menu" role="menu">
-                <button role="menuitem" disabled={!project?.transcript.words.length || Boolean(busy)} onClick={() => { setShowMoreMenu(false); void detectSuggestions(); }}><Scissors size={14}/>{tr("app.s0254")}</button>
-                <button role="menuitem" disabled={!capabilities.canPreparePreview || Boolean(busy)} title={mediaCapabilityTitle} onClick={() => { setShowMoreMenu(false); void preparePreview(); }}><Film size={14}/>{tr("app.s0257")}</button>
-                <button role="menuitem" disabled={!capabilities.canRelinkMedia || Boolean(busy)} onClick={() => { setShowMoreMenu(false); void relinkMedia(); }}><Link2 size={14}/>{tr("app.s0258")}</button>
-              </div>}
-            </div>
-            <div className="export-split">
+              {showMoreMenu && <Suspense fallback={null}><AppCommandMenu canDetectSuggestions={Boolean(project?.transcript.words.length) && !busy} canPreparePreview={capabilities.canPreparePreview && !busy} canRelinkMedia={capabilities.canRelinkMedia && !busy} mediaCapabilityTitle={mediaCapabilityTitle} onDetectSuggestions={() => { setShowMoreMenu(false); void detectSuggestions(); }} onPreparePreview={() => { setShowMoreMenu(false); void preparePreview(); }} onRelinkMedia={() => { setShowMoreMenu(false); void relinkMedia(); }}/></Suspense>}
+              </div>
+              <div className="export-split">
               <Button ref={exportButtonRef} variant="primary" className="export-main" disabled={!capabilities.canExportVideo || Boolean(busy) || selectedTranslationPending || Boolean(activeExport && ["queued", "running"].includes(activeExport.status))} title={mediaCapabilityTitle} onClick={exportVideo}><Download size={15}/>{tr("app.s0259")}</Button>
               <button className="export-settings" aria-label={tr("app.s0260")} title={tr("app.s0261")} disabled={!project} onClick={() => setShowExportPanel(true)}><ChevronDown size={15}/></button>
+              </div>
             </div>
           </div>
         </header>
 
         {(notice || error) && <div className={`notice ${error ? "error" : ""}`} role="status" aria-live="polite">{error && <CircleAlert size={15}/>}<span>{error ? tr("app.error.unknownSummary") : notice}</span>{error && <details><summary>{tr("app.error.technicalDetails")}</summary><code>{error}</code></details>}{error && <button className="notice-action" onClick={() => void initialize()}>{tr("app.s0262")}</button>}<button aria-label={tr("app.s0263")} title={tr("app.s0263")} onClick={() => { setNotice(null); setError(null); }}>×</button></div>}
         {busy && <div className="progress-strip" role="status" aria-live="polite"><LoaderCircle size={14} className="spin"/>{busy}</div>}
+        {transcriptionJob && <Suspense fallback={null}><TranscriptionJobBar job={transcriptionJob} busy={Boolean(busy)} onCancel={cancelTranscription} onResume={resumeTranscription} onInspectCandidate={() => { setTranscriptionApplyConfirmed(false); setShowTranscriptionCandidate(true); }} onDiscardCandidate={discardTranscriptionCandidate}/></Suspense>}
         {activeExport && ["queued", "running"].includes(activeExport.status) && <div className="export-progress" role="status"><Film size={15}/><span>{tr("app.s0264") + " "}{Math.round(activeExport.progress * 100)}%</span><progress value={activeExport.progress} max={1}/><button onClick={cancelExport}>{tr("app.s0265")}</button></div>}
         {activeExport && ["failed", "interrupted"].includes(activeExport.status) && <div className="export-progress interrupted" role="status"><CircleAlert size={15}/><span>{activeExport.status === "interrupted" ? tr("app.s0266") : tr("app.s0267")}</span><JobFailureDetails context="export" status={activeExport.status} errorCode={activeExport.errorCode} errorMessage={activeExport.errorMessage}/><button onClick={retryExport}>{tr("app.s0269")}</button></div>}
         {sourceJob && !showSourceImport && ["queued", "running", "finalizing"].includes(sourceJob.status) && <div className="source-progress" role="status"><Link2 size={15}/><span><strong>{sourceStatusLabel(sourceJob.status)} · {Math.round(sourceJob.progress * 100)}%</strong><small>{sourceJob.title}</small></span><progress value={sourceJob.progress} max={1}/><button onClick={() => setShowSourceImport(true)}>{tr("app.s0270")}</button></div>}
@@ -1637,7 +1849,16 @@ function App() {
               <aside className="review-panel">
                 <div className="section-title"><div><p className="eyebrow">{tr("app.s0294")}</p><h2>{tr("app.s0295")}</h2></div>{actionableReviewCount > 0 && <span className="state-count" aria-label={tr("app.s0296", { "0": actionableReviewCount })}>{actionableReviewCount}</span>}</div>
                 <div className="review-panel-scroll" role="region" aria-label={tr("app.s0297")} tabIndex={0}>
-                  {workerTask && <section className="codex-worker-status" aria-label={workerTask.status === "queued" ? tr("app.worker.waiting") : tr("app.worker.connected")}><header><Bot size={14}/><strong>{workerTask.status === "queued" ? tr("app.worker.waiting") : tr("app.worker.connected")}</strong></header><p>{tr("app.worker.privacy")}</p><label><span>{tr("app.worker.claimCommand")}</span><code>{workerClaimCommand}</code><button type="button" onClick={() => void navigator.clipboard?.writeText(workerClaimCommand)}>{tr("app.worker.copy")}</button></label>{workerContinueCommand && <label><span>{tr("app.worker.continueCommand")}</span><code>{workerContinueCommand}</code><button type="button" onClick={() => void navigator.clipboard?.writeText(workerContinueCommand)}>{tr("app.worker.copy")}</button></label>}</section>}
+                  {agentTask && <section className={`agent-task-status ${agentTask.status}`} aria-label={agentStatus ?? undefined}>
+                    <header><Bot size={14}/><strong>{agentStatus}</strong><StatusBadge tone={agentTask.status === "running" && !agentActivityStale ? "agent" : "warning"}>{agentTask.kind}{agentTask.language ? ` · ${agentTask.language.toUpperCase()}` : ""}</StatusBadge></header>
+                    <p>{tr("app.agent.task.privacy")}</p>
+                    {agentTask.status === "queued" && <p className="agent-task-next">{tr("app.agent.task.queuedHelp")}</p>}
+                    {agentTask.status === "claimed" && <p className="agent-task-next">{tr("app.agent.task.claimedHelp", { worker: agentTask.lease?.worker ?? tr("app.agent.task.unknownWorker") })}</p>}
+                    {agentTask.status === "running" && <p className="agent-task-next">{agentActivityStale ? tr("app.agent.task.staleHelp") : agentTask.lastActivity?.message ?? tr("app.agent.task.runningHelp")}</p>}
+                    {agentTask.lastActivity && <small>{tr("app.agent.task.lastActivity", { time: new Date(agentTask.lastActivity.createdAt).toLocaleTimeString(uiLocale, { hour: "2-digit", minute: "2-digit" }) })}</small>}
+                    <div className="agent-task-actions"><button type="button" onClick={() => openExistingAgentHandoff(agentTask.id)}><Copy size={12}/>{tr("app.agent.task.copyHandoff")}</button><button type="button" onClick={() => updateTask(agentTask.id, "cancel")}>{tr("app.s0328")}</button></div>
+                    <details><summary>{tr("app.agent.task.technical")}</summary><dl><div><dt>{tr("app.agent.task.id")}</dt><dd><code>{agentTask.id}</code></dd></div>{agentTask.lease && <div><dt>{tr("app.agent.task.worker")}</dt><dd>{agentTask.lease.worker}</dd></div>}{agentTask.lease && <div><dt>{tr("app.agent.task.lease")}</dt><dd>{new Date(agentTask.lease.expiresAt).toLocaleTimeString(uiLocale, { hour: "2-digit", minute: "2-digit" })}</dd></div>}</dl></details>
+                  </section>}
                   {orderedPatchSets.map((set) => <section className="patch-set" key={set.id}>
                     <header><span>{set.kind}{set.language ? ` · ${set.language.toUpperCase()}` : ""}</span>{set.items.length > 1 && <div><button onClick={() => reviewAll(set.taskId, "keep")}>{tr("app.s0298")}</button><button onClick={() => reviewAll(set.taskId, "apply")}>{tr("app.s0299")}</button></div>}</header>
                     {set.items.map((item) => <PatchReviewCard key={item.id} item={item} onReview={(action) => reviewPatch(item.id, action)} onSelect={() => { const segment = project.transcript.segments.find((candidate) => candidate.id === item.segmentId); if (segment)
@@ -1645,13 +1866,14 @@ function App() {
                   </section>)}
                   {pendingEdits.map((edit) => <article className="review-item" key={edit.id}><span className="review-tag">{tr("app.composite.reviewSuggestion", { kind: cutSuggestionLabel(edit.suggestion?.suggestionType) })}</span><strong>{editReasonLabel(edit)}</strong><p>{edit.suggestion ? tr("app.composite.suggestionEvidence", { range: `${formatTime(edit.start)} — ${formatTime(edit.end)}`, confidence: Math.round(edit.suggestion.confidence * 100) }) : `${formatTime(edit.start)} — ${formatTime(edit.end)} ${tr("app.s0302")}`}</p><div className="cut-actions"><button onClick={() => selectSegment(project.transcript.segments.find((segment) => segment.id === edit.segmentId)!)}>{tr("app.s0303")}</button>{edit.kind === "word_cut" && <button onClick={() => previewCut(edit.id)}><Headphones size={11}/>{tr("app.s0304")}</button>}<button onClick={() => updateCut(edit.id, "apply")}>{tr("app.s0305")}</button></div></article>)}
                   {audioRisks.map((risk, index) => <article className="review-item audio-risk-item" key={`${risk.kind}-${risk.start}-${index}`}><span className="review-tag warning"><CircleAlert size={12}/>{tr("app.s0306")}</span><strong>{audioRiskLabel(risk.kind)}</strong><p>{tr("app.composite.audioRiskEvidence", { range: `${formatTime(risk.start)} — ${formatTime(risk.end)}`, measured: risk.measuredValue, threshold: risk.threshold, unit: audioUnitLabel(risk.unit) })}</p><button onClick={() => locateAudioRisk(risk)}>{tr("app.s0309")}</button></article>)}
+                  <TranscriptionReviewPanel items={transcriptionReviews} disabled={Boolean(busy)} onLocate={(segmentId) => { const segment = project.transcript.segments.find((item) => item.id === segmentId); if (segment) selectSegment(segment); }} onResolve={resolveTranscriptionReview}/>
                   {audioAnalysisJob && ["failed", "interrupted"].includes(audioAnalysisJob.status) && <article className="review-item task-item failure"><span className="review-tag failure"><CircleAlert size={12}/>{tr("app.s0310")}{audioAnalysisJob.status === "interrupted" ? tr("app.s0018") : tr("app.s0311")}</span><strong>{tr("app.s0312")}</strong><JobFailureDetails context="audio" status={audioAnalysisJob.status} errorCode={audioAnalysisJob.errorCode} errorMessage={audioAnalysisJob.errorMessage}/><button onClick={resumeAudioAnalysis}><RefreshCw size={11}/>{tr("app.s0279")}</button></article>}
                   {audioAnalysisJob && ["queued", "running"].includes(audioAnalysisJob.status) && <article className="review-item task-item processing"><span className="review-tag info"><Activity size={12}/>{tr("app.s0314")}</span><strong>{tr("app.s0315")}</strong><p>{Math.round(audioAnalysisJob.progress * 100)}{tr("app.s0316")}</p><button disabled={Boolean(audioAnalysisJob.cancelRequestedAt)} onClick={cancelAudioAnalysis}>{audioAnalysisJob.cancelRequestedAt ? tr("app.s0317") : tr("app.s0318")}</button></article>}
                   {projectSpeakerJob && ["failed", "interrupted"].includes(projectSpeakerJob.status) && <article className="review-item task-item failure"><span className="review-tag failure"><CircleAlert size={12}/>{tr("app.s0319")}{projectSpeakerJob.status === "interrupted" ? tr("app.s0018") : tr("app.s0311")}</span><strong>{tr("app.s0320")}</strong><JobFailureDetails context="speaker" status={projectSpeakerJob.status} errorCode={projectSpeakerJob.errorCode} errorMessage={projectSpeakerJob.errorMessage}/><button onClick={resumeSpeakerJob}><RefreshCw size={11}/>{tr("app.s0279")}</button></article>}
                   {projectSpeakerJob && ["queued", "running"].includes(projectSpeakerJob.status) && <article className="review-item task-item processing"><span className="review-tag info"><Users size={12}/>{tr("app.s0314")}</span><strong>{tr("app.s0322")}</strong><p>{projectSpeakerJob.stage} · {Math.round(projectSpeakerJob.progress * 100)}{tr("app.s0323")}</p><button onClick={cancelSpeakerJob}>{tr("app.s0318")}</button></article>}
                   {failedTasks.map((task) => <article className="review-item task-item failure" key={task.id}><span className="review-tag failure"><CircleAlert size={12}/>Agent {task.status === "interrupted" ? tr("app.s0018") : tr("app.s0324")}</span><strong>{task.kind} · {Math.round(task.progress * 100)}%</strong><JobFailureDetails context="agent" status={task.status} errorCode={task.errorCode} errorMessage={task.errorMessage}/><button onClick={() => updateTask(task.id, "retry")}><RefreshCw size={11}/>{tr("app.s0325")}</button></article>)}
-                  {processingTasks.map((task) => <article className="review-item task-item processing" key={task.id}><span className="review-tag agent"><Bot size={12}/>{task.status === "queued" ? tr("app.s0326") : tr("app.s0327")}</span><strong>{task.kind}</strong><p>{Math.round(task.progress * 100)}%</p><button onClick={() => updateTask(task.id, "cancel")}>{tr("app.s0328")}</button></article>)}
-                  {actionableReviewCount === 0 && processingTasks.length === 0 && !audioAnalysisJob?.status.match(/queued|running|failed|interrupted/) && !projectSpeakerJob?.status.match(/queued|running|failed|interrupted/) && <div className="all-clear"><Check size={20}/><span>{tr("app.s0329")}</span></div>}
+                  {processingTasks.filter((task) => task.id !== agentTask?.id).map((task) => <article className="review-item task-item processing" key={task.id}><span className="review-tag agent"><Bot size={12}/>{task.status === "queued" ? tr("app.s0326") : tr("app.s0327")}</span><strong>{task.kind}</strong><p>{Math.round(task.progress * 100)}%</p><button onClick={() => updateTask(task.id, "cancel")}>{tr("app.s0328")}</button></article>)}
+                  {actionableReviewCount === 0 && processingTasks.length === 0 && !audioAnalysisJob?.status.match(/queued|running|failed|interrupted/) && !projectSpeakerJob?.status.match(/queued|running|failed|interrupted/) && !transcriptionJob?.status.match(/queued|running|finalizing|failed|interrupted/) && <div className="all-clear"><Check size={20}/><span>{tr("app.s0329")}</span></div>}
                   {recentTasks.length > 0 && <details className="review-history"><summary>{tr("app.s0330") + " "}{recentTasks.length}</summary><div>{recentTasks.map((task) => <article className="review-item recent" key={task.id}><span className="review-tag success"><Check size={12}/>{task.status === "completed" ? tr("app.s0032") : tr("app.s0017")}</span><strong>{task.kind}</strong><p>{Math.round(task.progress * 100)}%</p></article>)}</div></details>}
                   <div className="review-principle"><Sparkles size={16}/><span>{tr("app.s0331")}</span></div>
                 </div>
@@ -1662,6 +1884,8 @@ function App() {
               <article className="transcript-panel">
                 <header className="panel-header"><div><p className="eyebrow">{tr("app.s0332")}</p><h2>{tr("app.s0253")}</h2></div><div className="find-replace"><button ref={subtitleImportButtonRef} className="subtitle-import-command" disabled={Boolean(busy)} onClick={openSubtitleImport}><FileText size={12}/>{tr("app.s0333")}</button><button className="detect-suggestions" disabled={!project.transcript.words.length || Boolean(busy)} onClick={detectSuggestions}><Scissors size={12}/>{tr("app.s0334")}</button><label className="search"><Search size={14}/><input ref={searchInputRef} value={search} onChange={(event) => { setSearch(event.target.value); setEmptyReplacementConfirmed(false); }} placeholder={tr("app.s0335")} title="Ctrl+F"/></label><input ref={replacementInputRef} aria-label={tr("app.s0336")} value={replacement} onChange={(event) => { setReplacement(event.target.value); setEmptyReplacementConfirmed(false); }} placeholder={tr("app.s0336")} title="Ctrl+H"/>{search && <span className="replace-match-count">{tr("app.replace.matches", { count: replaceMatchCount })}</span>}{search && !replacement && <label className="replace-empty-confirm"><input type="checkbox" checked={emptyReplacementConfirmed} onChange={(event) => setEmptyReplacementConfirmed(event.target.checked)}/><span>{tr("app.replace.confirmDelete")}</span></label>}<button disabled={!search || (!replacement && !emptyReplacementConfirmed) || Boolean(busy)} onClick={replaceAll}>{tr("app.s0337")}</button></div></header>
                 <div className="transcript-meta"><span>{tr("app.s0338")}</span><span>{tr("app.composite.transcriptStats", { language: project.transcript.sourceLanguage.toUpperCase(), segments: segmentCountLabel(project.transcript.segments.length), words: wordCountLabel(project.transcript.words.length) })}</span></div>
+                {transcriptionMode === "multispeaker" && <details className="moss-advanced"><summary>{tr("app.moss.advanced.title")}</summary><div><label><span>{tr("app.moss.advanced.prompt")}</span><textarea value={transcriptionPrompt} maxLength={1200} onChange={(event) => setTranscriptionPrompt(event.target.value)} placeholder={tr("app.moss.advanced.promptPlaceholder")}/></label><label><span>{tr("app.moss.advanced.hotwords")}</span><input value={transcriptionHotwords} maxLength={500} onChange={(event) => setTranscriptionHotwords(event.target.value)} placeholder={tr("app.moss.advanced.hotwordsPlaceholder")}/></label><p>{tr("app.moss.advanced.experimental")}</p></div></details>}
+                {mossWordTimingUnavailable && <div className="capability-notice"><CircleAlert size={14}/><span><strong>{tr("app.moss.words.unavailable")}</strong><small>{tr("app.moss.words.explanation")}</small></span></div>}
                 <section className="subtitle-workbench-toolbar" aria-label={tr("app.s0341")}>
                   <div className="subtitle-selection-summary"><ListChecks size={15}/><span><strong>{selectedScopeLabel}</strong><small>{tr("app.s0342")}</small></span></div>
                   <div className="subtitle-selection-controls">
@@ -1719,35 +1943,22 @@ function App() {
             </section>
           </>)}
       </section>
-      {showExportPanel && project && <aside ref={exportPanelRef} className="export-panel" aria-label={tr("app.s0392")}>
-        <header className="export-panel-header"><div><p className="eyebrow">{tr("app.s0393")}</p><h2>{tr("app.s0392")}</h2></div><IconButton label={tr("app.s0394")} onClick={() => setShowExportPanel(false)}><X size={17}/></IconButton></header>
-        <div className="export-panel-body">
-          <section className="export-group" aria-labelledby="export-canvas-heading">
-            <div><h3 id="export-canvas-heading">{tr("app.s0395")}</h3><p>{tr("app.s0396")}</p></div>
-            <label><span>{tr("app.s0397")}</span><select aria-label={tr("app.s0397")} value={project.canvasSettings.aspectRatio} onChange={(event) => void changeCanvas({ ...project.canvasSettings, aspectRatio: event.target.value as CanvasSettings["aspectRatio"] })}><option value="source">{tr("app.s0398")}</option><option value="9:16">{tr("app.s0399")}</option></select></label>
-            <label><span>{tr("app.s0400")}</span><select aria-label={tr("app.s0400")} disabled={project.canvasSettings.aspectRatio === "source"} value={project.canvasSettings.framing} onChange={(event) => void changeCanvas({ ...project.canvasSettings, framing: event.target.value as CanvasSettings["framing"] })}><option value="contain-blur">{tr("app.s0401")}</option><option value="cover-center">{tr("app.s0402")}</option></select></label>
-          </section>
-          <section className="export-group" aria-labelledby="export-subtitle-heading">
-            <div><h3 id="export-subtitle-heading">{tr("app.s0175")}</h3><p>{tr("app.s0403")}</p></div>
-            <label><span>{tr("app.s0404")}</span><select aria-label={tr("app.s0405")} value={subtitleMode} onChange={(event) => setSubtitleMode(event.target.value as typeof subtitleMode)}><option value="source">{tr("app.s0406")}</option><option value="translated">{tr("app.s0407")}</option><option value="bilingual">{tr("app.s0408")}</option></select></label>
-            <label><span>{tr("app.s0409")}</span><select aria-label={tr("app.s0409")} disabled={!translationLanguageOptions.length} value={selectedSubtitleLanguage} onChange={(event) => setSubtitleLanguage(event.target.value)}>{translationLanguageOptions.length ? translationLanguageOptions.map((language) => <option value={language} key={language}>{language.toUpperCase()}{translationLanguages.includes(language) ? "" : tr("app.s0410")}</option>) : <option value="">{tr("app.s0411")}</option>}</select></label>
-            <label><span>{tr("app.s0412")}</span><select aria-label={tr("app.s0413")} value={exportFormat} onChange={(event) => setExportFormat(event.target.value as typeof exportFormat)}><option value="srt">SRT</option><option value="vtt">VTT</option><option value="ass">ASS</option><option value="markdown">Markdown</option></select></label>
-            {selectedTranslationPending && <p className="export-warning"><CircleAlert size={14}/>{selectedSubtitleLanguage.toUpperCase()}{tr("app.s0414")}</p>}
-          </section>
-          <section className="export-group subtitle-style-group" aria-labelledby="export-subtitle-style-heading">
-            <div><h3 id="export-subtitle-style-heading">{tr("app.s0415")}</h3><p>{tr("app.s0416")}</p></div>
-            <label><span>{tr("app.s0417")}</span><select aria-label={tr("app.s0418")} disabled={Boolean(busy)} value={project.subtitleStyle.preset} onChange={(event) => void changeSubtitleStyle(event.target.value as Project["subtitleStyle"]["preset"], project.subtitleStyle.position)}><option value="compact">{tr("app.s0419")}</option><option value="standard">{tr("app.s0420")}</option><option value="emphasis">{tr("app.s0421")}</option></select></label>
-            <label><span>{tr("app.s0422")}</span><select aria-label={tr("app.s0422")} disabled={Boolean(busy)} value={project.subtitleStyle.position} onChange={(event) => void changeSubtitleStyle(project.subtitleStyle.preset, event.target.value as Project["subtitleStyle"]["position"])}><option value="bottom">{tr("app.s0423")}</option><option value="center">{tr("app.s0424")}</option></select></label>
-            <label className="subtitle-safe-toggle"><input type="checkbox" checked={showSubtitleSafeArea} onChange={(event) => setShowSubtitleSafeArea(event.target.checked)}/><span>{tr("app.s0425")}</span></label>
-            <div className="subtitle-style-summary"><span><strong>{project.subtitleStyle.fontSize} px</strong><small>{tr("app.s0426")}</small></span><span><strong>{project.subtitleStyle.secondaryFontSize} px</strong><small>{tr("app.s0427")}</small></span><span><strong>{project.subtitleStyle.outlineWidth} px</strong><small>{tr("app.s0428")}</small></span><span><strong>{project.subtitleStyle.safeMarginPercent}%</strong><small>{tr("app.s0429")}</small></span></div>
-          </section>
-          <section className="export-safety"><ShieldCheck size={17}/><span><strong>{tr("app.s0430")}</strong><small>{tr("app.s0431")}</small></span></section>
-        </div>
-        <footer className="export-panel-actions">
-          <Button disabled={Boolean(busy) || selectedTranslationPending} onClick={exportTranscript}><Download size={15}/>{tr("app.s0432")}</Button>
-          <Button variant="primary" disabled={!capabilities.canExportVideo || Boolean(busy) || selectedTranslationPending || Boolean(activeExport && ["queued", "running"].includes(activeExport.status))} title={mediaCapabilityTitle} onClick={exportVideo}><Film size={15}/>{tr("app.s0259")}</Button>
-        </footer>
-      </aside>}
+      {showExportPanel && project && <Suspense fallback={null}><ExportPanel ref={exportPanelRef} project={project} busy={Boolean(busy)} subtitleMode={subtitleMode} translationLanguageOptions={translationLanguageOptions} translationLanguages={translationLanguages} selectedSubtitleLanguage={selectedSubtitleLanguage} selectedTranslationPending={selectedTranslationPending} exportFormat={exportFormat} structuredExport={structuredExport} includeSpeakerLabels={includeSpeakerLabels} transcriptionExportErrorCount={transcriptionExportErrors.length} transcriptionExportWarningCount={transcriptionExportWarnings.length} confirmTranscriptionWarnings={confirmTranscriptionWarnings} showSubtitleSafeArea={showSubtitleSafeArea} transcriptionExportBlocked={transcriptionExportBlocked} canExportVideo={capabilities.canExportVideo} activeExportRunning={Boolean(activeExport && ["queued", "running"].includes(activeExport.status))} mediaCapabilityTitle={mediaCapabilityTitle} onClose={() => setShowExportPanel(false)} onChangeCanvas={(settings) => void changeCanvas(settings)} onSubtitleModeChange={setSubtitleMode} onSubtitleLanguageChange={setSubtitleLanguage} onExportFormatChange={(format) => { setExportFormat(format); setConfirmTranscriptionWarnings(false); }} onIncludeSpeakerLabelsChange={setIncludeSpeakerLabels} onConfirmWarningsChange={setConfirmTranscriptionWarnings} onSubtitleStyleChange={(preset, position) => void changeSubtitleStyle(preset, position)} onShowSafeAreaChange={setShowSubtitleSafeArea} onExportTranscript={exportTranscript} onExportVideo={exportVideo}/></Suspense>}
+      {showAgentHandoff && project && <Dialog label={tr("app.agent.handoff.title")} className="runtime-dialog agent-handoff-dialog" onClose={() => setShowAgentHandoff(false)} returnFocusRef={agentButtonRef}>
+        <button autoFocus className="dialog-close" aria-label={tr("app.agent.handoff.close")} title={tr("app.agent.handoff.close")} onClick={() => setShowAgentHandoff(false)}><X size={18}/></button>
+        <p className="eyebrow">{tr("app.agent.handoff.eyebrow")}</p><h2>{agentHandoffTaskId ? tr("app.agent.handoff.readyTitle") : tr("app.agent.handoff.title")}</h2>
+        <p className="dialog-copy">{tr("app.agent.handoff.description")}</p>
+        <section className="agent-handoff-boundary"><ShieldCheck size={16}/><span>{tr("app.agent.handoff.boundary")}</span></section>
+        {!agentHandoffTaskId ? <>
+          <label className="agent-handoff-confirm"><input type="checkbox" checked={agentHandoffReady} onChange={(event) => setAgentHandoffReady(event.target.checked)}/><span>{tr("app.agent.handoff.confirm")}</span></label>
+          <div className="confirm-actions"><button className="button quiet" onClick={() => setShowAgentHandoff(false)}>{tr("app.s0511")}</button><button className="button agent" disabled={!agentHandoffReady || Boolean(busy)} onClick={() => void createAgentTask()}><Bot size={14}/>{tr("app.agent.handoff.create")}</button></div>
+        </> : <>
+          <label className="agent-identity-field"><span>{tr("app.agent.handoff.identity")}</span><input value={agentIdentity} onChange={(event) => { setAgentIdentity(event.target.value); setAgentHandoffCopied(false); }} aria-invalid={!isValidAgentIdentity(handoffIdentity)} /><small>{tr("app.agent.handoff.identityHelp")}</small></label>
+          {!isValidAgentIdentity(handoffIdentity) && <p className="source-error" role="alert">{tr("app.agent.handoff.identityInvalid")}</p>}
+          <label className="agent-handoff-prompt"><span>{tr("app.agent.handoff.promptLabel")}</span><textarea readOnly value={handoffText} aria-label={tr("app.agent.handoff.promptLabel")}/></label>
+          <div className="confirm-actions"><button className="button quiet" onClick={() => setShowAgentHandoff(false)}>{tr("app.agent.handoff.later")}</button><button className="button agent" disabled={!handoffText} onClick={() => void copyAgentHandoff()}><Copy size={14}/>{agentHandoffCopied ? tr("app.agent.handoff.copied") : tr("app.agent.handoff.copy")}</button></div>
+        </>}
+      </Dialog>}
       {structureEditMode && project && <Dialog label={structureEditLabel(structureEditMode)} className="runtime-dialog subtitle-structure-dialog" onClose={() => { if (!structureBusy)
             setStructureEditMode(null); }}>
         <button autoFocus className="dialog-close" aria-label={tr("app.s0433", { "0": structureEditLabel(structureEditMode) })} title={tr("app.s0434")} disabled={structureBusy} onClick={() => setStructureEditMode(null)}><X size={18}/></button>
@@ -1814,9 +2025,10 @@ function App() {
       </Dialog>}
       {showRuntime && <Dialog label={tr("app.s0245")} className="runtime-dialog runtime-settings-dialog" onClose={() => setShowRuntime(false)} returnFocusRef={runtimeButtonRef}>
         <header className="runtime-dialog-header"><div><p className="eyebrow">{tr("app.s0505")}</p><h2>{tr("app.s0245")}</h2></div><button autoFocus className="dialog-close" aria-label={tr("app.s0503")} title={tr("app.s0504")} onClick={() => setShowRuntime(false)}><X size={18}/></button></header>
-        <div className="runtime-dialog-content"><p className="dialog-copy">{tr("app.s0506")}</p><RuntimeChecklist runtime={runtime} modelPath={modelPath} onChooseModel={chooseModel}/><AsrBackendPicker runtime={runtime} onSelect={changeAsrBackend}/><ModelManager models={models} selectedPath={modelPath} job={modelJob} onSelect={(path) => { localStorage.setItem("siaocut.modelPath", path); setModelPath(path); }} onInstall={installModel} onCancel={cancelModel} onRemove={removeModel}/><SpeakerPackageManager packageStatus={speakerPackage} job={speakerJob?.kind === "install" ? speakerJob : null} disabled={Boolean(busy)} onInstall={installSpeakerPackage} onCancel={cancelSpeakerJob} onResume={resumeSpeakerJob}/><DiagnosticsPanel runtime={runtime} onOpen={openDiagnostics}/><UpdatePanel policy={updatePolicy} update={availableUpdate} busy={updateBusy} error={updateError} onCheck={() => void checkUpdates()} onInstall={() => void confirmUpdateInstall()}/><button className="button quiet full" onClick={() => void initialize()}><RefreshCw size={14}/>{tr("app.s0507")}</button></div>
+        <div className="runtime-dialog-content"><p className="dialog-copy">{tr("app.s0506")}</p><RuntimeChecklist runtime={runtime} modelPath={modelPath} onChooseModel={chooseModel}/><TranscriptionProviderSettings config={transcriptionConfig} health={transcriptionHealth} busy={Boolean(busy)} onSave={saveTranscriptionProvider} onCheck={checkTranscriptionProvider}/><AsrBackendPicker runtime={runtime} onSelect={changeAsrBackend}/><ModelManager models={models} selectedPath={modelPath} job={modelJob} onSelect={(path) => { localStorage.setItem("siaocut.modelPath", path); setModelPath(path); }} onInstall={installModel} onCancel={cancelModel} onRemove={removeModel}/><SpeakerPackageManager packageStatus={speakerPackage} job={speakerJob?.kind === "install" ? speakerJob : null} disabled={Boolean(busy)} onInstall={installSpeakerPackage} onCancel={cancelSpeakerJob} onResume={resumeSpeakerJob}/><DiagnosticsPanel runtime={runtime} onOpen={openDiagnostics}/><UpdatePanel policy={updatePolicy} update={availableUpdate} busy={updateBusy} error={updateError} onCheck={() => void checkUpdates()} onInstall={() => void confirmUpdateInstall()}/><button className="button quiet full" onClick={() => void initialize()}><RefreshCw size={14}/>{tr("app.s0507")}</button></div>
       </Dialog>}
-      {currentDeleteCandidate && <Dialog label={tr("app.s0243")} className="confirm-dialog" onClose={closeDeleteDialog}><div className="confirm-icon"><Trash2 size={20}/></div><p className="eyebrow">{tr("app.s0508")}</p><h2>{tr("app.s0509")}{currentDeleteCandidate.title}」？</h2><p className="dialog-copy">{tr("app.s0510")}</p>{(deleteBlockMessage || deleteError) && <div className="confirm-error" role="alert"><CircleAlert size={16}/><span>{deleteBlockMessage ?? deleteError}</span></div>}<div className="confirm-actions"><button className="button quiet" disabled={deleteBusy} onClick={closeDeleteDialog}>{tr("app.s0511")}</button><button className="button danger" disabled={deleteBusy || Boolean(deleteBlockMessage)} onClick={() => void deleteProject()}>{deleteBusy ? <LoaderCircle className="spin" size={14}/> : <Trash2 size={14}/>}{tr("app.s0512")}</button></div></Dialog>}
+      {showTranscriptionCandidate && transcriptionJob?.status === "awaiting_apply" && <Suspense fallback={null}><TranscriptionCandidateDialog job={transcriptionJob} busy={Boolean(busy)} confirmed={transcriptionApplyConfirmed} onConfirmedChange={setTranscriptionApplyConfirmed} onApply={applyTranscriptionCandidate} onDiscard={discardTranscriptionCandidate} onClose={() => { if (!busy) { setShowTranscriptionCandidate(false); setTranscriptionApplyConfirmed(false); } }}/></Suspense>}
+      {currentDeleteCandidate && <Suspense fallback={null}><ProjectDeleteDialog project={currentDeleteCandidate} checking={deletePreflightBusy} deleting={deleteBusy} deletable={Boolean(deletionPreflight?.deletable)} blockerMessage={deleteBlockMessage} error={deleteError} onClose={closeDeleteDialog} onDelete={() => void deleteProject()}/></Suspense>}
       {showSourceImport && <Dialog label={tr("app.s0513")} className="runtime-dialog source-dialog" onClose={() => setShowSourceImport(false)} returnFocusRef={sourceButtonRef}><button autoFocus className="dialog-close" aria-label={tr("app.s0514")} title={tr("app.s0515")} onClick={() => setShowSourceImport(false)}><X size={18}/></button><p className="eyebrow">{tr("app.s0516")}</p><h2>{tr("app.s0517")}</h2><p className="dialog-copy">{tr("app.s0518")}</p>
         {!sourceJob && <form className="source-form" onSubmit={(event) => { event.preventDefault(); void inspectSource(); }}><label><span>{tr("app.s0487")}</span><input autoComplete="url" aria-label={tr("app.s0487")} placeholder="https://…" value={sourceUrl} disabled={Boolean(sourceBusy)} onChange={(event) => { setSourceUrl(event.target.value); setSourcePreview(null); setSourceAuthorized(false); setSourceError(null); }}/></label><button className="button primary" type="submit" disabled={Boolean(sourceBusy) || !isHttpsSourceUrl(sourceUrl)}>{sourceBusy && !sourcePreview ? <LoaderCircle className="spin" size={14}/> : <Search size={14}/>}{tr("app.s0489")}</button></form>}
         {sourcePreview && !sourceJob && <section className="source-preview" aria-label={tr("app.s0519")}><header><span><small>{sourcePreview.extractor}</small><strong>{sourcePreview.title}</strong></span><ShieldCheck size={19}/></header><dl><div><dt>{tr("app.s0491")}</dt><dd>{formatTime(sourcePreview.durationSeconds)}</dd></div><div><dt>{sourcePreview.fileSizeKnown ? tr("app.s0520") : tr("app.s0521")}</dt><dd>{formatBytes(sourcePreview.fileSizeBytes)}</dd></div><div><dt>{tr("app.s0492")}</dt><dd>{sourcePreview.siteMediaId}</dd></div><div><dt>{tr("app.s0522")}</dt><dd>yt-dlp {sourcePreview.toolVersion}</dd></div></dl><p className="source-url" title={sourcePreview.webpageUrl}>{sourcePreview.webpageUrl}</p><label className="source-consent"><input type="checkbox" checked={sourceAuthorized} onChange={(event) => setSourceAuthorized(event.target.checked)}/><span>{tr("app.s0523")}</span></label><button className="button primary full" disabled={!sourceAuthorized || Boolean(sourceBusy)} onClick={() => void startSourceImport()}>{sourceBusy ? <LoaderCircle className="spin" size={14}/> : <Download size={14}/>}{tr("app.s0524")}</button></section>}

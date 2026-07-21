@@ -12,6 +12,19 @@ export const backgroundJobStatuses = [
 ] as const;
 export type BackgroundJobStatus = typeof backgroundJobStatuses[number];
 
+export const transcriptionJobStatuses = [
+  "queued",
+  "running",
+  "finalizing",
+  "awaiting_apply",
+  "cancelled",
+  "interrupted",
+  "failed",
+  "completed",
+  "discarded"
+] as const;
+export type TranscriptionJobStatus = typeof transcriptionJobStatuses[number];
+
 export const taskStatuses = [
   "queued",
   "claimed",
@@ -106,6 +119,26 @@ export const coreErrorCodes = [
   "subtitle_style_position_invalid",
   "subtitle_style_content_changed",
   "subtitle_style_color_invalid",
+  "transcription_provider_invalid",
+  "transcription_provider_unavailable",
+  "transcription_job_not_found",
+  "transcription_job_not_cancellable",
+  "transcription_job_not_resumable",
+  "transcription_response_invalid",
+  "transcription_timing_invalid",
+  "transcription_import_failed",
+  "transcription_cancelled",
+  "transcription_interrupted",
+  "transcription_active_job_exists",
+  "transcription_job_state_invalid",
+  "transcription_project_changed",
+  "transcription_source_changed",
+  "transcription_result_not_ready",
+  "transcription_apply_confirmation_required",
+  "transcription_apply_version_mismatch",
+  "transcription_export_format_invalid",
+  "transcription_export_blocked",
+  "transcription_export_warning_confirmation_required",
   "source_url_invalid",
   "source_https_required",
   "source_credentials_not_allowed",

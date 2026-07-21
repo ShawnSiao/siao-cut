@@ -98,12 +98,13 @@ export async function pickSubtitleFile(): Promise<string | null> {
   });
 }
 
-export async function pickTranscriptPath(title: string, format: "srt" | "vtt" | "ass" | "markdown"): Promise<string | null> {
+export async function pickTranscriptPath(title: string, format: "srt" | "vtt" | "ass" | "markdown" | "json"): Promise<string | null> {
   const options = {
     srt: { extension: "srt", name: "SubRip 字幕" },
     vtt: { extension: "vtt", name: "WebVTT 字幕" },
     ass: { extension: "ass", name: "ASS 字幕" },
     markdown: { extension: "md", name: "Markdown 文稿" },
+    json: { extension: "json", name: "结构化转写 JSON" },
   }[format];
   if (!isTauri()) return `${title}.${options.extension}`;
   return save({ defaultPath: `${title}.${options.extension}`, filters: [{ name: options.name, extensions: [options.extension] }] });

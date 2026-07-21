@@ -23,8 +23,19 @@ pub fn create_with_locale(
     language: Option<String>,
     instruction_locale: &str,
 ) -> Result<Workflow> {
-    if !["polish", "translate", "proofread", "edit", "cut", "summary"].contains(&kind) {
-        bail!("工作流类型必须为 polish、translate、proofread、edit、cut 或 summary")
+    if ![
+        "polish",
+        "translate",
+        "proofread",
+        "edit",
+        "cut",
+        "summary",
+        "punctuate",
+        "speaker_names",
+    ]
+    .contains(&kind)
+    {
+        bail!("工作流类型不受支持")
     }
     if kind == "translate" && language.is_none() {
         bail!("翻译工作流需要 --lang")
@@ -92,7 +103,7 @@ pub fn continue_workflow(db: &mut Connection, workflow_id: &str) -> Result<Workf
             )?;
         }
         "queued" => {}
-        "claimed" => {
+        "claimed" | "running" => {
             db.execute(
                 "UPDATE workflows SET status='running',updated_at=?2 WHERE id=?1",
                 params![workflow_id, now()],
@@ -139,7 +150,9 @@ mod tests {
         let segment =
             project::add_segment(&mut db, &project.id, 0.0, 1.0, "你好".into(), None).unwrap();
         let workflow = create(&mut db, &project.id, "polish", None).unwrap();
-        let claim = tasks::claim(&mut db, "workflow-agent").unwrap().unwrap();
+        let claim = tasks::claim(&mut db, "workflow-agent", None)
+            .unwrap()
+            .unwrap();
         let base = claim.2["baseVersionId"].as_str().unwrap();
         tasks::submit(
             &mut db,

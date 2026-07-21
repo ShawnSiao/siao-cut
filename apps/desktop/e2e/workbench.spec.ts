@@ -23,7 +23,10 @@ test("switches the application chrome to English without reloading the project",
   await expect(page.getByRole("combobox", { name: "Source language" })).toHaveValue("en");
   await page.getByRole("combobox", { name: "Agent workflow" }).selectOption("edit");
   await page.getByRole("button", { name: "Send to Agent" }).click();
-  await expect(page.getByRole("region", { name: "Waiting for Codex Worker" })).toContainText("Media files and paths are never included");
+  await page.getByRole("checkbox", { name: "I will continue in an external Agent tool that can access this computer's SiaoCut Core." }).check();
+  await page.getByRole("button", { name: "Create handoff task" }).click();
+  await expect(page.getByText("Waiting for an external Agent to claim")).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Complete instructions to copy to the external Agent" })).toContainText("task claim");
   await expect(page.locator(".task-item.processing strong").filter({ hasText: "edit" })).toBeVisible();
   await expect(projectHeading).toHaveText("发布口播 · 草稿");
   await expect(page.locator("html")).toHaveAttribute("lang", "en-US");
@@ -48,6 +51,39 @@ test("uses a compact command bar without horizontal overflow", async ({ page }) 
   expect(exportButton!.x + exportButton!.width).toBeLessThanOrEqual(1444);
   expect(topbar!.height).toBeLessThan(90);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test("keeps command groups non-overlapping in Chinese and English", async ({ page }) => {
+  const viewports = [
+    { width: 1080, height: 720 },
+    { width: 1280, height: 800 },
+    { width: 1440, height: 900 },
+    { width: 1920, height: 1080 },
+  ];
+
+  for (const locale of ["zh-CN", "en-US"]) {
+    for (const viewport of viewports) {
+      await page.setViewportSize(viewport);
+      await page.goto("/");
+      await page.locator(".locale-switch select").selectOption(locale);
+      const primary = await page.locator(".command-primary").boundingBox();
+      const secondary = await page.locator(".command-secondary").boundingBox();
+      expect(primary).not.toBeNull();
+      expect(secondary).not.toBeNull();
+      expect(primary!.x).toBeGreaterThanOrEqual(0);
+      expect(secondary!.x + secondary!.width).toBeLessThanOrEqual(viewport.width + 1);
+      if (viewport.width < 1440) {
+        expect(primary!.y + primary!.height).toBeLessThanOrEqual(secondary!.y + 1);
+      } else {
+        expect(primary!.x + primary!.width).toBeLessThanOrEqual(secondary!.x + 1);
+      }
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+      expect(await page.locator(".command-bar button, .command-bar select").evaluateAll((elements) => elements.every((element) => {
+        const rect = element.getBoundingClientRect();
+        return rect.left >= 0 && rect.right <= window.innerWidth + 1 && rect.width > 0 && rect.height > 0;
+      }))).toBe(true);
+    }
+  }
 });
 
 test("keeps the transcript primary at the minimum supported workspace size", async ({ page }) => {
@@ -210,6 +246,7 @@ test("analyzes audio locally and sends measurable risks to the review queue", as
 
 test("keeps core controls usable across supported desktop viewports", async ({ page }) => {
   const viewports = [
+    { width: 1080, height: 720 },
     { width: 1280, height: 720 },
     { width: 1440, height: 900 },
     { width: 1920, height: 1080 },
@@ -416,4 +453,63 @@ test("runs a resumable one-click workflow through the human review gate", async 
   await status.getByRole("button", { name: "确认完成并继续" }).click();
   await expect(status.getByText(/已完成 · 流程完成/)).toBeVisible({ timeout: 3000 });
   await expect(page.getByText(/一键工作流已完成，视频已导出到/)).toBeVisible();
+});
+
+test("uses MOSS as an explicit multispeaker mode with loopback settings and review", async ({ page }) => {
+  await page.goto("/");
+  await bindMockMedia(page);
+  await page.getByRole("combobox", { name: "转写模式" }).selectOption("multispeaker");
+  const start = page.getByRole("button", { name: "开始多人转写" });
+  await expect(start).toBeEnabled();
+  await start.click();
+  await expect(page.getByText(/字幕和说话人轨已作为一个版本写入/)).toBeVisible();
+  const review = page.getByRole("region", { name: "多人转写复核" });
+  await expect(review.getByText("快速人物切换")).toBeVisible();
+  await expect(page.getByText("当前结果没有词级时间戳")).toBeVisible();
+
+  await page.getByRole("combobox", { name: "Agent 工作流" }).selectOption("speaker_names");
+  await expect(page.getByRole("button", { name: "交给 Agent" })).toBeEnabled();
+  await page.getByRole("button", { name: "打开导出设置" }).click();
+  const exportPanel = page.getByLabel("导出设置");
+  await exportPanel.getByLabel("导出格式").selectOption("json");
+  await expect(exportPanel.getByText(/始终保留模型、人物轨、段落关联和复核状态/)).toBeVisible();
+  const transcriptExport = exportPanel.getByRole("button", { name: "导出字幕" });
+  await expect(transcriptExport).toBeDisabled();
+  await exportPanel.getByRole("checkbox", { name: /确认带着 1 个未处理警告/ }).check();
+  await expect(transcriptExport).toBeEnabled();
+  await exportPanel.getByRole("button", { name: "关闭导出设置" }).click();
+
+  await page.getByRole("button", { name: "运行环境" }).click();
+  const settings = page.getByRole("dialog", { name: "运行环境" });
+  const provider = settings.getByRole("region", { name: "MOSS 多人长音频服务" });
+  await expect(provider.locator("input").first()).toHaveValue("http://127.0.0.1:8000");
+  await expect(provider.getByText("服务可用", { exact: true })).toBeVisible();
+});
+
+test("keeps a conflicting MOSS candidate isolated until explicit replacement", async ({ page }) => {
+  await page.goto("/");
+  await bindMockMedia(page);
+  await page.getByRole("combobox", { name: "转写模式" }).selectOption("multispeaker");
+  await page.getByText("高级实验项：Prompt 与热词").click();
+  await page.getByRole("textbox", { name: "自定义 Prompt" }).fill("simulate-conflict");
+  await page.getByRole("button", { name: "开始多人转写" }).click();
+
+  await expect(page.getByText("候选结果等待确认")).toBeVisible();
+  await expect(page.getByText("18 段 · 3 位说话人 · 2 项提醒")).toBeVisible();
+  await page.getByRole("button", { name: "删除项目 发布口播 · 草稿" }).click();
+  const deleteDialog = page.getByRole("dialog", { name: "删除项目" });
+  await expect(deleteDialog.getByText("仍有多人转写候选结果等待应用或丢弃。")).toBeVisible();
+  await expect(deleteDialog.getByRole("button", { name: "确认删除" })).toBeDisabled();
+  await deleteDialog.getByRole("button", { name: "取消" }).click();
+
+  await page.getByRole("button", { name: "查看影响" }).click();
+  const candidate = page.getByRole("dialog", { name: "确认多人转写候选结果" });
+  const apply = candidate.getByRole("button", { name: "应用并替换" });
+  await expect(apply).toBeDisabled();
+  await candidate.getByRole("checkbox", { name: /确认用候选结果替换/ }).check();
+  await apply.click();
+
+  await expect(page.getByText("候选结果已应用为可撤销的新版本。")).toBeVisible();
+  await expect(page.getByLabel("00:00 字幕文本")).toHaveValue("这是经过明确确认后应用的多人转写候选结果。");
+  await expect(page.getByRole("button", { name: "撤销" })).toBeEnabled();
 });

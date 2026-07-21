@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 19;
+pub const CURRENT_SCHEMA_VERSION: i64 = 22;
 
 struct Migration {
     version: i64,
@@ -89,6 +89,18 @@ const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 19,
         apply: migration_19_instruction_locales,
+    },
+    Migration {
+        version: 20,
+        apply: migration_20_transcription_providers,
+    },
+    Migration {
+        version: 21,
+        apply: migration_21_transcription_consistency,
+    },
+    Migration {
+        version: 22,
+        apply: migration_22_transcription_candidate_summary,
     },
 ];
 
@@ -662,6 +674,234 @@ fn migration_19_instruction_locales(tx: &Transaction<'_>) -> Result<()> {
     Ok(())
 }
 
+fn migration_20_transcription_providers(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE transcription_provider_config (
+             provider_id TEXT PRIMARY KEY,
+             endpoint TEXT NOT NULL,
+             model_id TEXT NOT NULL,
+             updated_at TEXT NOT NULL
+         );
+         INSERT INTO transcription_provider_config(provider_id,endpoint,model_id,updated_at)
+         VALUES('moss_openai','http://127.0.0.1:8000','OpenMOSS-Team/MOSS-Transcribe-Diarize','migration');
+         CREATE TABLE transcription_jobs (
+             id TEXT PRIMARY KEY,
+             project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+             provider_id TEXT NOT NULL,
+             endpoint TEXT NOT NULL,
+             model_id TEXT NOT NULL,
+             language TEXT,
+             prompt TEXT,
+             hotwords_json TEXT NOT NULL DEFAULT '[]',
+             status TEXT NOT NULL CHECK(status IN ('queued','running','finalizing','cancelled','interrupted','failed','completed')),
+             stage TEXT NOT NULL,
+             result_run_id TEXT,
+             cancel_requested_at TEXT,
+             error_message TEXT,
+             created_at TEXT NOT NULL,
+             updated_at TEXT NOT NULL,
+             completed_at TEXT,
+             worker_pid INTEGER,
+             attempt_count INTEGER NOT NULL DEFAULT 1
+         );
+         CREATE INDEX idx_transcription_jobs_project ON transcription_jobs(project_id,created_at);
+         CREATE INDEX idx_transcription_jobs_status ON transcription_jobs(status,created_at);
+         CREATE TABLE transcription_runs (
+             id TEXT PRIMARY KEY,
+             project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+             job_id TEXT NOT NULL UNIQUE REFERENCES transcription_jobs(id) ON DELETE CASCADE,
+             provider_id TEXT NOT NULL,
+             model_id TEXT NOT NULL,
+             source_sha256 TEXT NOT NULL,
+             result_sha256 TEXT NOT NULL,
+             raw_result_path TEXT NOT NULL,
+             segment_count INTEGER NOT NULL,
+             speaker_count INTEGER NOT NULL,
+             has_word_timings INTEGER NOT NULL DEFAULT 0,
+             created_at TEXT NOT NULL
+         );
+         CREATE INDEX idx_transcription_runs_project ON transcription_runs(project_id,created_at);
+         CREATE TABLE transcription_review_items (
+             id TEXT PRIMARY KEY,
+             project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+             run_id TEXT NOT NULL REFERENCES transcription_runs(id) ON DELETE CASCADE,
+             segment_id TEXT REFERENCES segments(id) ON DELETE CASCADE,
+             severity TEXT NOT NULL CHECK(severity IN ('info','warning','error')),
+             kind TEXT NOT NULL,
+             message TEXT NOT NULL,
+             status TEXT NOT NULL CHECK(status IN ('open','resolved','ignored')),
+             created_at TEXT NOT NULL,
+             resolved_at TEXT
+         );
+         CREATE INDEX idx_transcription_review_project ON transcription_review_items(project_id,status,severity);
+         ALTER TABLE speaker_tracks ADD COLUMN provider_id TEXT NOT NULL DEFAULT 'legacy_diarization';
+         ALTER TABLE speaker_tracks ADD COLUMN model_id TEXT NOT NULL DEFAULT '';
+         ALTER TABLE speaker_tracks ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'cascade';",
+    )?;
+    Ok(())
+}
+
+fn migration_21_transcription_consistency(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE transcription_jobs_v21 (
+             id TEXT PRIMARY KEY,
+             project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+             provider_id TEXT NOT NULL,
+             endpoint TEXT NOT NULL,
+             model_id TEXT NOT NULL,
+             language TEXT,
+             prompt TEXT,
+             hotwords_json TEXT NOT NULL DEFAULT '[]',
+             status TEXT NOT NULL CHECK(status IN ('queued','running','finalizing','awaiting_apply','cancelled','interrupted','failed','completed','discarded')),
+             stage TEXT NOT NULL,
+             result_run_id TEXT,
+             base_version_id TEXT,
+             source_sha256 TEXT,
+             input_audio_sha256 TEXT,
+             cancel_requested_at TEXT,
+             error_message TEXT,
+             created_at TEXT NOT NULL,
+             updated_at TEXT NOT NULL,
+             completed_at TEXT,
+             worker_pid INTEGER,
+             attempt_count INTEGER NOT NULL DEFAULT 1
+         );
+         INSERT INTO transcription_jobs_v21(
+             id,project_id,provider_id,endpoint,model_id,language,prompt,hotwords_json,
+             status,stage,result_run_id,base_version_id,source_sha256,input_audio_sha256,
+             cancel_requested_at,error_message,created_at,updated_at,completed_at,worker_pid,attempt_count
+         )
+         SELECT
+             id,project_id,provider_id,endpoint,model_id,language,prompt,hotwords_json,
+             CASE
+                 WHEN status IN ('queued','running','finalizing') AND id NOT IN (
+                     SELECT id FROM (
+                         SELECT id,ROW_NUMBER() OVER (
+                             PARTITION BY project_id
+                             ORDER BY CASE status WHEN 'finalizing' THEN 0 WHEN 'running' THEN 1 ELSE 2 END,
+                                      updated_at DESC,id DESC
+                         ) AS position
+                         FROM transcription_jobs
+                         WHERE status IN ('queued','running','finalizing')
+                     ) WHERE position=1
+                 ) THEN 'interrupted'
+                 ELSE status
+             END,
+             CASE
+                 WHEN status IN ('queued','running','finalizing') AND id NOT IN (
+                     SELECT id FROM (
+                         SELECT id,ROW_NUMBER() OVER (
+                             PARTITION BY project_id
+                             ORDER BY CASE status WHEN 'finalizing' THEN 0 WHEN 'running' THEN 1 ELSE 2 END,
+                                      updated_at DESC,id DESC
+                         ) AS position
+                         FROM transcription_jobs
+                         WHERE status IN ('queued','running','finalizing')
+                     ) WHERE position=1
+                 ) THEN 'interrupted'
+                 ELSE stage
+             END,
+             result_run_id,NULL,NULL,NULL,cancel_requested_at,
+             CASE
+                 WHEN status IN ('queued','running','finalizing') AND id NOT IN (
+                     SELECT id FROM (
+                         SELECT id,ROW_NUMBER() OVER (
+                             PARTITION BY project_id
+                             ORDER BY CASE status WHEN 'finalizing' THEN 0 WHEN 'running' THEN 1 ELSE 2 END,
+                                      updated_at DESC,id DESC
+                         ) AS position
+                         FROM transcription_jobs
+                         WHERE status IN ('queued','running','finalizing')
+                     ) WHERE position=1
+                 ) THEN 'transcription_interrupted: 数据库升级时发现同一项目存在多个活动转写任务。'
+                 ELSE error_message
+             END,
+             created_at,updated_at,completed_at,
+             CASE
+                 WHEN status IN ('queued','running','finalizing') AND id NOT IN (
+                     SELECT id FROM (
+                         SELECT id,ROW_NUMBER() OVER (
+                             PARTITION BY project_id
+                             ORDER BY CASE status WHEN 'finalizing' THEN 0 WHEN 'running' THEN 1 ELSE 2 END,
+                                      updated_at DESC,id DESC
+                         ) AS position
+                         FROM transcription_jobs
+                         WHERE status IN ('queued','running','finalizing')
+                     ) WHERE position=1
+                 ) THEN NULL
+                 ELSE worker_pid
+             END,
+             attempt_count
+         FROM transcription_jobs;
+
+         CREATE TABLE transcription_runs_v21 (
+             id TEXT PRIMARY KEY,
+             project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+             job_id TEXT NOT NULL UNIQUE REFERENCES transcription_jobs_v21(id) ON DELETE CASCADE,
+             provider_id TEXT NOT NULL,
+             model_id TEXT NOT NULL,
+             status TEXT NOT NULL DEFAULT 'applied' CHECK(status IN ('prepared','applied','discarded')),
+             base_version_id TEXT,
+             source_sha256 TEXT NOT NULL,
+             input_audio_sha256 TEXT,
+             result_sha256 TEXT NOT NULL,
+             raw_result_path TEXT NOT NULL,
+             segment_count INTEGER NOT NULL,
+             speaker_count INTEGER NOT NULL,
+             has_word_timings INTEGER NOT NULL DEFAULT 0,
+             applied_version_id TEXT,
+             created_at TEXT NOT NULL
+         );
+         INSERT INTO transcription_runs_v21(
+             id,project_id,job_id,provider_id,model_id,status,base_version_id,source_sha256,
+             input_audio_sha256,result_sha256,raw_result_path,segment_count,speaker_count,
+             has_word_timings,applied_version_id,created_at
+         )
+         SELECT id,project_id,job_id,provider_id,model_id,'applied',NULL,source_sha256,NULL,
+                result_sha256,raw_result_path,segment_count,speaker_count,has_word_timings,NULL,created_at
+         FROM transcription_runs;
+
+         CREATE TABLE transcription_review_items_v21 (
+             id TEXT PRIMARY KEY,
+             project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+             run_id TEXT NOT NULL REFERENCES transcription_runs_v21(id) ON DELETE CASCADE,
+             segment_id TEXT REFERENCES segments(id) ON DELETE CASCADE,
+             severity TEXT NOT NULL CHECK(severity IN ('info','warning','error')),
+             kind TEXT NOT NULL,
+             message TEXT NOT NULL,
+             status TEXT NOT NULL CHECK(status IN ('open','resolved','ignored')),
+             created_at TEXT NOT NULL,
+             resolved_at TEXT
+         );
+         INSERT INTO transcription_review_items_v21
+         SELECT * FROM transcription_review_items;
+
+         DROP TABLE transcription_review_items;
+         DROP TABLE transcription_runs;
+         DROP TABLE transcription_jobs;
+         ALTER TABLE transcription_jobs_v21 RENAME TO transcription_jobs;
+         ALTER TABLE transcription_runs_v21 RENAME TO transcription_runs;
+         ALTER TABLE transcription_review_items_v21 RENAME TO transcription_review_items;
+
+         CREATE INDEX idx_transcription_jobs_project ON transcription_jobs(project_id,created_at);
+         CREATE INDEX idx_transcription_jobs_status ON transcription_jobs(status,created_at);
+         CREATE UNIQUE INDEX idx_transcription_jobs_one_active
+             ON transcription_jobs(project_id)
+             WHERE status IN ('queued','running','finalizing','awaiting_apply');
+         CREATE INDEX idx_transcription_runs_project ON transcription_runs(project_id,created_at);
+         CREATE INDEX idx_transcription_review_project ON transcription_review_items(project_id,status,severity);",
+    )?;
+    Ok(())
+}
+
+fn migration_22_transcription_candidate_summary(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute_batch(
+        "ALTER TABLE transcription_runs ADD COLUMN duration_seconds REAL;
+         ALTER TABLE transcription_runs ADD COLUMN warning_count INTEGER NOT NULL DEFAULT 0;",
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -763,6 +1003,80 @@ mod tests {
             )
             .unwrap();
         assert!(export_style_column);
+    }
+
+    #[test]
+    fn migration_21_reconciles_duplicate_active_transcriptions_and_enforces_uniqueness() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("schema-20.db");
+        let mut database = Connection::open(&path).unwrap();
+        database.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        database
+            .execute_batch(
+                "CREATE TABLE schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    applied_at TEXT NOT NULL
+                );",
+            )
+            .unwrap();
+        for migration in MIGRATIONS
+            .iter()
+            .filter(|migration| migration.version <= 20)
+        {
+            let tx = database.transaction().unwrap();
+            (migration.apply)(&tx).unwrap();
+            tx.execute(
+                "INSERT INTO schema_migrations(version,applied_at) VALUES(?1,'test')",
+                [migration.version],
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+        database
+            .execute(
+                "INSERT INTO projects(id,title,created_at,updated_at) VALUES('p','P','now','now')",
+                [],
+            )
+            .unwrap();
+        for (id, status, updated_at) in [
+            ("queued", "queued", "2026-01-01T00:00:00Z"),
+            ("running", "running", "2026-01-01T00:01:00Z"),
+        ] {
+            database
+                .execute(
+                    "INSERT INTO transcription_jobs(
+                        id,project_id,provider_id,endpoint,model_id,status,stage,created_at,updated_at
+                     ) VALUES(?1,'p','moss_openai','http://127.0.0.1:8000','moss',?2,?2,'now',?3)",
+                    params![id, status, updated_at],
+                )
+                .unwrap();
+        }
+
+        migrate(&mut database).unwrap();
+
+        let active: i64 = database
+            .query_row(
+                "SELECT COUNT(*) FROM transcription_jobs WHERE project_id='p' AND status IN ('queued','running','finalizing','awaiting_apply')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(active, 1);
+        let interrupted: String = database
+            .query_row(
+                "SELECT status FROM transcription_jobs WHERE id='queued'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(interrupted, "interrupted");
+        let duplicate = database.execute(
+            "INSERT INTO transcription_jobs(
+                id,project_id,provider_id,endpoint,model_id,status,stage,created_at,updated_at
+             ) VALUES('duplicate','p','moss_openai','http://127.0.0.1:8000','moss','queued','queued','now','now')",
+            [],
+        );
+        assert!(duplicate.is_err());
     }
 
     #[test]

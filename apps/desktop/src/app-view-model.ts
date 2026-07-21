@@ -24,7 +24,7 @@ export const getProjectCapabilities = (project: Project | null, options: {
     mediaUrl?: string | null;
     modelPath?: string | null;
     translationTarget?: string | null;
-    agentWorkflowKind?: "polish" | "proofread" | "edit" | "translate";
+    agentWorkflowKind?: "polish" | "proofread" | "edit" | "translate" | "punctuate" | "speaker_names";
 } = {}): ProjectCapabilities => {
     const hasProject = Boolean(project);
     const hasBoundMedia = Boolean(project?.media.sourcePath.trim());
@@ -68,7 +68,7 @@ export type ExportPreferencesV1 = {
     version: 1;
     subtitleMode: "source" | "translated" | "bilingual";
     subtitleLanguage: string;
-    transcriptFormat: "srt" | "vtt" | "ass" | "markdown";
+    transcriptFormat: "srt" | "vtt" | "ass" | "markdown" | "json";
 };
 export const DEFAULT_EXPORT_PREFERENCES: ExportPreferencesV1 = {
     version: 1,
@@ -84,7 +84,7 @@ export const parseExportPreferences = (raw: string | null): ExportPreferencesV1 
     try {
         const candidate = JSON.parse(raw) as Partial<ExportPreferencesV1>;
         const subtitleModes = ["source", "translated", "bilingual"];
-        const transcriptFormats = ["srt", "vtt", "ass", "markdown"];
+        const transcriptFormats = ["srt", "vtt", "ass", "markdown", "json"];
         if (candidate.version !== 1 || !subtitleModes.includes(candidate.subtitleMode ?? "") || !transcriptFormats.includes(candidate.transcriptFormat ?? ""))
             return DEFAULT_EXPORT_PREFERENCES;
         return {
@@ -117,9 +117,9 @@ export const taskLabel = (project: Project | null): HumanState => {
         return tr("app.s0003");
     if (project.edits.some((edit) => ["suggested", "proposed"].includes(edit.status)))
         return tr("app.s0003");
-    if (project.tasks.some((task) => ["queued", "failed", "interrupted"].includes(task.status)))
+    if (project.tasks.some((task) => ["queued", "claimed", "failed", "interrupted"].includes(task.status)))
         return tr("app.s0002");
-    if (project.tasks.some((task) => ["claimed", "running"].includes(task.status)))
+    if (project.tasks.some((task) => task.status === "running"))
         return tr("app.s0001");
     return tr("app.s0004");
 };
