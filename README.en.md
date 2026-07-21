@@ -13,7 +13,7 @@ SiaoCut is a Windows-local-first editing workbench for AI talking-head creators.
 ## Workflow
 
 1. Import local media, or import a public single-video URL after confirming that you have permission to process it.
-2. Select a local Whisper model and generate a timed transcript with FFmpeg and whisper.cpp.
+2. Select a local Whisper model for quick transcription, or explicitly connect a local MOSS service for long-form segments and anonymous speaker labels.
 3. Edit subtitles and review Agent suggestions, speech evidence, and soft cuts before applying changes.
 4. Export subtitles or an MP4. Video export and subtitle retiming use the same timeline mapping.
 
@@ -22,6 +22,7 @@ SiaoCut is a Windows-local-first editing workbench for AI talking-head creators.
 | Area | Current implementation |
 | --- | --- |
 | Local transcription | Normalizes audio with FFmpeg and transcribes through whisper.cpp on CPU or a compatible Vulkan GPU. The model is always selected explicitly. |
+| Multispeaker long-form (experimental) | Explicitly connects to a loopback MOSS service for segments, anonymous speaker labels, and review items. SiaoCut does not install the service, CUDA, Python, or model weights. |
 | Transcript editing | Provides positioned subtitle editing, translation review, soft cuts, undo, redo, and version restore. Source media is never overwritten. |
 | Speech evidence | Flags pace, pauses, filler words, low confidence, loudness, silence, and possible clipping. An optional local model can create a speaker track for review. |
 | Agent review | Agents receive only text, timestamps, and structural constraints. Results remain reviewable three-way patches and do not modify the project directly. |
@@ -35,6 +36,7 @@ SiaoCut is a Windows-local-first editing workbench for AI talking-head creators.
 - The desktop app, CLI, and Skill modify projects through the Rust Core instead of writing SQLite directly.
 - Speech analysis and Agent output are evidence or suggestions. Applying text changes or cuts requires human review.
 - Real-world coverage still needs to expand across dialects, overlapping speech, complex noise, and additional hardware.
+- MOSS accepts only a loopback service, not a remote endpoint or API key. An unavailable service never triggers a silent Whisper fallback.
 
 ## Run from source
 
@@ -100,9 +102,13 @@ tools/                Build, release, and repository-checking tools
 
 - [Architecture](ARCHITECTURE.md)
 - [Voice intelligence 0.3](docs/voice-intelligence-0.3.md)
+- [MOSS multispeaker transcription](docs/multispeaker-transcription.en.md)
 - [English Creator Source Beta](docs/english-creator-beta.md)
-- [Release and updates](docs/release-updates.md)
+- [Release and updates](docs/release-updates.en.md)
 - [Windows candidate acceptance record](docs/windows-candidate-acceptance.en.md)
+- [Changelog](CHANGELOG.md)
+- [Security policy](SECURITY.md)
+- [Support](SUPPORT.md)
 - [Repository artifact policy](docs/repository-artifact-policy.md)
 - [Contributing](CONTRIBUTING.md)
 - [Third-party notices](THIRD_PARTY_NOTICES.md)

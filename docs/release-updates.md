@@ -1,5 +1,20 @@
 # SiaoCut 签名更新发布
 
+[简体中文](release-updates.md) | [English](release-updates.en.md)
+
+## 发布状态与术语
+
+截至 2026 年 7 月 21 日，GitHub 仓库没有标签或 Release。源码可以构建，Windows 10 未签名候选包已经完成部分本地验收，但仍不属于公开发行版。
+
+| 状态 | 含义 | 当前情况 |
+| --- | --- | --- |
+| 源码 Beta | 从仓库构建，需要完整开发环境，只适合受邀测试 | 可用；外部 Creator Beta 验收仍未完成 |
+| 未签名候选包 | 本地生成、`NotSigned`，用于安装与恢复测试 | 已生成 Windows 10 候选包；不公开上传 |
+| GitHub prerelease | 经过正式签名并上传，仍需真实升级与恢复验收 | 尚未创建 |
+| 正式 Release | 签名、校验、SBOM、来源证明和 Windows 10/11 验收全部通过 | 尚不可用 |
+
+候选包证据见 [Windows 候选包验收记录](windows-candidate-acceptance.md)。未完成项不得通过改名、手工上传或取消 prerelease 标记来绕过。
+
 SiaoCut 的 Windows 更新同时使用 Tauri 更新签名和 Authenticode。发布构建还会在 `latest.json` 中记录安装包的 SHA-256 与大小。任一校验未通过时，桌面端不会执行安装器。
 
 ## 密钥边界
@@ -60,7 +75,17 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-signed-release.p
 2. Tauri 生成与安装包对应的 `.sig` 文件。
 3. `latest.json` 包含 HTTPS 下载地址、内联 Tauri 签名、文件大小和 SHA-256。
 
-tag 触发的工作流会同时上传安装包、同名 `.sig` 和 `latest.json`，并先创建 prerelease。此时 GitHub 的稳定「Latest」版本和客户端更新入口保持不变。
+tag 触发的工作流会先生成 SPDX JSON SBOM 和 `SHA256SUMS`，再通过 GitHub OIDC 为发布文件生成来源证明，并为安装包生成 SBOM 证明。工作流会把以下 7 个文件上传到 prerelease：
+
+1. Windows NSIS 安装包；
+2. 同名 Tauri `.sig`；
+3. `latest.json`；
+4. SPDX JSON SBOM；
+5. `SHA256SUMS`；
+6. Sigstore 来源证明包；
+7. Sigstore SBOM 证明包。
+
+GitHub 的稳定「Latest」版本和客户端更新入口在 prerelease 阶段保持不变。SBOM 由 [Anchore SBOM Action](https://github.com/anchore/sbom-action) 生成，证明由 [GitHub Artifact Attestations](https://github.com/actions/attest) 生成；两个 Action 都固定到已审核的提交。
 
 完成真实下载、升级、数据保留和 Windows 10/11 验收后，手动运行提升工作流：
 
@@ -68,7 +93,7 @@ tag 触发的工作流会同时上传安装包、同名 `.sig` 和 `latest.json`
 gh workflow run promote-windows-release.yml -f tag=v0.2.0
 ```
 
-提升工作流会重新下载三个发布文件，并核对 prerelease 状态、安装包 Authenticode、Tauri 签名、大小、SHA-256、版本和下载地址。全部通过后才移除 prerelease 标记并设为「Latest」。
+提升工作流会重新下载全部 7 个发布文件，并核对文件集合、SBOM 和 Sigstore 包结构、`SHA256SUMS`、GitHub 来源证明、安装包 Authenticode、Tauri 签名、大小、版本和下载地址。全部通过后才移除 prerelease 标记并设为「Latest」。
 
 ## 客户端行为
 

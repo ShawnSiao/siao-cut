@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: write
+  attestations: read
 
 concurrency:
   group: promote-windows-${{ inputs.tag }}
@@ -39,12 +40,47 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Failed to download prerelease assets." }
 
           $assets = @(Get-ChildItem -LiteralPath $download -File)
-          if ($assets.Count -ne 3) { throw "Expected exactly three prerelease assets." }
+          if ($assets.Count -ne 7) { throw "Expected exactly seven prerelease assets." }
           $installers = @(Get-ChildItem -LiteralPath $download -Filter '*-setup.exe')
           if ($installers.Count -ne 1) { throw "Expected exactly one NSIS installer." }
           $installer = $installers[0]
           $signature = Get-Item -LiteralPath ($installer.FullName + '.sig') -ErrorAction Stop
           $manifestPath = Get-Item -LiteralPath (Join-Path $download 'latest.json') -ErrorAction Stop
+          $sbomPath = @(Get-ChildItem -LiteralPath $download -Filter '*.sbom.spdx.json')
+          if ($sbomPath.Count -ne 1) { throw "Expected exactly one SPDX SBOM." }
+          $checksumsPath = Get-Item -LiteralPath (Join-Path $download 'SHA256SUMS') -ErrorAction Stop
+          $provenancePath = Get-Item -LiteralPath (Join-Path $download 'provenance.sigstore.json') -ErrorAction Stop
+          $sbomAttestationPath = Get-Item -LiteralPath (Join-Path $download 'sbom-attestation.sigstore.json') -ErrorAction Stop
+
+          $sbom = Get-Content -Raw $sbomPath[0] | ConvertFrom-Json
+          if ($sbom.spdxVersion -notmatch '^SPDX-') { throw "SBOM does not contain a valid SPDX version." }
+          foreach ($bundlePath in @($provenancePath, $sbomAttestationPath)) {
+            $bundle = Get-Content -Raw $bundlePath | ConvertFrom-Json
+            if (-not $bundle.mediaType -or -not $bundle.verificationMaterial) {
+              throw "$($bundlePath.Name) is not a valid Sigstore bundle."
+            }
+          }
+
+          $expectedChecksums = @{}
+          foreach ($line in Get-Content -LiteralPath $checksumsPath) {
+            if ($line -notmatch '^([0-9a-f]{64}) \*(.+)$') {
+              throw "SHA256SUMS contains an invalid line: $line"
+            }
+            $expectedChecksums[$Matches[2]] = $Matches[1]
+          }
+          foreach ($subject in @($installer, $signature, $manifestPath, $sbomPath[0])) {
+            if (-not $expectedChecksums.ContainsKey($subject.Name)) {
+              throw "SHA256SUMS does not contain $($subject.Name)."
+            }
+            $actual = (Get-FileHash -LiteralPath $subject.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($expectedChecksums[$subject.Name] -ne $actual) {
+              throw "SHA-256 does not match for $($subject.Name)."
+            }
+          }
+          if ($expectedChecksums.Count -ne 4) { throw "SHA256SUMS must contain exactly four entries." }
+
+          gh attestation verify $installer.FullName --repo $env:GITHUB_REPOSITORY
+          if ($LASTEXITCODE -ne 0) { throw "GitHub provenance verification failed." }
 
           $authenticode = Get-AuthenticodeSignature -LiteralPath $installer.FullName
           if ($authenticode.Status -ne 'Valid') {
