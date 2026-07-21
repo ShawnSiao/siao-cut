@@ -1,6 +1,6 @@
 use crate::{
     db,
-    media::tool_path,
+    media::{hash_file, tool_path},
     project,
     speaker::{SegmentSpeaker, SpeakerIdentity, SpeakerTrack, SpeakerTurn},
     util::{hidden_command, new_id, now},
@@ -10,7 +10,7 @@ use reqwest::{
     Url,
     blocking::{Client, multipart},
 };
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -60,6 +60,9 @@ pub struct TranscriptionJob {
     pub status: String,
     pub stage: String,
     pub result_run_id: Option<String>,
+    pub base_version_id: Option<String>,
+    pub source_sha256: Option<String>,
+    pub input_audio_sha256: Option<String>,
     pub cancel_requested_at: Option<String>,
     pub error_message: Option<String>,
     pub error_code: Option<String>,
@@ -188,7 +191,7 @@ pub fn health(db: &Connection) -> Result<ProviderHealth> {
 }
 
 pub fn start(
-    db: &Connection,
+    db: &mut Connection,
     project_id: &str,
     language: Option<&str>,
     prompt: Option<&str>,
@@ -196,12 +199,15 @@ pub fn start(
     start_delay_ms: Option<u64>,
 ) -> Result<TranscriptionJob> {
     let project = project::load(db, project_id)?;
-    if !Path::new(&project.media.source_path).is_file() {
+    let source_path = Path::new(&project.media.source_path);
+    if !source_path.is_file() {
         bail!("audio_source_missing: 项目关联的原始媒体不存在")
     }
-    if let Some(job) = latest_active(db, project_id)? {
-        return Ok(job);
+    let source_sha256 = hash_file(source_path)?;
+    if source_sha256 != project.media.sha256 {
+        bail!("transcription_source_changed: 原始媒体内容与项目记录不一致，请重新定位媒体")
     }
+    let base_version_id = project.history.current_version_id.clone();
     let provider = config(db)?;
     let endpoint = validate_loopback_endpoint(&provider.endpoint)?;
     let provider_health = health(db)?;
@@ -213,15 +219,40 @@ pub fn start(
     }
     let timestamp = now();
     let id = new_id("transcription");
-    db.execute(
-        "INSERT INTO transcription_jobs(id,project_id,provider_id,endpoint,model_id,language,prompt,hotwords_json,status,stage,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'queued','queued',?9,?9)",
-        params![id, project_id, provider.provider_id, endpoint, provider.model_id, clean_optional(language), clean_optional(prompt), serde_json::to_string(hotwords)?, timestamp],
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    if let Some(job) = latest_active(&tx, project_id)? {
+        tx.commit()?;
+        return Ok(job);
+    }
+    tx.execute(
+        "INSERT INTO transcription_jobs(
+            id,project_id,provider_id,endpoint,model_id,language,prompt,hotwords_json,
+            status,stage,base_version_id,source_sha256,created_at,updated_at
+         ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'queued','queued',?9,?10,?11,?11)",
+        params![
+            id,
+            project_id,
+            provider.provider_id,
+            endpoint,
+            provider.model_id,
+            clean_language(language),
+            clean_optional(prompt),
+            serde_json::to_string(hotwords)?,
+            base_version_id,
+            source_sha256,
+            timestamp
+        ],
     )?;
+    tx.commit()?;
     if let Err(error) = spawn_worker(&id, start_delay_ms) {
         db.execute("UPDATE transcription_jobs SET status='failed',stage='failed',error_message=?2,completed_at=?3,updated_at=?3 WHERE id=?1", params![id, error.to_string(), now()])?;
         return Err(error);
     }
     load(db, &id)
+}
+
+fn clean_language(value: Option<&str>) -> Option<String> {
+    clean_optional(value).filter(|value| !value.eq_ignore_ascii_case("auto"))
 }
 
 fn clean_optional(value: Option<&str>) -> Option<String> {
@@ -233,17 +264,21 @@ fn clean_optional(value: Option<&str>) -> Option<String> {
 
 pub fn load(db: &Connection, job_id: &str) -> Result<TranscriptionJob> {
     db.query_row(
-        "SELECT id,project_id,provider_id,endpoint,model_id,language,prompt,hotwords_json,status,stage,result_run_id,cancel_requested_at,error_message,created_at,updated_at,completed_at,worker_pid,attempt_count FROM transcription_jobs WHERE id=?1",
+        "SELECT id,project_id,provider_id,endpoint,model_id,language,prompt,hotwords_json,
+                status,stage,result_run_id,base_version_id,source_sha256,input_audio_sha256,
+                cancel_requested_at,error_message,created_at,updated_at,completed_at,worker_pid,attempt_count
+         FROM transcription_jobs WHERE id=?1",
         [job_id], |row| {
             let status: String = row.get(8)?;
-            let error_message: Option<String> = row.get(12)?;
+            let error_message: Option<String> = row.get(15)?;
             let hotwords_json: String = row.get(7)?;
             Ok(TranscriptionJob {
                 id: row.get(0)?, project_id: row.get(1)?, provider_id: row.get(2)?, endpoint: row.get(3)?, model_id: row.get(4)?,
                 language: row.get(5)?, prompt: row.get(6)?, hotwords: serde_json::from_str(&hotwords_json).unwrap_or_default(),
-                status: status.clone(), stage: row.get(9)?, result_run_id: row.get(10)?, cancel_requested_at: row.get(11)?,
+                status: status.clone(), stage: row.get(9)?, result_run_id: row.get(10)?, base_version_id: row.get(11)?,
+                source_sha256: row.get(12)?, input_audio_sha256: row.get(13)?, cancel_requested_at: row.get(14)?,
                 error_code: crate::model::background_error_code(&status, error_message.as_deref()), error_message,
-                created_at: row.get(13)?, updated_at: row.get(14)?, completed_at: row.get(15)?, worker_pid: row.get(16)?, attempt_count: row.get::<_, i64>(17)? as u32,
+                created_at: row.get(16)?, updated_at: row.get(17)?, completed_at: row.get(18)?, worker_pid: row.get(19)?, attempt_count: row.get::<_, i64>(20)? as u32,
             })
         }
     ).optional()?.ok_or_else(|| anyhow!("transcription_job_not_found: 转写任务不存在：{job_id}"))
@@ -285,19 +320,31 @@ pub fn cancel(db: &Connection, job_id: &str) -> Result<TranscriptionJob> {
     if !matches!(job.status.as_str(), "queued" | "running" | "finalizing") {
         bail!("transcription_job_not_cancellable: 当前转写任务不能取消")
     }
+    let timestamp = now();
+    let changed = db.execute(
+        "UPDATE transcription_jobs
+         SET status='cancelled',stage='cancelled',cancel_requested_at=?2,completed_at=?2,updated_at=?2
+         WHERE id=?1 AND status IN ('queued','running','finalizing')",
+        params![job_id, timestamp],
+    )?;
+    if changed != 1 {
+        bail!("transcription_job_not_cancellable: 当前转写任务不能取消")
+    }
     if let Some(pid) = job.worker_pid
         && pid != std::process::id()
         && crate::util::process_is_active(pid)
     {
         let _ = crate::util::terminate_process_tree_by_id(pid);
     }
-    let timestamp = now();
-    db.execute("UPDATE transcription_jobs SET status='cancelled',stage='cancelled',cancel_requested_at=?2,worker_pid=NULL,completed_at=?2,updated_at=?2 WHERE id=?1", params![job_id, timestamp])?;
+    db.execute(
+        "UPDATE transcription_jobs SET worker_pid=NULL WHERE id=?1 AND status='cancelled'",
+        [job_id],
+    )?;
     load(db, job_id)
 }
 
 pub fn resume(
-    db: &Connection,
+    db: &mut Connection,
     job_id: &str,
     start_delay_ms: Option<u64>,
 ) -> Result<TranscriptionJob> {
@@ -305,8 +352,39 @@ pub fn resume(
     if !matches!(job.status.as_str(), "cancelled" | "failed" | "interrupted") {
         bail!("transcription_job_not_resumable: 当前转写任务不能继续")
     }
-    db.execute("UPDATE transcription_jobs SET status='queued',stage='queued',result_run_id=NULL,cancel_requested_at=NULL,error_message=NULL,completed_at=NULL,worker_pid=NULL,attempt_count=attempt_count+1,updated_at=?2 WHERE id=?1", params![job_id, now()])?;
-    spawn_worker(job_id, start_delay_ms).context("无法继续 MOSS 转写")?;
+    let project_value = project::load(db, &job.project_id)?;
+    let source_sha256 = hash_file(Path::new(&project_value.media.source_path))?;
+    if source_sha256 != project_value.media.sha256 {
+        bail!("transcription_source_changed: 原始媒体内容与项目记录不一致，请重新定位媒体")
+    }
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    if let Some(active) = latest_active(&tx, &job.project_id)? {
+        bail!(
+            "transcription_active_job_exists: 项目已有等待处理的转写任务：{}",
+            active.id
+        )
+    }
+    tx.execute(
+        "UPDATE transcription_jobs
+         SET status='queued',stage='queued',result_run_id=NULL,base_version_id=?2,
+             source_sha256=?3,input_audio_sha256=NULL,cancel_requested_at=NULL,error_message=NULL,
+             completed_at=NULL,worker_pid=NULL,attempt_count=attempt_count+1,updated_at=?4
+         WHERE id=?1",
+        params![
+            job_id,
+            project_value.history.current_version_id,
+            source_sha256,
+            now()
+        ],
+    )?;
+    tx.commit()?;
+    if let Err(error) = spawn_worker(job_id, start_delay_ms) {
+        db.execute(
+            "UPDATE transcription_jobs SET status='failed',stage='failed',error_message=?2,completed_at=?3,updated_at=?3 WHERE id=?1",
+            params![job_id, error.to_string(), now()],
+        )?;
+        return Err(error).context("无法继续 MOSS 转写");
+    }
     load(db, job_id)
 }
 
@@ -354,14 +432,7 @@ pub fn run_worker(job_id: &str, start_delay_ms: Option<u64>) -> Result<()> {
     }
     let result = execute_job(&mut database, job_id);
     match result {
-        Ok(run_id) => {
-            let completed_at = now();
-            database.execute(
-                "UPDATE transcription_jobs SET status='completed',stage='completed',result_run_id=?2,error_message=NULL,worker_pid=NULL,completed_at=?3,updated_at=?3 WHERE id=?1 AND status!='cancelled'",
-                params![job_id, run_id, completed_at],
-            )?;
-            Ok(())
-        }
+        Ok(_) => Ok(()),
         Err(error) if error.to_string().starts_with("transcription_cancelled") => {
             let timestamp = now();
             database.execute(
@@ -389,6 +460,11 @@ fn execute_job(db: &mut Connection, job_id: &str) -> Result<String> {
     fs::create_dir_all(&cache_dir)?;
     let wav_path = cache_dir.join(format!("{}.wav", job.id));
     extract_audio(Path::new(&project_value.media.source_path), &wav_path)?;
+    let input_audio_sha256 = hash_file(&wav_path)?;
+    db.execute(
+        "UPDATE transcription_jobs SET input_audio_sha256=?2,updated_at=?3 WHERE id=?1 AND status='running'",
+        params![job_id, input_audio_sha256, now()],
+    )?;
     ensure_not_cancelled(db, job_id)?;
     db.execute(
         "UPDATE transcription_jobs SET stage='requesting_model',updated_at=?2 WHERE id=?1",
@@ -674,8 +750,32 @@ fn import_result(
     let track = build_track(segments, &job.model_id, &generated_at);
     let reviews = build_review_items(&job.project_id, run_id, segments, &generated_at);
     let raw_hash = format!("{:x}", Sha256::digest(raw.as_bytes()));
-    project::mutate_with_snapshot(db, &job.project_id, "MOSS 多人长音频转写", |tx| {
-        tx.execute("DELETE FROM segments WHERE project_id=?1", [&job.project_id])?;
+    let source_sha256 = hash_file(Path::new(&project_value.media.source_path))?;
+    if job.source_sha256.as_deref() != Some(source_sha256.as_str()) {
+        bail!("transcription_source_changed: 转写期间原始媒体内容发生变化，结果未应用")
+    }
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let status: String = tx.query_row(
+        "SELECT status FROM transcription_jobs WHERE id=?1",
+        [&job.id],
+        |row| row.get(0),
+    )?;
+    if status == "cancelled" {
+        bail!("transcription_cancelled: 转写任务已取消")
+    }
+    if status != "finalizing" {
+        bail!("transcription_job_state_invalid: 转写任务状态不允许导入结果")
+    }
+    let current_version_id = project::current_version_id(&tx, &job.project_id)?;
+    if current_version_id != job.base_version_id {
+        bail!("transcription_project_changed: 转写期间项目已被修改，结果未应用")
+    }
+
+    let transaction_result = (|| -> Result<()> {
+        tx.execute(
+            "DELETE FROM segments WHERE project_id=?1",
+            [&job.project_id],
+        )?;
         for segment in segments {
             project::assert_segment(segment.start, segment.end, &segment.text)
                 .context("transcription_import_failed: 无法导入 MOSS 字幕段")?;
@@ -684,11 +784,32 @@ fn import_result(
                 params![segment.id, job.project_id, segment.start, segment.end, segment.text],
             )?;
         }
-        tx.execute("UPDATE translations SET status='stale' WHERE project_id=?1", [&job.project_id])?;
-        crate::speaker::replace_track_tx(tx, &job.project_id, Some(&track))?;
         tx.execute(
-            "INSERT INTO transcription_runs(id,project_id,job_id,provider_id,model_id,source_sha256,result_sha256,raw_result_path,segment_count,speaker_count,has_word_timings,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,0,?11)",
-            params![run_id, job.project_id, job.id, job.provider_id, job.model_id, project_value.media.sha256, raw_hash, raw_path.to_string_lossy(), segments.len() as i64, track.speakers.len() as i64, generated_at],
+            "UPDATE translations SET status='stale' WHERE project_id=?1",
+            [&job.project_id],
+        )?;
+        crate::speaker::replace_track_tx(&tx, &job.project_id, Some(&track))?;
+        tx.execute(
+            "INSERT INTO transcription_runs(
+                id,project_id,job_id,provider_id,model_id,status,base_version_id,source_sha256,
+                input_audio_sha256,result_sha256,raw_result_path,segment_count,speaker_count,
+                has_word_timings,created_at
+             ) VALUES(?1,?2,?3,?4,?5,'applied',?6,?7,?8,?9,?10,?11,?12,0,?13)",
+            params![
+                run_id,
+                job.project_id,
+                job.id,
+                job.provider_id,
+                job.model_id,
+                job.base_version_id,
+                source_sha256,
+                job.input_audio_sha256,
+                raw_hash,
+                raw_path.to_string_lossy(),
+                segments.len() as i64,
+                track.speakers.len() as i64,
+                generated_at
+            ],
         )?;
         for item in &reviews {
             tx.execute(
@@ -696,8 +817,28 @@ fn import_result(
                 params![item.id, item.project_id, item.run_id, item.segment_id, item.severity, item.kind, item.message, item.created_at],
             )?;
         }
+        let version =
+            project::snapshot_in_transaction(&tx, &job.project_id, "MOSS 多人长音频转写")?;
+        let completed_at = now();
+        tx.execute(
+            "UPDATE transcription_runs SET applied_version_id=?2 WHERE id=?1",
+            params![run_id, version.id],
+        )?;
+        let changed = tx.execute(
+            "UPDATE transcription_jobs
+             SET status='completed',stage='completed',result_run_id=?2,error_message=NULL,
+                 worker_pid=NULL,completed_at=?3,updated_at=?3
+             WHERE id=?1 AND status='finalizing' AND cancel_requested_at IS NULL",
+            params![job.id, run_id, completed_at],
+        )?;
+        if changed != 1 {
+            bail!("transcription_cancelled: 转写任务已取消")
+        }
         Ok(())
-    }).context("transcription_import_failed: MOSS 结果未写入项目")
+    })();
+    transaction_result.context("transcription_import_failed: MOSS 结果未写入项目")?;
+    tx.commit()?;
+    Ok(())
 }
 
 fn build_track(segments: &[ImportedSegment], model_id: &str, timestamp: &str) -> SpeakerTrack {
@@ -1075,7 +1216,7 @@ mod tests {
         let project_value =
             crate::project::create(&mut database, &media, Some("sample".into())).unwrap();
         let timestamp = now();
-        database.execute("INSERT INTO transcription_jobs(id,project_id,provider_id,endpoint,model_id,hotwords_json,status,stage,created_at,updated_at) VALUES('job',?1,?2,?3,?4,'[]','finalizing','validating_result',?5,?5)", params![project_value.id, PROVIDER_ID, DEFAULT_ENDPOINT, DEFAULT_MODEL_ID, timestamp]).unwrap();
+        database.execute("INSERT INTO transcription_jobs(id,project_id,provider_id,endpoint,model_id,hotwords_json,status,stage,base_version_id,source_sha256,created_at,updated_at) VALUES('job',?1,?2,?3,?4,'[]','finalizing','validating_result',?5,?6,?7,?7)", params![project_value.id, PROVIDER_ID, DEFAULT_ENDPOINT, DEFAULT_MODEL_ID, project_value.history.current_version_id, project_value.media.sha256, timestamp]).unwrap();
         let job = load(&database, "job").unwrap();
         let raw_path = temp.path().join("run.json");
         let segments = vec![
@@ -1110,5 +1251,76 @@ mod tests {
         assert_eq!(track.provider_id, PROVIDER_ID);
         assert_eq!(track.speakers.len(), 2);
         assert_eq!(track.associations.len(), 2);
+        let completed = load(&database, "job").unwrap();
+        assert_eq!(completed.status, "completed");
+        assert_eq!(completed.result_run_id.as_deref(), Some("run"));
+    }
+
+    #[test]
+    fn finalization_rolls_back_project_run_and_job_on_import_failure() {
+        let temp = tempdir().unwrap();
+        let media = temp.path().join("rollback.wav");
+        fs::write(&media, b"media").unwrap();
+        let mut database = crate::db::open_at(&temp.path().join("rollback.db")).unwrap();
+        let project_value =
+            crate::project::create(&mut database, &media, Some("rollback".into())).unwrap();
+        crate::project::add_segment(
+            &mut database,
+            &project_value.id,
+            0.0,
+            1.0,
+            "original".into(),
+            None,
+        )
+        .unwrap();
+        let project_value = crate::project::load(&database, &project_value.id).unwrap();
+        let timestamp = now();
+        database.execute("INSERT INTO transcription_jobs(id,project_id,provider_id,endpoint,model_id,hotwords_json,status,stage,base_version_id,source_sha256,created_at,updated_at) VALUES('job-rollback',?1,?2,?3,?4,'[]','finalizing','validating_result',?5,?6,?7,?7)", params![project_value.id, PROVIDER_ID, DEFAULT_ENDPOINT, DEFAULT_MODEL_ID, project_value.history.current_version_id, project_value.media.sha256, timestamp]).unwrap();
+        let job = load(&database, "job-rollback").unwrap();
+        let duplicate_segments = vec![
+            ImportedSegment {
+                id: "duplicate".into(),
+                start: 0.0,
+                end: 1.0,
+                speaker: "S01".into(),
+                text: "first".into(),
+            },
+            ImportedSegment {
+                id: "duplicate".into(),
+                start: 1.0,
+                end: 2.0,
+                speaker: "S02".into(),
+                text: "second".into(),
+            },
+        ];
+
+        let error = import_result(
+            &mut database,
+            &job,
+            &project_value,
+            "run-rollback",
+            &temp.path().join("run.json"),
+            "{}",
+            &duplicate_segments,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("transcription_import_failed"));
+        let current = crate::project::load(&database, &project_value.id).unwrap();
+        assert_eq!(current.transcript.segments.len(), 1);
+        assert_eq!(current.transcript.segments[0].text, "original");
+        assert_eq!(
+            load(&database, "job-rollback").unwrap().status,
+            "finalizing"
+        );
+        let runs: i64 = database
+            .query_row(
+                "SELECT COUNT(*) FROM transcription_runs WHERE job_id='job-rollback'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(runs, 0);
     }
 }

@@ -96,6 +96,9 @@ enum ProjectCommand {
     Show {
         project_id: String,
     },
+    DeletePreflight {
+        project_id: String,
+    },
     Delete {
         project_id: String,
     },
@@ -780,6 +783,9 @@ fn run(cli: Cli) -> Result<Value> {
                 let project = project::load(&database, &project_id)?;
                 Ok(envelope(json!({"projectId":project.id,"project":project})))
             }
+            ProjectCommand::DeletePreflight { project_id } => Ok(envelope(json!({
+                "deletionPreflight": project::deletion_preflight(&database, &project_id)?
+            }))),
             ProjectCommand::Delete { project_id } => {
                 project::delete(&mut database, &project_id)?;
                 Ok(envelope(json!({
@@ -1566,7 +1572,7 @@ fn run(cli: Cli) -> Result<Value> {
                 hotwords,
                 start_delay_ms,
             } => Ok(envelope(json!({
-                "transcriptionJob": transcription::start(&database, &project_id, language.as_deref(), prompt.as_deref(), &hotwords, start_delay_ms)?,
+                "transcriptionJob": transcription::start(&mut database, &project_id, language.as_deref(), prompt.as_deref(), &hotwords, start_delay_ms)?,
                 "message": "多人长音频转写已进入后台队列；不会静默回退到快速转写。"
             }))),
             TranscriptionCommand::Status { job_id } => Ok(envelope(
@@ -1585,7 +1591,7 @@ fn run(cli: Cli) -> Result<Value> {
                 job_id,
                 start_delay_ms,
             } => Ok(envelope(
-                json!({"transcriptionJob": transcription::resume(&database, &job_id, start_delay_ms)?, "message": "转写任务已显式继续。"}),
+                json!({"transcriptionJob": transcription::resume(&mut database, &job_id, start_delay_ms)?, "message": "转写任务已显式继续。"}),
             )),
             TranscriptionCommand::Review { project_id, all } => Ok(envelope(
                 json!({"reviewItems": transcription::review_items(&database, &project_id, !all)?}),
