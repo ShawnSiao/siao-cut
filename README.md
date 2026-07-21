@@ -66,7 +66,7 @@ npm run desktop:dev
 
 完整 CLI 工作流见 [`skills/siaocut/SKILL.md`](skills/siaocut/SKILL.md)。
 
-受邀英文创作者应按 [English Creator Source Beta 指南](docs/english-creator-beta.md)运行，并遵守其中的 Codex Worker、故障恢复、隐私和反馈要求。
+受邀英文创作者应按 [English Creator Source Beta 指南](docs/english-creator-beta.md)运行，并遵守其中的外部 Agent、故障恢复、隐私和反馈要求。
 
 ## 开发与验证
 

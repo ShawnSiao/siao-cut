@@ -11,7 +11,7 @@ Join only if you can run PowerShell commands and already have:
 - Rust stable with `rustfmt` and `clippy`;
 - Visual Studio 2022 Build Tools with the Desktop development with C++ workload;
 - Microsoft Edge WebView2 Runtime;
-- a working Codex environment for optional Agent workflows; and
+- an external Agent environment that can run local SiaoCut commands for optional Agent workflows; and
 - English media you own or are authorized to process.
 
 The beta does not include an installer, code signing, SmartScreen reputation, telemetry, billing, automatic updates, publishing integrations, or live developer setup support.
@@ -57,26 +57,26 @@ Do not transcribe until `model verify` reports `verified: true`. If FFmpeg or wh
 2. Set Source language to **Auto** for unknown or mixed input, or **English** when the recording is known to be English.
 3. Start transcription and inspect the timed transcript.
 4. Correct names and recognition errors. Review filler, repetition, false-start, timing, reading-speed, and line-length suggestions. These checks never edit text or apply cuts automatically.
-5. Optionally select one Codex workflow: **Clean up transcript**, **Proofread transcript**, **Improve concision**, or **Translate subtitles**.
+5. Optionally select one Agent workflow: **Clean up transcript**, **Proofread transcript**, **Improve concision**, or **Translate subtitles**.
 6. Review every proposed Agent change in the three-way diff. Apply or keep each item explicitly.
 7. Export SRT, VTT, ASS, or MP4. English captions use the beta limits of 8 seconds, 42 visible characters per line, 2 lines, 20 characters per second, and a 0.12-second minimum gap. Warnings do not silently rewrite captions.
 
 For bilingual output, SiaoCut wraps and checks the source and translated tracks independently. The existing subtitle safe area is retained.
 
-## 4. Connect a Codex Worker
+## 4. Hand off to an external Agent
 
-The Codex Worker is external to SiaoCut. It receives transcript text, timestamps, task instructions, and structural constraints. It never receives media bytes or media paths.
+An external Agent is separate from SiaoCut. It receives transcript text, timestamps, task instructions, and structural constraints. It never receives media bytes or media paths.
 
-The app displays **Waiting for Codex Worker** until a worker claims the task. From a Codex environment rooted at this repository, use the SiaoCut Skill or run:
+The app displays **Waiting for an external Agent to claim** until an Agent claims the task. Copy the full handoff instructions from the app into an Agent environment that can run SiaoCut commands on this computer. For a direct local invocation, use:
 
 ```powershell
-.\skills\siaocut\bin\siaocut.ps1 --json task claim --worker codex-1
+.\skills\siaocut\bin\siaocut.ps1 --json task claim <taskId> --worker external-agent
 ```
 
 The claim response includes `instructionLocale`, `language`, and `contentLanguage`. Follow its `instructions` and `responseSchema`, write the response JSON outside the repository, then submit it:
 
 ```powershell
-.\skills\siaocut\bin\siaocut.ps1 --json task submit <taskId> --worker codex-1 --response "C:\Temp\siaocut-response.json"
+.\skills\siaocut\bin\siaocut.ps1 --json task submit <taskId> --worker external-agent --response "C:\Temp\siaocut-response.json"
 .\skills\siaocut\bin\siaocut.ps1 --json task diff <taskId>
 ```
 
@@ -94,7 +94,7 @@ Continuing a workflow can retry work or return to pending review. It does not ap
 - **Interrupted export:** select Retry. A new export job uses the current project version; partial output is not reported as complete.
 - **Missing or changed source:** relink only the byte-identical original. The SHA-256 audit blocks export when the source does not match.
 - **Model download stopped:** resume the same model install. The partial download is retained and the finished file must pass verification.
-- **Codex Worker not connected:** leave the task queued, start Codex in this repository, and run the displayed claim command.
+- **External Agent not connected:** leave the task queued, then copy the app's handoff instructions into an Agent environment that can access the local SiaoCut Core.
 - **Unknown error:** use the localized summary first, then expand or copy the original technical detail. Remove local paths, media text, and personal data before reporting it.
 
 Run the local verification commands if the app does not start:
@@ -121,4 +121,4 @@ Copy the [beta evidence template](english-creator-beta-feedback-template.md) to 
 
 ## Invitation text
 
-> You are invited to test the SiaoCut English Creator source beta on Windows 10/11. This beta requires Git, Node.js 22, Rust, Visual Studio Build Tools, and a working Codex environment. Please use only media you are authorized to process. SiaoCut keeps media processing local and sends only transcript text, timestamps, and structural constraints to an external Codex Worker. No installer or real-time setup support is provided. Feedback must be anonymized and must not include media, transcripts, local paths, or personal data.
+> You are invited to test the SiaoCut English Creator source beta on Windows 10/11. This beta requires Git, Node.js 22, Rust, Visual Studio Build Tools, and an external Agent environment that can run local SiaoCut commands. Please use only media you are authorized to process. SiaoCut keeps media processing local and sends only transcript text, timestamps, and structural constraints to an external Agent. No installer or real-time setup support is provided. Feedback must be anonymized and must not include media, transcripts, local paths, or personal data.
