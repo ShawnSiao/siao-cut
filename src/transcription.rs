@@ -12,9 +12,15 @@ use reqwest::{
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeMap, fs, path::Path, thread, time::Duration};
+use std::{
+    collections::{BTreeMap, HashMap},
+    fs,
+    path::Path,
+    thread,
+    time::Duration,
+};
 
 pub const PROVIDER_ID: &str = "moss_openai";
 pub const DEFAULT_ENDPOINT: &str = "http://127.0.0.1:8000";
@@ -870,6 +876,141 @@ pub fn resolve_review(db: &Connection, item_id: &str, action: &str) -> Result<Re
     })).map_err(Into::into)
 }
 
+pub fn render_structured_export(
+    db: &Connection,
+    project_id: &str,
+    format: &str,
+    include_speaker_labels: bool,
+    confirm_warnings: bool,
+) -> Result<(String, Value)> {
+    if !matches!(format, "json" | "markdown") {
+        bail!("transcription_export_format_invalid: 结构化导出只支持 json 或 markdown")
+    }
+    let open_items = review_items(db, project_id, true)?;
+    let errors = open_items
+        .iter()
+        .filter(|item| item.severity == "error")
+        .collect::<Vec<_>>();
+    let warnings = open_items
+        .iter()
+        .filter(|item| item.severity == "warning")
+        .collect::<Vec<_>>();
+    if !errors.is_empty() {
+        bail!("transcription_export_blocked: 存在未处理的错误复核项，不能导出")
+    }
+    if !warnings.is_empty() && !confirm_warnings {
+        bail!(
+            "transcription_export_warning_confirmation_required: 存在未处理的警告，确认后才能导出"
+        )
+    }
+
+    let project = project::load(db, project_id)?;
+    let track = crate::speaker::load_track(db, project_id)?;
+    let speakers = track
+        .speakers
+        .iter()
+        .map(|speaker| (speaker.id.as_str(), speaker))
+        .collect::<HashMap<_, _>>();
+    let associations = track
+        .associations
+        .iter()
+        .map(|association| (association.segment_id.as_str(), association))
+        .collect::<HashMap<_, _>>();
+    let segments = project
+        .transcript
+        .segments
+        .iter()
+        .map(|segment| {
+            let association = associations.get(segment.id.as_str()).copied();
+            let speaker =
+                association.and_then(|item| speakers.get(item.speaker_id.as_str()).copied());
+            let rendered_text = match (include_speaker_labels, speaker) {
+                (true, Some(speaker)) => format!("[{}] {}", speaker.label, segment.text),
+                _ => segment.text.clone(),
+            };
+            json!({
+                "id": segment.id,
+                "start": segment.start,
+                "end": segment.end,
+                "text": segment.text,
+                "renderedText": rendered_text,
+                "speakerId": speaker.map(|item| item.id.as_str()),
+                "speakerLabel": speaker.map(|item| item.label.as_str()),
+                "speakerSource": association.map(|item| item.source.as_str()),
+                "speakerConfidence": association.and_then(|item| item.confidence),
+            })
+        })
+        .collect::<Vec<_>>();
+    let evidence = json!({
+        "schemaVersion": 1,
+        "project": {"id": project.id, "title": project.title},
+        "transcript": {
+            "sourceLanguage": project.transcript.source_language,
+            "speakerLabelsIncluded": include_speaker_labels,
+            "segments": segments,
+        },
+        "speakerTrack": track,
+        "review": {
+            "openWarningCount": warnings.len(),
+            "warningsConfirmed": !warnings.is_empty() && confirm_warnings,
+            "openItems": open_items,
+        }
+    });
+    let content = if format == "json" {
+        serde_json::to_string_pretty(&evidence)?
+    } else {
+        let mut lines = vec![
+            format!("# {}", project.title),
+            String::new(),
+            format!("- Provider: `{}`", track.provider_id),
+            format!("- Model: `{}`", track.model_id),
+            format!("- Source kind: `{}`", track.source_kind),
+            format!("- Open warnings: {}", warnings.len()),
+            String::new(),
+            "## Transcript".into(),
+            String::new(),
+            "| Start | End | Speaker | Text |".into(),
+            "| ---: | ---: | --- | --- |".into(),
+        ];
+        for segment in evidence["transcript"]["segments"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            let speaker = if include_speaker_labels {
+                segment["speakerLabel"].as_str().unwrap_or("")
+            } else {
+                ""
+            };
+            lines.push(format!(
+                "| {:.3} | {:.3} | {} | {} |",
+                segment["start"].as_f64().unwrap_or_default(),
+                segment["end"].as_f64().unwrap_or_default(),
+                escape_markdown_cell(speaker),
+                escape_markdown_cell(segment["text"].as_str().unwrap_or("")),
+            ));
+        }
+        lines.push(String::new());
+        lines.push("## Speaker evidence".into());
+        lines.push(String::new());
+        lines.push("```json".into());
+        lines.push(serde_json::to_string_pretty(&evidence["speakerTrack"])?);
+        lines.push("```".into());
+        lines.join("\n")
+    };
+    let audit = json!({
+        "ready": true,
+        "openErrorCount": errors.len(),
+        "openWarningCount": warnings.len(),
+        "warningsConfirmed": warnings.is_empty() || confirm_warnings,
+    });
+    Ok((content, audit))
+}
+
+fn escape_markdown_cell(value: &str) -> String {
+    value.replace('|', "\\|").replace(['\r', '\n'], " ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -885,6 +1026,34 @@ mod tests {
         assert!(validate_loopback_endpoint("http://example.com:8000").is_err());
         assert!(validate_loopback_endpoint("http://user@127.0.0.1:8000").is_err());
         assert!(validate_loopback_endpoint("http://127.0.0.1:8000/v1").is_err());
+    }
+
+    #[test]
+    fn structured_export_requires_warning_confirmation_and_preserves_evidence() {
+        let temp = tempdir().unwrap();
+        let mut database = db::open_at(&temp.path().join("structured-export.db")).unwrap();
+        let media = temp.path().join("talk.wav");
+        fs::write(&media, b"audio").unwrap();
+        let project = project::create(&mut database, &media, Some("Meeting".into())).unwrap();
+        let segment =
+            project::add_segment(&mut database, &project.id, 0.0, 1.0, "你好".into(), None)
+                .unwrap();
+        let timestamp = now();
+        database.execute("INSERT INTO transcription_jobs(id,project_id,provider_id,endpoint,model_id,language,prompt,hotwords_json,status,stage,result_run_id,cancel_requested_at,error_message,created_at,updated_at,completed_at,worker_pid,attempt_count) VALUES('job-export',?1,'moss_openai','http://127.0.0.1:8000','moss-test',NULL,NULL,'[]','completed','completed','run-export',NULL,NULL,?2,?2,?2,NULL,1)", params![&project.id, &timestamp]).unwrap();
+        database.execute("INSERT INTO transcription_runs(id,project_id,job_id,provider_id,model_id,source_sha256,result_sha256,raw_result_path,segment_count,speaker_count,has_word_timings,created_at) VALUES('run-export',?1,'job-export','moss_openai','moss-test','source','result','result.json',1,0,0,?2)", params![&project.id, &timestamp]).unwrap();
+        database.execute("INSERT INTO transcription_review_items(id,project_id,run_id,segment_id,severity,kind,message,status,created_at) VALUES('review-export',?1,'run-export',?2,'warning','rapid_speaker_switch','check','open',?3)", params![&project.id, &segment.id, &timestamp]).unwrap();
+
+        let rejected = render_structured_export(&database, &project.id, "json", true, false)
+            .unwrap_err()
+            .to_string();
+        assert!(rejected.contains("warning_confirmation_required"));
+        let (content, audit) =
+            render_structured_export(&database, &project.id, "json", true, true).unwrap();
+        let value: Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(value["schemaVersion"], 1);
+        assert_eq!(value["transcript"]["segments"][0]["id"], segment.id);
+        assert_eq!(value["review"]["openWarningCount"], 1);
+        assert_eq!(audit["warningsConfirmed"], true);
     }
 
     #[test]

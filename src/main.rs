@@ -256,6 +256,17 @@ enum TranscriptionCommand {
         #[arg(long)]
         action: String,
     },
+    Export {
+        project_id: String,
+        #[arg(long, default_value = "json")]
+        format: String,
+        #[arg(short = 'o', long)]
+        output: PathBuf,
+        #[arg(long)]
+        include_speaker_labels: bool,
+        #[arg(long)]
+        confirm_warnings: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -385,6 +396,7 @@ enum TaskCommand {
         locale: String,
     },
     Claim {
+        task_id: Option<String>,
         #[arg(long)]
         worker: String,
     },
@@ -1040,20 +1052,22 @@ fn run(cli: Cli) -> Result<Value> {
                     "message":"任务已创建，等待 Agent 领取。"
                 })))
             }
-            TaskCommand::Claim { worker } => match tasks::claim(&mut database, &worker)? {
-                Some((project, task, payload)) => Ok(envelope(json!({
-                    "projectId":project.id,
-                    "taskId":task.id,
-                    "language":task.language,
-                    "instructionLocale":task.instruction_locale,
-                    "contentLanguage":project.transcript.source_language,
-                    "task":task,
-                    "payload":payload
-                }))),
-                None => Ok(envelope(
-                    json!({"task":null,"message":"当前没有待领取任务。"}),
-                )),
-            },
+            TaskCommand::Claim { task_id, worker } => {
+                match tasks::claim(&mut database, &worker, task_id.as_deref())? {
+                    Some((project, task, payload)) => Ok(envelope(json!({
+                        "projectId":project.id,
+                        "taskId":task.id,
+                        "language":task.language,
+                        "instructionLocale":task.instruction_locale,
+                        "contentLanguage":project.transcript.source_language,
+                        "task":task,
+                        "payload":payload
+                    }))),
+                    None => Ok(envelope(
+                        json!({"task":null,"message":"当前没有待领取任务。"}),
+                    )),
+                }
+            }
             TaskCommand::Submit {
                 task_id,
                 worker,
@@ -1169,6 +1183,7 @@ fn run(cli: Cli) -> Result<Value> {
                 Ok(envelope(json!({
                     "projectId":project_id,
                     "workflowId":workflow.id,
+                    "taskId":workflow.task_id,
                     "workflow":workflow,
                     "message":"工作流已创建，需要 Agent 继续。"
                 })))
@@ -1578,6 +1593,29 @@ fn run(cli: Cli) -> Result<Value> {
             TranscriptionCommand::Resolve { item_id, action } => Ok(envelope(
                 json!({"reviewItem": transcription::resolve_review(&database, &item_id, &action)?}),
             )),
+            TranscriptionCommand::Export {
+                project_id,
+                format,
+                output,
+                include_speaker_labels,
+                confirm_warnings,
+            } => {
+                let (content, audit) = transcription::render_structured_export(
+                    &database,
+                    &project_id,
+                    &format,
+                    include_speaker_labels,
+                    confirm_warnings,
+                )?;
+                fs::write(&output, content)?;
+                Ok(envelope(json!({
+                    "projectId": project_id,
+                    "output": output,
+                    "format": format,
+                    "audit": audit,
+                    "message": "结构化多人转写已导出；JSON/Markdown 保留说话人证据。"
+                })))
+            }
         },
         Commands::Runtime(command) => match command {
             RuntimeCommand::Status => Ok(envelope(json!({"runtime":runtime::status()?}))),

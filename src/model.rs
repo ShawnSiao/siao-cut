@@ -530,6 +530,8 @@ pub struct Task {
     pub created_at: String,
     pub completed_at: Option<String>,
     pub lease: Option<Lease>,
+    #[serde(default)]
+    pub last_activity: Option<TaskActivity>,
     pub base_version_id: Option<String>,
     pub progress: f64,
     pub error_message: Option<String>,
@@ -656,6 +658,15 @@ pub struct TaskEvent {
     pub id: i64,
     pub task_id: String,
     pub project_id: String,
+    pub kind: String,
+    pub progress: Option<f64>,
+    pub message: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskActivity {
     pub kind: String,
     pub progress: Option<f64>,
     pub message: String,

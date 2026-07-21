@@ -49,8 +49,19 @@ pub(crate) fn create_for_workflow(
     workflow_id: Option<&str>,
     instruction_locale: &str,
 ) -> Result<Task> {
-    if !["polish", "translate", "summary", "proofread", "edit", "cut"].contains(&kind) {
-        bail!("任务类型必须为 polish、translate、summary、proofread、edit 或 cut")
+    if ![
+        "polish",
+        "translate",
+        "summary",
+        "proofread",
+        "edit",
+        "cut",
+        "punctuate",
+        "speaker_names",
+    ]
+    .contains(&kind)
+    {
+        bail!("任务类型不受支持")
     }
     if kind == "translate" && language.is_none() {
         bail!("翻译任务需要 --lang")
@@ -67,6 +78,7 @@ pub(crate) fn create_for_workflow(
         created_at: now(),
         completed_at: None,
         lease: None,
+        last_activity: None,
         base_version_id: project.history.current_version_id.clone(),
         progress: 0.0,
         error_message: None,
@@ -87,7 +99,7 @@ pub(crate) fn create_for_workflow(
 pub fn reconcile_expired(db: &mut Connection) -> Result<usize> {
     let expired = {
         let mut statement = db.prepare(
-            "SELECT id,project_id,cancel_requested_at FROM tasks WHERE status='claimed' AND lease_expires_at IS NOT NULL AND lease_expires_at < ?1",
+            "SELECT id,project_id,cancel_requested_at FROM tasks WHERE status IN ('claimed','running') AND lease_expires_at IS NOT NULL AND lease_expires_at < ?1",
         )?;
         statement
             .query_map([now()], |row| {
@@ -114,12 +126,16 @@ pub fn reconcile_expired(db: &mut Connection) -> Result<usize> {
     Ok(expired.len())
 }
 
-pub fn claim(db: &mut Connection, worker: &str) -> Result<Option<(Project, Task, Value)>> {
+pub fn claim(
+    db: &mut Connection,
+    worker: &str,
+    requested_task_id: Option<&str>,
+) -> Result<Option<(Project, Task, Value)>> {
     reconcile_expired(db)?;
     let candidate: Option<(String, String)> = db
         .query_row(
-            "SELECT project_id,id FROM tasks WHERE status='queued' ORDER BY created_at LIMIT 1",
-            [],
+            "SELECT project_id,id FROM tasks WHERE status='queued' AND (?1 IS NULL OR id=?1) ORDER BY created_at LIMIT 1",
+            [requested_task_id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;
@@ -153,6 +169,7 @@ pub fn claim(db: &mut Connection, worker: &str) -> Result<Option<(Project, Task,
     let project = project::load(db, &project_id)?;
     let task = find_task(&project, &task_id)?;
     let instructions = task_instructions(&task.kind, &task.instruction_locale);
+    let include_words = !matches!(task.kind.as_str(), "punctuate" | "speaker_names");
     let segments = project
         .transcript
         .segments
@@ -165,10 +182,25 @@ pub fn claim(db: &mut Connection, worker: &str) -> Result<Option<(Project, Task,
                 .filter(|word| word.segment_id == segment.id)
                 .map(|word| json!({"text":word.text,"start":word.start,"end":word.end,"confidence":word.confidence}))
                 .collect::<Vec<_>>();
-            json!({"id":segment.id,"text":segment.text,"start":segment.start,"end":segment.end,"confidence":segment.confidence,"words":words})
+            if include_words {
+                json!({"id":segment.id,"text":segment.text,"start":segment.start,"end":segment.end,"confidence":segment.confidence,"words":words})
+            } else {
+                json!({"id":segment.id,"text":segment.text,"start":segment.start,"end":segment.end})
+            }
         })
         .collect::<Vec<_>>();
-    let response_schema = if task.instruction_locale == "en-US" {
+    let response_schema = if task.kind == "speaker_names" {
+        json!({
+            "baseVersionId": "Original version ID returned with the task",
+            "speakers": [{
+                "speakerId": "Speaker ID from speakerEvidence",
+                "before": "Current speaker label",
+                "after": "Proposed display name",
+                "reason": "Text evidence supporting the proposed name",
+                "confidence": "0 to 1"
+            }]
+        })
+    } else if task.instruction_locale == "en-US" {
         json!({
             "baseVersionId": "Original version ID returned with the task",
             "patches": [{
@@ -191,6 +223,23 @@ pub fn claim(db: &mut Connection, worker: &str) -> Result<Option<(Project, Task,
             }]
         })
     };
+    let speaker_evidence = if task.kind == "speaker_names" {
+        let track = crate::speaker::load_track(db, &project_id)?;
+        Some(json!({
+            "speakers": track.speakers.iter().map(|speaker| json!({
+                "id": speaker.id,
+                "sourceLabel": speaker.source_label,
+                "label": speaker.label
+            })).collect::<Vec<_>>(),
+            "associations": track.associations.iter().map(|association| json!({
+                "segmentId": association.segment_id,
+                "speakerId": association.speaker_id,
+                "source": association.source
+            })).collect::<Vec<_>>()
+        }))
+    } else {
+        None
+    };
     let payload = json!({
         "taskId": task.id,
         "projectId": project.id,
@@ -201,6 +250,7 @@ pub fn claim(db: &mut Connection, worker: &str) -> Result<Option<(Project, Task,
         "baseVersionId": task.base_version_id,
         "instructions": instructions,
         "segments": segments,
+        "speakerEvidence": speaker_evidence,
         "responseSchema": response_schema
     });
     Ok(Some((project, task, payload)))
@@ -216,6 +266,12 @@ fn task_instructions(kind: &str, instruction_locale: &str) -> &'static str {
             "proofread" => {
                 "Proofread each segment and correct spelling, punctuation, and clear transcription errors."
             }
+            "punctuate" => {
+                "Add punctuation and sentence casing only. Preserve every spoken word and return reviewable segment patches."
+            }
+            "speaker_names" => {
+                "Infer speaker display names only from self-introductions or explicit textual evidence. Return reviewable speaker suggestions and never guess."
+            }
             "edit" => {
                 "Identify repetition, tangents, and failed takes, then propose reviewable text changes."
             }
@@ -229,6 +285,10 @@ fn task_instructions(kind: &str, instruction_locale: &str) -> &'static str {
         "translate" => "逐段翻译，保留原意与术语。",
         "polish" => "逐段润色，纠正明显转写错误，不删改事实。",
         "proofread" => "逐段校对，修正错别字、标点和明显转写错误。",
+        "punctuate" => "只补充标点和必要的句首大小写，保留全部口述词，按字幕段返回待审建议。",
+        "speaker_names" => {
+            "只根据自我介绍或明确文本证据推断人物显示名；证据不足时不要猜测，结果必须等待人工审阅。"
+        }
         "edit" => "识别重复、跑题和失败重录，给出可审阅的文本修改。",
         "cut" => "识别应删除的完整语义片段，禁止切入词中。",
         _ => "用中文给出短摘要，不捏造事实。",
@@ -253,12 +313,12 @@ pub fn heartbeat(
         )
         .optional()?
         .ok_or_else(|| anyhow!("任务不存在：{task_id}"))?;
-    if status != "claimed" || owner.as_deref() != Some(worker) {
+    if !["claimed", "running"].contains(&status.as_str()) || owner.as_deref() != Some(worker) {
         bail!("任务未由当前 Agent 领取")
     }
     let expires_at = (Utc::now() + Duration::minutes(LEASE_MINUTES)).to_rfc3339();
     db.execute(
-        "UPDATE tasks SET progress=?2,lease_expires_at=?3 WHERE id=?1",
+        "UPDATE tasks SET status='running',progress=?2,lease_expires_at=?3 WHERE id=?1",
         params![task_id, progress, expires_at],
     )?;
     append_event(
@@ -284,7 +344,7 @@ pub fn fail(db: &mut Connection, task_id: &str, worker: &str, message: &str) -> 
         )
         .optional()?
         .ok_or_else(|| anyhow!("任务不存在：{task_id}"))?;
-    if status != "claimed" || owner.as_deref() != Some(worker) {
+    if !["claimed", "running"].contains(&status.as_str()) || owner.as_deref() != Some(worker) {
         bail!("任务未由当前 Agent 领取")
     }
     db.execute(
@@ -337,7 +397,7 @@ pub fn cancel(db: &mut Connection, task_id: &str) -> Result<Task> {
             )?;
             append_event(db, task_id, &project_id, "cancelled", None, "任务已取消")?;
         }
-        "claimed" => {
+        "claimed" | "running" => {
             db.execute(
                 "UPDATE tasks SET cancel_requested_at=?2 WHERE id=?1",
                 params![task_id, now()],
@@ -409,7 +469,7 @@ pub fn submit(
     else {
         bail!("任务不存在：{task_id}")
     };
-    if status != "claimed" || owner.as_deref() != Some(worker) {
+    if !["claimed", "running"].contains(&status.as_str()) || owner.as_deref() != Some(worker) {
         bail!("任务未由当前 Agent 领取")
     }
     if cancel_requested_at.is_some() {
@@ -503,7 +563,7 @@ mod tests {
         let task = create_with_locale(&mut db, &project.id, "proofread", None, "en-US").unwrap();
         assert_eq!(task.instruction_locale, "en-US");
 
-        let claimed = claim(&mut db, "english-worker").unwrap().unwrap();
+        let claimed = claim(&mut db, "english-worker", None).unwrap().unwrap();
         assert_eq!(claimed.1.instruction_locale, "en-US");
         assert_eq!(claimed.2["instructionLocale"], "en-US");
         assert_eq!(claimed.2["contentLanguage"], "auto");
@@ -523,7 +583,7 @@ mod tests {
     fn agent_patch_submit_waits_for_review_before_updating_project() {
         let (_temp, mut db, project, segment_id) = fixture();
         let task = create(&mut db, &project.id, "translate", Some("en".into())).unwrap();
-        let claim = claim(&mut db, "test-agent").unwrap().unwrap();
+        let claim = claim(&mut db, "test-agent", None).unwrap().unwrap();
         let base = claim.2["baseVersionId"].as_str().unwrap();
         submit(
             &mut db,
@@ -547,10 +607,56 @@ mod tests {
     }
 
     #[test]
+    fn speaker_name_agent_uses_text_structure_and_waits_for_review() {
+        let (_temp, mut db, project, segment_id) = fixture();
+        let timestamp = now();
+        db.execute("INSERT INTO speaker_tracks(project_id,status,runtime_version,segmentation_model,embedding_model,generated_at,provider_id,model_id,source_kind) VALUES(?1,'ready','test','end-to-end','end-to-end',?2,'moss_openai','moss-test','end_to_end')", params![&project.id, &timestamp]).unwrap();
+        db.execute("INSERT INTO speakers(id,project_id,source_label,label,color_index,created_at) VALUES('speaker-test',?1,'S00','Speaker 1',0,?2)", params![&project.id, &timestamp]).unwrap();
+        db.execute("INSERT INTO segment_speakers(project_id,segment_id,speaker_id,source,confidence,updated_at) VALUES(?1,?2,'speaker-test','moss_end_to_end',NULL,?3)", params![&project.id, &segment_id, &timestamp]).unwrap();
+
+        let task = create(&mut db, &project.id, "speaker_names", None).unwrap();
+        let claimed = claim(&mut db, "name-agent", Some(&task.id))
+            .unwrap()
+            .unwrap();
+        let serialized = claimed.2.to_string();
+        assert!(!serialized.contains(&project.media.source_path));
+        assert!(claimed.2["segments"][0].get("words").is_none());
+        assert_eq!(
+            claimed.2["speakerEvidence"]["associations"][0]["speakerId"],
+            "speaker-test"
+        );
+        let base = claimed.2["baseVersionId"].as_str().unwrap();
+        submit(
+            &mut db,
+            &task.id,
+            "name-agent",
+            json!({"baseVersionId":base,"speakers":[{"speakerId":"speaker-test","before":"Speaker 1","after":"李明","reason":"字幕中明确自我介绍","confidence":0.92}]}),
+        )
+        .unwrap();
+        let before: String = db
+            .query_row(
+                "SELECT label FROM speakers WHERE id='speaker-test'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(before, "Speaker 1");
+        patches::review_all(&mut db, &task.id, "apply").unwrap();
+        let after: String = db
+            .query_row(
+                "SELECT label FROM speakers WHERE id='speaker-test'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(after, "李明");
+    }
+
+    #[test]
     fn version_conflict_stages_three_way_diff_without_overwriting_human_edit() {
         let (_temp, mut db, project, segment_id) = fixture();
         let task = create(&mut db, &project.id, "polish", None).unwrap();
-        let claim = claim(&mut db, "test-agent").unwrap().unwrap();
+        let claim = claim(&mut db, "test-agent", None).unwrap().unwrap();
         let base = claim.2["baseVersionId"].as_str().unwrap();
         project::edit_segment(&mut db, &project.id, &segment_id, "人工修改".into()).unwrap();
         let submitted = submit(
@@ -577,7 +683,7 @@ mod tests {
     fn task_recovery_marks_expired_lease_interrupted_and_retries() {
         let (_temp, mut db, project, _segment_id) = fixture();
         let task = create(&mut db, &project.id, "summary", None).unwrap();
-        claim(&mut db, "test-agent").unwrap();
+        claim(&mut db, "test-agent", None).unwrap();
         db.execute(
             "UPDATE tasks SET lease_expires_at='2000-01-01T00:00:00+00:00' WHERE id=?1",
             [&task.id],
@@ -587,5 +693,54 @@ mod tests {
         let interrupted = find_task(&project::load(&db, &project.id).unwrap(), &task.id).unwrap();
         assert_eq!(interrupted.status, "interrupted");
         assert_eq!(retry(&mut db, &task.id).unwrap().status, "queued");
+    }
+
+    #[test]
+    fn targeted_claim_never_locks_another_queued_task() {
+        let (_temp, mut db, project, _segment_id) = fixture();
+        let first = create(&mut db, &project.id, "summary", None).unwrap();
+        let second = create(&mut db, &project.id, "proofread", None).unwrap();
+
+        let claimed = claim(&mut db, "external-agent", Some(&second.id))
+            .unwrap()
+            .unwrap();
+        assert_eq!(claimed.1.id, second.id);
+        assert_eq!(
+            find_task(&project::load(&db, &project.id).unwrap(), &first.id)
+                .unwrap()
+                .status,
+            "queued"
+        );
+
+        assert!(
+            claim(&mut db, "external-agent", Some("missing-task"))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            find_task(&project::load(&db, &project.id).unwrap(), &first.id)
+                .unwrap()
+                .status,
+            "queued"
+        );
+    }
+
+    #[test]
+    fn heartbeat_marks_a_claimed_task_running_and_records_activity() {
+        let (_temp, mut db, project, _segment_id) = fixture();
+        let task = create(&mut db, &project.id, "summary", None).unwrap();
+        claim(&mut db, "external-agent", Some(&task.id)).unwrap();
+
+        let running = heartbeat(
+            &mut db,
+            &task.id,
+            "external-agent",
+            0.05,
+            Some("开始处理任务"),
+        )
+        .unwrap();
+        assert_eq!(running.status, "running");
+        let loaded = find_task(&project::load(&db, &project.id).unwrap(), &task.id).unwrap();
+        assert_eq!(loaded.last_activity.unwrap().kind, "progress");
     }
 }

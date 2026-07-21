@@ -3,7 +3,7 @@ use crate::{
     model::{
         CanvasAspectRatio, CanvasFraming, CanvasSettings, CutRange, CutSuggestion, Edit,
         HistoryState, Lease, Media, MediaArtifacts, Project, Segment, SpeechInsights, Task,
-        TimelineMap, Transcript, Translation, TranslationSegment, Version, Word,
+        TaskActivity, TimelineMap, Transcript, Translation, TranslationSegment, Version, Word,
     },
     patches, speaker, speech, subtitle_quality, subtitle_style, timeline,
     util::{new_id, now},
@@ -122,7 +122,7 @@ pub fn load(db: &Connection, id: &str) -> Result<Project> {
             }),
         })
     })?.collect::<rusqlite::Result<Vec<_>>>()?;
-    let tasks = db.prepare("SELECT id,kind,language,status,created_at,completed_at,lease_worker,lease_id,lease_expires_at,base_version_id,progress,error_message,attempt_count,cancel_requested_at,workflow_id,instruction_locale FROM tasks WHERE project_id=?1 ORDER BY created_at")?.query_map([id],|row| { let worker:Option<String>=row.get(6)?; let status:String=row.get(3)?; let error_message:Option<String>=row.get(11)?; Ok(Task{id:row.get(0)?,kind:row.get(1)?,language:row.get(2)?,error_code:crate::model::background_error_code(&status,error_message.as_deref()),status,created_at:row.get(4)?,completed_at:row.get(5)?,lease:worker.map(|worker| Lease { worker, id:row.get(7).unwrap_or_default(), expires_at:row.get(8).unwrap_or_default()}),base_version_id:row.get(9)?,progress:row.get(10)?,error_message,attempt_count:row.get(12)?,cancel_requested_at:row.get(13)?,workflow_id:row.get(14)?,instruction_locale:row.get(15)?})})?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let tasks = db.prepare("SELECT id,kind,language,status,created_at,completed_at,lease_worker,lease_id,lease_expires_at,base_version_id,progress,error_message,attempt_count,cancel_requested_at,workflow_id,instruction_locale,(SELECT kind FROM task_events WHERE task_id=tasks.id ORDER BY id DESC LIMIT 1),(SELECT progress FROM task_events WHERE task_id=tasks.id ORDER BY id DESC LIMIT 1),(SELECT message FROM task_events WHERE task_id=tasks.id ORDER BY id DESC LIMIT 1),(SELECT created_at FROM task_events WHERE task_id=tasks.id ORDER BY id DESC LIMIT 1) FROM tasks WHERE project_id=?1 ORDER BY created_at")?.query_map([id],|row| { let worker:Option<String>=row.get(6)?; let status:String=row.get(3)?; let error_message:Option<String>=row.get(11)?; let activity_kind:Option<String>=row.get(16)?; Ok(Task{id:row.get(0)?,kind:row.get(1)?,language:row.get(2)?,error_code:crate::model::background_error_code(&status,error_message.as_deref()),status,created_at:row.get(4)?,completed_at:row.get(5)?,lease:worker.map(|worker| Lease { worker, id:row.get(7).unwrap_or_default(), expires_at:row.get(8).unwrap_or_default()}),last_activity:activity_kind.map(|kind| TaskActivity { kind, progress:row.get(17).unwrap_or(None), message:row.get(18).unwrap_or_default(), created_at:row.get(19).unwrap_or_default() }),base_version_id:row.get(9)?,progress:row.get(10)?,error_message,attempt_count:row.get(12)?,cancel_requested_at:row.get(13)?,workflow_id:row.get(14)?,instruction_locale:row.get(15)?})})?.collect::<rusqlite::Result<Vec<_>>>()?;
     let versions = db
         .prepare(
             "SELECT id,reason,created_at FROM versions WHERE project_id=?1 ORDER BY history_index",

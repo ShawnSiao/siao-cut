@@ -97,6 +97,65 @@ fn proposed_items(
     base_project: &Project,
     response: &Value,
 ) -> Result<Vec<ProposedItem>> {
+    if kind == "speaker_names" {
+        let raw_items = response
+            .get("speakers")
+            .and_then(Value::as_array)
+            .filter(|items| !items.is_empty())
+            .ok_or_else(|| anyhow!("人物姓名任务响应需要非空 speakers 数组"))?;
+        let mut seen = BTreeSet::new();
+        let mut proposed = Vec::with_capacity(raw_items.len());
+        for item in raw_items {
+            let speaker_id = item
+                .get("speakerId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("人物姓名建议缺少 speakerId"))?;
+            if !seen.insert(speaker_id.to_owned()) {
+                bail!("同一人物不能在一个任务中重复提交")
+            }
+            let current: String = db
+                .query_row(
+                    "SELECT label FROM speakers WHERE id=?1 AND project_id=?2",
+                    params![speaker_id, project_id],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .ok_or_else(|| anyhow!("项目中不存在人物：{speaker_id}"))?;
+            let before = item
+                .get("before")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("人物姓名建议缺少 before"))?;
+            if before != current {
+                bail!("patch_before_mismatch: 人物姓名建议与当前标签不一致")
+            }
+            let after = item
+                .get("after")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| anyhow!("人物姓名建议缺少非空 after"))?;
+            let confidence = item.get("confidence").and_then(Value::as_f64);
+            if confidence.is_some_and(|value| !value.is_finite() || !(0.0..=1.0).contains(&value)) {
+                bail!("补丁置信度必须在 0 到 1 之间")
+            }
+            proposed.push(ProposedItem {
+                segment_id: None,
+                target: format!("speaker_name:{speaker_id}"),
+                before_text: current.clone(),
+                after_text: after.to_owned(),
+                current_text: current,
+                reason: item
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or("文本证据支持的人物姓名建议")
+                    .to_owned(),
+                confidence,
+                status: "pending".into(),
+            });
+        }
+        return Ok(proposed);
+    }
     if kind == "summary" {
         let after = response
             .get("summary")
@@ -299,6 +358,14 @@ fn load_set(db: &Connection, set_id: &str) -> Result<AgentPatchSet> {
                 )
                 .optional()?
                 .unwrap_or_default(),
+            target if target.starts_with("speaker_name:") => db
+                .query_row(
+                    "SELECT label FROM speakers WHERE id=?1 AND project_id=?2",
+                    params![target.trim_start_matches("speaker_name:"), &project_id],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .unwrap_or_default(),
             _ => item.current_text.clone(),
         };
         if item.status == "pending" && current != item.current_text {
@@ -380,6 +447,16 @@ pub fn review_item(
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )?;
                 tx.execute("INSERT INTO edits(id,project_id,kind,status,segment_id,start_seconds,end_seconds,reason,created_at) VALUES(?1,?2,'semantic_cut','applied',?3,?4,?5,?6,?7)",params![new_id("e"),&project_id,segment_id,start,end,&reason,now()])?;
+            }
+            target if target.starts_with("speaker_name:") => {
+                let speaker_id = target.trim_start_matches("speaker_name:");
+                let changed = tx.execute(
+                    "UPDATE speakers SET label=?3 WHERE id=?1 AND project_id=?2",
+                    params![speaker_id, &project_id, &after],
+                )?;
+                if changed == 0 {
+                    bail!("项目中不存在人物：{speaker_id}")
+                }
             }
             _ => bail!("未知补丁目标：{target}"),
         }

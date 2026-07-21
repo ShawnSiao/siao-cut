@@ -312,7 +312,7 @@ pub fn cancel(db: &mut Connection, workflow_id: &str) -> Result<AutoWorkflow> {
 
 fn project_id_for_task(db: &Connection, task_id: &str) -> Option<String> {
     db.query_row(
-        "SELECT project_id FROM tasks WHERE id=?1 AND status IN ('queued','claimed','failed','interrupted')",
+        "SELECT project_id FROM tasks WHERE id=?1 AND status IN ('queued','claimed','running','failed','interrupted')",
         [task_id],
         |row| row.get(0),
     )
@@ -339,7 +339,7 @@ pub fn continue_workflow(db: &mut Connection, workflow_id: &str) -> Result<AutoW
                     row.get(0)
                 })?;
             match task_status.as_str() {
-                "queued" | "claimed" => return Ok(workflow),
+                "queued" | "claimed" | "running" => return Ok(workflow),
                 "failed" | "interrupted" => {
                     tasks::retry(db, task_id)?;
                     db.execute(
@@ -771,7 +771,7 @@ fn sync_agent_stage(db: &mut Connection, workflow: &AutoWorkflow) -> Result<bool
             row.get(0)
         })?;
     match status.as_str() {
-        "queued" | "claimed" | "failed" | "interrupted" => {
+        "queued" | "claimed" | "running" | "failed" | "interrupted" => {
             set_state(
                 db,
                 &workflow.id,
@@ -1161,7 +1161,7 @@ mod tests {
         let project = project::load(&db, &project_id).unwrap();
         assert!(project.translations.is_empty());
         assert!(project.edits.is_empty());
-        let claim = tasks::claim(&mut db, "auto-agent").unwrap().unwrap();
+        let claim = tasks::claim(&mut db, "auto-agent", None).unwrap().unwrap();
         let base = claim.2["baseVersionId"].as_str().unwrap();
         tasks::submit(
             &mut db,
