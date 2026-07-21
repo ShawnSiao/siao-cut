@@ -1,7 +1,8 @@
 param(
     [string]$SourceTestUrl = 'https://www.youtube.com/watch?v=HOfdboHvshg',
     [string]$FromVersion = '0.1.1',
-    [string]$ToVersion = '0.2.0'
+    [string]$ToVersion = '0.2.0',
+    [string]$FromInstallerPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -13,6 +14,27 @@ $probeDir = Join-Path $env:LOCALAPPDATA 'SiaoCut\retention-probes'
 $probe = Join-Path $probeDir "$token.txt"
 $configPath = Join-Path $tempRoot "siaocut-installer-test-$token.json"
 if ([version]$ToVersion -le [version]$FromVersion) { throw 'ToVersion must be higher than FromVersion.' }
+if (-not [string]::IsNullOrWhiteSpace($FromInstallerPath)) {
+    $FromInstallerPath = (Resolve-Path -LiteralPath $FromInstallerPath -ErrorAction Stop).Path
+}
+
+$testEnvironmentNames = @(
+    'SIAOCUT_HOME',
+    'SIAOCUT_DIRECT',
+    'SIAOCUT_FFMPEG',
+    'SIAOCUT_FFPROBE',
+    'SIAOCUT_WHISPER_CLI',
+    'SIAOCUT_WHISPER_VAD_MODEL',
+    'SIAOCUT_YTDLP',
+    'SIAOCUT_SERVICE_IDLE_MS'
+)
+$previousEnvironment = @{}
+foreach ($name in $testEnvironmentNames) {
+    $previousEnvironment[$name] = [pscustomobject]@{
+        exists = Test-Path -LiteralPath "Env:$name"
+        value = [Environment]::GetEnvironmentVariable($name, 'Process')
+    }
+}
 
 function Build-AcceptanceInstaller([string]$Version) {
     $config = @{
@@ -22,9 +44,12 @@ function Build-AcceptanceInstaller([string]$Version) {
     } | ConvertTo-Json -Depth 3
     [IO.File]::WriteAllText($configPath, $config, [Text.UTF8Encoding]::new($false))
     Push-Location (Join-Path $root 'apps\desktop')
-    & (Join-Path $root 'apps\desktop\node_modules\.bin\tauri.cmd') build --config $configPath | Out-Host
-    if ($LASTEXITCODE -ne 0) { throw "Acceptance installer build $Version failed." }
-    Pop-Location
+    try {
+        & (Join-Path $root 'apps\desktop\node_modules\.bin\tauri.cmd') build --config $configPath | Out-Host
+        if ($LASTEXITCODE -ne 0) { throw "Acceptance installer build $Version failed." }
+    } finally {
+        Pop-Location
+    }
     $installer = Get-ChildItem (Join-Path $root 'apps\desktop\src-tauri\target\release\bundle\nsis') -Filter 'SiaoCut Acceptance_*-setup.exe' | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
     if (-not $installer) { throw "Acceptance installer $Version was not produced." }
     return $installer.FullName
@@ -48,7 +73,8 @@ function Assert-DesktopStarts {
 }
 
 try {
-    $v1 = Build-AcceptanceInstaller $FromVersion
+    $usesHistoricalInstaller = -not [string]::IsNullOrWhiteSpace($FromInstallerPath)
+    $v1 = if ($usesHistoricalInstaller) { $FromInstallerPath } else { Build-AcceptanceInstaller $FromVersion }
     Install-Silent $v1
     Assert-DesktopStarts
     if (-not (Test-Path -LiteralPath (Join-Path $installDir 'siaocut-core.exe'))) { throw 'Core sidecar is missing after install.' }
@@ -125,9 +151,18 @@ try {
         sourceInspectionCreatedProject = $false
         installerSignature = (Get-AuthenticodeSignature -LiteralPath $v2).Status.ToString()
         testProduct = 'SiaoCut Acceptance'
+        upgradeEvidence = if ($usesHistoricalInstaller) { 'historical-acceptance-installer' } else { 'same-source-installer-contract' }
+        historicalBinaryUpgrade = $usesHistoricalInstaller
     } | ConvertTo-Json
 } finally {
-    if ((Get-Location).Path -ne $root) { Pop-Location -ErrorAction SilentlyContinue }
+    foreach ($name in $testEnvironmentNames) {
+        $previous = $previousEnvironment[$name]
+        if ($previous.exists) {
+            [Environment]::SetEnvironmentVariable($name, $previous.value, 'Process')
+        } else {
+            Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
+        }
+    }
     if (Test-Path -LiteralPath $configPath) { Remove-Item -LiteralPath $configPath -Force }
     if (Test-Path -LiteralPath $probe) { Remove-Item -LiteralPath $probe -Force }
     if ((Test-Path -LiteralPath $probeDir) -and -not (Get-ChildItem -LiteralPath $probeDir -Force | Select-Object -First 1)) { Remove-Item -LiteralPath $probeDir -Force }

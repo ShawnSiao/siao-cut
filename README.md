@@ -102,6 +102,7 @@ tools/                构建、发布和仓库检查工具
 - [0.3 语音智能](docs/voice-intelligence-0.3.md)
 - [英文创作者源码 Beta](docs/english-creator-beta.md)
 - [发布与更新](docs/release-updates.md)
+- [Windows 候选包验收记录](docs/windows-candidate-acceptance.md)
 - [仓库提交物规范](docs/repository-artifact-policy.md)
 - [贡献指南](CONTRIBUTING.md)
 - [第三方软件说明](THIRD_PARTY_NOTICES.md)
