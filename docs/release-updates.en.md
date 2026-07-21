@@ -75,7 +75,17 @@ The script succeeds only when:
 2. Tauri creates the matching `.sig`; and
 3. `latest.json` contains an HTTPS URL, inline Tauri signature, file size, and SHA-256.
 
-A tag-triggered workflow uploads the installer, matching `.sig`, and `latest.json` to a prerelease. It does not replace the stable Latest release or activate the client update path.
+A tag-triggered workflow generates an SPDX JSON SBOM and `SHA256SUMS`, creates provenance for the release files through GitHub OIDC, and creates an SBOM attestation for the installer. It uploads exactly seven files to the prerelease:
+
+1. the Windows NSIS installer;
+2. the matching Tauri `.sig`;
+3. `latest.json`;
+4. the SPDX JSON SBOM;
+5. `SHA256SUMS`;
+6. a Sigstore provenance bundle; and
+7. a Sigstore SBOM attestation bundle.
+
+The prerelease does not replace the stable Latest release or activate the client update path. The SBOM uses [Anchore SBOM Action](https://github.com/anchore/sbom-action), and attestations use [GitHub Artifact Attestations](https://github.com/actions/attest). Both actions are pinned to reviewed commits.
 
 After real download, upgrade, data-retention, and Windows 10/11 acceptance, promote the prerelease manually:
 
@@ -83,7 +93,7 @@ After real download, upgrade, data-retention, and Windows 10/11 acceptance, prom
 gh workflow run promote-windows-release.yml -f tag=v0.2.0
 ```
 
-The promotion workflow downloads the three files again and checks prerelease state, Authenticode, Tauri signature, size, SHA-256, version, and download URL before changing the release to Latest.
+The promotion workflow downloads all seven files and checks the exact asset set, SBOM and Sigstore bundle structure, `SHA256SUMS`, GitHub provenance, Authenticode, Tauri signature, size, version, and download URL before changing the release to Latest.
 
 ## Client behavior
 

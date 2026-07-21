@@ -7,6 +7,9 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
+  artifact-metadata: write
 
 concurrency:
   group: release-windows-${{ github.ref }}
@@ -78,17 +81,91 @@ jobs:
             Remove-Item -LiteralPath $privateKeyPath, $publicKeyPath -Force -ErrorAction SilentlyContinue
           }
 
+      - name: Locate release assets
+        id: assets
+        shell: pwsh
+        run: |
+          $bundle = (Resolve-Path apps/desktop/src-tauri/target/release/bundle/nsis).Path
+          $installers = @(Get-ChildItem -LiteralPath $bundle -Filter '*-setup.exe')
+          if ($installers.Count -ne 1) { throw "Expected exactly one signed NSIS installer." }
+          $installer = $installers[0]
+          $signature = Get-Item -LiteralPath ($installer.FullName + '.sig') -ErrorAction Stop
+          $manifest = Get-Item -LiteralPath (Join-Path $bundle 'latest.json') -ErrorAction Stop
+          $sbom = Join-Path $bundle "siaocut-$env:GITHUB_REF_NAME.sbom.spdx.json"
+          $checksums = Join-Path $bundle 'SHA256SUMS'
+          "bundle=$bundle" >> $env:GITHUB_OUTPUT
+          "installer=$($installer.FullName)" >> $env:GITHUB_OUTPUT
+          "signature=$($signature.FullName)" >> $env:GITHUB_OUTPUT
+          "manifest=$($manifest.FullName)" >> $env:GITHUB_OUTPUT
+          "sbom=$sbom" >> $env:GITHUB_OUTPUT
+          "checksums=$checksums" >> $env:GITHUB_OUTPUT
+
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@28d71544de8eaf1b958d335707167c5f783590ad # v0.22.2
+        with:
+          path: .
+          format: spdx-json
+          output-file: ${{ steps.assets.outputs.sbom }}
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Generate release checksums
+        shell: pwsh
+        run: |
+          $subjects = @(
+            '${{ steps.assets.outputs.installer }}',
+            '${{ steps.assets.outputs.signature }}',
+            '${{ steps.assets.outputs.manifest }}',
+            '${{ steps.assets.outputs.sbom }}'
+          )
+          $lines = foreach ($subject in $subjects) {
+            $file = Get-Item -LiteralPath $subject -ErrorAction Stop
+            $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash *$($file.Name)"
+          }
+          [IO.File]::WriteAllLines(
+            '${{ steps.assets.outputs.checksums }}',
+            $lines,
+            [Text.UTF8Encoding]::new($false)
+          )
+
+      - name: Attest release provenance
+        id: provenance
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        with:
+          subject-checksums: ${{ steps.assets.outputs.checksums }}
+
+      - name: Attest installer SBOM
+        id: sbom-attestation
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        with:
+          subject-path: ${{ steps.assets.outputs.installer }}
+          sbom-path: ${{ steps.assets.outputs.sbom }}
+
+      - name: Stage attestation bundles
+        id: attestations
+        shell: pwsh
+        run: |
+          $provenance = Join-Path '${{ steps.assets.outputs.bundle }}' 'provenance.sigstore.json'
+          $sbomAttestation = Join-Path '${{ steps.assets.outputs.bundle }}' 'sbom-attestation.sigstore.json'
+          Copy-Item -LiteralPath '${{ steps.provenance.outputs.bundle-path }}' -Destination $provenance
+          Copy-Item -LiteralPath '${{ steps.sbom-attestation.outputs.bundle-path }}' -Destination $sbomAttestation
+          "provenance=$provenance" >> $env:GITHUB_OUTPUT
+          "sbom=$sbomAttestation" >> $env:GITHUB_OUTPUT
+
       - name: Publish GitHub prerelease
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $bundle = Resolve-Path apps/desktop/src-tauri/target/release/bundle/nsis
-          $installer = Get-ChildItem $bundle -Filter '*-setup.exe' | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
-          if (-not $installer) { throw 'Signed NSIS installer was not produced.' }
-          $signature = Get-Item -LiteralPath ($installer.FullName + '.sig')
-          $manifest = Get-Item -LiteralPath (Join-Path $bundle 'latest.json')
-          gh release create $env:GITHUB_REF_NAME $installer.FullName $signature.FullName $manifest.FullName `
+          gh release create $env:GITHUB_REF_NAME `
+            '${{ steps.assets.outputs.installer }}' `
+            '${{ steps.assets.outputs.signature }}' `
+            '${{ steps.assets.outputs.manifest }}' `
+            '${{ steps.assets.outputs.sbom }}' `
+            '${{ steps.assets.outputs.checksums }}' `
+            '${{ steps.attestations.outputs.provenance }}' `
+            '${{ steps.attestations.outputs.sbom }}' `
             --verify-tag --prerelease --generate-notes --title "SiaoCut $env:GITHUB_REF_NAME"
 
       - name: Remove imported certificate
