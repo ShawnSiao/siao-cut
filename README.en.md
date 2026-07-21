@@ -102,6 +102,7 @@ tools/                Build, release, and repository-checking tools
 - [Voice intelligence 0.3](docs/voice-intelligence-0.3.md)
 - [English Creator Source Beta](docs/english-creator-beta.md)
 - [Release and updates](docs/release-updates.md)
+- [Windows candidate acceptance record](docs/windows-candidate-acceptance.en.md)
 - [Repository artifact policy](docs/repository-artifact-policy.md)
 - [Contributing](CONTRIBUTING.md)
 - [Third-party notices](THIRD_PARTY_NOTICES.md)
