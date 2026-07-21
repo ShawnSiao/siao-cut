@@ -711,7 +711,7 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
   if (command === "transcription" && subcommand === "jobs") return { apiVersion: "0.1", status: "ok", transcriptionJobs: Array.from(mockTranscriptionJobs.values()).reverse() };
   if (command === "transcription" && subcommand === "start") {
     const timestamp = new Date().toISOString();
-    const job: TranscriptionJob = { id: `transcription-${Date.now()}`, projectId: args[2], providerId: "moss_openai", endpoint: mockTranscriptionConfig.endpoint, modelId: mockTranscriptionConfig.modelId, language: valueAfter("--language"), prompt: valueAfter("--prompt"), hotwords: [], status: "completed", stage: "completed", resultRunId: "trun-demo", cancelRequestedAt: null, errorMessage: null, createdAt: timestamp, updatedAt: timestamp, completedAt: timestamp, attemptCount: 1 };
+    const job: TranscriptionJob = { id: `transcription-${Date.now()}`, projectId: args[2], providerId: "moss_openai", endpoint: mockTranscriptionConfig.endpoint, modelId: mockTranscriptionConfig.modelId, language: valueAfter("--language"), prompt: valueAfter("--prompt"), hotwords: [], status: "completed", stage: "completed", resultRunId: "trun-demo", baseVersionId: null, sourceSha256: "mock-source", inputAudioSha256: "mock-audio", candidate: null, cancelRequestedAt: null, errorMessage: null, createdAt: timestamp, updatedAt: timestamp, completedAt: timestamp, attemptCount: 1 };
     mockTranscriptionJobs.set(job.id, job);
     const track = analyzedSpeakerTrack();
     track.providerId = "moss_openai"; track.modelId = mockTranscriptionConfig.modelId; track.sourceKind = "end_to_end"; track.runtimeVersion = "openai-compatible-loopback-v1";

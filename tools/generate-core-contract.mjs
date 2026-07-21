@@ -21,6 +21,7 @@ if (result.status !== 0) {
 const contract = JSON.parse(result.stdout);
 const declarations = [
   ["backgroundJobStatuses", "BackgroundJobStatus", contract.statusSets.backgroundJob],
+  ["transcriptionJobStatuses", "TranscriptionJobStatus", contract.statusSets.transcriptionJob],
   ["taskStatuses", "TaskStatus", contract.statusSets.task],
   ["workflowStatuses", "WorkflowStatus", contract.statusSets.workflow],
   ["autoWorkflowStatuses", "AutoWorkflowStatus", contract.statusSets.autoWorkflow],

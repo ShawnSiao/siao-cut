@@ -1,5 +1,5 @@
-import type { AutoWorkflowStage, AutoWorkflowStatus, BackgroundJobStatus, CoreErrorCode, TaskStatus, WorkflowStatus } from "./generated/core-contract";
-export type { AutoWorkflowStage, AutoWorkflowStatus, BackgroundJobStatus, CoreErrorCode, KnownCoreErrorCode, TaskStatus, WorkflowStatus } from "./generated/core-contract";
+import type { AutoWorkflowStage, AutoWorkflowStatus, BackgroundJobStatus, CoreErrorCode, TaskStatus, TranscriptionJobStatus, WorkflowStatus } from "./generated/core-contract";
+export type { AutoWorkflowStage, AutoWorkflowStatus, BackgroundJobStatus, CoreErrorCode, KnownCoreErrorCode, TaskStatus, TranscriptionJobStatus, WorkflowStatus } from "./generated/core-contract";
 
 export type Segment = {
   id: string;
@@ -492,9 +492,12 @@ export type TranscriptionJob = {
   language: string | null;
   prompt: string | null;
   hotwords: string[];
-  status: BackgroundJobStatus;
+  status: TranscriptionJobStatus;
   stage: string;
   resultRunId: string | null;
+  baseVersionId: string | null;
+  sourceSha256: string | null;
+  inputAudioSha256: string | null;
   cancelRequestedAt: string | null;
   errorMessage: string | null;
   errorCode?: CoreErrorCode | null;
@@ -503,6 +506,24 @@ export type TranscriptionJob = {
   completedAt: string | null;
   workerPid?: number | null;
   attemptCount: number;
+  candidate: TranscriptionCandidateSummary | null;
+};
+
+export type TranscriptionCandidateSummary = {
+  runId: string;
+  segmentCount: number;
+  speakerCount: number;
+  durationSeconds: number | null;
+  warningCount: number;
+  baseVersionId: string | null;
+  currentVersionId: string | null;
+  canApply: boolean;
+};
+
+export type ProjectDeletionPreflight = {
+  projectId: string;
+  deletable: boolean;
+  blockers: Array<{ kind: string; id: string; status: string }>;
 };
 
 export type TranscriptionReviewItem = {
@@ -650,6 +671,7 @@ export type CoreEnvelope = {
   providerHealth?: TranscriptionProviderHealth;
   transcriptionJob?: TranscriptionJob | null;
   transcriptionJobs?: TranscriptionJob[];
+  deletionPreflight?: ProjectDeletionPreflight;
   reviewItem?: TranscriptionReviewItem;
   reviewItems?: TranscriptionReviewItem[];
   subtitleQuality?: SubtitleQualityReport;

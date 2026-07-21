@@ -11,6 +11,18 @@ pub const BACKGROUND_JOB_STATUSES: &[&str] = &[
     "completed",
 ];
 
+pub const TRANSCRIPTION_JOB_STATUSES: &[&str] = &[
+    "queued",
+    "running",
+    "finalizing",
+    "awaiting_apply",
+    "cancelled",
+    "interrupted",
+    "failed",
+    "completed",
+    "discarded",
+];
+
 pub const TASK_STATUSES: &[&str] = &[
     "queued",
     "claimed",
@@ -110,6 +122,17 @@ pub const CORE_ERROR_CODES: &[&str] = &[
     "transcription_timing_invalid",
     "transcription_import_failed",
     "transcription_cancelled",
+    "transcription_interrupted",
+    "transcription_active_job_exists",
+    "transcription_job_state_invalid",
+    "transcription_project_changed",
+    "transcription_source_changed",
+    "transcription_result_not_ready",
+    "transcription_apply_confirmation_required",
+    "transcription_apply_version_mismatch",
+    "transcription_export_format_invalid",
+    "transcription_export_blocked",
+    "transcription_export_warning_confirmation_required",
     "source_url_invalid",
     "source_https_required",
     "source_credentials_not_allowed",
@@ -183,6 +206,7 @@ pub fn contract() -> Value {
     json!({
         "statusSets": {
             "backgroundJob": BACKGROUND_JOB_STATUSES,
+            "transcriptionJob": TRANSCRIPTION_JOB_STATUSES,
             "task": TASK_STATUSES,
             "workflow": WORKFLOW_STATUSES,
             "autoWorkflow": AUTO_WORKFLOW_STATUSES,
@@ -223,12 +247,19 @@ mod tests {
             error_code(&anyhow!("mentions disk_space_low in prose")),
             "invalid_request"
         );
+        assert_eq!(
+            error_code(&anyhow!(
+                "transcription_export_blocked: unresolved review item"
+            )),
+            "transcription_export_blocked"
+        );
     }
 
     #[test]
     fn contract_status_sets_are_unique() {
         for statuses in [
             BACKGROUND_JOB_STATUSES,
+            TRANSCRIPTION_JOB_STATUSES,
             TASK_STATUSES,
             WORKFLOW_STATUSES,
             AUTO_WORKFLOW_STATUSES,

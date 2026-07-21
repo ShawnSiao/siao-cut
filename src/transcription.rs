@@ -6,10 +6,6 @@ use crate::{
     util::{hidden_command, new_id, now},
 };
 use anyhow::{Context, Result, anyhow, bail};
-use reqwest::{
-    Url,
-    blocking::{Client, multipart},
-};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -22,9 +18,24 @@ use std::{
     time::Duration,
 };
 
+mod moss;
+mod provider;
+
+use moss::MossProvider;
+use provider::{ProviderRequest, TranscriptionProvider};
+
 pub const PROVIDER_ID: &str = "moss_openai";
 pub const DEFAULT_ENDPOINT: &str = "http://127.0.0.1:8000";
 pub const DEFAULT_MODEL_ID: &str = "OpenMOSS-Team/MOSS-Transcribe-Diarize";
+
+static MOSS_PROVIDER: MossProvider = MossProvider;
+
+fn provider_for(provider_id: &str) -> Result<&'static dyn TranscriptionProvider> {
+    if provider_id == MOSS_PROVIDER.provider_id() {
+        return Ok(&MOSS_PROVIDER);
+    }
+    bail!("transcription_provider_invalid: 不支持的转写提供方：{provider_id}")
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -102,14 +113,6 @@ pub struct ReviewItem {
     pub resolved_at: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-struct ParsedSegment {
-    start: f64,
-    end: f64,
-    speaker: String,
-    text: String,
-}
-
 #[derive(Clone, Debug)]
 struct ImportedSegment {
     id: String,
@@ -150,7 +153,7 @@ pub fn config(db: &Connection) -> Result<ProviderConfig> {
 }
 
 pub fn configure(db: &Connection, endpoint: &str, model_id: &str) -> Result<ProviderConfig> {
-    let endpoint = validate_loopback_endpoint(endpoint)?;
+    let endpoint = provider_for(PROVIDER_ID)?.validate_endpoint(endpoint)?;
     let model_id = model_id.trim();
     if model_id.is_empty() || model_id.len() > 200 {
         bail!("transcription_provider_invalid: 模型标识不能为空或超过 200 个字符")
@@ -163,67 +166,12 @@ pub fn configure(db: &Connection, endpoint: &str, model_id: &str) -> Result<Prov
 }
 
 pub fn validate_loopback_endpoint(endpoint: &str) -> Result<String> {
-    let mut url =
-        Url::parse(endpoint.trim()).context("transcription_provider_invalid: MOSS 服务地址无效")?;
-    if url.scheme() != "http"
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.query().is_some()
-        || url.fragment().is_some()
-    {
-        bail!("transcription_provider_invalid: 仅允许无凭据、无查询参数的本机 HTTP 地址")
-    }
-    let host = url
-        .host_str()
-        .unwrap_or_default()
-        .trim_matches(['[', ']'])
-        .to_ascii_lowercase();
-    if !matches!(host.as_str(), "127.0.0.1" | "localhost" | "::1") {
-        bail!("transcription_provider_invalid: MOSS 首版只允许连接本机回环地址")
-    }
-    if !matches!(url.path(), "" | "/") {
-        bail!("transcription_provider_invalid: 服务地址不能包含 API 路径")
-    }
-    url.set_path("");
-    Ok(url.as_str().trim_end_matches('/').to_owned())
+    MOSS_PROVIDER.validate_endpoint(endpoint)
 }
 
 pub fn health(db: &Connection) -> Result<ProviderHealth> {
     let config = config(db)?;
-    let endpoint = validate_loopback_endpoint(&config.endpoint)?;
-    let url = format!("{endpoint}/v1/models");
-    let checked_at = now();
-    let result = Client::builder()
-        .timeout(Duration::from_secs(3))
-        .build()?
-        .get(url)
-        .send();
-    Ok(match result {
-        Ok(response) if response.status().is_success() => ProviderHealth {
-            provider_id: config.provider_id,
-            endpoint,
-            model_id: config.model_id,
-            state: "healthy".into(),
-            detail: "本机 MOSS 服务可用。".into(),
-            checked_at,
-        },
-        Ok(response) => ProviderHealth {
-            provider_id: config.provider_id,
-            endpoint,
-            model_id: config.model_id,
-            state: "unavailable".into(),
-            detail: format!("服务返回 HTTP {}。", response.status()),
-            checked_at,
-        },
-        Err(error) => ProviderHealth {
-            provider_id: config.provider_id,
-            endpoint,
-            model_id: config.model_id,
-            state: "unavailable".into(),
-            detail: format!("无法连接本机 MOSS 服务：{error}"),
-            checked_at,
-        },
-    })
+    provider_for(&config.provider_id)?.health(&config)
 }
 
 pub fn start(
@@ -503,7 +451,7 @@ pub fn apply_candidate(
     let (run_id, raw_path, result_sha256) = prepared_run(db, job_id)?
         .ok_or_else(|| anyhow!("transcription_result_not_ready: 未找到已准备的转写结果"))?;
     let raw = read_verified_result(&raw_path, &result_sha256)?;
-    let imported = parsed_segments(&raw)?;
+    let imported = parsed_segments(&job.provider_id, &raw)?;
     let project_value = project::load(db, &job.project_id)?;
     finalize_result(
         db,
@@ -688,7 +636,7 @@ fn execute_job(db: &mut Connection, job_id: &str) -> Result<String> {
     if let Some((run_id, raw_path, result_sha256)) = prepared_run(db, job_id)? {
         mark_finalizing(db, job_id)?;
         let raw = read_verified_result(&raw_path, &result_sha256)?;
-        let imported = parsed_segments(&raw)?;
+        let imported = parsed_segments(&job.provider_id, &raw)?;
         job = load(db, job_id)?;
         finalize_result(
             db,
@@ -706,7 +654,7 @@ fn execute_job(db: &mut Connection, job_id: &str) -> Result<String> {
     let raw_path = result_path(job_id);
     if raw_path.is_file()
         && let Ok(raw) = fs::read_to_string(&raw_path)
-        && let Ok(imported) = parsed_segments(&raw)
+        && let Ok(imported) = parsed_segments(&job.provider_id, &raw)
     {
         mark_finalizing(db, job_id)?;
         job = load(db, job_id)?;
@@ -745,7 +693,7 @@ fn execute_job(db: &mut Connection, job_id: &str) -> Result<String> {
     let raw = request_moss(&job, &wav_path)?;
     ensure_not_cancelled(db, job_id)?;
     mark_finalizing(db, job_id)?;
-    let imported = parsed_segments(&raw)?;
+    let imported = parsed_segments(&job.provider_id, &raw)?;
     atomic_write_result(&raw_path, raw.as_bytes())?;
     job = load(db, job_id)?;
     let run_id = prepare_result(db, &job, &raw_path, &raw, &imported, None)?;
@@ -762,8 +710,9 @@ fn execute_job(db: &mut Connection, job_id: &str) -> Result<String> {
     Ok(run_id)
 }
 
-fn parsed_segments(raw: &str) -> Result<Vec<ImportedSegment>> {
-    Ok(parse_response(raw)?
+fn parsed_segments(provider_id: &str, raw: &str) -> Result<Vec<ImportedSegment>> {
+    Ok(provider_for(provider_id)?
+        .parse(raw)?
         .into_iter()
         .map(|segment| ImportedSegment {
             id: new_id("s"),
@@ -773,6 +722,33 @@ fn parsed_segments(raw: &str) -> Result<Vec<ImportedSegment>> {
             text: segment.text,
         })
         .collect())
+}
+
+fn validate_imported(segments: &[ImportedSegment], duration: Option<f64>) -> Result<()> {
+    if segments.is_empty() {
+        bail!("transcription_response_invalid: 转写提供方没有返回字幕分段")
+    }
+    let mut previous_start = -1.0;
+    for segment in segments {
+        if !segment.start.is_finite()
+            || !segment.end.is_finite()
+            || segment.start < 0.0
+            || segment.end <= segment.start
+        {
+            bail!("transcription_timing_invalid: 转写提供方返回了无效时间范围")
+        }
+        if segment.start + 0.001 < previous_start {
+            bail!("transcription_timing_invalid: 转写分段未按时间排序")
+        }
+        if duration.is_some_and(|duration| segment.end > duration + 2.0) {
+            bail!("transcription_timing_invalid: 转写分段超出媒体时长")
+        }
+        if segment.text.trim().is_empty() {
+            bail!("transcription_response_invalid: 转写提供方返回了空字幕段")
+        }
+        previous_start = segment.start;
+    }
+    Ok(())
 }
 
 fn result_path(job_id: &str) -> PathBuf {
@@ -864,194 +840,14 @@ fn extract_audio(source: &Path, wav: &Path) -> Result<()> {
 }
 
 fn request_moss(job: &TranscriptionJob, wav: &Path) -> Result<String> {
-    validate_loopback_endpoint(&job.endpoint)?;
-    let mut prompt = job.prompt.clone();
-    if !job.hotwords.is_empty() {
-        let suffix = format!("热词提示：{}", job.hotwords.join(", "));
-        prompt = Some(match prompt {
-            Some(value) => format!("{value}\n{suffix}"),
-            None => suffix,
-        });
-    }
-    let mut form = multipart::Form::new()
-        .text("model", job.model_id.clone())
-        .text("response_format", "verbose_json")
-        .text("temperature", "0")
-        .text("max_new_tokens", "65536")
-        .file("file", wav)
-        .context("transcription_import_failed: 无法读取待转写音频")?;
-    if let Some(language) = &job.language {
-        form = form.text("language", language.clone());
-    }
-    if let Some(prompt) = prompt {
-        form = form.text("prompt", prompt);
-    }
-    let response = Client::builder()
-        .timeout(Duration::from_secs(2 * 60 * 60))
-        .build()?
-        .post(format!(
-            "{}/v1/audio/transcriptions",
-            job.endpoint.trim_end_matches('/')
-        ))
-        .multipart(form)
-        .send()
-        .context("transcription_provider_unavailable: MOSS 请求失败")?;
-    let status = response.status();
-    let body = response
-        .text()
-        .context("transcription_response_invalid: 无法读取 MOSS 响应")?;
-    if !status.is_success() {
-        let detail = body.chars().take(500).collect::<String>();
-        bail!("transcription_provider_unavailable: MOSS 返回 HTTP {status}：{detail}")
-    }
-    Ok(body)
-}
-
-fn parse_response(raw: &str) -> Result<Vec<ParsedSegment>> {
-    let payload: Value = serde_json::from_str(raw)
-        .context("transcription_response_invalid: MOSS 未返回有效 JSON")?;
-    if let Some(text) = payload.get("text").and_then(Value::as_str)
-        && let Ok(segments) = parse_compact_transcript(text)
-        && !segments.is_empty()
-    {
-        return Ok(segments);
-    }
-    let entries = payload
-        .get("segments")
-        .and_then(Value::as_array)
-        .ok_or_else(|| {
-            anyhow!("transcription_response_invalid: MOSS 响应缺少可解析的 text 或 segments")
-        })?;
-    let mut result = Vec::new();
-    for entry in entries {
-        let start = entry
-            .get("start")
-            .and_then(Value::as_f64)
-            .ok_or_else(|| anyhow!("transcription_response_invalid: 分段缺少 start"))?;
-        let end = entry
-            .get("end")
-            .and_then(Value::as_f64)
-            .ok_or_else(|| anyhow!("transcription_response_invalid: 分段缺少 end"))?;
-        let mut text = entry
-            .get("text")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .trim()
-            .to_owned();
-        let mut speaker = ["speaker", "speaker_id", "speaker_label"]
-            .into_iter()
-            .find_map(|key| entry.get(key).and_then(Value::as_str))
-            .map(normalize_speaker);
-        if speaker.is_none()
-            && text.starts_with("[S")
-            && let Some(end_index) = text.find(']')
-        {
-            speaker = Some(normalize_speaker(&text[1..end_index]));
-            text = text[end_index + 1..].trim().to_owned();
-        }
-        let speaker =
-            speaker.ok_or_else(|| anyhow!("transcription_response_invalid: 分段缺少说话人标签"))?;
-        result.push(ParsedSegment {
-            start,
-            end,
-            speaker,
-            text,
-        });
-    }
-    validate_parsed(&result, None)?;
-    Ok(result)
-}
-
-fn parse_compact_transcript(input: &str) -> Result<Vec<ParsedSegment>> {
-    let mut cursor = 0usize;
-    let mut result = Vec::new();
-    while let Some(start_open_rel) = input[cursor..].find('[') {
-        let start_open = cursor + start_open_rel;
-        let (start_token, after_start) = bracket_token(input, start_open)?;
-        let start = start_token
-            .trim()
-            .parse::<f64>()
-            .context("transcription_response_invalid: 起始时间戳无效")?;
-        let speaker_open = input[after_start..]
-            .find('[')
-            .map(|value| after_start + value)
-            .ok_or_else(|| anyhow!("transcription_response_invalid: 缺少说话人标签"))?;
-        if !input[after_start..speaker_open].trim().is_empty() {
-            bail!("transcription_response_invalid: 时间戳与说话人标签之间存在未知内容")
-        }
-        let (speaker_token, text_start) = bracket_token(input, speaker_open)?;
-        let speaker = normalize_speaker(speaker_token);
-        if !speaker.starts_with('S') || speaker.len() < 2 {
-            bail!("transcription_response_invalid: 说话人标签无效")
-        }
-        let mut search = text_start;
-        let (end, text_end, after_end) = loop {
-            let end_open = input[search..]
-                .find('[')
-                .map(|value| search + value)
-                .ok_or_else(|| anyhow!("transcription_response_invalid: 分段缺少结束时间戳"))?;
-            let (token, after) = bracket_token(input, end_open)?;
-            if let Ok(value) = token.trim().parse::<f64>() {
-                break (value, end_open, after);
-            }
-            search = after;
-        };
-        result.push(ParsedSegment {
-            start,
-            end,
-            speaker,
-            text: input[text_start..text_end].trim().to_owned(),
-        });
-        cursor = after_end;
-    }
-    validate_parsed(&result, None)?;
-    Ok(result)
-}
-
-fn bracket_token(input: &str, open: usize) -> Result<(&str, usize)> {
-    if input.as_bytes().get(open) != Some(&b'[') {
-        bail!("transcription_response_invalid: 标记格式无效")
-    }
-    let close = input[open + 1..]
-        .find(']')
-        .map(|value| open + 1 + value)
-        .ok_or_else(|| anyhow!("transcription_response_invalid: 标记缺少右括号"))?;
-    Ok((&input[open + 1..close], close + 1))
-}
-
-fn normalize_speaker(value: &str) -> String {
-    let value = value.trim().trim_matches(['[', ']']).to_ascii_uppercase();
-    if let Some(number) = value.strip_prefix("SPEAKER_") {
-        return format!("S{:02}", number.parse::<u32>().unwrap_or_default() + 1);
-    }
-    value
-}
-
-fn validate_parsed(segments: &[ParsedSegment], duration: Option<f64>) -> Result<()> {
-    if segments.is_empty() {
-        bail!("transcription_response_invalid: MOSS 没有返回转写分段")
-    }
-    let mut previous_start = -1.0;
-    for segment in segments {
-        if !segment.start.is_finite()
-            || !segment.end.is_finite()
-            || segment.start < 0.0
-            || segment.end <= segment.start
-        {
-            bail!("transcription_timing_invalid: MOSS 返回了无效时间范围")
-        }
-        if segment.start + 0.001 < previous_start {
-            bail!("transcription_timing_invalid: MOSS 分段未按时间排序")
-        }
-        if duration.is_some_and(|duration| segment.end > duration + 2.0) {
-            bail!("transcription_timing_invalid: MOSS 分段超出媒体时长")
-        }
-        if segment.text.trim().is_empty() {
-            bail!("transcription_response_invalid: MOSS 返回了空字幕段")
-        }
-        previous_start = segment.start;
-    }
-    Ok(())
+    provider_for(&job.provider_id)?.transcribe(ProviderRequest {
+        endpoint: &job.endpoint,
+        model_id: &job.model_id,
+        language: job.language.as_deref(),
+        prompt: job.prompt.as_deref(),
+        hotwords: &job.hotwords,
+        audio_path: wav,
+    })
 }
 
 #[cfg(test)]
@@ -1086,16 +882,7 @@ fn prepare_result(
     segments: &[ImportedSegment],
     requested_run_id: Option<&str>,
 ) -> Result<String> {
-    let parsed = segments
-        .iter()
-        .map(|segment| ParsedSegment {
-            start: segment.start,
-            end: segment.end,
-            speaker: segment.speaker.clone(),
-            text: segment.text.clone(),
-        })
-        .collect::<Vec<_>>();
-    validate_parsed(&parsed, None)?;
+    validate_imported(segments, None)?;
     let generated_at = now();
     let track = build_track(segments, &job.model_id, &generated_at);
     let run_id = requested_run_id
@@ -1178,16 +965,7 @@ fn finalize_result(
     segments: &[ImportedSegment],
     expected_current_version: Option<&str>,
 ) -> Result<FinalizationOutcome> {
-    let parsed = segments
-        .iter()
-        .map(|segment| ParsedSegment {
-            start: segment.start,
-            end: segment.end,
-            speaker: segment.speaker.clone(),
-            text: segment.text.clone(),
-        })
-        .collect::<Vec<_>>();
-    validate_parsed(&parsed, project_value.media.duration_seconds)?;
+    validate_imported(segments, project_value.media.duration_seconds)?;
     let source_sha256 = hash_file(Path::new(&project_value.media.source_path))?;
     if job.source_sha256.as_deref() != Some(source_sha256.as_str())
         || source_sha256 != project_value.media.sha256
@@ -1647,7 +1425,7 @@ mod tests {
     #[test]
     fn parses_official_compact_transcript_shape() {
         let value = r#"{"text":"[0.48][S01]Welcome everyone[1.66][12.26][S02]The pipeline is ready[13.81]"}"#;
-        let segments = parse_response(value).unwrap();
+        let segments = MOSS_PROVIDER.parse(value).unwrap();
         assert_eq!(segments.len(), 2);
         assert_eq!(segments[0].speaker, "S01");
         assert_eq!(segments[1].start, 12.26);
@@ -1861,7 +1639,7 @@ mod tests {
         let raw = r#"{"segments":[{"start":0.0,"end":1.0,"speaker":"S01","text":"candidate"}]}"#;
         let raw_path = temp.path().join("job-discard.json");
         fs::write(&raw_path, raw).unwrap();
-        let segments = parsed_segments(raw).unwrap();
+        let segments = parsed_segments(PROVIDER_ID, raw).unwrap();
         import_result(
             &mut database,
             &job,
@@ -1932,7 +1710,7 @@ mod tests {
         let raw = r#"{"segments":[{"start":0.0,"end":1.0,"speaker":"S01","text":"recovered"}]}"#;
         let raw_path = temp.path().join("job-recover.json");
         fs::write(&raw_path, raw).unwrap();
-        let segments = parsed_segments(raw).unwrap();
+        let segments = parsed_segments(PROVIDER_ID, raw).unwrap();
         let job = load(&database, "job-recover").unwrap();
         let run_id = prepare_result(
             &mut database,
@@ -1951,7 +1729,7 @@ mod tests {
         assert_eq!(prepared_id, run_id);
         mark_finalizing(&database, "job-recover").unwrap();
         let recovered_raw = read_verified_result(&prepared_path, &expected_hash).unwrap();
-        let recovered_segments = parsed_segments(&recovered_raw).unwrap();
+        let recovered_segments = parsed_segments(PROVIDER_ID, &recovered_raw).unwrap();
         let recovered_job = load(&database, "job-recover").unwrap();
         finalize_result(
             &mut database,
