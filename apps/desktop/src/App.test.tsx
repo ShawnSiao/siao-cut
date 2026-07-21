@@ -93,7 +93,7 @@ describe("SiaoCut review workbench", () => {
     render(<App />);
     const more = await screen.findByRole("button", { name: "更多命令" });
     fireEvent.click(more);
-    expect(screen.getByRole("menu")).toBeInTheDocument();
+    expect(await screen.findByRole("menu")).toBeInTheDocument();
     fireEvent.pointerDown(document.body);
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
 
@@ -207,8 +207,9 @@ describe("SiaoCut review workbench", () => {
     await screen.findByRole("heading", { name: "发布口播 · 草稿" });
 
     fireEvent.click(screen.getByRole("button", { name: "删除项目 第二个本地项目" }));
-    const dialog = screen.getByRole("dialog", { name: "删除项目" });
+    const dialog = await screen.findByRole("dialog", { name: "删除项目" });
     expect(within(dialog).getByText(/原始音视频文件不会删除或修改/)).toBeInTheDocument();
+    await waitFor(() => expect(within(dialog).getByRole("button", { name: "确认删除" })).toBeEnabled());
     fireEvent.click(within(dialog).getByRole("button", { name: "确认删除" }));
 
     await waitFor(() => expect(screen.queryByRole("button", { name: /第二个本地项目/ })).not.toBeInTheDocument());
@@ -220,9 +221,9 @@ describe("SiaoCut review workbench", () => {
     await screen.findByRole("heading", { name: "发布口播 · 草稿" });
 
     fireEvent.click(screen.getByRole("button", { name: "删除项目 发布口播 · 草稿" }));
-    const dialog = screen.getByRole("dialog", { name: "删除项目" });
+    const dialog = await screen.findByRole("dialog", { name: "删除项目" });
 
-    expect(within(dialog).getByRole("alert")).toHaveTextContent("该项目有 1 项正在运行或等待 Agent 处理的任务");
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("仍有 Agent 任务正在运行或等待处理");
     expect(within(dialog).getByRole("button", { name: "确认删除" })).toBeDisabled();
     expect(screen.queryByText(/project_busy/)).not.toBeInTheDocument();
   });
@@ -769,6 +770,32 @@ describe("SiaoCut review workbench", () => {
     expect(exportButton).toBeDisabled();
     fireEvent.click(within(exportPanel).getByRole("checkbox", { name: /确认带着 1 个未处理警告/ }));
     expect(exportButton).toBeEnabled();
+  });
+
+  it("preserves a conflicting MOSS result until replacement is explicitly confirmed", async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "新建项目" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "转写模式" }), { target: { value: "multispeaker" } });
+    fireEvent.click(screen.getByText("高级实验项：Prompt 与热词"));
+    fireEvent.change(screen.getByRole("textbox", { name: "自定义 Prompt" }), { target: { value: "simulate-conflict" } });
+
+    const start = screen.getByRole("button", { name: "开始多人转写" });
+    await waitFor(() => expect(start).toBeEnabled());
+    fireEvent.click(start);
+
+    expect(await screen.findByText("候选结果等待确认")).toBeInTheDocument();
+    expect(screen.getByText("18 段 · 3 位说话人 · 2 项提醒")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "查看影响" }));
+    const dialog = await screen.findByRole("dialog", { name: "确认多人转写候选结果" });
+    const apply = within(dialog).getByRole("button", { name: "应用并替换" });
+    expect(apply).toBeDisabled();
+    fireEvent.click(within(dialog).getByRole("checkbox", { name: /确认用候选结果替换/ }));
+    expect(apply).toBeEnabled();
+    fireEvent.click(apply);
+
+    expect(await screen.findByText("候选结果已应用为可撤销的新版本。")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("这是经过明确确认后应用的多人转写候选结果。")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "撤销" })).toBeEnabled();
   });
 
   it("shows MOSS loopback configuration and health in runtime settings", async () => {

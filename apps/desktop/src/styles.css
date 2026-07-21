@@ -74,7 +74,8 @@
 h1, h2, p { margin-top: 0; }
 h1 { margin: 5px 0 0; font-size: 22px; letter-spacing: -.035em; }
 h2 { margin: 4px 0 0; font-size: 15px; letter-spacing: -.02em; }
-.command-bar { min-width: 0; display: flex; grid-area: commands; align-items: center; justify-content: flex-end; gap: 8px; }
+.command-bar { width: 100%; min-width: 0; display: grid; grid-area: commands; grid-template-columns: minmax(0, 1fr); align-items: center; justify-content: end; gap: 8px; }
+.command-primary, .command-secondary { min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
 .command-history { display: flex; align-items: center; gap: 2px; }
 .command-history .ui-icon-button { width: 30px; min-height: 30px; }
 .command-select { display: inline-flex; }
@@ -608,7 +609,10 @@ h2 { margin: 4px 0 0; font-size: 15px; letter-spacing: -.02em; }
   .context-panel > .eyebrow, .context-panel > h2, .context-panel > dl { grid-column: 1; }
   .context-panel > .speech-insights, .context-panel > .audio-quality, .context-panel > .speaker-track-panel, .context-panel > .word-evidence, .context-panel > .version-block { grid-column: 2; }
 }
-@media (min-width: 1440px) { .topbar { grid-template-columns: minmax(180px, 1fr) auto; grid-template-areas: "heading commands"; } }
+@media (min-width: 1440px) {
+  .topbar { grid-template-columns: minmax(180px, 1fr) auto; grid-template-areas: "heading commands"; }
+  .command-bar { width: auto; grid-template-columns: auto auto; }
+}
 @media (max-width: 1599px) {
   .export-panel { position: fixed; top: 0; right: 0; width: 360px; }
 }
@@ -726,6 +730,20 @@ select:focus-visible { border-color: var(--focus-ring) !important; box-shadow: 0
 .transcription-job-bar small { overflow: hidden; color: var(--text-muted); text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .transcription-job-bar button { min-height: 30px; border: 1px solid var(--border-strong); border-radius: var(--radius-control); background: var(--bg-control); color: var(--text-secondary); padding: 5px 9px; }
 .transcription-job-bar.failed, .transcription-job-bar.interrupted { background: color-mix(in srgb, var(--danger-soft) 42%, var(--bg-panel)); }
+.transcription-job-bar.awaiting_apply { background: color-mix(in srgb, var(--warning-soft) 48%, var(--bg-panel)); }
+.transcription-job-actions { display: flex; justify-content: flex-end; gap: 7px; }
+.transcription-job-actions button { white-space: nowrap; }
+.transcription-job-actions button.primary { border-color: color-mix(in srgb, var(--warning) 55%, var(--border-strong)); color: var(--text-primary); }
+.transcription-candidate-dialog { position: relative; }
+.candidate-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 18px 0; }
+.candidate-summary div { display: grid; gap: 5px; border: 1px solid var(--border-subtle); border-radius: var(--radius-control); background: var(--bg-control); padding: 10px; }
+.candidate-summary dt { color: var(--text-muted); font-size: 12px; }
+.candidate-summary dd { margin: 0; color: var(--text-primary); font-size: 14px; font-weight: 650; }
+.candidate-version-warning, .confirm-checking { display: flex; align-items: flex-start; gap: 8px; border-radius: var(--radius-control); padding: 10px; line-height: 1.45; font-size: 12px; }
+.candidate-version-warning { border: 1px solid color-mix(in srgb, var(--warning) 38%, var(--border-subtle)); background: color-mix(in srgb, var(--warning) 9%, var(--bg-control)); color: var(--warning); }
+.candidate-version-warning svg, .confirm-checking svg { flex: 0 0 auto; margin-top: 1px; }
+.candidate-actions { justify-content: space-between; }
+.confirm-checking { color: var(--text-secondary); }
 .moss-provider-settings { display: grid; gap: 12px; border: 1px solid var(--border-subtle); border-radius: var(--radius-panel); background: var(--bg-panel-raised); padding: 16px; }
 .moss-provider-fields { display: grid; grid-template-columns: minmax(240px, 1fr) minmax(280px, 1.2fr); gap: 10px; }
 .moss-provider-fields label { display: grid; gap: 6px; color: var(--text-secondary); font-size: 12px; }
@@ -754,4 +772,4 @@ select:focus-visible { border-color: var(--focus-ring) !important; box-shadow: 0
 .moss-review-list > header small { min-width: 22px; border-radius: 999px; background: var(--warning-soft); color: var(--warning); padding: 2px 6px; text-align: center; }
 .moss-review.warning { border-color: color-mix(in srgb, var(--warning) 45%, var(--border-subtle)); }
 .review-tag.info { color: var(--info); }
-@media (max-width: 900px) { .moss-provider-fields { grid-template-columns: 1fr; } .transcription-job-bar { grid-template-columns: auto 1fr auto; } .transcription-job-bar .job-failure-details { grid-column: 2 / -1; } }
+@media (max-width: 900px) { .moss-provider-fields { grid-template-columns: 1fr; } .transcription-job-bar { grid-template-columns: auto 1fr auto; } .transcription-job-bar .job-failure-details { grid-column: 2 / -1; } .candidate-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

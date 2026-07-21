@@ -1,8 +1,8 @@
 import { changeUiLocale, getUiLocale, tr, type UiLocale } from "./i18n";
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type SyntheticEvent } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type SyntheticEvent } from "react";
 import { Activity, Bot, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Clock3, Copy, Cpu, Database, Download, FileVideo2, FileText, Film, FolderOpen, FolderPlus, HardDrive, History, Link2, LoaderCircle, Play, RefreshCw, RotateCcw, Search, Scissors, Settings2, ShieldCheck, Sparkles, Trash2, Undo2, Redo2, Headphones, ListChecks, MoreHorizontal, MoveHorizontal, Users, X, } from "lucide-react";
 import { authorizeArtifact, authorizeMedia, checkForUpdate, installUpdate, listProjects, loadProject, openLogDirectory, pickMedia, pickModel, pickSubtitleFile, pickTranscriptPath, pickVideoPath, runCore, runtimeInfo, selectAsrBackend, updaterPolicy } from "./core";
-import type { AudioAnalysisJob, AudioRisk, AutoWorkflow, CanvasSettings, CutPreview, ExportJob, ModelDownloadJob, ModelStatus, Project, RuntimeInfo, Segment, SourceImportJob, SourcePreview, SpeakerIdentity, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SpeechEvidence, SpeechInsights, SpeechPause, SubtitleImportPreview, SubtitleQualityIssue, TranscriptionJob, TranscriptionLanguage, TranscriptionProviderConfig, TranscriptionProviderHealth, TranscriptionReviewItem, UpdateMetadata, UpdatePolicy } from "./types";
+import type { AudioAnalysisJob, AudioRisk, AutoWorkflow, CanvasSettings, CutPreview, ExportJob, ModelDownloadJob, ModelStatus, Project, ProjectDeletionPreflight, RuntimeInfo, Segment, SourceImportJob, SourcePreview, SpeakerIdentity, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SpeechEvidence, SpeechInsights, SpeechPause, SubtitleImportPreview, SubtitleQualityIssue, TranscriptionJob, TranscriptionLanguage, TranscriptionProviderConfig, TranscriptionProviderHealth, TranscriptionReviewItem, UpdateMetadata, UpdatePolicy } from "./types";
 import { Button, Dialog, IconButton, StatusBadge } from "./components/ui";
 import { JobFailureDetails } from "./components/job-failure";
 import { AsrBackendPicker, AudioQualityPanel, DiagnosticsPanel, ModelManager, PatchReviewCard, RuntimeChecklist, SegmentRow, SpeakerPackageManager, SpeakerTrackPanel, SpeechInsightsPanel, TranscriptionProviderSettings, TranscriptionReviewPanel, UpdatePanel } from "./components/workbench-panels";
@@ -38,16 +38,11 @@ export function resolvePlaybackDuration(mediaDuration: number, fallbackDuration:
 }
 
 const isValidAgentIdentity = (value: string) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value);
-const transcriptionStageLabel = (stage: string) => ({
-    queued: tr("app.moss.stage.queued"),
-    preparing_audio: tr("app.moss.stage.preparing_audio"),
-    requesting_model: tr("app.moss.stage.requesting_model"),
-    validating_result: tr("app.moss.stage.validating_result"),
-    completed: tr("app.moss.stage.completed"),
-    failed: tr("app.moss.stage.failed"),
-    interrupted: tr("app.moss.stage.interrupted"),
-    cancelled: tr("app.moss.stage.cancelled"),
-}[stage] ?? stage);
+const TranscriptionCandidateDialog = lazy(() => import("./components/transcription-candidate-dialog"));
+const ExportPanel = lazy(() => import("./components/export-panel"));
+const TranscriptionJobBar = lazy(() => import("./components/transcription-job-bar"));
+const ProjectDeleteDialog = lazy(() => import("./components/project-delete-dialog"));
+const AppCommandMenu = lazy(() => import("./components/app-command-menu"));
 
 function App() {
     const [uiLocale, setUiLocale] = useState<UiLocale>(() => getUiLocale());
@@ -81,6 +76,8 @@ function App() {
     const [transcriptionConfig, setTranscriptionConfig] = useState<TranscriptionProviderConfig | null>(null);
     const [transcriptionHealth, setTranscriptionHealth] = useState<TranscriptionProviderHealth | null>(null);
     const [transcriptionJob, setTranscriptionJob] = useState<TranscriptionJob | null>(null);
+    const [showTranscriptionCandidate, setShowTranscriptionCandidate] = useState(false);
+    const [transcriptionApplyConfirmed, setTranscriptionApplyConfirmed] = useState(false);
     const [transcriptionReviews, setTranscriptionReviews] = useState<TranscriptionReviewItem[]>([]);
     const [transcriptionPrompt, setTranscriptionPrompt] = useState("");
     const [transcriptionHotwords, setTranscriptionHotwords] = useState("");
@@ -160,6 +157,8 @@ function App() {
     const [deleteCandidate, setDeleteCandidate] = useState<Project | null>(null);
     const [deleteBusy, setDeleteBusy] = useState(false);
     const [deleteError, setDeleteError] = useState<string | null>(null);
+    const [deletionPreflight, setDeletionPreflight] = useState<ProjectDeletionPreflight | null>(null);
+    const [deletePreflightBusy, setDeletePreflightBusy] = useState(false);
     const videoRef = useRef<HTMLVideoElement>(null);
     const runtimeButtonRef = useRef<HTMLButtonElement>(null);
     const sourceButtonRef = useRef<HTMLButtonElement>(null);
@@ -618,13 +617,16 @@ function App() {
         textShadow: `0 ${project.subtitleStyle.shadowDepth}px ${Math.max(1, project.subtitleStyle.shadowDepth * 2)}px ${project.subtitleStyle.outlineColor}, 0 0 ${project.subtitleStyle.outlineWidth * 2}px ${project.subtitleStyle.outlineColor}`,
     } : undefined;
     const currentDeleteCandidate = deleteCandidate ? projects.find((item) => item.id === deleteCandidate.id) ?? deleteCandidate : null;
-    const deleteActiveTaskCount = currentDeleteCandidate?.tasks.filter((task) => ["queued", "claimed", "running"].includes(task.status)).length ?? 0;
-    const deleteBlockMessage = deleteActiveTaskCount > 0
-        ? tr("app.s0073", { "0": deleteActiveTaskCount }) : currentDeleteCandidate && activeExport?.projectId === currentDeleteCandidate.id && ["queued", "running"].includes(activeExport.status)
-        ? tr("app.s0074") : currentDeleteCandidate && audioAnalysisJob?.projectId === currentDeleteCandidate.id && ["queued", "running"].includes(audioAnalysisJob.status)
-        ? tr("app.s0075") : currentDeleteCandidate && speakerJob?.projectId === currentDeleteCandidate.id && ["queued", "running"].includes(speakerJob.status)
-        ? tr("app.s0076") : currentDeleteCandidate && autoWorkflow?.projectId === currentDeleteCandidate.id && ["queued", "running", "needs_agent", "needs_review", "failed", "interrupted"].includes(autoWorkflow.status)
-        ? tr("app.s0077") : null;
+    const deleteBlockMessage = deletionPreflight?.blockers.length
+        ? deletionPreflight.blockers.map((blocker) => ({
+            agent_task: tr("app.delete.blocker.agent"),
+            export: tr("app.delete.blocker.export"),
+            audio_analysis: tr("app.delete.blocker.audio"),
+            speaker_analysis: tr("app.delete.blocker.speaker"),
+            auto_workflow: tr("app.delete.blocker.workflow"),
+            transcription: blocker.status === "awaiting_apply" ? tr("app.delete.blocker.transcriptionCandidate") : tr("app.delete.blocker.transcription"),
+        }[blocker.kind] ?? tr("app.delete.blocker.unknown", { kind: blocker.kind, status: blocker.status }))).join(" ")
+        : null;
     const humanState = busy ? tr("app.s0001") : taskLabel(project);
     const humanStateTone = humanState === tr("app.s0003") ? "warning" : humanState === tr("app.s0002") ? "agent" : humanState === tr("app.s0001") ? "info" : "success";
     const orderedPatchSets = project?.patchSets
@@ -802,23 +804,39 @@ function App() {
             await refreshProject(projectId, true);
         });
     };
+    const refreshDeletionPreflight = async (projectId: string) => {
+        const envelope = await runCore(["project", "delete-preflight", projectId]);
+        if (!envelope.deletionPreflight)
+            throw new Error(tr("app.delete.preflightMissing"));
+        setDeletionPreflight(envelope.deletionPreflight);
+        return envelope.deletionPreflight;
+    };
     const openDeleteDialog = (candidate: Project) => {
         setDeleteError(null);
+        setDeletionPreflight(null);
         setDeleteCandidate(candidate);
+        setDeletePreflightBusy(true);
+        void refreshDeletionPreflight(candidate.id).catch((cause) => {
+            setDeleteError(cause instanceof Error ? cause.message : String(cause));
+        }).finally(() => setDeletePreflightBusy(false));
     };
     const closeDeleteDialog = () => {
-        if (deleteBusy)
+        if (deleteBusy || deletePreflightBusy)
             return;
         setDeleteCandidate(null);
         setDeleteError(null);
+        setDeletionPreflight(null);
     };
     const deleteProject = async () => {
-        if (!currentDeleteCandidate || deleteBlockMessage)
+        if (!currentDeleteCandidate || deletePreflightBusy)
             return;
         const deleting = currentDeleteCandidate;
         setDeleteBusy(true);
         setDeleteError(null);
         try {
+            const latestPreflight = await refreshDeletionPreflight(deleting.id);
+            if (!latestPreflight.deletable)
+                return;
             await runCore(["project", "delete", deleting.id]);
             const remaining = projects.filter((item) => item.id !== deleting.id);
             setProjects(remaining);
@@ -843,6 +861,7 @@ function App() {
         catch (cause) {
             const message = cause instanceof Error ? cause.message : String(cause);
             setDeleteError(message.replace(/^project_busy:\s*/, ""));
+            await refreshDeletionPreflight(deleting.id).catch(() => undefined);
         }
         finally {
             setDeleteBusy(false);
@@ -1020,6 +1039,9 @@ function App() {
                 await Promise.all([refreshProject(project.id, true), refreshSpeakerTrack(project.id), refreshTranscription(project.id)]);
                 setNotice(tr("app.moss.job.completed"));
             }
+            else if (envelope.transcriptionJob.status === "awaiting_apply") {
+                setNotice(tr("app.moss.job.awaitingApply"));
+            }
             else {
                 setNotice(tr("app.moss.job.started"));
             }
@@ -1055,6 +1077,24 @@ function App() {
         if (!envelope.transcriptionJob)
             throw new Error(tr("app.moss.job.missing"));
         setTranscriptionJob(envelope.transcriptionJob);
+    });
+    const applyTranscriptionCandidate = () => transcriptionJob?.candidate && project && withBusy(tr("app.moss.candidate.applying"), async () => {
+        const envelope = await runCore(["transcription", "apply", transcriptionJob.id, "--expected-version", transcriptionJob.candidate!.currentVersionId ?? "", "--confirm-replace"]);
+        if (!envelope.transcriptionJob)
+            throw new Error(tr("app.moss.job.missing"));
+        setShowTranscriptionCandidate(false);
+        setTranscriptionApplyConfirmed(false);
+        await refreshProject(project.id);
+        setNotice(tr("app.moss.candidate.applied"));
+    });
+    const discardTranscriptionCandidate = () => transcriptionJob && withBusy(tr("app.moss.candidate.discarding"), async () => {
+        const envelope = await runCore(["transcription", "discard", transcriptionJob.id]);
+        if (!envelope.transcriptionJob)
+            throw new Error(tr("app.moss.job.missing"));
+        setTranscriptionJob(envelope.transcriptionJob);
+        setShowTranscriptionCandidate(false);
+        setTranscriptionApplyConfirmed(false);
+        setNotice(tr("app.moss.candidate.discarded"));
     });
     const resolveTranscriptionReview = (itemId: string, action: "resolved" | "ignored") => withBusy(tr("app.moss.review.saving"), async () => {
         await runCore(["transcription", "resolve", itemId, "--action", action]);
@@ -1740,38 +1780,33 @@ function App() {
         <header className="topbar">
           <div className="topbar-heading"><p className="eyebrow">{tr("app.s0247")}</p><h1>{project?.title ?? tr("app.s0248")}</h1></div>
           <div className="command-bar" aria-label={tr("app.s0249")}>
-            <StatusBadge tone={humanStateTone}>{humanState}</StatusBadge>
-            <div className="command-history" aria-label={tr("app.s0250")}>
-              <IconButton label={tr("app.s0251")} shortcut="Ctrl+Z" disabled={!project?.history.canUndo || Boolean(busy)} onClick={() => navigateHistory("undo")}><Undo2 size={15}/></IconButton>
-              <IconButton label={tr("app.s0252")} shortcut="Ctrl+Shift+Z" disabled={!project?.history.canRedo || Boolean(busy)} onClick={() => navigateHistory("redo")}><Redo2 size={15}/></IconButton>
+            <div className="command-primary">
+              <StatusBadge tone={humanStateTone}>{humanState}</StatusBadge>
+              <div className="command-history" aria-label={tr("app.s0250")}>
+                <IconButton label={tr("app.s0251")} shortcut="Ctrl+Z" disabled={!project?.history.canUndo || Boolean(busy)} onClick={() => navigateHistory("undo")}><Undo2 size={15}/></IconButton>
+                <IconButton label={tr("app.s0252")} shortcut="Ctrl+Shift+Z" disabled={!project?.history.canRedo || Boolean(busy)} onClick={() => navigateHistory("redo")}><Redo2 size={15}/></IconButton>
+              </div>
+              <label className="command-select transcription-mode"><span>{tr("app.moss.mode.label")}</span><select aria-label={tr("app.moss.mode.label")} value={transcriptionMode} onChange={(event) => selectTranscriptionMode(event.target.value as "quick" | "multispeaker")}><option value="quick">{tr("app.moss.mode.quick")}</option><option value="multispeaker">{tr("app.moss.mode.multispeaker")}</option></select></label>
+              <label className="command-select"><span>{tr("app.transcription.language")}</span><select aria-label={tr("app.transcription.language")} value={transcriptionLanguage} onChange={(event) => selectTranscriptionLanguage(event.target.value as TranscriptionLanguage)}><option value="auto">{tr("app.transcription.auto")}</option><option value="en">{tr("app.transcription.english")}</option><option value="zh">{tr("app.transcription.chinese")}</option></select></label>
+              <Button disabled={!canStartTranscription || transcriptionActive || Boolean(busy)} title={transcribeCapabilityTitle} onClick={transcribe}><RefreshCw size={15}/>{transcriptionMode === "multispeaker" ? tr("app.moss.action.start") : tr("app.s0253")}</Button>
             </div>
-            <label className="command-select transcription-mode"><span>{tr("app.moss.mode.label")}</span><select aria-label={tr("app.moss.mode.label")} value={transcriptionMode} onChange={(event) => selectTranscriptionMode(event.target.value as "quick" | "multispeaker")}><option value="quick">{tr("app.moss.mode.quick")}</option><option value="multispeaker">{tr("app.moss.mode.multispeaker")}</option></select></label>
-            <label className="command-select"><span>{tr("app.transcription.language")}</span><select aria-label={tr("app.transcription.language")} value={transcriptionLanguage} onChange={(event) => selectTranscriptionLanguage(event.target.value as TranscriptionLanguage)}><option value="auto">{tr("app.transcription.auto")}</option><option value="en">{tr("app.transcription.english")}</option><option value="zh">{tr("app.transcription.chinese")}</option></select></label>
-            <Button disabled={!canStartTranscription || transcriptionActive || Boolean(busy)} title={transcribeCapabilityTitle} onClick={transcribe}><RefreshCw size={15}/>{transcriptionMode === "multispeaker" ? tr("app.moss.action.start") : tr("app.s0253")}</Button>
-            <div className="agent-command"><select aria-label={tr("app.workflow.label")} value={agentWorkflowKind} onChange={(event) => setAgentWorkflowKind(event.target.value as typeof agentWorkflowKind)}><option value="polish">{tr("app.workflow.polish")}</option><option value="proofread">{tr("app.workflow.proofread")}</option><option value="punctuate">{tr("app.workflow.punctuate")}</option><option value="speaker_names">{tr("app.workflow.speakerNames")}</option><option value="edit">{tr("app.workflow.edit")}</option><option value="translate">{tr("app.workflow.translate")}</option></select>{agentWorkflowKind === "translate" && <select className="agent-language" aria-label={tr("app.workflow.targetLanguage")} value={subtitleLanguage} onChange={(event) => setSubtitleLanguage(event.target.value)}><option value="en">EN</option><option value="zh">ZH</option><option value="ja">JA</option><option value="ko">KO</option></select>}<Button ref={agentButtonRef} variant="agent" disabled={!capabilities.canCreateAgentTask || Boolean(busy) || (agentWorkflowKind === "speaker_names" && speakerTrack?.status !== "ready")} title={agentWorkflowKind === "speaker_names" && speakerTrack?.status !== "ready" ? tr("app.workflow.speakerNamesUnavailable") : agentCapabilityTitle} onClick={openAgentHandoff}><Bot size={15}/>{tr("app.agent.handoff.open")}</Button></div>
-            <div className="command-more" ref={commandMoreRef}>
+            <div className="command-secondary">
+              <div className="agent-command"><select aria-label={tr("app.workflow.label")} value={agentWorkflowKind} onChange={(event) => setAgentWorkflowKind(event.target.value as typeof agentWorkflowKind)}><option value="polish">{tr("app.workflow.polish")}</option><option value="proofread">{tr("app.workflow.proofread")}</option><option value="punctuate">{tr("app.workflow.punctuate")}</option><option value="speaker_names">{tr("app.workflow.speakerNames")}</option><option value="edit">{tr("app.workflow.edit")}</option><option value="translate">{tr("app.workflow.translate")}</option></select>{agentWorkflowKind === "translate" && <select className="agent-language" aria-label={tr("app.workflow.targetLanguage")} value={subtitleLanguage} onChange={(event) => setSubtitleLanguage(event.target.value)}><option value="en">EN</option><option value="zh">ZH</option><option value="ja">JA</option><option value="ko">KO</option></select>}<Button ref={agentButtonRef} variant="agent" disabled={!capabilities.canCreateAgentTask || Boolean(busy) || (agentWorkflowKind === "speaker_names" && speakerTrack?.status !== "ready")} title={agentWorkflowKind === "speaker_names" && speakerTrack?.status !== "ready" ? tr("app.workflow.speakerNamesUnavailable") : agentCapabilityTitle} onClick={openAgentHandoff}><Bot size={15}/>{tr("app.agent.handoff.open")}</Button></div>
+              <div className="command-more" ref={commandMoreRef}>
               <IconButton label={tr("app.s0256")} onClick={() => setShowMoreMenu((current) => !current)}><MoreHorizontal size={17}/></IconButton>
-              {showMoreMenu && <div className="command-menu" role="menu">
-                <button role="menuitem" disabled={!project?.transcript.words.length || Boolean(busy)} onClick={() => { setShowMoreMenu(false); void detectSuggestions(); }}><Scissors size={14}/>{tr("app.s0254")}</button>
-                <button role="menuitem" disabled={!capabilities.canPreparePreview || Boolean(busy)} title={mediaCapabilityTitle} onClick={() => { setShowMoreMenu(false); void preparePreview(); }}><Film size={14}/>{tr("app.s0257")}</button>
-                <button role="menuitem" disabled={!capabilities.canRelinkMedia || Boolean(busy)} onClick={() => { setShowMoreMenu(false); void relinkMedia(); }}><Link2 size={14}/>{tr("app.s0258")}</button>
-              </div>}
-            </div>
-            <div className="export-split">
+              {showMoreMenu && <Suspense fallback={null}><AppCommandMenu canDetectSuggestions={Boolean(project?.transcript.words.length) && !busy} canPreparePreview={capabilities.canPreparePreview && !busy} canRelinkMedia={capabilities.canRelinkMedia && !busy} mediaCapabilityTitle={mediaCapabilityTitle} onDetectSuggestions={() => { setShowMoreMenu(false); void detectSuggestions(); }} onPreparePreview={() => { setShowMoreMenu(false); void preparePreview(); }} onRelinkMedia={() => { setShowMoreMenu(false); void relinkMedia(); }}/></Suspense>}
+              </div>
+              <div className="export-split">
               <Button ref={exportButtonRef} variant="primary" className="export-main" disabled={!capabilities.canExportVideo || Boolean(busy) || selectedTranslationPending || Boolean(activeExport && ["queued", "running"].includes(activeExport.status))} title={mediaCapabilityTitle} onClick={exportVideo}><Download size={15}/>{tr("app.s0259")}</Button>
               <button className="export-settings" aria-label={tr("app.s0260")} title={tr("app.s0261")} disabled={!project} onClick={() => setShowExportPanel(true)}><ChevronDown size={15}/></button>
+              </div>
             </div>
           </div>
         </header>
 
         {(notice || error) && <div className={`notice ${error ? "error" : ""}`} role="status" aria-live="polite">{error && <CircleAlert size={15}/>}<span>{error ? tr("app.error.unknownSummary") : notice}</span>{error && <details><summary>{tr("app.error.technicalDetails")}</summary><code>{error}</code></details>}{error && <button className="notice-action" onClick={() => void initialize()}>{tr("app.s0262")}</button>}<button aria-label={tr("app.s0263")} title={tr("app.s0263")} onClick={() => { setNotice(null); setError(null); }}>×</button></div>}
         {busy && <div className="progress-strip" role="status" aria-live="polite"><LoaderCircle size={14} className="spin"/>{busy}</div>}
-        {transcriptionJob && ["queued", "running", "finalizing", "failed", "interrupted", "cancelled"].includes(transcriptionJob.status) && <section className={`transcription-job-bar ${transcriptionJob.status}`} role="status">
-          {transcriptionActive ? <LoaderCircle size={15} className="spin"/> : <CircleAlert size={15}/>}<span><strong>{transcriptionStageLabel(transcriptionJob.stage)}</strong><small>{tr("app.moss.job.attempt", { attempt: transcriptionJob.attemptCount })} · {transcriptionJob.modelId}</small></span>
-          {transcriptionJob.errorMessage && <JobFailureDetails context="transcription" status={transcriptionJob.status} errorCode={transcriptionJob.errorCode} errorMessage={transcriptionJob.errorMessage}/>} 
-          {transcriptionActive && <button disabled={Boolean(busy)} onClick={cancelTranscription}>{tr("app.moss.job.cancel")}</button>}
-          {["failed", "interrupted", "cancelled"].includes(transcriptionJob.status) && <button disabled={Boolean(busy)} onClick={resumeTranscription}><RefreshCw size={13}/>{tr("app.moss.job.resume")}</button>}
-        </section>}
+        {transcriptionJob && <Suspense fallback={null}><TranscriptionJobBar job={transcriptionJob} busy={Boolean(busy)} onCancel={cancelTranscription} onResume={resumeTranscription} onInspectCandidate={() => { setTranscriptionApplyConfirmed(false); setShowTranscriptionCandidate(true); }} onDiscardCandidate={discardTranscriptionCandidate}/></Suspense>}
         {activeExport && ["queued", "running"].includes(activeExport.status) && <div className="export-progress" role="status"><Film size={15}/><span>{tr("app.s0264") + " "}{Math.round(activeExport.progress * 100)}%</span><progress value={activeExport.progress} max={1}/><button onClick={cancelExport}>{tr("app.s0265")}</button></div>}
         {activeExport && ["failed", "interrupted"].includes(activeExport.status) && <div className="export-progress interrupted" role="status"><CircleAlert size={15}/><span>{activeExport.status === "interrupted" ? tr("app.s0266") : tr("app.s0267")}</span><JobFailureDetails context="export" status={activeExport.status} errorCode={activeExport.errorCode} errorMessage={activeExport.errorMessage}/><button onClick={retryExport}>{tr("app.s0269")}</button></div>}
         {sourceJob && !showSourceImport && ["queued", "running", "finalizing"].includes(sourceJob.status) && <div className="source-progress" role="status"><Link2 size={15}/><span><strong>{sourceStatusLabel(sourceJob.status)} · {Math.round(sourceJob.progress * 100)}%</strong><small>{sourceJob.title}</small></span><progress value={sourceJob.progress} max={1}/><button onClick={() => setShowSourceImport(true)}>{tr("app.s0270")}</button></div>}
@@ -1908,41 +1943,7 @@ function App() {
             </section>
           </>)}
       </section>
-      {showExportPanel && project && <aside ref={exportPanelRef} className="export-panel" aria-label={tr("app.s0392")}>
-        <header className="export-panel-header"><div><p className="eyebrow">{tr("app.s0393")}</p><h2>{tr("app.s0392")}</h2></div><IconButton label={tr("app.s0394")} onClick={() => setShowExportPanel(false)}><X size={17}/></IconButton></header>
-        <div className="export-panel-body">
-          <section className="export-group" aria-labelledby="export-canvas-heading">
-            <div><h3 id="export-canvas-heading">{tr("app.s0395")}</h3><p>{tr("app.s0396")}</p></div>
-            <label><span>{tr("app.s0397")}</span><select aria-label={tr("app.s0397")} value={project.canvasSettings.aspectRatio} onChange={(event) => void changeCanvas({ ...project.canvasSettings, aspectRatio: event.target.value as CanvasSettings["aspectRatio"] })}><option value="source">{tr("app.s0398")}</option><option value="9:16">{tr("app.s0399")}</option></select></label>
-            <label><span>{tr("app.s0400")}</span><select aria-label={tr("app.s0400")} disabled={project.canvasSettings.aspectRatio === "source"} value={project.canvasSettings.framing} onChange={(event) => void changeCanvas({ ...project.canvasSettings, framing: event.target.value as CanvasSettings["framing"] })}><option value="contain-blur">{tr("app.s0401")}</option><option value="cover-center">{tr("app.s0402")}</option></select></label>
-          </section>
-          <section className="export-group" aria-labelledby="export-subtitle-heading">
-            <div><h3 id="export-subtitle-heading">{tr("app.s0175")}</h3><p>{tr("app.s0403")}</p></div>
-            <label><span>{tr("app.s0404")}</span><select aria-label={tr("app.s0405")} value={subtitleMode} onChange={(event) => setSubtitleMode(event.target.value as typeof subtitleMode)}><option value="source">{tr("app.s0406")}</option><option value="translated">{tr("app.s0407")}</option><option value="bilingual">{tr("app.s0408")}</option></select></label>
-            <label><span>{tr("app.s0409")}</span><select aria-label={tr("app.s0409")} disabled={!translationLanguageOptions.length} value={selectedSubtitleLanguage} onChange={(event) => setSubtitleLanguage(event.target.value)}>{translationLanguageOptions.length ? translationLanguageOptions.map((language) => <option value={language} key={language}>{language.toUpperCase()}{translationLanguages.includes(language) ? "" : tr("app.s0410")}</option>) : <option value="">{tr("app.s0411")}</option>}</select></label>
-            <label><span>{tr("app.s0412")}</span><select aria-label={tr("app.s0413")} value={exportFormat} onChange={(event) => { setExportFormat(event.target.value as typeof exportFormat); setConfirmTranscriptionWarnings(false); }}><option value="srt">SRT</option><option value="vtt">VTT</option><option value="ass">ASS</option><option value="markdown">Markdown</option><option value="json">JSON</option></select></label>
-            {selectedTranslationPending && <p className="export-warning"><CircleAlert size={14}/>{selectedSubtitleLanguage.toUpperCase()}{tr("app.s0414")}</p>}
-            {structuredExport && <>
-              <label className="subtitle-safe-toggle"><input type="checkbox" checked={includeSpeakerLabels} onChange={(event) => setIncludeSpeakerLabels(event.target.checked)}/><span>{tr("app.moss.export.includeSpeakers")}</span></label>
-              {transcriptionExportErrors.length > 0 && <p className="export-warning error" role="alert"><CircleAlert size={14}/>{tr("app.moss.export.errorsBlock", { count: transcriptionExportErrors.length })}</p>}
-              {transcriptionExportWarnings.length > 0 && <label className="subtitle-safe-toggle export-confirm"><input type="checkbox" checked={confirmTranscriptionWarnings} disabled={transcriptionExportErrors.length > 0} onChange={(event) => setConfirmTranscriptionWarnings(event.target.checked)}/><span>{tr("app.moss.export.confirmWarnings", { count: transcriptionExportWarnings.length })}</span></label>}
-              <p className="runtime-disclosure">{tr("app.moss.export.evidence")}</p>
-            </>}
-          </section>
-          <section className="export-group subtitle-style-group" aria-labelledby="export-subtitle-style-heading">
-            <div><h3 id="export-subtitle-style-heading">{tr("app.s0415")}</h3><p>{tr("app.s0416")}</p></div>
-            <label><span>{tr("app.s0417")}</span><select aria-label={tr("app.s0418")} disabled={Boolean(busy)} value={project.subtitleStyle.preset} onChange={(event) => void changeSubtitleStyle(event.target.value as Project["subtitleStyle"]["preset"], project.subtitleStyle.position)}><option value="compact">{tr("app.s0419")}</option><option value="standard">{tr("app.s0420")}</option><option value="emphasis">{tr("app.s0421")}</option></select></label>
-            <label><span>{tr("app.s0422")}</span><select aria-label={tr("app.s0422")} disabled={Boolean(busy)} value={project.subtitleStyle.position} onChange={(event) => void changeSubtitleStyle(project.subtitleStyle.preset, event.target.value as Project["subtitleStyle"]["position"])}><option value="bottom">{tr("app.s0423")}</option><option value="center">{tr("app.s0424")}</option></select></label>
-            <label className="subtitle-safe-toggle"><input type="checkbox" checked={showSubtitleSafeArea} onChange={(event) => setShowSubtitleSafeArea(event.target.checked)}/><span>{tr("app.s0425")}</span></label>
-            <div className="subtitle-style-summary"><span><strong>{project.subtitleStyle.fontSize} px</strong><small>{tr("app.s0426")}</small></span><span><strong>{project.subtitleStyle.secondaryFontSize} px</strong><small>{tr("app.s0427")}</small></span><span><strong>{project.subtitleStyle.outlineWidth} px</strong><small>{tr("app.s0428")}</small></span><span><strong>{project.subtitleStyle.safeMarginPercent}%</strong><small>{tr("app.s0429")}</small></span></div>
-          </section>
-          <section className="export-safety"><ShieldCheck size={17}/><span><strong>{tr("app.s0430")}</strong><small>{tr("app.s0431")}</small></span></section>
-        </div>
-        <footer className="export-panel-actions">
-          <Button disabled={Boolean(busy) || selectedTranslationPending || transcriptionExportBlocked} onClick={exportTranscript}><Download size={15}/>{tr("app.s0432")}</Button>
-          <Button variant="primary" disabled={!capabilities.canExportVideo || Boolean(busy) || selectedTranslationPending || Boolean(activeExport && ["queued", "running"].includes(activeExport.status))} title={mediaCapabilityTitle} onClick={exportVideo}><Film size={15}/>{tr("app.s0259")}</Button>
-        </footer>
-      </aside>}
+      {showExportPanel && project && <Suspense fallback={null}><ExportPanel ref={exportPanelRef} project={project} busy={Boolean(busy)} subtitleMode={subtitleMode} translationLanguageOptions={translationLanguageOptions} translationLanguages={translationLanguages} selectedSubtitleLanguage={selectedSubtitleLanguage} selectedTranslationPending={selectedTranslationPending} exportFormat={exportFormat} structuredExport={structuredExport} includeSpeakerLabels={includeSpeakerLabels} transcriptionExportErrorCount={transcriptionExportErrors.length} transcriptionExportWarningCount={transcriptionExportWarnings.length} confirmTranscriptionWarnings={confirmTranscriptionWarnings} showSubtitleSafeArea={showSubtitleSafeArea} transcriptionExportBlocked={transcriptionExportBlocked} canExportVideo={capabilities.canExportVideo} activeExportRunning={Boolean(activeExport && ["queued", "running"].includes(activeExport.status))} mediaCapabilityTitle={mediaCapabilityTitle} onClose={() => setShowExportPanel(false)} onChangeCanvas={(settings) => void changeCanvas(settings)} onSubtitleModeChange={setSubtitleMode} onSubtitleLanguageChange={setSubtitleLanguage} onExportFormatChange={(format) => { setExportFormat(format); setConfirmTranscriptionWarnings(false); }} onIncludeSpeakerLabelsChange={setIncludeSpeakerLabels} onConfirmWarningsChange={setConfirmTranscriptionWarnings} onSubtitleStyleChange={(preset, position) => void changeSubtitleStyle(preset, position)} onShowSafeAreaChange={setShowSubtitleSafeArea} onExportTranscript={exportTranscript} onExportVideo={exportVideo}/></Suspense>}
       {showAgentHandoff && project && <Dialog label={tr("app.agent.handoff.title")} className="runtime-dialog agent-handoff-dialog" onClose={() => setShowAgentHandoff(false)} returnFocusRef={agentButtonRef}>
         <button autoFocus className="dialog-close" aria-label={tr("app.agent.handoff.close")} title={tr("app.agent.handoff.close")} onClick={() => setShowAgentHandoff(false)}><X size={18}/></button>
         <p className="eyebrow">{tr("app.agent.handoff.eyebrow")}</p><h2>{agentHandoffTaskId ? tr("app.agent.handoff.readyTitle") : tr("app.agent.handoff.title")}</h2>
@@ -2026,7 +2027,8 @@ function App() {
         <header className="runtime-dialog-header"><div><p className="eyebrow">{tr("app.s0505")}</p><h2>{tr("app.s0245")}</h2></div><button autoFocus className="dialog-close" aria-label={tr("app.s0503")} title={tr("app.s0504")} onClick={() => setShowRuntime(false)}><X size={18}/></button></header>
         <div className="runtime-dialog-content"><p className="dialog-copy">{tr("app.s0506")}</p><RuntimeChecklist runtime={runtime} modelPath={modelPath} onChooseModel={chooseModel}/><TranscriptionProviderSettings config={transcriptionConfig} health={transcriptionHealth} busy={Boolean(busy)} onSave={saveTranscriptionProvider} onCheck={checkTranscriptionProvider}/><AsrBackendPicker runtime={runtime} onSelect={changeAsrBackend}/><ModelManager models={models} selectedPath={modelPath} job={modelJob} onSelect={(path) => { localStorage.setItem("siaocut.modelPath", path); setModelPath(path); }} onInstall={installModel} onCancel={cancelModel} onRemove={removeModel}/><SpeakerPackageManager packageStatus={speakerPackage} job={speakerJob?.kind === "install" ? speakerJob : null} disabled={Boolean(busy)} onInstall={installSpeakerPackage} onCancel={cancelSpeakerJob} onResume={resumeSpeakerJob}/><DiagnosticsPanel runtime={runtime} onOpen={openDiagnostics}/><UpdatePanel policy={updatePolicy} update={availableUpdate} busy={updateBusy} error={updateError} onCheck={() => void checkUpdates()} onInstall={() => void confirmUpdateInstall()}/><button className="button quiet full" onClick={() => void initialize()}><RefreshCw size={14}/>{tr("app.s0507")}</button></div>
       </Dialog>}
-      {currentDeleteCandidate && <Dialog label={tr("app.s0243")} className="confirm-dialog" onClose={closeDeleteDialog}><div className="confirm-icon"><Trash2 size={20}/></div><p className="eyebrow">{tr("app.s0508")}</p><h2>{tr("app.s0509")}{currentDeleteCandidate.title}」？</h2><p className="dialog-copy">{tr("app.s0510")}</p>{(deleteBlockMessage || deleteError) && <div className="confirm-error" role="alert"><CircleAlert size={16}/><span>{deleteBlockMessage ?? deleteError}</span></div>}<div className="confirm-actions"><button className="button quiet" disabled={deleteBusy} onClick={closeDeleteDialog}>{tr("app.s0511")}</button><button className="button danger" disabled={deleteBusy || Boolean(deleteBlockMessage)} onClick={() => void deleteProject()}>{deleteBusy ? <LoaderCircle className="spin" size={14}/> : <Trash2 size={14}/>}{tr("app.s0512")}</button></div></Dialog>}
+      {showTranscriptionCandidate && transcriptionJob?.status === "awaiting_apply" && <Suspense fallback={null}><TranscriptionCandidateDialog job={transcriptionJob} busy={Boolean(busy)} confirmed={transcriptionApplyConfirmed} onConfirmedChange={setTranscriptionApplyConfirmed} onApply={applyTranscriptionCandidate} onDiscard={discardTranscriptionCandidate} onClose={() => { if (!busy) { setShowTranscriptionCandidate(false); setTranscriptionApplyConfirmed(false); } }}/></Suspense>}
+      {currentDeleteCandidate && <Suspense fallback={null}><ProjectDeleteDialog project={currentDeleteCandidate} checking={deletePreflightBusy} deleting={deleteBusy} deletable={Boolean(deletionPreflight?.deletable)} blockerMessage={deleteBlockMessage} error={deleteError} onClose={closeDeleteDialog} onDelete={() => void deleteProject()}/></Suspense>}
       {showSourceImport && <Dialog label={tr("app.s0513")} className="runtime-dialog source-dialog" onClose={() => setShowSourceImport(false)} returnFocusRef={sourceButtonRef}><button autoFocus className="dialog-close" aria-label={tr("app.s0514")} title={tr("app.s0515")} onClick={() => setShowSourceImport(false)}><X size={18}/></button><p className="eyebrow">{tr("app.s0516")}</p><h2>{tr("app.s0517")}</h2><p className="dialog-copy">{tr("app.s0518")}</p>
         {!sourceJob && <form className="source-form" onSubmit={(event) => { event.preventDefault(); void inspectSource(); }}><label><span>{tr("app.s0487")}</span><input autoComplete="url" aria-label={tr("app.s0487")} placeholder="https://…" value={sourceUrl} disabled={Boolean(sourceBusy)} onChange={(event) => { setSourceUrl(event.target.value); setSourcePreview(null); setSourceAuthorized(false); setSourceError(null); }}/></label><button className="button primary" type="submit" disabled={Boolean(sourceBusy) || !isHttpsSourceUrl(sourceUrl)}>{sourceBusy && !sourcePreview ? <LoaderCircle className="spin" size={14}/> : <Search size={14}/>}{tr("app.s0489")}</button></form>}
         {sourcePreview && !sourceJob && <section className="source-preview" aria-label={tr("app.s0519")}><header><span><small>{sourcePreview.extractor}</small><strong>{sourcePreview.title}</strong></span><ShieldCheck size={19}/></header><dl><div><dt>{tr("app.s0491")}</dt><dd>{formatTime(sourcePreview.durationSeconds)}</dd></div><div><dt>{sourcePreview.fileSizeKnown ? tr("app.s0520") : tr("app.s0521")}</dt><dd>{formatBytes(sourcePreview.fileSizeBytes)}</dd></div><div><dt>{tr("app.s0492")}</dt><dd>{sourcePreview.siteMediaId}</dd></div><div><dt>{tr("app.s0522")}</dt><dd>yt-dlp {sourcePreview.toolVersion}</dd></div></dl><p className="source-url" title={sourcePreview.webpageUrl}>{sourcePreview.webpageUrl}</p><label className="source-consent"><input type="checkbox" checked={sourceAuthorized} onChange={(event) => setSourceAuthorized(event.target.checked)}/><span>{tr("app.s0523")}</span></label><button className="button primary full" disabled={!sourceAuthorized || Boolean(sourceBusy)} onClick={() => void startSourceImport()}>{sourceBusy ? <LoaderCircle className="spin" size={14}/> : <Download size={14}/>}{tr("app.s0524")}</button></section>}
