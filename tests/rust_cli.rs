@@ -59,6 +59,49 @@ fn run_direct_error(home: &Path, arguments: &[&str]) -> Value {
 }
 
 #[test]
+fn help_is_successful_for_direct_and_service_cli_paths() {
+    let temp = tempdir().unwrap();
+    for direct in [false, true] {
+        for arguments in [
+            vec!["--help"],
+            vec!["transcription", "--help"],
+            vec!["transcription", "start", "--help"],
+        ] {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_siaocut-core"));
+            command
+                .env("SIAOCUT_HOME", temp.path())
+                .env("SIAOCUT_SERVICE_IDLE_MS", "100")
+                .args(&arguments);
+            if direct {
+                command.env("SIAOCUT_DIRECT", "1");
+            }
+            let output = command.output().unwrap();
+            assert!(
+                output.status.success(),
+                "help failed for direct={direct}, arguments={arguments:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(output.stderr.is_empty());
+            assert!(String::from_utf8_lossy(&output.stdout).contains("Usage:"));
+        }
+    }
+}
+
+#[test]
+fn invalid_arguments_still_return_usage_error() {
+    let temp = tempdir().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_siaocut-core"))
+        .env("SIAOCUT_HOME", temp.path())
+        .env("SIAOCUT_DIRECT", "1")
+        .arg("not-a-command")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unrecognized subcommand"));
+}
+
+#[test]
 fn health_uses_stable_json_envelope() {
     let temp = tempdir().unwrap();
     let response = run(temp.path(), &["health"]);

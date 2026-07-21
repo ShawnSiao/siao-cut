@@ -1,5 +1,5 @@
 use anyhow::{Result, anyhow, bail};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, error::ErrorKind};
 use serde_json::{Value, json};
 use std::{env, fs, path::PathBuf};
 
@@ -1725,8 +1725,12 @@ pub(crate) fn execute_args(arguments: Vec<String>) -> ipc::Response {
     let cli = match Cli::try_parse_from(argv) {
         Ok(cli) => cli,
         Err(error) => {
+            let exit_code = match error.kind() {
+                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => 0,
+                _ => 2,
+            };
             return ipc::Response {
-                exit_code: 2,
+                exit_code,
                 output: error.to_string(),
             };
         }

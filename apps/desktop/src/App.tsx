@@ -1,13 +1,15 @@
 import { changeUiLocale, getUiLocale, tr, type UiLocale } from "./i18n";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type SyntheticEvent } from "react";
 import { Activity, Bot, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Clock3, Copy, Cpu, Database, Download, FileVideo2, FileText, Film, FolderOpen, FolderPlus, HardDrive, History, Link2, LoaderCircle, Play, RefreshCw, RotateCcw, Search, Scissors, Settings2, ShieldCheck, Sparkles, Trash2, Undo2, Redo2, Headphones, ListChecks, MoreHorizontal, MoveHorizontal, Users, X, } from "lucide-react";
-import { authorizeArtifact, authorizeMedia, checkForUpdate, installUpdate, listProjects, loadProject, openLogDirectory, pickMedia, pickModel, pickSubtitleFile, pickTranscriptPath, pickVideoPath, runCore, runtimeInfo, selectAsrBackend, updaterPolicy } from "./core";
-import type { AudioAnalysisJob, AudioRisk, AutoWorkflow, CanvasSettings, CutPreview, ExportJob, ModelDownloadJob, ModelStatus, Project, ProjectDeletionPreflight, RuntimeInfo, Segment, SourceImportJob, SourcePreview, SpeakerIdentity, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SpeechEvidence, SpeechInsights, SpeechPause, SubtitleImportPreview, SubtitleQualityIssue, TranscriptionJob, TranscriptionLanguage, TranscriptionProviderConfig, TranscriptionProviderHealth, TranscriptionReviewItem, UpdateMetadata, UpdatePolicy } from "./types";
+import { authorizeArtifact, authorizeMedia, listProjects, loadProject, openLogDirectory, pickMedia, pickModel, pickSubtitleFile, pickTranscriptPath, pickVideoPath, runCore, runtimeInfo, selectAsrBackend, updaterPolicy } from "./core";
+import type { AudioAnalysisJob, AudioRisk, AutoWorkflow, CanvasSettings, CutPreview, ExportJob, ModelDownloadJob, ModelStatus, Project, ProjectDeletionPreflight, RuntimeInfo, Segment, SourceImportJob, SourcePreview, SpeakerIdentity, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SpeechEvidence, SpeechInsights, SpeechPause, SubtitleImportPreview, SubtitleQualityIssue, TranscriptionJob, TranscriptionLanguage, TranscriptionProviderConfig, TranscriptionProviderHealth, TranscriptionReviewItem } from "./types";
 import { Button, Dialog, IconButton, StatusBadge } from "./components/ui";
 import { JobFailureDetails } from "./components/job-failure";
-import { AsrBackendPicker, AudioQualityPanel, DiagnosticsPanel, ModelManager, PatchReviewCard, RuntimeChecklist, SegmentRow, SpeakerPackageManager, SpeakerTrackPanel, SpeechInsightsPanel, TranscriptionProviderSettings, TranscriptionReviewPanel, UpdatePanel } from "./components/workbench-panels";
+import RuntimeSettingsDialog from "./components/runtime-settings-dialog";
+import { AudioQualityPanel, PatchReviewCard, RuntimeChecklist, SegmentRow, SpeakerTrackPanel, SpeechInsightsPanel, TranscriptionReviewPanel } from "./components/workbench-panels";
+import { useAppUpdater } from "./hooks/use-app-updater";
 export { AudioQualityPanel, PatchReviewCard, SpeakerPackageManager, SpeakerTrackPanel, SpeechInsightsPanel } from "./components/workbench-panels";
-import { audioRiskLabel, audioUnitLabel, autoStageLabel, autoStatusLabel, clearTransientCoreError, cutSuggestionLabel, DEFAULT_EXPORT_PREFERENCES, editReasonLabel, formatBytes, formatTime, getProjectCapabilities, hasMeaningfulSubtitleText, isHttpsSourceUrl, modelDescription, modelName, parseExportPreferences, parseTranscriptionLanguage, patchReasonLabel, segmentCountLabel, shouldCheckForUpdates, sourceStatusLabel, startSerialPolling, structureEditLabel, subtitleCountLabel, subtitleIssueLabel, subtitleQualityStatusLabel, taskLabel, TRANSCRIPTION_LANGUAGE_STORAGE_KEY, versionReasonLabel, wordCountLabel, type ExportPreferencesV1, type SegmentSelectionMode, type StructureEditMode } from "./app-view-model";
+import { audioRiskLabel, audioUnitLabel, autoStageLabel, autoStatusLabel, clearTransientCoreError, cutSuggestionLabel, DEFAULT_EXPORT_PREFERENCES, editReasonLabel, formatBytes, formatTime, getProjectCapabilities, hasMeaningfulSubtitleText, isHttpsSourceUrl, modelDescription, modelName, parseExportPreferences, parseTranscriptionLanguage, patchReasonLabel, segmentCountLabel, sourceStatusLabel, startSerialPolling, structureEditLabel, subtitleCountLabel, subtitleIssueLabel, subtitleQualityStatusLabel, taskLabel, TRANSCRIPTION_LANGUAGE_STORAGE_KEY, versionReasonLabel, wordCountLabel, type ExportPreferencesV1, type SegmentSelectionMode, type StructureEditMode } from "./app-view-model";
 export * from "./app-view-model";
 
 export async function resolveCanvasMedia(
@@ -85,10 +87,7 @@ function App() {
     const [notice, setNotice] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [runtime, setRuntime] = useState<RuntimeInfo | null>(null);
-    const [updatePolicy, setUpdatePolicy] = useState<UpdatePolicy | null>(null);
-    const [availableUpdate, setAvailableUpdate] = useState<UpdateMetadata | null>(null);
-    const [updateBusy, setUpdateBusy] = useState<string | null>(null);
-    const [updateError, setUpdateError] = useState<string | null>(null);
+    const { updatePolicy, setUpdatePolicy, availableUpdate, updateBusy, updateError, checkUpdates, confirmUpdateInstall } = useAppUpdater(setNotice);
     const [models, setModels] = useState<ModelStatus[]>([]);
     const [modelJob, setModelJob] = useState<ModelDownloadJob | null>(null);
     const [sourcePreview, setSourcePreview] = useState<SourcePreview | null>(null);
@@ -315,48 +314,6 @@ function App() {
     useEffect(() => {
         void initialize();
     }, [initialize]);
-    const checkUpdates = useCallback(async (automatic = false) => {
-        if (!updatePolicy?.enabled)
-            return;
-        setUpdateBusy(tr("app.s0047"));
-        setUpdateError(null);
-        try {
-            const candidate = await checkForUpdate();
-            localStorage.setItem("siaocut.updateLastCheckedAt", new Date().toISOString());
-            setAvailableUpdate(candidate);
-            if (!automatic && !candidate)
-                setNotice(tr("app.s0048"));
-        }
-        catch (cause) {
-            const message = cause instanceof Error ? cause.message : String(cause);
-            if (!automatic)
-                setUpdateError(message);
-        }
-        finally {
-            setUpdateBusy(null);
-        }
-    }, [updatePolicy?.enabled]);
-    useEffect(() => {
-        if (!updatePolicy || !shouldCheckForUpdates(localStorage.getItem("siaocut.updateLastCheckedAt"), Date.now(), updatePolicy.enabled))
-            return;
-        void checkUpdates(true);
-    }, [checkUpdates, updatePolicy]);
-    const confirmUpdateInstall = async () => {
-        if (!availableUpdate)
-            return;
-        setUpdateBusy(tr("app.s0049"));
-        setUpdateError(null);
-        try {
-            await installUpdate((event) => {
-                if (event.event === "Verifying")
-                    setUpdateBusy(tr("app.s0050"));
-            });
-        }
-        catch (cause) {
-            setUpdateError(cause instanceof Error ? cause.message : String(cause));
-            setUpdateBusy(null);
-        }
-    };
     useEffect(() => {
         if (!project?.tasks.some((task) => ["queued", "claimed", "running", "interrupted"].includes(task.status)))
             return;
@@ -2023,10 +1980,38 @@ function App() {
           {autoError && <div className="source-error" role="alert"><CircleAlert size={15}/><JobFailureDetails context="auto" status="failed" errorMessage={autoError}/></div>}
         </div>
       </Dialog>}
-      {showRuntime && <Dialog label={tr("app.s0245")} className="runtime-dialog runtime-settings-dialog" onClose={() => setShowRuntime(false)} returnFocusRef={runtimeButtonRef}>
-        <header className="runtime-dialog-header"><div><p className="eyebrow">{tr("app.s0505")}</p><h2>{tr("app.s0245")}</h2></div><button autoFocus className="dialog-close" aria-label={tr("app.s0503")} title={tr("app.s0504")} onClick={() => setShowRuntime(false)}><X size={18}/></button></header>
-        <div className="runtime-dialog-content"><p className="dialog-copy">{tr("app.s0506")}</p><RuntimeChecklist runtime={runtime} modelPath={modelPath} onChooseModel={chooseModel}/><TranscriptionProviderSettings config={transcriptionConfig} health={transcriptionHealth} busy={Boolean(busy)} onSave={saveTranscriptionProvider} onCheck={checkTranscriptionProvider}/><AsrBackendPicker runtime={runtime} onSelect={changeAsrBackend}/><ModelManager models={models} selectedPath={modelPath} job={modelJob} onSelect={(path) => { localStorage.setItem("siaocut.modelPath", path); setModelPath(path); }} onInstall={installModel} onCancel={cancelModel} onRemove={removeModel}/><SpeakerPackageManager packageStatus={speakerPackage} job={speakerJob?.kind === "install" ? speakerJob : null} disabled={Boolean(busy)} onInstall={installSpeakerPackage} onCancel={cancelSpeakerJob} onResume={resumeSpeakerJob}/><DiagnosticsPanel runtime={runtime} onOpen={openDiagnostics}/><UpdatePanel policy={updatePolicy} update={availableUpdate} busy={updateBusy} error={updateError} onCheck={() => void checkUpdates()} onInstall={() => void confirmUpdateInstall()}/><button className="button quiet full" onClick={() => void initialize()}><RefreshCw size={14}/>{tr("app.s0507")}</button></div>
-      </Dialog>}
+      {showRuntime && <RuntimeSettingsDialog
+        returnFocusRef={runtimeButtonRef}
+        runtime={runtime}
+        modelPath={modelPath}
+        transcriptionConfig={transcriptionConfig}
+        transcriptionHealth={transcriptionHealth}
+        busy={Boolean(busy)}
+        models={models}
+        modelJob={modelJob}
+        speakerPackage={speakerPackage}
+        speakerJob={speakerJob?.kind === "install" ? speakerJob : null}
+        updatePolicy={updatePolicy}
+        availableUpdate={availableUpdate}
+        updateBusy={updateBusy}
+        updateError={updateError}
+        onClose={() => setShowRuntime(false)}
+        onChooseModel={chooseModel}
+        onSaveTranscriptionProvider={saveTranscriptionProvider}
+        onCheckTranscriptionProvider={checkTranscriptionProvider}
+        onSelectAsrBackend={changeAsrBackend}
+        onSelectModel={(path) => { localStorage.setItem("siaocut.modelPath", path); setModelPath(path); }}
+        onInstallModel={installModel}
+        onCancelModel={cancelModel}
+        onRemoveModel={removeModel}
+        onInstallSpeakerPackage={installSpeakerPackage}
+        onCancelSpeakerJob={cancelSpeakerJob}
+        onResumeSpeakerJob={resumeSpeakerJob}
+        onOpenDiagnostics={openDiagnostics}
+        onCheckUpdates={() => void checkUpdates()}
+        onInstallUpdate={() => void confirmUpdateInstall()}
+        onRefresh={() => void initialize()}
+      />}
       {showTranscriptionCandidate && transcriptionJob?.status === "awaiting_apply" && <Suspense fallback={null}><TranscriptionCandidateDialog job={transcriptionJob} busy={Boolean(busy)} confirmed={transcriptionApplyConfirmed} onConfirmedChange={setTranscriptionApplyConfirmed} onApply={applyTranscriptionCandidate} onDiscard={discardTranscriptionCandidate} onClose={() => { if (!busy) { setShowTranscriptionCandidate(false); setTranscriptionApplyConfirmed(false); } }}/></Suspense>}
       {currentDeleteCandidate && <Suspense fallback={null}><ProjectDeleteDialog project={currentDeleteCandidate} checking={deletePreflightBusy} deleting={deleteBusy} deletable={Boolean(deletionPreflight?.deletable)} blockerMessage={deleteBlockMessage} error={deleteError} onClose={closeDeleteDialog} onDelete={() => void deleteProject()}/></Suspense>}
       {showSourceImport && <Dialog label={tr("app.s0513")} className="runtime-dialog source-dialog" onClose={() => setShowSourceImport(false)} returnFocusRef={sourceButtonRef}><button autoFocus className="dialog-close" aria-label={tr("app.s0514")} title={tr("app.s0515")} onClick={() => setShowSourceImport(false)}><X size={18}/></button><p className="eyebrow">{tr("app.s0516")}</p><h2>{tr("app.s0517")}</h2><p className="dialog-copy">{tr("app.s0518")}</p>
