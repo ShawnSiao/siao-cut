@@ -23,7 +23,10 @@ test("switches the application chrome to English without reloading the project",
   await expect(page.getByRole("combobox", { name: "Source language" })).toHaveValue("en");
   await page.getByRole("combobox", { name: "Agent workflow" }).selectOption("edit");
   await page.getByRole("button", { name: "Send to Agent" }).click();
-  await expect(page.getByRole("region", { name: "Waiting for Codex Worker" })).toContainText("Media files and paths are never included");
+  await page.getByRole("checkbox", { name: "I will continue in an external Agent tool that can access this computer's SiaoCut Core." }).check();
+  await page.getByRole("button", { name: "Create handoff task" }).click();
+  await expect(page.getByText("Waiting for an external Agent to claim")).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Complete instructions to copy to the external Agent" })).toContainText("task claim");
   await expect(page.locator(".task-item.processing strong").filter({ hasText: "edit" })).toBeVisible();
   await expect(projectHeading).toHaveText("发布口播 · 草稿");
   await expect(page.locator("html")).toHaveAttribute("lang", "en-US");
@@ -416,4 +419,35 @@ test("runs a resumable one-click workflow through the human review gate", async 
   await status.getByRole("button", { name: "确认完成并继续" }).click();
   await expect(status.getByText(/已完成 · 流程完成/)).toBeVisible({ timeout: 3000 });
   await expect(page.getByText(/一键工作流已完成，视频已导出到/)).toBeVisible();
+});
+
+test("uses MOSS as an explicit multispeaker mode with loopback settings and review", async ({ page }) => {
+  await page.goto("/");
+  await bindMockMedia(page);
+  await page.getByRole("combobox", { name: "转写模式" }).selectOption("multispeaker");
+  const start = page.getByRole("button", { name: "开始多人转写" });
+  await expect(start).toBeEnabled();
+  await start.click();
+  await expect(page.getByText(/字幕和说话人轨已作为一个版本写入/)).toBeVisible();
+  const review = page.getByRole("region", { name: "多人转写复核" });
+  await expect(review.getByText("快速人物切换")).toBeVisible();
+  await expect(page.getByText("当前结果没有词级时间戳")).toBeVisible();
+
+  await page.getByRole("combobox", { name: "Agent 工作流" }).selectOption("speaker_names");
+  await expect(page.getByRole("button", { name: "交给 Agent" })).toBeEnabled();
+  await page.getByRole("button", { name: "打开导出设置" }).click();
+  const exportPanel = page.getByLabel("导出设置");
+  await exportPanel.getByLabel("导出格式").selectOption("json");
+  await expect(exportPanel.getByText(/始终保留模型、人物轨、段落关联和复核状态/)).toBeVisible();
+  const transcriptExport = exportPanel.getByRole("button", { name: "导出字幕" });
+  await expect(transcriptExport).toBeDisabled();
+  await exportPanel.getByRole("checkbox", { name: /确认带着 1 个未处理警告/ }).check();
+  await expect(transcriptExport).toBeEnabled();
+  await exportPanel.getByRole("button", { name: "关闭导出设置" }).click();
+
+  await page.getByRole("button", { name: "运行环境" }).click();
+  const settings = page.getByRole("dialog", { name: "运行环境" });
+  const provider = settings.getByRole("region", { name: "MOSS 多人长音频服务" });
+  await expect(provider.locator("input").first()).toHaveValue("http://127.0.0.1:8000");
+  await expect(provider.getByText("服务可用", { exact: true })).toBeVisible();
 });

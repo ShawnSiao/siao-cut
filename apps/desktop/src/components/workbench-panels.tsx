@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Activity, Check, CircleAlert, Clock3, Cpu, Database, Download, FileVideo2, FolderOpen, HardDrive, Headphones, LoaderCircle, RefreshCw, ShieldCheck, Users } from "lucide-react";
 import { getUiLocale, tr } from "../i18n";
-import type { AudioAnalysisJob, AudioRisk, ModelDownloadJob, ModelStatus, Project, RuntimeInfo, Segment, SpeakerIdentity, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SpeechEvidence, SpeechInsights, SpeechPause, UpdateMetadata, UpdatePolicy } from "../types";
+import type { AudioAnalysisJob, AudioRisk, ModelDownloadJob, ModelStatus, Project, RuntimeInfo, Segment, SpeakerIdentity, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SpeechEvidence, SpeechInsights, SpeechPause, TranscriptionProviderConfig, TranscriptionProviderHealth, TranscriptionReviewItem, UpdateMetadata, UpdatePolicy } from "../types";
 import { JobFailureDetails } from "./job-failure";
 import { audioRiskLabel, audioUnitLabel, formatBytes, formatTime, modelDescription, modelName, patchReasonLabel, type SegmentSelectionMode } from "../app-view-model";
 export function SpeechInsightsPanel({ insights, onLocateEvidence, onLocatePause }: {
@@ -117,6 +117,49 @@ export function SpeakerIdentityRow({ speaker, allSpeakers, disabled, onRename, o
     } }} title={tr("app.s0571")}/>
     {allSpeakers.length > 1 && <><select aria-label={tr("app.s0572", { "0": speaker.label })} value={mergeTarget} disabled={disabled} onChange={(event) => setMergeTarget(event.target.value)}><option value="">{tr("app.s0573")}</option>{allSpeakers.filter((item) => item.id !== speaker.id).map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select><button disabled={disabled || !mergeTarget} onClick={() => mergeTarget && onMerge(speaker.id, mergeTarget)}>{tr("app.s0352")}</button></>}
   </div>;
+}
+
+export function TranscriptionProviderSettings({ config, health, busy, onSave, onCheck }: {
+    config: TranscriptionProviderConfig | null;
+    health: TranscriptionProviderHealth | null;
+    busy: boolean;
+    onSave: (endpoint: string, modelId: string) => void;
+    onCheck: () => void;
+}) {
+    const [endpoint, setEndpoint] = useState(config?.endpoint ?? "http://127.0.0.1:8000");
+    const [modelId, setModelId] = useState(config?.modelId ?? "OpenMOSS-Team/MOSS-Transcribe-Diarize");
+    useEffect(() => { if (config) { setEndpoint(config.endpoint); setModelId(config.modelId); } }, [config]);
+    const changed = Boolean(config && (endpoint.trim() !== config.endpoint || modelId.trim() !== config.modelId));
+    return <section className="moss-provider-settings" aria-label={tr("app.moss.settings.title")}>
+      <div className="model-heading"><span><strong>{tr("app.moss.settings.title")}</strong><small>{tr("app.moss.settings.subtitle")}</small></span><Users size={17}/></div>
+      <div className="moss-provider-fields">
+        <label><span>{tr("app.moss.settings.endpoint")}</span><input value={endpoint} disabled={busy} spellCheck={false} onChange={(event) => setEndpoint(event.target.value)}/><small>{tr("app.moss.settings.loopback")}</small></label>
+        <label><span>{tr("app.moss.settings.model")}</span><input value={modelId} disabled={busy} spellCheck={false} onChange={(event) => setModelId(event.target.value)}/></label>
+      </div>
+      <div className={`moss-health ${health?.state ?? "unknown"}`} role="status"><i/>
+        <span><strong>{health?.state === "healthy" ? tr("app.moss.health.healthy") : health?.state === "unavailable" ? tr("app.moss.health.unavailable") : tr("app.moss.health.unchecked")}</strong><small>{health?.detail ?? tr("app.moss.health.help")}</small></span>
+        <button disabled={busy || changed} onClick={onCheck}><RefreshCw size={13}/>{tr("app.moss.health.check")}</button>
+      </div>
+      <div className="model-actions"><button className="primary" disabled={busy || !changed || !endpoint.trim() || !modelId.trim()} onClick={() => onSave(endpoint.trim(), modelId.trim())}>{tr("app.moss.settings.save")}</button></div>
+      <p className="runtime-disclosure">{tr("app.moss.settings.disclosure")}</p>
+    </section>;
+}
+
+export function TranscriptionReviewPanel({ items, disabled, onLocate, onResolve }: {
+    items: TranscriptionReviewItem[];
+    disabled: boolean;
+    onLocate: (segmentId: string) => void;
+    onResolve: (itemId: string, action: "resolved" | "ignored") => void;
+}) {
+    if (!items.length) return null;
+    return <section className="moss-review-list" aria-label={tr("app.moss.review.title")}>
+      <header><strong>{tr("app.moss.review.title")}</strong><small>{items.length}</small></header>
+      {items.map((item) => <article className={`review-item moss-review ${item.severity}`} key={item.id}>
+        <span className={`review-tag ${item.severity}`}><CircleAlert size={12}/>{item.kind === "rapid_speaker_switch" ? tr("app.moss.review.rapidSwitch") : item.kind === "short_fragment" ? tr("app.moss.review.shortFragment") : tr("app.moss.review.punctuation")}</span>
+        <p>{item.message}</p>
+        <div className="patch-actions">{item.segmentId && <button disabled={disabled} onClick={() => onLocate(item.segmentId!)}>{tr("app.moss.review.locate")}</button>}<span/><button disabled={disabled} onClick={() => onResolve(item.id, "ignored")}>{tr("app.moss.review.ignore")}</button><button className="apply" disabled={disabled} onClick={() => onResolve(item.id, "resolved")}>{tr("app.moss.review.resolved")}</button></div>
+      </article>)}
+    </section>;
 }
 export function PatchReviewCard({ item, onReview, onSelect }: {
     item: Project["patchSets"][number]["items"][number];

@@ -1,5 +1,5 @@
 import { sampleProject } from "./mock";
-import type { AudioAnalysisJob, AutoWorkflow, CoreEnvelope, ExportJob, ModelDownloadJob, ModelStatus, Project, RuntimeInfo, SourceImportJob, SourcePreview, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SubtitleImportPreview, SubtitleStructureEdit, UpdateDownloadEvent, UpdateMetadata, UpdatePolicy } from "./types";
+import type { AudioAnalysisJob, AutoWorkflow, CoreEnvelope, ExportJob, ModelDownloadJob, ModelStatus, Project, RuntimeInfo, SourceImportJob, SourcePreview, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SubtitleImportPreview, SubtitleStructureEdit, TranscriptionJob, TranscriptionProviderConfig, TranscriptionProviderHealth, TranscriptionReviewItem, UpdateDownloadEvent, UpdateMetadata, UpdatePolicy } from "./types";
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
 const mockSubtitleStylePresets = [
@@ -39,6 +39,10 @@ const mockAutoPolls = new Map<string, number>();
 const mockAudioJobs = new Map<string, AudioAnalysisJob>();
 const mockSpeakerJobs = new Map<string, SpeakerJob>();
 const mockSpeakerTracks = new Map<string, SpeakerTrack>();
+const mockTranscriptionJobs = new Map<string, TranscriptionJob>();
+let mockTranscriptionConfig: TranscriptionProviderConfig = { providerId: "moss_openai", endpoint: "http://127.0.0.1:8000", modelId: "OpenMOSS-Team/MOSS-Transcribe-Diarize", updatedAt: new Date().toISOString() };
+let mockTranscriptionHealth: TranscriptionProviderHealth = { ...mockTranscriptionConfig, state: "healthy", detail: "本机 MOSS 服务可用。", checkedAt: new Date().toISOString() };
+let mockTranscriptionReviews: TranscriptionReviewItem[] = [];
 
 function syncMockProject(next: Project): Project {
   mockProject = structuredClone(next);
@@ -91,6 +95,9 @@ const emptySpeakerTrack = (): SpeakerTrack => ({
   runtimeVersion: "sherpa-onnx 1.13.2",
   segmentationModel: "pyannote segmentation 3.0 int8",
   embeddingModel: "3D-Speaker ERes2Net Base 16 kHz",
+  providerId: "legacy_diarization",
+  modelId: "",
+  sourceKind: "cascade",
   generatedAt: null,
   speakers: [],
   turns: [],
@@ -693,6 +700,31 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
     mockSpeakerTracks.set(args[2], track);
     return { apiVersion: "0.1", status: "ok", speakerTrack: structuredClone(track) };
   }
+  if (command === "transcription" && subcommand === "providers") return { apiVersion: "0.1", status: "ok", providers: [{ id: "whisper_cpp", role: "quick", isDefault: true, wordTimings: true, integratedDiarization: false }, { id: "moss_openai", role: "multispeaker_longform", isDefault: false, wordTimings: false, integratedDiarization: true, config: structuredClone(mockTranscriptionConfig) }] };
+  if (command === "transcription" && subcommand === "configure") {
+    mockTranscriptionConfig = { providerId: "moss_openai", endpoint: valueAfter("--endpoint") ?? mockTranscriptionConfig.endpoint, modelId: valueAfter("--model") ?? mockTranscriptionConfig.modelId, updatedAt: new Date().toISOString() };
+    mockTranscriptionHealth = { ...mockTranscriptionConfig, state: "healthy", detail: "本机 MOSS 服务可用。", checkedAt: new Date().toISOString() };
+    return { apiVersion: "0.1", status: "ok", config: structuredClone(mockTranscriptionConfig) };
+  }
+  if (command === "transcription" && subcommand === "health") return { apiVersion: "0.1", status: "ok", providerHealth: structuredClone(mockTranscriptionHealth) };
+  if (command === "transcription" && subcommand === "latest") return { apiVersion: "0.1", status: "ok", transcriptionJob: Array.from(mockTranscriptionJobs.values()).filter((job) => job.projectId === args[2]).at(-1) ?? null };
+  if (command === "transcription" && subcommand === "jobs") return { apiVersion: "0.1", status: "ok", transcriptionJobs: Array.from(mockTranscriptionJobs.values()).reverse() };
+  if (command === "transcription" && subcommand === "start") {
+    const timestamp = new Date().toISOString();
+    const job: TranscriptionJob = { id: `transcription-${Date.now()}`, projectId: args[2], providerId: "moss_openai", endpoint: mockTranscriptionConfig.endpoint, modelId: mockTranscriptionConfig.modelId, language: valueAfter("--language"), prompt: valueAfter("--prompt"), hotwords: [], status: "completed", stage: "completed", resultRunId: "trun-demo", cancelRequestedAt: null, errorMessage: null, createdAt: timestamp, updatedAt: timestamp, completedAt: timestamp, attemptCount: 1 };
+    mockTranscriptionJobs.set(job.id, job);
+    const track = analyzedSpeakerTrack();
+    track.providerId = "moss_openai"; track.modelId = mockTranscriptionConfig.modelId; track.sourceKind = "end_to_end"; track.runtimeVersion = "openai-compatible-loopback-v1";
+    mockSpeakerTracks.set(args[2], track);
+    mockTranscriptionReviews = [{ id: "review-demo", projectId: args[2], runId: "trun-demo", segmentId: "s3", severity: "warning", kind: "rapid_speaker_switch", message: "这里发生快速说话人切换，请人工确认人物归属。", status: "open", createdAt: timestamp, resolvedAt: null }];
+    return { apiVersion: "0.1", status: "ok", transcriptionJob: structuredClone(job) };
+  }
+  if (command === "transcription" && subcommand === "status") return { apiVersion: "0.1", status: "ok", transcriptionJob: structuredClone(mockTranscriptionJobs.get(args[2]) ?? null) };
+  if (command === "transcription" && subcommand === "cancel") { const job = mockTranscriptionJobs.get(args[2]); if (job) job.status = "cancelled"; return { apiVersion: "0.1", status: "ok", transcriptionJob: structuredClone(job) }; }
+  if (command === "transcription" && subcommand === "resume") { const job = mockTranscriptionJobs.get(args[2]); if (job) { job.status = "completed"; job.stage = "completed"; job.attemptCount += 1; } return { apiVersion: "0.1", status: "ok", transcriptionJob: structuredClone(job) }; }
+  if (command === "transcription" && subcommand === "review") return { apiVersion: "0.1", status: "ok", reviewItems: structuredClone(mockTranscriptionReviews.filter((item) => args.includes("--all") || item.status === "open")) };
+  if (command === "transcription" && subcommand === "resolve") { const item = mockTranscriptionReviews.find((candidate) => candidate.id === args[2]); if (item) { item.status = valueAfter("--action") as TranscriptionReviewItem["status"]; item.resolvedAt = new Date().toISOString(); } return { apiVersion: "0.1", status: "ok", reviewItem: structuredClone(item) }; }
+  if (command === "transcription" && subcommand === "export") return { apiVersion: "0.1", status: "ok", projectId: args[2], output: valueAfter("--output"), format: valueAfter("--format"), audit: { ready: true, openErrorCount: 0, openWarningCount: mockTranscriptionReviews.filter((item) => item.status === "open" && item.severity === "warning").length, warningsConfirmed: args.includes("--confirm-warnings") } };
   if (command === "source" && subcommand === "inspect") {
     return { apiVersion: "0.1", status: "ok", source: { ...mockSourcePreview, originalUrl: args[2], webpageUrl: args[2] }, message: "已读取公开单视频信息；确认前不会下载或创建项目。" };
   }
@@ -902,7 +934,7 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
     const language = valueAfter("--lang");
     mockProject.tasks.push({ id: taskId, kind: args[args.indexOf("--kind") + 1], language, status: "queued", progress: 0, errorMessage: null, workflowId, instructionLocale });
     mockProject.workflows.push({ id: workflowId, kind: args[args.indexOf("--kind") + 1], language, status: "waiting_agent", taskId, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), instructionLocale });
-    return { apiVersion: "0.1", status: "ok", project: mockProject, workflowId, message: "工作流已创建，需要 Agent 继续。" };
+    return { apiVersion: "0.1", status: "ok", project: mockProject, workflowId, taskId, message: "工作流已创建，需要 Agent 继续。" };
   }
   if (command === "task" && subcommand === "review") {
     const item = mockProject.patchSets.flatMap((set) => set.items).find((candidate) => candidate.id === args[2]);

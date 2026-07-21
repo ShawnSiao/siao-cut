@@ -1,7 +1,7 @@
 import { tr } from "../i18n";
 import type { TranslationKey } from "../locales";
 
-export type JobFailureContext = "export" | "source" | "model" | "audio" | "speaker" | "agent" | "auto";
+export type JobFailureContext = "export" | "source" | "model" | "audio" | "speaker" | "transcription" | "agent" | "auto";
 
 const contextMessageKeys: Record<JobFailureContext, TranslationKey> = {
   export: "app.error.exportFailed",
@@ -9,6 +9,7 @@ const contextMessageKeys: Record<JobFailureContext, TranslationKey> = {
   model: "app.error.modelDownloadFailed",
   audio: "app.error.audioAnalysisFailed",
   speaker: "app.error.speakerTaskFailed",
+  transcription: "app.error.transcriptionFailed",
   agent: "app.error.agentTaskFailed",
   auto: "app.error.autoWorkflowFailed",
 };

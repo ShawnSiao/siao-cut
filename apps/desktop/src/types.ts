@@ -72,6 +72,9 @@ export type Task = {
   kind: string;
   language: string | null;
   status: TaskStatus;
+  createdAt?: string;
+  lease?: { worker: string; id: string; expiresAt: string } | null;
+  lastActivity?: { kind: string; progress: number | null; message: string; createdAt: string } | null;
   stageCode?: string | null;
   progress: number;
   errorMessage: string | null;
@@ -402,6 +405,9 @@ export type SpeakerTrack = {
   runtimeVersion: string;
   segmentationModel: string;
   embeddingModel: string;
+  providerId: string;
+  modelId: string;
+  sourceKind: "cascade" | "end_to_end" | string;
   generatedAt: string | null;
   speakers: SpeakerIdentity[];
   turns: SpeakerTurn[];
@@ -459,6 +465,57 @@ export type AutoWorkflow = {
   workerPid?: number | null;
   attemptCount: number;
   instructionLocale: UiLocale;
+};
+
+export type TranscriptionProviderConfig = {
+  providerId: "moss_openai" | string;
+  endpoint: string;
+  modelId: string;
+  updatedAt: string;
+};
+
+export type TranscriptionProviderHealth = {
+  providerId: string;
+  endpoint: string;
+  modelId: string;
+  state: "healthy" | "unavailable";
+  detail: string;
+  checkedAt: string;
+};
+
+export type TranscriptionJob = {
+  id: string;
+  projectId: string;
+  providerId: string;
+  endpoint: string;
+  modelId: string;
+  language: string | null;
+  prompt: string | null;
+  hotwords: string[];
+  status: BackgroundJobStatus;
+  stage: string;
+  resultRunId: string | null;
+  cancelRequestedAt: string | null;
+  errorMessage: string | null;
+  errorCode?: CoreErrorCode | null;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+  workerPid?: number | null;
+  attemptCount: number;
+};
+
+export type TranscriptionReviewItem = {
+  id: string;
+  projectId: string;
+  runId: string;
+  segmentId: string | null;
+  severity: "info" | "warning" | "error";
+  kind: "missing_punctuation" | "rapid_speaker_switch" | "short_fragment" | string;
+  message: string;
+  status: "open" | "resolved" | "ignored";
+  createdAt: string;
+  resolvedAt: string | null;
 };
 
 export type AutoWorkflowEvent = {
@@ -565,6 +622,7 @@ export type CoreEnvelope = {
   error?: { code: CoreErrorCode; message: string; technicalDetails?: string | null };
   code?: CoreErrorCode;
   message?: string;
+  taskId?: string;
   project?: Project;
   projects?: Project[];
   job?: ExportJob;
@@ -588,6 +646,12 @@ export type CoreEnvelope = {
   speakerTrack?: SpeakerTrack;
   speakerJob?: SpeakerJob;
   speakerJobs?: SpeakerJob[];
+  config?: TranscriptionProviderConfig;
+  providerHealth?: TranscriptionProviderHealth;
+  transcriptionJob?: TranscriptionJob | null;
+  transcriptionJobs?: TranscriptionJob[];
+  reviewItem?: TranscriptionReviewItem;
+  reviewItems?: TranscriptionReviewItem[];
   subtitleQuality?: SubtitleQualityReport;
   subtitleStyle?: SubtitleStyle;
   subtitleStylePresets?: SubtitleStylePresetOption[];
