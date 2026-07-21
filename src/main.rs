@@ -249,6 +249,16 @@ enum TranscriptionCommand {
         #[arg(long, hide = true)]
         start_delay_ms: Option<u64>,
     },
+    Apply {
+        job_id: String,
+        #[arg(long)]
+        expected_version: String,
+        #[arg(long)]
+        confirm_replace: bool,
+    },
+    Discard {
+        job_id: String,
+    },
     Review {
         project_id: String,
         #[arg(long)]
@@ -1593,6 +1603,23 @@ fn run(cli: Cli) -> Result<Value> {
             } => Ok(envelope(
                 json!({"transcriptionJob": transcription::resume(&mut database, &job_id, start_delay_ms)?, "message": "转写任务已显式继续。"}),
             )),
+            TranscriptionCommand::Apply {
+                job_id,
+                expected_version,
+                confirm_replace,
+            } => Ok(envelope(json!({
+                "transcriptionJob": transcription::apply_candidate(
+                    &mut database,
+                    &job_id,
+                    &expected_version,
+                    confirm_replace,
+                )?,
+                "message": "转写结果已替换字幕和说话人轨；可以通过项目历史撤销。"
+            }))),
+            TranscriptionCommand::Discard { job_id } => Ok(envelope(json!({
+                "transcriptionJob": transcription::discard_candidate(&mut database, &job_id)?,
+                "message": "待应用的转写结果已丢弃。"
+            }))),
             TranscriptionCommand::Review { project_id, all } => Ok(envelope(
                 json!({"reviewItems": transcription::review_items(&database, &project_id, !all)?}),
             )),

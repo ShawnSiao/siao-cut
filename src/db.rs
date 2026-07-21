@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 21;
+pub const CURRENT_SCHEMA_VERSION: i64 = 22;
 
 struct Migration {
     version: i64,
@@ -97,6 +97,10 @@ const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 21,
         apply: migration_21_transcription_consistency,
+    },
+    Migration {
+        version: 22,
+        apply: migration_22_transcription_candidate_summary,
     },
 ];
 
@@ -886,6 +890,14 @@ fn migration_21_transcription_consistency(tx: &Transaction<'_>) -> Result<()> {
              WHERE status IN ('queued','running','finalizing','awaiting_apply');
          CREATE INDEX idx_transcription_runs_project ON transcription_runs(project_id,created_at);
          CREATE INDEX idx_transcription_review_project ON transcription_review_items(project_id,status,severity);",
+    )?;
+    Ok(())
+}
+
+fn migration_22_transcription_candidate_summary(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute_batch(
+        "ALTER TABLE transcription_runs ADD COLUMN duration_seconds REAL;
+         ALTER TABLE transcription_runs ADD COLUMN warning_count INTEGER NOT NULL DEFAULT 0;",
     )?;
     Ok(())
 }
