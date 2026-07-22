@@ -3,17 +3,24 @@ use std::{
     env,
     ffi::OsStr,
     io, mem,
-    os::windows::{ffi::OsStrExt, process::CommandExt},
+    os::windows::{ffi::OsStrExt, io::AsRawHandle, process::CommandExt},
     path::Path,
     process::{Child, Command},
     ptr,
 };
 use uuid::Uuid;
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, STILL_ACTIVE},
-    System::Threading::{
-        CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CreateProcessW, GetExitCodeProcess,
-        OpenProcess, PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, STARTUPINFOW,
+    Foundation::{CloseHandle, HANDLE, STILL_ACTIVE},
+    System::{
+        JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+            SetInformationJobObject,
+        },
+        Threading::{
+            CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CreateProcessW, GetExitCodeProcess,
+            OpenProcess, PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, STARTUPINFOW,
+        },
     },
 };
 
@@ -118,6 +125,47 @@ pub fn terminate_process_tree_by_id(process_id: u32) -> bool {
         .stderr(std::process::Stdio::null())
         .status()
         .is_ok_and(|status| status.success())
+}
+
+/// Owns a Windows Job Object configured to terminate the assigned child tree
+/// when the worker exits or drops the handle.
+pub struct KillOnCloseJob {
+    handle: HANDLE,
+}
+
+impl KillOnCloseJob {
+    pub fn assign(child: &Child) -> io::Result<Self> {
+        let handle = unsafe { CreateJobObjectW(ptr::null(), ptr::null()) };
+        if handle.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { mem::zeroed() };
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let configured = unsafe {
+            SetInformationJobObject(
+                handle,
+                JobObjectExtendedLimitInformation,
+                (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+                mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )
+        };
+        if configured == 0 {
+            unsafe { CloseHandle(handle) };
+            return Err(io::Error::last_os_error());
+        }
+        let assigned = unsafe { AssignProcessToJobObject(handle, child.as_raw_handle() as HANDLE) };
+        if assigned == 0 {
+            unsafe { CloseHandle(handle) };
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self { handle })
+    }
+}
+
+impl Drop for KillOnCloseJob {
+    fn drop(&mut self) {
+        unsafe { CloseHandle(self.handle) };
+    }
 }
 
 pub fn available_space(path: &Path) -> io::Result<u64> {

@@ -574,6 +574,49 @@ pub struct AgentPatchSet {
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct AgentRunBatch {
+    pub id: String,
+    pub ordinal: u32,
+    pub status: String,
+    pub segment_ids: Vec<String>,
+    pub codex_thread_id: Option<String>,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub attempt_count: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRun {
+    pub id: String,
+    pub task_id: String,
+    pub project_id: String,
+    pub provider: String,
+    pub status: String,
+    pub base_version_id: String,
+    pub progress: f64,
+    pub current_batch: u32,
+    pub batch_count: u32,
+    pub timeout_seconds: u64,
+    pub cli_version: Option<String>,
+    pub auth_mode: Option<String>,
+    pub codex_thread_id: Option<String>,
+    pub cancel_requested_at: Option<String>,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub worker_pid: Option<u32>,
+    pub attempt_count: u32,
+    pub batches: Vec<AgentRunBatch>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct Workflow {
     pub id: String,
     pub kind: String,
