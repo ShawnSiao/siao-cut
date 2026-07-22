@@ -165,11 +165,14 @@ pub fn transcribe(
         language,
         vad_model.as_deref(),
     )?;
-    if vad_model.is_some()
-        && whisper_transcription_is_empty(&output_base.with_extension("json"))?
-        && audio_has_retryable_signal(&ffmpeg, &wav)?
-    {
-        run_whisper(&whisper, model, &wav, &output_base, language, None)?;
+    if vad_model.is_some() {
+        let json_path = output_base.with_extension("json");
+        let retry_without_vad = whisper_word_timeline_is_compressed(&json_path)?
+            || (whisper_transcription_is_empty(&json_path)?
+                && audio_has_retryable_signal(&ffmpeg, &wav)?);
+        if retry_without_vad {
+            run_whisper(&whisper, model, &wav, &output_base, language, None)?;
+        }
     }
     import_whisper_json(db, &project.id, &output_base.with_extension("json"))
 }
@@ -228,6 +231,45 @@ fn whisper_transcription_is_empty(json_path: &Path) -> Result<bool> {
         .get("transcription")
         .and_then(Value::as_array)
         .is_some_and(Vec::is_empty))
+}
+
+fn whisper_word_timeline_is_compressed(json_path: &Path) -> Result<bool> {
+    let raw: Value = serde_json::from_str(
+        &fs::read_to_string(json_path).context("whisper.cpp 未生成 JSON 输出")?,
+    )?;
+    let Some(entries) = raw.get("transcription").and_then(Value::as_array) else {
+        return Ok(false);
+    };
+    let segment_end = entries
+        .iter()
+        .filter_map(|item| {
+            item.pointer("/timestamps/to")
+                .and_then(Value::as_str)
+                .and_then(|value| parse_whisper_timestamp(value).ok())
+        })
+        .fold(0.0_f64, f64::max);
+    let word_end = entries
+        .iter()
+        .flat_map(|item| {
+            item.get("tokens")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .filter_map(|token| {
+            let text = token.get("text").and_then(Value::as_str)?.trim();
+            if text.is_empty() || text.starts_with("[_") || text.starts_with("<|") {
+                return None;
+            }
+            token
+                .pointer("/timestamps/to")
+                .and_then(Value::as_str)
+                .and_then(|value| parse_whisper_timestamp(value).ok())
+        })
+        .fold(0.0_f64, f64::max);
+
+    let gap = segment_end - word_end;
+    Ok(segment_end > 0.0 && word_end > 0.0 && gap > 5.0 && word_end < segment_end * 0.9)
 }
 
 fn audio_has_retryable_signal(ffmpeg: &str, wav: &Path) -> Result<bool> {
@@ -497,6 +539,26 @@ mod tests {
         fs::write(&populated, r#"{"transcription":[{"text":"speech"}]}"#).unwrap();
         assert!(whisper_transcription_is_empty(&empty).unwrap());
         assert!(!whisper_transcription_is_empty(&populated).unwrap());
+    }
+
+    #[test]
+    fn detects_a_vad_compressed_word_timeline_for_safe_retry() {
+        let temp = tempdir().unwrap();
+        let compressed = temp.path().join("compressed.json");
+        let aligned = temp.path().join("aligned.json");
+        fs::write(
+            &compressed,
+            r#"{"transcription":[{"timestamps":{"from":"00:00:00,820","to":"00:00:14,920"},"text":" first","tokens":[{"text":" first","timestamps":{"from":"00:00:00,070","to":"00:00:06,400"}}]},{"timestamps":{"from":"00:02:18,280","to":"00:02:21,840"},"text":" last","tokens":[{"text":" last","timestamps":{"from":"00:01:25,470","to":"00:01:26,600"}}]}]}"#,
+        )
+        .unwrap();
+        fs::write(
+            &aligned,
+            r#"{"transcription":[{"timestamps":{"from":"00:00:00,820","to":"00:00:14,920"},"text":" first","tokens":[{"text":" first","timestamps":{"from":"00:00:00,900","to":"00:00:06,400"}}]},{"timestamps":{"from":"00:02:18,280","to":"00:02:21,840"},"text":" last","tokens":[{"text":" last","timestamps":{"from":"00:02:18,470","to":"00:02:21,600"}}]}]}"#,
+        )
+        .unwrap();
+
+        assert!(whisper_word_timeline_is_compressed(&compressed).unwrap());
+        assert!(!whisper_word_timeline_is_compressed(&aligned).unwrap());
     }
 
     #[test]
