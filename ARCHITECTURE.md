@@ -42,6 +42,10 @@ Task leases support heartbeat, progress events, failure, retry, cancellation and
 
 React 仅调用已注册的 Tauri 命令。Tauri Rust 层以参数数组调用 `siaocut-core --json`，拒绝内部服务命令和未知顶级命令；Core CLI 再通过 Windows 命名管道连接单实例服务。GUI 不读取数据库，也不把媒体路径交给 Agent。
 
+`apps/desktop/src/App.tsx` 只负责装配工作台。项目会话、后台任务、文稿编辑、Agent 审阅、导出与运行环境分别通过 `apps/desktop/src/domains/` 下的具名客户端调用 Core；组件、工作台控制器和普通 Hook 不得直接调用 `runCore`。`apps/desktop/src/architecture.test.ts` 检查该边界并限制 `App.tsx` 的规模。
+
+后台任务统一注册到 `useBackgroundTaskRegistry`。不同任务可以独立轮询，同一任务必须等待上一次请求结束后再调度下一次请求；任务结束或组件卸载时停止对应计时器，避免状态查询重入。
+
 本地媒体使用 Tauri asset 协议播放。项目读取完成后，Rust 层从 Core 响应中取得媒体路径并只授权该文件。静态配置中的 asset scope 保持为空，不配置全磁盘通配符。
 
 ## Windows release boundary
