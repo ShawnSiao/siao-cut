@@ -1,93 +1,119 @@
 <!--
-  SiaoCut workbench prototype
-  Assumptions: Chinese-first, desktop-wide editor for a single talking-head source.
-  Design reasoning: text stays the primary editing surface; the timeline proves every
-  operation; the preview confirms it. Dense dark surfaces reduce glare in long edits.
+  SiaoCut Creator Beta main-flow prototype
+  Source context: designs/siaocut-workbench (previous prototype) and apps/desktop.
+  Assumptions: Windows desktop, single talking-head source, local-first processing.
+  Design reasoning: one visible job at a time, transcript as the primary surface,
+  one mutually exclusive drawer, and advanced tools outside the default path.
 -->
 <!doctype html>
 <html lang="zh-CN">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>SiaoCut · 本地剪辑工作台</title>
+    <title>SiaoCut · Creator Beta 主流程</title>
     <link rel="stylesheet" href="styles.css">
   </head>
   <body>
-    <main class="app-shell" data-screen-label="SiaoCut 工作台">
-      <aside class="rail">
-        <div class="brand"><span class="brand-mark">S</span><span>SiaoCut</span></div>
-        <button class="new-project" id="newProject">＋ 新建项目</button>
-        <nav aria-label="项目导航">
-          <p class="nav-label">项目</p>
-          <button class="nav-item active"><span class="dot dot-live"></span>发布口播 · 草稿</button>
-          <button class="nav-item"><span class="dot"></span>五月复盘</button>
-          <button class="nav-item"><span class="dot"></span>产品演示</button>
-          <p class="nav-label lower">队列</p>
-          <button class="nav-item"><span class="signal">↗</span>等待 Agent <b>1</b></button>
-          <button class="nav-item"><span class="signal">✓</span>最近导出</button>
+    <main class="app-shell" data-screen-label="SiaoCut Creator Beta 主流程">
+      <aside class="rail" aria-label="项目与就绪状态">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">S</span>
+          <div><strong>SiaoCut</strong><small>Creator Beta</small></div>
+        </div>
+
+        <button class="import-button" id="importButton" type="button">
+          <span aria-hidden="true">＋</span>
+          <span data-i18n="importButton">导入素材</span>
+        </button>
+
+        <nav class="project-nav" aria-label="项目">
+          <p class="nav-label" data-i18n="projects">项目</p>
+          <button class="project-item active" type="button">
+            <span class="project-dot live" aria-hidden="true"></span>
+            <span><strong data-i18n="projectCurrent">发布口播</strong><small data-i18n="projectDraft">草稿 · 刚刚保存</small></span>
+          </button>
+          <button class="project-item" type="button">
+            <span class="project-dot" aria-hidden="true"></span>
+            <span><strong data-i18n="projectSecond">五月复盘</strong><small data-i18n="projectReview">待审阅</small></span>
+          </button>
         </nav>
-        <div class="rail-foot"><span class="privacy-dot"></span>素材只保存在本机</div>
+
+        <section class="readiness-card" aria-labelledby="readinessTitle">
+          <header>
+            <p class="nav-label" id="readinessTitle" data-i18n="deviceReady">本机就绪</p>
+            <span class="ready-count">3/4</span>
+          </header>
+          <ul>
+            <li><span class="check-dot ok"></span><span data-i18n="coreReady">编辑核心</span><small data-i18n="available">可用</small></li>
+            <li><span class="check-dot ok"></span><span>FFmpeg</span><small data-i18n="available">可用</small></li>
+            <li><span class="check-dot ok"></span><span data-i18n="transcribeReady">本机转写</span><small>CPU</small></li>
+            <li><span class="check-dot optional"></span><span>Codex</span><small data-i18n="optional">可选</small></li>
+          </ul>
+          <button class="text-button" id="advancedButton" type="button" data-i18n="advancedSettings">高级设置</button>
+        </section>
+
+        <div class="rail-footer">
+          <label>
+            <span data-i18n="language">界面语言</span>
+            <select id="localeSelect" aria-label="界面语言">
+              <option value="zh">简体中文</option>
+              <option value="en">English</option>
+            </select>
+          </label>
+          <p><span class="privacy-dot"></span><span data-i18n="privacy">素材只保存在本机</span></p>
+        </div>
       </aside>
 
       <section class="workbench">
         <header class="topbar">
-          <div><p class="eyebrow">项目 · 单源口播</p><h1>发布口播 · 草稿</h1></div>
-          <div class="top-actions"><span class="status"><i></i><span id="statusText">本地处理完成</span></span><button class="quiet" id="agentButton">交给 Agent</button><button class="export" id="exportButton">导出</button></div>
+          <div class="project-heading">
+            <p class="eyebrow" data-i18n="projectType">单源口播 · 本地项目</p>
+            <div class="title-row">
+              <h1 data-i18n="projectCurrent">发布口播</h1>
+              <span class="save-state" id="saveState" data-i18n="saved">已保存</span>
+            </div>
+          </div>
+          <div class="top-actions">
+            <button class="top-button" id="undoButton" type="button" data-i18n-title="undo" aria-label="撤销">↶</button>
+            <button class="top-button" id="moreButton" type="button" data-i18n-title="more" aria-label="更多">•••</button>
+            <button class="primary-action" id="primaryAction" type="button">开始处理</button>
+          </div>
         </header>
 
-        <section class="stage">
-          <div class="video-panel">
-            <div class="preview" id="preview"><div class="preview-copy"><p id="playTime">00:00:12</p><strong>从文稿开始，把每个决定留在时间线上。</strong></div><button class="play" id="playButton" aria-label="播放或暂停">▶</button></div>
-            <div class="transport"><button id="previous">↶</button><button id="playMini">播放</button><span id="currentTime">00:00:12.4</span><div class="scrubber"><span id="scrubPosition"></span></div><span>04:38</span><button>⚙</button></div>
-          </div>
-          <aside class="inspector">
-            <div class="panel-heading"><div><p class="eyebrow">待确认</p><h2>剪辑建议</h2></div><span class="count" id="suggestionCount">2</span></div>
-            <div id="suggestionList"></div>
-            <div class="version-note"><span class="history-icon">◌</span><div><strong>原片未改动</strong><p id="versionText">可恢复到导入版本</p></div></div>
-          </aside>
-        </section>
+        <ol class="flow-steps" id="flowSteps" aria-label="项目流程"></ol>
 
-        <section class="editor-grid">
-          <article class="transcript-panel">
-            <header class="panel-heading transcript-heading"><div><p class="eyebrow">可校对文稿</p><h2>转录</h2></div><div class="panel-controls"><button id="findButton">查找</button><button id="languageButton">中文 · 原文</button></div></header>
-            <div class="transcript-meta"><span>点选文字定位视频</span><span class="confidence">置信度提示已开启</span></div>
-            <div class="transcript-list" id="transcriptList"></div>
-          </article>
-          <aside class="context-panel">
-            <p class="eyebrow">当前段落</p><h2 id="contextTitle">从文本剪辑，而不是猜测。</h2>
-            <dl><div><dt>时间</dt><dd id="contextTime">00:00:12 — 00:00:18</dd></div><div><dt>状态</dt><dd id="contextStatus">已校对</dd></div><div><dt>译文</dt><dd id="translationStatus">已同步</dd></div></dl>
-            <button class="outline" id="restoreButton">恢复此处</button>
-          </aside>
-        </section>
-
-        <section class="timeline-panel">
-          <div class="timeline-head"><div><p class="eyebrow">证据与节奏</p><h2>时间轴</h2></div><div class="timeline-actions"><button id="zoomOut">−</button><span id="zoomLevel">100%</span><button id="zoomIn">＋</button></div></div>
-          <div class="ruler"><span>00:00</span><span>01:00</span><span>02:00</span><span>03:00</span><span>04:00</span></div>
-          <div class="waveform" id="waveform"><div class="playhead" id="playhead"></div></div>
-          <div class="caption-track" id="captionTrack"></div>
-          <p class="timeline-note" id="timelineNote">虚线标记为建议，尚未删除任何内容。</p>
-        </section>
+        <div class="workspace-grid">
+          <section class="main-surface" id="mainSurface" data-screen-label="文稿主工作区"></section>
+          <aside class="drawer" id="drawer" data-screen-label="单一任务抽屉"></aside>
+        </div>
       </section>
     </main>
 
-    <dialog id="welcomeDialog">
+    <div class="prototype-switcher" role="group" aria-label="原型状态">
+      <span data-i18n="prototypeState">原型状态</span>
+      <button type="button" data-view="setup" data-i18n="stateSetup">首次导入</button>
+      <button type="button" data-view="review" data-i18n="stateReview">文稿审阅</button>
+      <button type="button" data-view="export" data-i18n="stateExport">导出检查</button>
+    </div>
+
+    <dialog id="advancedDialog">
       <form method="dialog" class="dialog-card">
-        <button class="close-dialog" value="cancel">×</button>
-        <p class="eyebrow">新建本地项目</p><h2>视频只保存在这台电脑。</h2><p class="dialog-copy">先选择转录模型。模型按需下载，Agent 只会获得你允许处理的字幕文本。</p>
-        <div class="model-grid" id="modelGrid">
-          <button type="button" class="model-card" data-model="省空间"><strong>省空间</strong><span>适合快速试用</span><small>下载后可离线运行</small></button>
-          <button type="button" class="model-card selected" data-model="平衡"><strong>平衡</strong><span>建议用于日常口播</span><small>本地处理</small></button>
-          <button type="button" class="model-card" data-model="高质量"><strong>高质量</strong><span>适合术语密集内容</span><small>需要更多磁盘与时间</small></button>
+        <header>
+          <div><p class="eyebrow" data-i18n="advancedSettings">高级设置</p><h2 data-i18n="advancedTitle">需要时再配置</h2></div>
+          <button class="icon-button" value="cancel" aria-label="关闭">×</button>
+        </header>
+        <p class="dialog-copy" data-i18n="advancedCopy">默认流程只使用 CPU 转写。以下能力保留，但不占用首次使用界面。</p>
+        <div class="advanced-list">
+          <button type="button"><span><strong>MOSS</strong><small data-i18n="mossCopy">多人说话人转写</small></span><b data-i18n="notConfigured">未配置</b></button>
+          <button type="button"><span><strong data-i18n="speakerAnalysis">说话人分析</strong><small data-i18n="speakerCopy">匿名说话人复核</small></span><b data-i18n="onDemand">按需</b></button>
+          <button type="button"><span><strong data-i18n="audioAnalysis">音频分析</strong><small data-i18n="audioCopy">响度、静音和削波</small></span><b data-i18n="onDemand">按需</b></button>
+          <button type="button"><span><strong data-i18n="manualAgent">手工 Agent 交接</strong><small data-i18n="manualAgentCopy">Codex 不可用时使用</small></span><b data-i18n="available">可用</b></button>
         </div>
-        <label class="file-drop">拖入视频，或 <span>选择本地文件</span><input type="file" accept="video/*,audio/*"></label>
-        <button class="export dialog-action" value="default">创建项目</button>
+        <button class="secondary-action full" value="cancel" data-i18n="done">完成</button>
       </form>
     </dialog>
 
-    <dialog id="exportDialog">
-      <form method="dialog" class="dialog-card narrow"><button class="close-dialog" value="cancel">×</button><p class="eyebrow">确认导出</p><h2>导出一份可用交付物。</h2><div class="export-options"><label><input type="radio" name="format" checked> 双语 SRT</label><label><input type="radio" name="format"> Markdown 文稿</label><label><input type="radio" name="format"> 带字幕 MP4</label></div><p class="dialog-copy" id="exportWarning">原片不会被覆盖；当前有 1 处可恢复软剪辑。</p><button class="export dialog-action" value="default">开始导出</button></form>
-    </dialog>
-    <div class="toast" id="toast" role="status"></div>
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <script src="app.js"></script>
   </body>
 </html>
