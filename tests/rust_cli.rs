@@ -58,6 +58,23 @@ fn run_direct_error(home: &Path, arguments: &[&str]) -> Value {
     serde_json::from_slice(&output.stderr).unwrap()
 }
 
+fn run_direct_with_codex(home: &Path, codex: &Path, arguments: &[&str]) -> Value {
+    let output = Command::new(env!("CARGO_BIN_EXE_siaocut-core"))
+        .env("SIAOCUT_HOME", home)
+        .env("SIAOCUT_DIRECT", "1")
+        .env("SIAOCUT_CODEX_CLI", codex)
+        .args(["--json"])
+        .args(arguments)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "direct Codex CLI failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
 #[test]
 fn help_is_successful_for_direct_and_service_cli_paths() {
     let temp = tempdir().unwrap();
@@ -679,6 +696,85 @@ fn project_agent_and_export_contract_remain_compatible() {
     );
     assert_eq!(exported["audit"]["ready"], true);
     assert!(fs::read_to_string(output).unwrap().contains("Hello"));
+}
+
+#[test]
+fn recoverable_agent_cli_uses_fake_codex_and_stops_at_review() {
+    let temp = tempdir().unwrap();
+    let media = temp.path().join("agent-runner.wav");
+    fs::write(&media, b"audio").unwrap();
+    let imported = run_direct(temp.path(), &["import", media.to_str().unwrap()]);
+    let project_id = imported["projectId"].as_str().unwrap();
+    let added = run_direct(
+        temp.path(),
+        &[
+            "transcript",
+            "add",
+            project_id,
+            "--start",
+            "0",
+            "--end",
+            "1",
+            "--text",
+            "hello",
+        ],
+    );
+    let segment_id = added["segment"]["id"].as_str().unwrap();
+    let task = run_direct(
+        temp.path(),
+        &["task", "create", project_id, "--kind", "polish"],
+    );
+    let task_id = task["taskId"].as_str().unwrap();
+    let base_version_id = task["task"]["baseVersionId"].as_str().unwrap();
+    let fake_codex = temp.path().join("fake-codex.cmd");
+    fs::write(
+        &fake_codex,
+        format!(
+            "@echo off\r\nif \"%~1\"==\"--version\" (\r\n  echo codex-cli 0.fake\r\n  exit /b 0\r\n)\r\nif \"%~1\"==\"login\" (\r\n  echo Logged in using ChatGPT\r\n  exit /b 0\r\n)\r\n> result.json echo {{\"baseVersionId\":\"{base_version_id}\",\"processedSegmentIds\":[\"{segment_id}\"],\"patches\":[{{\"segmentId\":\"{segment_id}\",\"before\":\"hello\",\"after\":\"hello.\",\"reason\":\"fake CLI integration\",\"confidence\":0.9}}]}}\r\necho {{\"type\":\"thread.started\",\"thread_id\":\"fake-cli-thread\"}}\r\necho {{\"type\":\"turn.completed\"}}\r\nexit /b 0\r\n"
+        ),
+    )
+    .unwrap();
+
+    let health = run_direct_with_codex(temp.path(), &fake_codex, &["agent", "health"]);
+    assert_eq!(health["codex"]["available"], true);
+    assert_eq!(health["codex"]["authenticated"], true);
+    let started = run_direct_with_codex(
+        temp.path(),
+        &fake_codex,
+        &[
+            "agent",
+            "start",
+            task_id,
+            "--timeout-seconds",
+            "30",
+            "--start-delay-ms",
+            "2000",
+        ],
+    );
+    let run_id = started["agentRunId"].as_str().unwrap().to_owned();
+    let cancelled = run_direct_with_codex(temp.path(), &fake_codex, &["agent", "cancel", &run_id]);
+    assert_eq!(cancelled["agentRun"]["status"], "cancelled");
+    let mut status = run_direct_with_codex(temp.path(), &fake_codex, &["agent", "resume", &run_id]);
+    for _ in 0..100 {
+        status = run_direct_with_codex(temp.path(), &fake_codex, &["agent", "status", &run_id]);
+        if matches!(
+            status["agentRun"]["status"].as_str(),
+            Some("completed" | "failed" | "interrupted")
+        ) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    assert_eq!(status["agentRun"]["status"], "completed");
+    assert_eq!(status["agentRun"]["codexThreadId"], "fake-cli-thread");
+    let shown = run_direct(temp.path(), &["project", "show", project_id]);
+    assert_eq!(
+        shown["project"]["transcript"]["segments"][0]["text"],
+        "hello"
+    );
+    assert_eq!(shown["project"]["tasks"][0]["status"], "review");
+    assert_eq!(shown["project"]["patchSets"][0]["status"], "pending_review");
 }
 
 #[test]

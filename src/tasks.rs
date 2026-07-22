@@ -380,6 +380,109 @@ pub fn retry(db: &mut Connection, task_id: &str) -> Result<Task> {
     find_task(&project::load(db, &project_id)?, task_id)
 }
 
+pub(crate) fn requeue_for_runner(db: &mut Connection, task_id: &str) -> Result<Task> {
+    let project_id: String = db
+        .query_row(
+            "SELECT project_id FROM tasks WHERE id=?1 AND status IN ('failed','interrupted','cancelled')",
+            [task_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| anyhow!("agent_run_not_resumable: 当前 Agent 任务不能继续"))?;
+    let latest_version = project::current_version_id(db, &project_id)?;
+    db.execute(
+        "UPDATE tasks SET status='queued',progress=0,error_message=NULL,cancel_requested_at=NULL,base_version_id=?2,lease_worker=NULL,lease_id=NULL,lease_expires_at=NULL WHERE id=?1",
+        params![task_id, latest_version],
+    )?;
+    append_event(
+        db,
+        task_id,
+        &project_id,
+        "queued",
+        Some(0.0),
+        "本机 Agent 任务已重新排队",
+    )?;
+    find_task(&project::load(db, &project_id)?, task_id)
+}
+
+pub(crate) fn finish_runner_cancel(db: &mut Connection, task_id: &str) -> Result<()> {
+    let project_id: String = db
+        .query_row(
+            "SELECT project_id FROM tasks WHERE id=?1",
+            [task_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| anyhow!("任务不存在：{task_id}"))?;
+    let changed = db.execute(
+        "UPDATE tasks SET status='cancelled',lease_worker=NULL,lease_id=NULL,lease_expires_at=NULL WHERE id=?1 AND status!='cancelled'",
+        [task_id],
+    )?;
+    if changed > 0 {
+        append_event(
+            db,
+            task_id,
+            &project_id,
+            "cancelled",
+            None,
+            "本机 Agent 任务已取消",
+        )?;
+    }
+    Ok(())
+}
+
+pub(crate) fn interrupt_runner(db: &mut Connection, task_id: &str) -> Result<()> {
+    let project_id: String = db
+        .query_row(
+            "SELECT project_id FROM tasks WHERE id=?1",
+            [task_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| anyhow!("任务不存在：{task_id}"))?;
+    let changed = db.execute(
+        "UPDATE tasks SET status='interrupted',error_message='本机 Agent 进程意外中断；需要显式继续。',lease_worker=NULL,lease_id=NULL,lease_expires_at=NULL WHERE id=?1 AND status IN ('claimed','running')",
+        [task_id],
+    )?;
+    if changed > 0 {
+        append_event(
+            db,
+            task_id,
+            &project_id,
+            "interrupted",
+            None,
+            "本机 Agent 进程意外中断；需要显式继续",
+        )?;
+    }
+    Ok(())
+}
+
+pub(crate) fn fail_runner(
+    db: &mut Connection,
+    task_id: &str,
+    worker: Option<&str>,
+    message: &str,
+) -> Result<()> {
+    let (project_id, status, owner): (String, String, Option<String>) = db
+        .query_row(
+            "SELECT project_id,status,lease_worker FROM tasks WHERE id=?1",
+            [task_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?
+        .ok_or_else(|| anyhow!("任务不存在：{task_id}"))?;
+    let eligible = status == "queued"
+        || (["claimed", "running"].contains(&status.as_str()) && owner.as_deref() == worker);
+    if eligible {
+        db.execute(
+            "UPDATE tasks SET status='failed',error_message=?2,lease_worker=NULL,lease_id=NULL,lease_expires_at=NULL WHERE id=?1",
+            params![task_id, message],
+        )?;
+        append_event(db, task_id, &project_id, "failed", None, message)?;
+    }
+    Ok(())
+}
+
 pub fn cancel(db: &mut Connection, task_id: &str) -> Result<Task> {
     let (project_id, status): (String, String) = db
         .query_row(

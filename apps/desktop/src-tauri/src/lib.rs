@@ -216,6 +216,7 @@ fn validate_core_args(args: &[String]) -> Result<(), String> {
         "project",
         "transcript",
         "task",
+        "agent",
         "workflow",
         "cut",
         "media",
@@ -606,6 +607,7 @@ mod tests {
         assert!(validate_core_args(&["speech".into(), "audio-latest".into()]).is_ok());
         assert!(validate_core_args(&["speaker".into(), "package".into()]).is_ok());
         assert!(validate_core_args(&["transcription".into(), "providers".into()]).is_ok());
+        assert!(validate_core_args(&["agent".into(), "health".into()]).is_ok());
     }
 
     #[test]

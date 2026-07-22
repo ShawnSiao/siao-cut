@@ -65,6 +65,16 @@ pub const AUTO_WORKFLOW_STAGES: &[&str] = &[
     "complete",
 ];
 
+pub const AGENT_RUN_STATUSES: &[&str] = &[
+    "queued",
+    "running",
+    "submitting",
+    "completed",
+    "cancelled",
+    "interrupted",
+    "failed",
+];
+
 pub const CORE_ERROR_CODES: &[&str] = &[
     "database_version_unsupported",
     "database_migration_failed",
@@ -73,6 +83,20 @@ pub const CORE_ERROR_CODES: &[&str] = &[
     "task_cancel_requested",
     "task_patch_already_submitted",
     "patch_before_mismatch",
+    "codex_cli_missing",
+    "codex_not_logged_in",
+    "agent_run_not_found",
+    "agent_run_active",
+    "agent_run_not_cancellable",
+    "agent_run_not_resumable",
+    "agent_run_timeout",
+    "agent_run_cancelled",
+    "agent_worker_interrupted",
+    "agent_output_invalid",
+    "agent_batch_incomplete",
+    "agent_segment_duplicate",
+    "agent_segment_unauthorized",
+    "agent_project_version_conflict",
     "core_service_unavailable",
     "core_service_no_response",
     "core_request_timeout",
@@ -211,6 +235,7 @@ pub fn contract() -> Value {
             "workflow": WORKFLOW_STATUSES,
             "autoWorkflow": AUTO_WORKFLOW_STATUSES,
             "autoWorkflowStage": AUTO_WORKFLOW_STAGES,
+            "agentRun": AGENT_RUN_STATUSES,
         },
         "errorCodes": CORE_ERROR_CODES,
     })

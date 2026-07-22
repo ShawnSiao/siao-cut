@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 22;
+pub const CURRENT_SCHEMA_VERSION: i64 = 23;
 
 struct Migration {
     version: i64,
@@ -101,6 +101,10 @@ const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 22,
         apply: migration_22_transcription_candidate_summary,
+    },
+    Migration {
+        version: 23,
+        apply: migration_23_agent_runs,
     },
 ];
 
@@ -902,6 +906,56 @@ fn migration_22_transcription_candidate_summary(tx: &Transaction<'_>) -> Result<
     Ok(())
 }
 
+fn migration_23_agent_runs(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE agent_runs (
+             id TEXT PRIMARY KEY,
+             task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id) ON DELETE CASCADE,
+             project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+             provider TEXT NOT NULL DEFAULT 'codex',
+             status TEXT NOT NULL CHECK(status IN ('queued','running','submitting','completed','cancelled','interrupted','failed')),
+             base_version_id TEXT NOT NULL,
+             progress REAL NOT NULL DEFAULT 0,
+             current_batch INTEGER NOT NULL DEFAULT 0,
+             batch_count INTEGER NOT NULL DEFAULT 0,
+             timeout_seconds INTEGER NOT NULL,
+             cli_version TEXT,
+             auth_mode TEXT,
+             codex_thread_id TEXT,
+             cancel_requested_at TEXT,
+             error_code TEXT,
+             error_message TEXT,
+             created_at TEXT NOT NULL,
+             updated_at TEXT NOT NULL,
+             started_at TEXT,
+             completed_at TEXT,
+             worker_pid INTEGER,
+             attempt_count INTEGER NOT NULL DEFAULT 1
+         );
+         CREATE INDEX idx_agent_runs_project ON agent_runs(project_id,created_at);
+         CREATE INDEX idx_agent_runs_status ON agent_runs(status,updated_at);
+         CREATE TABLE agent_run_batches (
+             id TEXT PRIMARY KEY,
+             run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+             ordinal INTEGER NOT NULL,
+             status TEXT NOT NULL CHECK(status IN ('queued','running','completed','cancelled','failed')),
+             segment_ids_json TEXT NOT NULL,
+             result_json TEXT,
+             codex_thread_id TEXT,
+             error_code TEXT,
+             error_message TEXT,
+             created_at TEXT NOT NULL,
+             updated_at TEXT NOT NULL,
+             started_at TEXT,
+             completed_at TEXT,
+             attempt_count INTEGER NOT NULL DEFAULT 0,
+             UNIQUE(run_id,ordinal)
+         );
+         CREATE INDEX idx_agent_run_batches_run ON agent_run_batches(run_id,ordinal);",
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -943,6 +997,14 @@ mod tests {
             )
             .unwrap();
         assert!(history_table);
+        let agent_run_tables: i64 = second
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('agent_runs','agent_run_batches')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(agent_run_tables, 2);
         second
             .execute(
                 "INSERT INTO projects(id,title,created_at,updated_at) VALUES('p-locale','Legacy','now','now')",

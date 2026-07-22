@@ -3,6 +3,7 @@ use clap::{Args, Parser, Subcommand, error::ErrorKind};
 use serde_json::{Value, json};
 use std::{env, fs, path::PathBuf};
 
+mod agent_runner;
 mod artifacts;
 mod audio_analysis;
 mod auto_workflow;
@@ -61,6 +62,8 @@ enum Commands {
     Transcript(TranscriptCommand),
     #[command(subcommand)]
     Task(TaskCommand),
+    #[command(subcommand)]
+    Agent(AgentCommand),
     #[command(subcommand)]
     Workflow(WorkflowCommand),
     #[command(subcommand)]
@@ -463,6 +466,32 @@ enum TaskCommand {
 }
 
 #[derive(Subcommand)]
+enum AgentCommand {
+    Health,
+    Start {
+        task_id: String,
+        #[arg(long, default_value_t = 900)]
+        timeout_seconds: u64,
+        #[arg(long, hide = true)]
+        start_delay_ms: Option<u64>,
+    },
+    Status {
+        run_id: String,
+    },
+    List {
+        project_id: Option<String>,
+    },
+    Cancel {
+        run_id: String,
+    },
+    Resume {
+        run_id: String,
+        #[arg(long, hide = true)]
+        start_delay_ms: Option<u64>,
+    },
+}
+
+#[derive(Subcommand)]
 enum WorkflowCommand {
     Create {
         project_id: String,
@@ -675,6 +704,7 @@ fn run(cli: Cli) -> Result<Value> {
     audio_analysis::reconcile_interrupted(&database)?;
     speaker::reconcile_interrupted(&database)?;
     transcription::reconcile_interrupted(&database)?;
+    agent_runner::reconcile_interrupted(&mut database)?;
     match cli.command {
         Commands::Contract => {
             unreachable!("contract command returns before database initialization")
@@ -1179,6 +1209,76 @@ fn run(cli: Cli) -> Result<Value> {
                     "patchSet":patch_set,
                     "project":project::load(&database,&project_id)?,
                     "message":if action == "apply" { "已应用全部待审建议。" } else { "已保留全部原文。" }
+                })))
+            }
+        },
+        Commands::Agent(command) => match command {
+            AgentCommand::Health => {
+                let health = agent_runner::health();
+                Ok(envelope(json!({
+                    "codex": health,
+                    "message": if health.available && health.authenticated {
+                        "Codex CLI 已就绪。"
+                    } else if health.available {
+                        "Codex CLI 可用，但尚未登录。"
+                    } else {
+                        "Codex CLI 不可用；仍可使用手工 Agent 交接。"
+                    }
+                })))
+            }
+            AgentCommand::Start {
+                task_id,
+                timeout_seconds,
+                start_delay_ms,
+            } => {
+                let run = agent_runner::start(
+                    &mut database,
+                    &task_id,
+                    Some(timeout_seconds),
+                    start_delay_ms,
+                )?;
+                Ok(envelope(json!({
+                    "projectId": run.project_id,
+                    "taskId": run.task_id,
+                    "agentRunId": run.id,
+                    "agentRun": run,
+                    "message": "本机 Agent 已启动；结果完成后仍需人工审阅。"
+                })))
+            }
+            AgentCommand::Status { run_id } => {
+                let run = agent_runner::load(&database, &run_id)?;
+                Ok(envelope(json!({
+                    "projectId": run.project_id,
+                    "taskId": run.task_id,
+                    "agentRunId": run.id,
+                    "agentRun": run
+                })))
+            }
+            AgentCommand::List { project_id } => {
+                let runs = agent_runner::list(&database, project_id.as_deref())?;
+                Ok(envelope(json!({"projectId":project_id,"agentRuns":runs})))
+            }
+            AgentCommand::Cancel { run_id } => {
+                let run = agent_runner::cancel(&mut database, &run_id)?;
+                Ok(envelope(json!({
+                    "projectId": run.project_id,
+                    "taskId": run.task_id,
+                    "agentRunId": run.id,
+                    "agentRun": run,
+                    "message": "本机 Agent 已取消；项目内容未自动修改。"
+                })))
+            }
+            AgentCommand::Resume {
+                run_id,
+                start_delay_ms,
+            } => {
+                let run = agent_runner::resume(&mut database, &run_id, start_delay_ms)?;
+                Ok(envelope(json!({
+                    "projectId": run.project_id,
+                    "taskId": run.task_id,
+                    "agentRunId": run.id,
+                    "agentRun": run,
+                    "message": "本机 Agent 已重新排队。"
                 })))
             }
         },
@@ -1778,6 +1878,18 @@ pub(crate) fn execute_args(arguments: Vec<String>) -> ipc::Response {
 #[tokio::main]
 async fn main() {
     let arguments = env::args().skip(1).collect::<Vec<_>>();
+    if arguments.first().map(String::as_str) == Some("__agent_worker") {
+        let Some(run_id) = arguments.get(1) else {
+            eprintln!("SiaoCut agent worker: missing run id");
+            std::process::exit(2)
+        };
+        let start_delay_ms = arguments.get(2).and_then(|value| value.parse().ok());
+        if let Err(error) = agent_runner::run_worker(run_id, start_delay_ms) {
+            eprintln!("SiaoCut agent worker: {error}");
+            std::process::exit(1)
+        }
+        return;
+    }
     if arguments.first().map(String::as_str) == Some("__model_worker") {
         let (Some(job_id), Some(model_id)) = (arguments.get(1), arguments.get(2)) else {
             eprintln!("SiaoCut model worker: missing job or model id");

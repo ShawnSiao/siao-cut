@@ -38,6 +38,14 @@ Every `--json` result is enveloped as `{ apiVersion, status, ... }`. Rust Core i
 
 Task leases support heartbeat, progress events, failure, retry, cancellation and request-boundary recovery. Agent submission must return the claimed `baseVersionId`; if the project changed during processing, Core returns `project_version_conflict` instead of overwriting human edits.
 
+## Local Codex Agent Runner
+
+Core 提供 `agent health/start/status/list/cancel/resume`，用于把已明确创建的文本任务交给本机 Codex CLI。Runner 固定使用只读沙箱、结构化输出 Schema 和独立临时工作目录；标准输入只包含任务文本、字幕段 ID、时间戳和结构约束。调用参数与子进程环境不传递媒体路径、数据库路径、仓库路径、API Key 或 `CODEX_HOME` 等私密配置。
+
+`agent_runs` 与 `agent_run_batches` 只保存进度、Codex 版本、认证方式摘要、线程 ID、脱敏错误和已校验的结构化结果。JSONL 事件在管道中解析后立即丢弃，不写入数据库或日志。每个结果必须确认完整的批次字幕段 ID，并拒绝缺段、重复段、越权段和版本变化。
+
+Codex 子进程由带 `KILL_ON_JOB_CLOSE` 的 Windows Job Object 管理。取消、超时或 Worker 退出会终止整棵子进程树；异常退出标记为 `interrupted`，只能通过显式 `resume` 重新排队。`completed` 只表示建议已提交到 `pending_review`，不会自动修改文稿。Codex 缺失或未登录时，原有手工 Agent 交接和不依赖 Agent 的基础流程保持可用。
+
 ## Desktop boundary
 
 React 仅调用已注册的 Tauri 命令。Tauri Rust 层以参数数组调用 `siaocut-core --json`，拒绝内部服务命令和未知顶级命令；Core CLI 再通过 Windows 命名管道连接单实例服务。GUI 不读取数据库，也不把媒体路径交给 Agent。
