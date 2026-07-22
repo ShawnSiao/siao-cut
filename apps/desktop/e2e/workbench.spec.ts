@@ -187,6 +187,34 @@ test("keeps subtitle styling in export settings and previews the saved bilingual
   await expect(page.locator(".topbar").getByLabel("字幕样式预设")).toHaveCount(0);
 });
 
+test("uses the full transcript panel height without leaving an empty footer", async ({ page }) => {
+  await page.setViewportSize({ width: 2560, height: 720 });
+  await page.goto("/");
+
+  const panel = await page.locator(".transcript-panel").boundingBox();
+  const list = await page.getByLabel("字幕文稿列表").boundingBox();
+  expect(panel).not.toBeNull();
+  expect(list).not.toBeNull();
+  expect(Math.abs(panel!.y + panel!.height - (list!.y + list!.height))).toBeLessThanOrEqual(2);
+  await expect(page.getByLabel("字幕文稿列表")).toHaveCSS("overflow-y", "auto");
+});
+
+test("keeps translated subtitle modes selected before a translation exists", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: /^第二个本地项目/ }).click();
+  await expect(page.getByRole("heading", { name: "第二个本地项目" })).toBeVisible();
+  await page.getByRole("tab", { name: "导出" }).click();
+
+  const panel = page.getByLabel("导出设置");
+  const subtitleMode = panel.getByLabel("字幕模式");
+  await subtitleMode.selectOption("translated");
+  await expect(subtitleMode).toHaveValue("translated");
+  await expect(panel.getByRole("alert")).toContainText("项目中没有可用译文");
+  await expect(panel.getByRole("button", { name: "导出字幕" })).toBeDisabled();
+  await subtitleMode.selectOption("bilingual");
+  await expect(subtitleMode).toHaveValue("bilingual");
+});
+
 test("selects subtitle ranges and confirms recoverable structure edits", async ({ page }) => {
   await page.setViewportSize({ width: 1444, height: 972 });
   await page.goto("/");
@@ -554,6 +582,11 @@ test("uses MOSS as an explicit multispeaker mode with loopback settings and revi
   const settings = page.getByRole("dialog", { name: "运行环境" });
   const provider = settings.getByRole("region", { name: "MOSS 多人长音频服务" });
   await expect(provider.locator("input").first()).toHaveValue("http://127.0.0.1:8000");
+  const endpointInput = await provider.locator("input").nth(0).boundingBox();
+  const modelInput = await provider.locator("input").nth(1).boundingBox();
+  expect(endpointInput).not.toBeNull();
+  expect(modelInput).not.toBeNull();
+  expect(Math.abs(endpointInput!.y - modelInput!.y)).toBeLessThanOrEqual(1);
   await expect(provider.getByText("服务可用", { exact: true })).toBeVisible();
 });
 

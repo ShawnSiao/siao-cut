@@ -748,8 +748,9 @@ select:focus-visible { border-color: var(--focus-ring) !important; box-shadow: 0
 .moss-provider-settings { display: grid; gap: 12px; border: 1px solid var(--border-subtle); border-radius: var(--radius-panel); background: var(--bg-panel-raised); padding: 16px; }
 .moss-provider-fields { display: grid; grid-template-columns: minmax(240px, 1fr) minmax(280px, 1.2fr); gap: 10px; }
 .moss-provider-fields label { display: grid; gap: 6px; color: var(--text-secondary); font-size: 12px; }
+.moss-provider-fields label > span { display: flex; align-items: baseline; gap: 4px; min-width: 0; }
 .moss-provider-fields input { min-width: 0; min-height: 36px; border: 1px solid var(--border-strong); border-radius: var(--radius-control); background: var(--bg-control); color: var(--text-primary); padding: 7px 9px; font-family: var(--font-mono); }
-.moss-provider-fields small { color: var(--text-muted); line-height: 1.45; }
+.moss-provider-fields label > span small { overflow: hidden; color: var(--text-muted); line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
 .moss-health { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 9px; border: 1px solid var(--border-subtle); border-radius: var(--radius-control); background: var(--bg-control); padding: 9px; }
 .moss-health > i { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); }
 .moss-health.healthy > i { background: var(--success); box-shadow: 0 0 0 4px color-mix(in srgb, var(--success) 16%, transparent); }
@@ -807,6 +808,8 @@ select:focus-visible { border-color: var(--focus-ring) !important; box-shadow: 0
 .creator-player-header small { overflow: hidden; color: var(--text-muted); text-overflow: ellipsis; white-space: nowrap; font: 12px var(--font-mono); }
 .creator-player-header button, .timeline-toggle { min-height: 32px; display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--border-subtle); border-radius: var(--radius-control); background: var(--bg-control); padding: 5px 8px; color: var(--text-secondary); white-space: nowrap; font-size: 12px; }
 .editor-grid { grid-template-columns: minmax(600px, 1fr) minmax(320px, 360px); align-items: stretch; }
+.editor-grid > .transcript-panel { min-height: 0; height: clamp(500px, 65vh, 720px); display: flex; flex-direction: column; }
+.editor-grid > .transcript-panel > .segment-list { min-height: 0; height: auto; max-height: none; flex: 1 1 auto; }
 .creator-drawer { min-width: 0; height: clamp(500px, 65vh, 720px); display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--border-subtle); border-radius: var(--radius-panel); background: var(--bg-panel); }
 .creator-drawer-tabs { flex: 0 0 auto; display: grid; grid-template-columns: repeat(5, minmax(52px, 1fr)); gap: 2px; border-bottom: 1px solid var(--border-subtle); background: var(--bg-panel-raised); padding: 5px; }
 .creator-drawer-tabs button { position: relative; min-width: 0; min-height: 34px; overflow: hidden; border: 0; border-radius: var(--radius-control); background: transparent; padding: 6px 4px; color: var(--text-muted); text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
