@@ -645,6 +645,7 @@ describe("SiaoCut review workbench", () => {
     await openDrawerTab("导出");
     const canvas = await screen.findByLabelText("画布比例");
     fireEvent.change(canvas, { target: { value: "9:16" } });
+    expect(canvas).toHaveValue("9:16");
     await waitFor(() => expect(screen.getByText("画布已改为 9:16；请重新生成预览以查看最终构图。")).toBeInTheDocument());
     expect(screen.getByLabelText("竖屏构图")).toBeEnabled();
     const subtitleMode = screen.getByLabelText("字幕模式");
@@ -655,6 +656,8 @@ describe("SiaoCut review workbench", () => {
     fireEvent.change(subtitleMode, { target: { value: "bilingual" } });
     await waitFor(() => expect(subtitleMode).toHaveValue("bilingual"));
     expect(screen.getByText(/不会隐藏原片已烧录字幕/)).toBeInTheDocument();
+    expect(screen.getByText(/按词级时间戳随说话进度/)).toBeInTheDocument();
+    expect(screen.getByText("当前项目未应用任何剪辑；导出视频将与原片等长。")).toBeInTheDocument();
   });
 
   it("previews the saved subtitle style, safe area, and bilingual hierarchy without changing text", async () => {

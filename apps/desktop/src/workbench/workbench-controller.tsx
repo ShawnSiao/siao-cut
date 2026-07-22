@@ -153,6 +153,7 @@ function WorkbenchController() {
     const [includeSpeakerLabels, setIncludeSpeakerLabels] = useState(true);
     const [confirmTranscriptionWarnings, setConfirmTranscriptionWarnings] = useState(false);
     const [confirmStaleTranslation, setConfirmStaleTranslation] = useState(false);
+    const [confirmUncutExport, setConfirmUncutExport] = useState(false);
     const [glossaryDraft, setGlossaryDraft] = useState("");
     const [subtitleMode, setSubtitleMode] = useState<"source" | "translated" | "bilingual">(() => parseExportPreferences(localStorage.getItem("siaocut.exportPreferences.v1")).subtitleMode);
     const [subtitleLanguage, setSubtitleLanguage] = useState(() => parseExportPreferences(localStorage.getItem("siaocut.exportPreferences.v1")).subtitleLanguage);
@@ -611,9 +612,36 @@ function WorkbenchController() {
             ? tr("app.capability.transcriptRequired")
             : agentWorkflowKind === "translate" && !capabilities.hasTranslationTarget
                 ? tr("app.capability.translationTargetRequired") : undefined;
-    const selectedTranslationText = selectedTranslation?.segments.find((segment) => segment.segmentId === selected?.id)?.text ?? "";
-    const captionPrimaryText = subtitleMode === "translated" ? selectedTranslationText : selected?.text ?? "";
+    const playbackSegment = playback.playing
+        ? project?.transcript.segments.find((segment) => playback.currentTime >= segment.start && playback.currentTime < segment.end)
+        : null;
+    const captionSegment = playback.playing ? playbackSegment ?? null : selected;
+    const captionWords = project?.transcript.words.filter((word) => word.segmentId === captionSegment?.id) ?? [];
+    const selectedTranslationText = selectedTranslation?.segments.find((segment) => segment.segmentId === captionSegment?.id)?.text ?? "";
+    const captionPrimaryText = subtitleMode === "translated" ? selectedTranslationText : captionSegment?.text ?? "";
     const captionSecondaryText = subtitleMode === "bilingual" ? selectedTranslationText : "";
+    const captionProgress = (() => {
+        if (!playback.playing || !captionSegment)
+            return 1;
+        if (!captionWords.length)
+            return Math.max(0, Math.min(1, (playback.currentTime - captionSegment.start) / Math.max(0.01, captionSegment.end - captionSegment.start)));
+        const units = captionWords.map((word) => Math.max(1, Array.from(word.text).filter((character) => !/\s/u.test(character)).length));
+        const total = units.reduce((sum, value) => sum + value, 0);
+        const completed = captionWords.reduce((sum, word, index) => {
+            if (playback.currentTime >= word.end)
+                return sum + units[index];
+            if (playback.currentTime <= word.start)
+                return sum;
+            return sum + units[index] * ((playback.currentTime - word.start) / Math.max(0.01, word.end - word.start));
+        }, 0);
+        return Math.max(0, Math.min(1, completed / Math.max(1, total)));
+    })();
+    const captionKaraokeStyle = playback.playing && project ? {
+        color: "transparent",
+        backgroundImage: `linear-gradient(90deg, ${project.subtitleStyle.primaryColor} 0%, ${project.subtitleStyle.primaryColor} ${captionProgress * 100}%, ${project.subtitleStyle.secondaryColor} ${captionProgress * 100}%, ${project.subtitleStyle.secondaryColor} 100%)`,
+        backgroundClip: "text",
+        WebkitBackgroundClip: "text",
+    } : undefined;
     const captionPreviewStyle = project ? {
         color: project.subtitleStyle.primaryColor,
         fontFamily: `"${project.subtitleStyle.fontFamily}", "Microsoft YaHei UI", sans-serif`,
@@ -675,6 +703,9 @@ function WorkbenchController() {
         const entries = project?.glossary.entries.filter((entry) => entry.language === subtitleLanguage) ?? [];
         setGlossaryDraft(entries.map((entry) => `${entry.source}=${entry.target}`).join("\n"));
     }, [project?.id, project?.glossary.version, subtitleLanguage]);
+    useEffect(() => {
+        setConfirmUncutExport(false);
+    }, [project?.id, project?.timeline.cuts.length]);
     useEffect(() => {
         if (!showExportPanel)
             return;
@@ -1433,17 +1464,34 @@ function WorkbenchController() {
             throw new Error(tr("app.s0177", { "0": selectedSubtitleLanguage.toUpperCase() }));
         return { mode: subtitleMode, language: selectedSubtitleLanguage, confirmStaleTranslation };
     };
-    const changeCanvas = (settings: CanvasSettings) => project && withBusy(tr("app.s0178"), async () => {
-        const envelope = await transcriptEditingClient.setCanvas(project.id, settings);
-        if (!envelope.project)
-            throw new Error(tr("app.canvas.projectMissing"));
-        setProject(envelope.project);
-        setProjects((current) => current.map((item) => item.id === envelope.project!.id ? envelope.project! : item));
-        const authorization = await resolveCanvasMedia(project.id);
-        setMediaUrl(authorization.mediaUrl);
-        const savedNotice = settings.aspectRatio === "9:16" ? tr("app.s0179") : tr("app.s0180");
-        setNotice(authorization.warning ? `${savedNotice} ${tr("app.canvas.previewUnavailable")}` : savedNotice);
-    });
+    const changeCanvas = (settings: CanvasSettings) => {
+        if (!project)
+            return Promise.resolve();
+        const projectId = project.id;
+        const previousSettings = project.canvasSettings;
+        const updateCanvasState = (canvasSettings: CanvasSettings) => {
+            setProject((current) => current?.id === projectId ? { ...current, canvasSettings } : current);
+            setProjects((current) => current.map((item) => item.id === projectId ? { ...item, canvasSettings } : item));
+        };
+        updateCanvasState(settings);
+        return withBusy(tr("app.s0178"), async () => {
+            try {
+                const envelope = await transcriptEditingClient.setCanvas(projectId, settings);
+                if (!envelope.project)
+                    throw new Error(tr("app.canvas.projectMissing"));
+                setProject(envelope.project);
+                setProjects((current) => current.map((item) => item.id === envelope.project!.id ? envelope.project! : item));
+                const authorization = await resolveCanvasMedia(projectId);
+                setMediaUrl(authorization.mediaUrl);
+                const savedNotice = settings.aspectRatio === "9:16" ? tr("app.s0179") : tr("app.s0180");
+                setNotice(authorization.warning ? `${savedNotice} ${tr("app.canvas.previewUnavailable")}` : savedNotice);
+            }
+            catch (cause) {
+                updateCanvasState(previousSettings);
+                throw cause;
+            }
+        });
+    };
     const changeSubtitleStyle = (preset: Project["subtitleStyle"]["preset"], position: Project["subtitleStyle"]["position"]) => project && withBusy(tr("app.s0181"), async () => {
         const envelope = await transcriptEditingClient.setSubtitleStyle(project.id, preset, position);
         if (!envelope.project)
@@ -1967,8 +2015,8 @@ function WorkbenchController() {
 	                <div className="video-frame">
                   {mediaUrl ? <video key={project.id} ref={videoRef} src={mediaUrl} controls preload="metadata" onLoadedMetadata={handleVideoLoadedMetadata} onPlay={() => setPlayback((current) => ({ ...current, playing: true }))} onPause={() => setPlayback((current) => ({ ...current, playing: false }))} onTimeUpdate={handleVideoTimeUpdate}/> : <div className="video-placeholder"><Play size={30}/><span>{tr("app.s0286")}</span></div>}
                   {showSubtitleSafeArea && <div className="subtitle-safe-area" aria-label={tr("app.s0287")} style={{ inset: `${project.subtitleStyle.safeMarginPercent}% 6%` }}/>}
-                  {selected && captionPrimaryText && <div className={`caption-overlay ${project.subtitleStyle.position}`} data-preset={project.subtitleStyle.preset} data-position={project.subtitleStyle.position} data-outline-width={project.subtitleStyle.outlineWidth} style={captionPreviewStyle}>
-                    <span className="caption-primary">{captionPrimaryText}</span>
+                  {captionSegment && captionPrimaryText && <div className={`caption-overlay ${project.subtitleStyle.position}`} data-preset={project.subtitleStyle.preset} data-position={project.subtitleStyle.position} data-outline-width={project.subtitleStyle.outlineWidth} style={captionPreviewStyle}>
+                    <span className="caption-primary" data-progress={captionProgress.toFixed(3)} style={captionKaraokeStyle}>{captionPrimaryText}</span>
                     {captionSecondaryText && <span className="caption-secondary" style={{ color: project.subtitleStyle.secondaryColor, fontSize: `${Math.max(12, Math.round(project.subtitleStyle.secondaryFontSize * 0.36))}px` }}>{captionSecondaryText}</span>}
                   </div>}
                 </div>
@@ -2059,7 +2107,7 @@ function WorkbenchController() {
 	                    </section>}
 	                  </div>}
 	                  {drawerTab === "history" && <div className="inspector-view"><div className="version-block"><div className="section-title"><div><p className="eyebrow">{tr("app.s0385")}</p><h2>{tr("app.s0386")}</h2></div><History size={16}/></div>{project.versions.slice().reverse().map((version) => <button className="version-row" key={version.id} onClick={() => restoreVersion(version.id)}><span><strong>{versionReasonLabel(version.reason)}</strong><small>{new Date(version.createdAt).toLocaleString(uiLocale)}</small></span><RotateCcw size={14}/></button>)}</div></div>}
-	                  {drawerTab === "export" && showExportPanel && <Suspense fallback={null}><ExportPanel embedded ref={exportPanelRef} project={project} busy={Boolean(busy)} subtitleMode={subtitleMode} translationLanguageOptions={translationLanguageOptions} translationLanguages={translationLanguages} selectedSubtitleLanguage={selectedSubtitleLanguage} selectedTranslationPending={selectedTranslationPending} selectedTranslationStale={selectedTranslationStale} confirmStaleTranslation={confirmStaleTranslation} exportFormat={exportFormat} structuredExport={structuredExport} includeSpeakerLabels={includeSpeakerLabels} transcriptionExportErrorCount={transcriptionExportErrors.length} transcriptionExportWarningCount={transcriptionExportWarnings.length} confirmTranscriptionWarnings={confirmTranscriptionWarnings} showSubtitleSafeArea={showSubtitleSafeArea} transcriptionExportBlocked={transcriptionExportBlocked} canExportVideo={capabilities.canExportVideo} activeExportRunning={Boolean(activeExport && ["queued", "running"].includes(activeExport.status))} mediaCapabilityTitle={mediaCapabilityTitle} onClose={() => { setShowExportPanel(false); setDrawerTab("quality"); }} onChangeCanvas={(settings) => void changeCanvas(settings)} onSubtitleModeChange={(mode) => { setSubtitleMode(mode); setConfirmStaleTranslation(false); }} onSubtitleLanguageChange={(language) => { setSubtitleLanguage(language); setConfirmStaleTranslation(false); }} onExportFormatChange={(format) => { setExportFormat(format); setConfirmTranscriptionWarnings(false); }} onIncludeSpeakerLabelsChange={setIncludeSpeakerLabels} onConfirmWarningsChange={setConfirmTranscriptionWarnings} onConfirmStaleTranslationChange={setConfirmStaleTranslation} onSubtitleStyleChange={(preset, position) => void changeSubtitleStyle(preset, position)} onShowSafeAreaChange={setShowSubtitleSafeArea} onExportTranscript={exportTranscript} onExportVideo={exportVideo}/></Suspense>}
+	                  {drawerTab === "export" && showExportPanel && <Suspense fallback={null}><ExportPanel embedded ref={exportPanelRef} project={project} busy={Boolean(busy)} subtitleMode={subtitleMode} translationLanguageOptions={translationLanguageOptions} translationLanguages={translationLanguages} selectedSubtitleLanguage={selectedSubtitleLanguage} selectedTranslationPending={selectedTranslationPending} selectedTranslationStale={selectedTranslationStale} confirmStaleTranslation={confirmStaleTranslation} confirmUncutExport={confirmUncutExport} exportFormat={exportFormat} structuredExport={structuredExport} includeSpeakerLabels={includeSpeakerLabels} transcriptionExportErrorCount={transcriptionExportErrors.length} transcriptionExportWarningCount={transcriptionExportWarnings.length} confirmTranscriptionWarnings={confirmTranscriptionWarnings} showSubtitleSafeArea={showSubtitleSafeArea} transcriptionExportBlocked={transcriptionExportBlocked} canExportVideo={capabilities.canExportVideo} activeExportRunning={Boolean(activeExport && ["queued", "running"].includes(activeExport.status))} mediaCapabilityTitle={mediaCapabilityTitle} onClose={() => { setShowExportPanel(false); setDrawerTab("quality"); }} onChangeCanvas={(settings) => void changeCanvas(settings)} onSubtitleModeChange={(mode) => { setSubtitleMode(mode); setConfirmStaleTranslation(false); }} onSubtitleLanguageChange={(language) => { setSubtitleLanguage(language); setConfirmStaleTranslation(false); }} onExportFormatChange={(format) => { setExportFormat(format); setConfirmTranscriptionWarnings(false); }} onIncludeSpeakerLabelsChange={setIncludeSpeakerLabels} onConfirmWarningsChange={setConfirmTranscriptionWarnings} onConfirmStaleTranslationChange={setConfirmStaleTranslation} onConfirmUncutExportChange={setConfirmUncutExport} onSubtitleStyleChange={(preset, position) => void changeSubtitleStyle(preset, position)} onShowSafeAreaChange={setShowSubtitleSafeArea} onExportTranscript={exportTranscript} onExportVideo={exportVideo}/></Suspense>}
 	                </div>
 	              </aside>
 	            </section>

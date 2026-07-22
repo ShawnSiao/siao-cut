@@ -1111,7 +1111,7 @@ fn subtitle_style_is_recoverable_and_drives_ass_export() {
     let ass = fs::read_to_string(output).unwrap();
     assert!(ass.contains("Style: Primary,Microsoft YaHei UI,60"));
     assert!(ass.contains(",4,2,5,80,80,0,1"));
-    assert!(ass.contains("Dialogue: 0,0:00:00,0:00:02,Primary,受控字幕样式"));
+    assert!(ass.contains("Dialogue: 0,0:00:00.00,0:00:02.00,Primary,{\\kf200}受控字幕样式"));
 
     let undone = run(temp.path(), &["project", "undo", project_id]);
     assert_eq!(undone["project"]["subtitleStyle"]["preset"], "standard");
@@ -1309,7 +1309,7 @@ fn voice_subtitle_agent_and_style_changes_share_one_recoverable_time_map() {
     );
     let ass = fs::read_to_string(output).unwrap();
     assert!(ass.contains("Style: Primary,Microsoft YaHei UI,60"));
-    assert!(ass.contains("Dialogue: 0,0:00:02.600,0:00:05.600,Primary,Final line."));
+    assert!(ass.contains("Dialogue: 0,0:00:02.60,0:00:05.60,Primary,{\\kf300}Final line."));
     let accepted = run_direct(temp.path(), &["project", "show", project_id]);
     assert_eq!(accepted["project"]["speechInsights"]["status"], "ready");
     assert_eq!(accepted["project"]["edits"][0]["status"], "applied");

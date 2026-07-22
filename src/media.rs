@@ -73,6 +73,32 @@ pub fn ffprobe_duration(path: &Path) -> Option<f64> {
         })
 }
 
+pub fn ffprobe_video_dimensions(path: &Path) -> Option<(u32, u32)> {
+    hidden_command(tool_path("SIAOCUT_FFPROBE", "ffprobe"))
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height",
+            "-of",
+            "csv=p=0:s=x",
+        ])
+        .arg(path)
+        .output()
+        .ok()
+        .and_then(|output| {
+            if !output.status.success() {
+                return None;
+            }
+            let value = String::from_utf8(output.stdout).ok()?;
+            let (width, height) = value.trim().split_once('x')?;
+            let dimensions = (width.parse().ok()?, height.parse().ok()?);
+            (dimensions.0 > 0 && dimensions.1 > 0).then_some(dimensions)
+        })
+}
+
 pub fn command_available(command: &str) -> bool {
     hidden_command(command)
         .arg("-version")
