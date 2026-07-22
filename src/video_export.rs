@@ -26,6 +26,7 @@ pub struct ExportRequest<'a> {
     pub burn_subtitles: bool,
     pub language: Option<String>,
     pub subtitle_mode: SubtitleMode,
+    pub allow_stale_translation: bool,
     pub start_delay_ms: Option<u64>,
     pub job_id: Option<String>,
 }
@@ -52,6 +53,7 @@ pub fn create(
         burn_subtitles,
         language,
         subtitle_mode,
+        allow_stale_translation,
         start_delay_ms,
         job_id,
     } = request;
@@ -64,6 +66,7 @@ pub fn create(
         language: language.as_deref(),
         subtitle_mode,
         include_cuts: false,
+        allow_stale_translation,
     };
     let report = export::audit_for_options(&project, &quality_options);
     if report["ready"] != true {
@@ -114,6 +117,7 @@ pub fn create(
         language,
         bilingual: subtitle_mode == SubtitleMode::Bilingual,
         subtitle_mode,
+        allow_stale_translation,
         canvas_settings: project.canvas_settings,
         subtitle_style: project.subtitle_style.clone(),
         cancel_requested_at: None,
@@ -126,8 +130,8 @@ pub fn create(
         worker_pid: None,
     };
     db.execute(
-        "INSERT INTO export_jobs(id,project_id,output_path,status,progress,burn_subtitles,language,bilingual,subtitle_mode,canvas_aspect_ratio,canvas_framing,subtitle_style_json,created_at,updated_at) VALUES(?1,?2,?3,'queued',0,?4,?5,?6,?7,?8,?9,?10,?11,?11)",
-        params![&job.id, &job.project_id, &job.output_path, job.burn_subtitles, &job.language, job.bilingual, job.subtitle_mode.as_str(), job.canvas_settings.aspect_ratio.as_str(), job.canvas_settings.framing.as_str(), subtitle_style::storage_json(&job.subtitle_style)?, &job.created_at],
+        "INSERT INTO export_jobs(id,project_id,output_path,status,progress,burn_subtitles,language,bilingual,subtitle_mode,canvas_aspect_ratio,canvas_framing,subtitle_style_json,created_at,updated_at,allow_stale_translation) VALUES(?1,?2,?3,'queued',0,?4,?5,?6,?7,?8,?9,?10,?11,?11,?12)",
+        params![&job.id, &job.project_id, &job.output_path, job.burn_subtitles, &job.language, job.bilingual, job.subtitle_mode.as_str(), job.canvas_settings.aspect_ratio.as_str(), job.canvas_settings.framing.as_str(), subtitle_style::storage_json(&job.subtitle_style)?, &job.created_at, job.allow_stale_translation],
     )?;
     spawn_worker(&job.id, start_delay_ms)?;
     Ok(job)
@@ -135,7 +139,7 @@ pub fn create(
 
 pub fn load(db: &Connection, job_id: &str) -> Result<ExportJob> {
     db.query_row(
-        "SELECT id,project_id,output_path,status,progress,burn_subtitles,language,bilingual,subtitle_mode,canvas_aspect_ratio,canvas_framing,subtitle_style_json,cancel_requested_at,error_message,manifest_path,created_at,updated_at,completed_at,worker_pid FROM export_jobs WHERE id=?1",
+        "SELECT id,project_id,output_path,status,progress,burn_subtitles,language,bilingual,subtitle_mode,canvas_aspect_ratio,canvas_framing,subtitle_style_json,cancel_requested_at,error_message,manifest_path,created_at,updated_at,completed_at,worker_pid,allow_stale_translation FROM export_jobs WHERE id=?1",
         [job_id],
         |row| {
             let status = row.get::<_, String>(3)?;
@@ -152,6 +156,7 @@ pub fn load(db: &Connection, job_id: &str) -> Result<ExportJob> {
                 bilingual: row.get(7)?,
                 subtitle_mode: SubtitleMode::parse(&row.get::<_, String>(8)?)
                     .ok_or(rusqlite::Error::InvalidQuery)?,
+                allow_stale_translation: row.get(19)?,
                 canvas_settings: crate::model::CanvasSettings {
                     aspect_ratio: crate::model::CanvasAspectRatio::parse(
                         &row.get::<_, String>(9)?,
@@ -316,6 +321,7 @@ fn run(db: &mut Connection, job_id: &str) -> Result<()> {
                     language: job.language.as_deref(),
                     subtitle_mode: job.subtitle_mode,
                     include_cuts: false,
+                    allow_stale_translation: job.allow_stale_translation,
                 },
             )?,
         )?;
@@ -586,6 +592,7 @@ mod tests {
                 burn_subtitles: true,
                 language: None,
                 subtitle_mode: SubtitleMode::Source,
+                allow_stale_translation: false,
                 start_delay_ms: Some(60_000),
                 job_id: Some("x-style-snapshot".into()),
             },
@@ -669,6 +676,7 @@ mod tests {
                 language: None,
                 subtitle_mode: SubtitleMode::Source,
                 include_cuts: false,
+                allow_stale_translation: false,
             },
         )
         .unwrap();
@@ -883,6 +891,7 @@ mod tests {
                 language: None,
                 subtitle_mode: SubtitleMode::Source,
                 include_cuts: false,
+                allow_stale_translation: false,
             },
         )
         .unwrap();
@@ -1076,6 +1085,7 @@ mod tests {
                 language: None,
                 subtitle_mode: SubtitleMode::Source,
                 include_cuts: false,
+                allow_stale_translation: false,
             },
         )
         .unwrap();
@@ -1131,6 +1141,7 @@ mod tests {
                 language: None,
                 subtitle_mode: SubtitleMode::Source,
                 include_cuts: false,
+                allow_stale_translation: false,
             },
         )
         .unwrap();

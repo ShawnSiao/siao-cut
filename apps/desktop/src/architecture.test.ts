@@ -27,6 +27,7 @@ describe("desktop architecture boundaries", () => {
       join(sourceRoot, "domains/transcript-editing-client.ts"),
       join(sourceRoot, "domains/agent-review-client.ts"),
       join(sourceRoot, "domains/export-runtime-client.ts"),
+      join(sourceRoot, "domains/translation-client.ts"),
     ].map((path) => path.replaceAll("\\", "/")));
     const violations = sourceFiles(sourceRoot)
       .map((path) => path.replaceAll("\\", "/"))

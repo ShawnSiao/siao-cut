@@ -457,6 +457,26 @@ test("reviews and edits a transcript from the workbench", async ({ page }) => {
   await expect(page.getByText(/视频已导出到/)).toBeVisible();
 });
 
+test("versions glossary terms and requires stale-translation export confirmation", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "发布口播 · 草稿" })).toBeVisible();
+  await page.getByRole("combobox", { name: "Agent 工作流" }).selectOption("translate");
+  const glossary = page.getByRole("textbox", { name: "项目术语表" });
+  await glossary.fill("本地优先=local-first\n工作台=workbench");
+  await page.getByRole("button", { name: "保存新版本" }).click();
+  await expect(page.getByText(/术语表已保存为版本 1/)).toBeVisible();
+  await expect(page.getByText("版本 1", { exact: true })).toBeVisible();
+
+  await page.getByRole("tab", { name: "导出" }).click();
+  const exportPanel = page.getByLabel("导出设置");
+  await exportPanel.getByLabel("字幕模式").selectOption("translated");
+  const exportButton = exportPanel.getByRole("button", { name: "导出字幕" });
+  const confirmation = exportPanel.getByRole("checkbox", { name: /确认仍使用当前译文导出/ });
+  await expect(exportButton).toBeDisabled();
+  await confirmation.check();
+  await expect(exportButton).toBeEnabled();
+});
+
 test("confirms and controls an audited URL import", async ({ page }) => {
   await page.goto("/");
   await page.getByText("更多导入方式").click();

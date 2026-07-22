@@ -5,7 +5,7 @@ use crate::{
         HistoryState, Lease, Media, MediaArtifacts, Project, Segment, SpeechInsights, Task,
         TaskActivity, TimelineMap, Transcript, Translation, TranslationSegment, Version, Word,
     },
-    patches, speaker, speech, subtitle_quality, subtitle_style, timeline,
+    patches, speaker, speech, subtitle_quality, subtitle_style, timeline, translation,
     util::{new_id, now},
     workflows,
 };
@@ -69,28 +69,53 @@ pub fn load(db: &Connection, id: &str) -> Result<Project> {
     let words = select_words(db, id)?;
     let mut translations = BTreeMap::new();
     let mut statement = db.prepare(
-        "SELECT language,status,updated_at FROM translations WHERE project_id=?1 ORDER BY language",
+        "SELECT language,status,updated_at,glossary_version FROM translations WHERE project_id=?1 ORDER BY language",
     )?;
     let mut rows = statement.query([id])?;
     while let Some(row) = rows.next()? {
         let language: String = row.get(0)?;
         let mut segment_statement = db.prepare(
-            "SELECT segment_id,text FROM translation_segments WHERE project_id=?1 AND language=?2 ORDER BY rowid",
+            "SELECT segment_id,text,source_hash,status,updated_at FROM translation_segments WHERE project_id=?1 AND language=?2 ORDER BY rowid",
         )?;
-        let segments = segment_statement
+        let mut translated_segments = segment_statement
             .query_map(params![id, &language], |segment_row| {
                 Ok(TranslationSegment {
                     segment_id: segment_row.get(0)?,
                     text: segment_row.get(1)?,
+                    source_hash: segment_row.get(2)?,
+                    status: segment_row.get(3)?,
+                    updated_at: segment_row.get(4)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+        for translated in &mut translated_segments {
+            if let Some(source) = segments
+                .iter()
+                .find(|segment| segment.id == translated.segment_id)
+            {
+                translated.status =
+                    translation::effective_segment_status(source, translated, &language);
+            } else {
+                translated.status = "stale".to_owned();
+            }
+        }
+        let complete = !segments.is_empty()
+            && segments.iter().all(|source| {
+                translated_segments.iter().any(|translated| {
+                    translated.segment_id == source.id && translated.status == "current"
+                })
+            });
         translations.insert(
             language,
             Translation {
-                status: row.get(1)?,
+                status: if complete {
+                    "current".to_owned()
+                } else {
+                    "stale".to_owned()
+                },
                 updated_at: row.get(2)?,
-                segments,
+                glossary_version: row.get::<_, i64>(3)?.max(0) as u32,
+                segments: translated_segments,
             },
         );
     }
@@ -162,6 +187,7 @@ pub fn load(db: &Connection, id: &str) -> Result<Project> {
         subtitle_quality: Default::default(),
         speech_insights: SpeechInsights::default(),
         translations,
+        glossary: translation::load_glossary(db, id)?,
         edits,
         tasks,
         versions,
@@ -441,6 +467,14 @@ pub(crate) fn create_with_id(
             "INSERT INTO media(project_id,source_path,sha256,extension,duration_seconds) VALUES(?1,?2,?3,?4,?5)",
             params![id, source_path, sha256, extension, duration],
         )?;
+        tx.execute(
+            "INSERT INTO project_glossaries(project_id,current_version,updated_at) VALUES(?1,0,?2)",
+            params![id, &created_at],
+        )?;
+        tx.execute(
+            "INSERT INTO glossary_versions(project_id,version,created_at) VALUES(?1,0,?2)",
+            params![id, &created_at],
+        )?;
         Ok(())
     })?;
     load(db, id)
@@ -534,10 +568,7 @@ pub fn edit_segment(
         if count == 0 {
             bail!("字幕段不存在：{segment_id}")
         }
-        tx.execute(
-            "UPDATE translations SET status='stale' WHERE project_id=?1",
-            [project_id],
-        )?;
+        translation::invalidate_segments(tx, project_id, &[segment_id])?;
         tx.execute(
             "UPDATE word_range_cuts SET stale=1 WHERE edit_id IN (SELECT id FROM edits WHERE project_id=?1 AND segment_id=?2)",
             params![project_id, segment_id],
@@ -592,10 +623,11 @@ pub fn replace_all(
                 params![project_id, segment_id],
             )?;
         }
-        tx.execute(
-            "UPDATE translations SET status='stale' WHERE project_id=?1",
-            [project_id],
-        )?;
+        let changed_ids = changes
+            .iter()
+            .map(|(segment_id, _)| segment_id.as_str())
+            .collect::<Vec<_>>();
+        translation::invalidate_segments(tx, project_id, &changed_ids)?;
         Ok(())
     })?;
     Ok((load(db, project_id)?, changes.len()))
@@ -675,16 +707,17 @@ fn apply_snapshot_in_transaction(
     }
     for (language, translation) in &project.translations {
         tx.execute(
-            "INSERT INTO translations(project_id,language,status,updated_at) VALUES(?1,?2,?3,?4)",
+            "INSERT INTO translations(project_id,language,status,updated_at,glossary_version) VALUES(?1,?2,?3,?4,?5)",
             params![
                 project_id,
                 language,
                 &translation.status,
-                &translation.updated_at
+                &translation.updated_at,
+                i64::from(translation.glossary_version)
             ],
         )?;
         for segment in &translation.segments {
-            tx.execute("INSERT INTO translation_segments(project_id,language,segment_id,text) VALUES(?1,?2,?3,?4)",params![project_id,language,&segment.segment_id,&segment.text])?;
+            tx.execute("INSERT INTO translation_segments(project_id,language,segment_id,text,source_hash,status,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![project_id,language,&segment.segment_id,&segment.text,&segment.source_hash,&segment.status,&segment.updated_at])?;
         }
     }
     for edit in &project.edits {

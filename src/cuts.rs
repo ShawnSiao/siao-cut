@@ -1,6 +1,6 @@
 use crate::{
     model::{CutRange, CutSuggestion, Edit, Project, Word},
-    project, speech,
+    project, speech, translation,
     util::{new_id, now},
 };
 use anyhow::{Result, anyhow, bail};
@@ -428,10 +428,7 @@ pub fn set_status(
             bail!("软剪辑不存在：{cut_id}")
         }
         if status == "applied" && edit.kind == "word_cut" {
-            tx.execute(
-                "UPDATE translations SET status='stale' WHERE project_id=?1",
-                [project_id],
-            )?;
+            translation::invalidate_segments(tx, project_id, &[&edit.segment_id])?;
         }
         Ok(())
     })?;

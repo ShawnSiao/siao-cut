@@ -13,19 +13,21 @@ export const exportRuntimeClient = {
     ...(includeSpeakerLabels ? ["--include-speaker-labels"] : []),
     ...(confirmWarnings ? ["--confirm-warnings"] : []),
   ]),
-  exportTranscript: (projectId: string, format: TranscriptFormat, output: string, subtitleMode: SubtitleMode, subtitleLanguage?: string) => runCore([
+  exportTranscript: (projectId: string, format: TranscriptFormat, output: string, subtitleMode: SubtitleMode, subtitleLanguage?: string, confirmStaleTranslation = false) => runCore([
     "transcript", "export", projectId,
     "--format", format,
     "--output", output,
     "--subtitle-mode", subtitleMode,
     ...(subtitleMode === "source" ? [] : ["--lang", subtitleLanguage ?? ""]),
+    ...(confirmStaleTranslation ? ["--confirm-stale-translation"] : []),
   ]),
-  exportVideo: (projectId: string, output: string, subtitleMode: SubtitleMode, subtitleLanguage?: string) => runCore([
+  exportVideo: (projectId: string, output: string, subtitleMode: SubtitleMode, subtitleLanguage?: string, confirmStaleTranslation = false) => runCore([
     "video", "export", projectId,
     "--output", output,
     "--burn-subtitles",
     "--subtitle-mode", subtitleMode,
     ...(subtitleMode === "source" ? [] : ["--lang", subtitleLanguage ?? ""]),
+    ...(confirmStaleTranslation ? ["--confirm-stale-translation"] : []),
   ]),
   cancelVideoExport: (jobId: string) => runCore(["video", "cancel", jobId]),
   retryVideoExport: (jobId: string) => runCore(["video", "retry", jobId]),

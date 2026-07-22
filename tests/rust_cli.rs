@@ -599,6 +599,22 @@ fn project_agent_and_export_contract_remain_compatible() {
         ],
     );
     let segment_id = added["segment"]["id"].as_str().unwrap();
+    let glossary = run(
+        temp.path(),
+        &[
+            "glossary",
+            "replace",
+            project_id,
+            "--lang",
+            "en",
+            "--expected-version",
+            "0",
+            "--entry",
+            "你好=Hello",
+        ],
+    );
+    assert_eq!(glossary["glossary"]["version"], 1);
+    assert_eq!(glossary["glossary"]["entries"][0]["target"], "Hello");
     let task = run(
         temp.path(),
         &[
@@ -629,6 +645,15 @@ fn project_agent_and_export_contract_remain_compatible() {
             .starts_with("Translate each segment")
     );
     assert!(claim["payload"]["baseVersionId"].is_string());
+    assert_eq!(claim["payload"]["translationContext"]["glossaryVersion"], 1);
+    assert_eq!(
+        claim["payload"]["translationContext"]["segmentIds"],
+        json!([segment_id])
+    );
+    assert_eq!(
+        claim["payload"]["translationContext"]["glossary"][0]["source"],
+        "你好"
+    );
     let base_version_id = claim["payload"]["baseVersionId"].as_str().unwrap();
     let heartbeat = run(
         temp.path(),
@@ -676,6 +701,14 @@ fn project_agent_and_export_contract_remain_compatible() {
     );
     assert_eq!(reviewed["patchSet"]["status"], "applied");
     assert_eq!(reviewed["project"]["tasks"][0]["status"], "done");
+    assert_eq!(
+        reviewed["project"]["translations"]["en"]["glossaryVersion"],
+        1
+    );
+    assert_eq!(
+        reviewed["project"]["translations"]["en"]["segments"][0]["status"],
+        "current"
+    );
 
     let output = temp.path().join("talk.srt");
     let exported = run(
@@ -696,6 +729,67 @@ fn project_agent_and_export_contract_remain_compatible() {
     );
     assert_eq!(exported["audit"]["ready"], true);
     assert!(fs::read_to_string(output).unwrap().contains("Hello"));
+    let up_to_date = run_error(
+        temp.path(),
+        &[
+            "task",
+            "create",
+            project_id,
+            "--kind",
+            "translate",
+            "--lang",
+            "en",
+        ],
+    );
+    assert_eq!(up_to_date["code"], "translation_up_to_date");
+    run(
+        temp.path(),
+        &[
+            "transcript",
+            "edit",
+            project_id,
+            segment_id,
+            "--text",
+            "你好啊",
+        ],
+    );
+    let stale_output = temp.path().join("stale.srt");
+    let stale_error = run_error(
+        temp.path(),
+        &[
+            "transcript",
+            "export",
+            project_id,
+            "--format",
+            "srt",
+            "--lang",
+            "en",
+            "--subtitle-mode",
+            "translated",
+            "-o",
+            stale_output.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(stale_error["code"], "translation_stale");
+    let confirmed = run(
+        temp.path(),
+        &[
+            "transcript",
+            "export",
+            project_id,
+            "--format",
+            "srt",
+            "--lang",
+            "en",
+            "--subtitle-mode",
+            "translated",
+            "--confirm-stale-translation",
+            "-o",
+            stale_output.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(confirmed["audit"]["readiness"], "needs_confirmation");
+    assert!(fs::read_to_string(stale_output).unwrap().contains("Hello"));
 }
 
 #[test]

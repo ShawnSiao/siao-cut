@@ -107,7 +107,7 @@ pub fn start(
     if project::current_version_id(db, &project_id)?.as_deref() != Some(base_version_id.as_str()) {
         bail!("agent_project_version_conflict: 项目版本已变化，请重新创建或重试任务")
     }
-    let segment_ids = project_segment_ids(db, &project_id)?;
+    let segment_ids = crate::translation::task_segment_ids(db, task_id)?;
     if segment_ids.is_empty() {
         bail!("agent_batch_incomplete: 项目没有可处理的字幕段")
     }
@@ -241,7 +241,7 @@ pub fn resume(db: &mut Connection, run_id: &str, start_delay_ms: Option<u64>) ->
         [&run.task_id],
         |row| row.get(0),
     )?;
-    let segment_ids = project_segment_ids(db, &run.project_id)?;
+    let segment_ids = crate::translation::task_segment_ids(db, &run.task_id)?;
     if segment_ids.is_empty() {
         bail!("agent_batch_incomplete: 项目没有可处理的字幕段")
     }
@@ -1021,13 +1021,6 @@ fn validate_timeout(timeout_seconds: u64) -> Result<()> {
         )
     }
     Ok(())
-}
-
-fn project_segment_ids(db: &Connection, project_id: &str) -> Result<Vec<String>> {
-    Ok(db
-        .prepare("SELECT id FROM segments WHERE project_id=?1 ORDER BY start_seconds,id")?
-        .query_map([project_id], |row| row.get::<_, String>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 fn split_batches(kind: &str, segment_ids: &[String]) -> Vec<Vec<String>> {

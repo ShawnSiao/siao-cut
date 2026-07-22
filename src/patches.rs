@@ -1,6 +1,6 @@
 use crate::{
     model::{AgentPatchItem, AgentPatchSet, Project},
-    project,
+    project, translation,
     util::{new_id, now},
 };
 use anyhow::{Result, anyhow, bail};
@@ -419,10 +419,7 @@ pub fn review_item(
                     "UPDATE segments SET text=?2 WHERE id=?1 AND project_id=?3",
                     params![segment_id, &after, &project_id],
                 )?;
-                tx.execute(
-                    "UPDATE translations SET status='stale' WHERE project_id=?1",
-                    [&project_id],
-                )?;
+                translation::invalidate_segments(&tx, &project_id, &[segment_id])?;
             }
             "translation" => {
                 let segment_id = segment_id
@@ -431,8 +428,25 @@ pub fn review_item(
                 let language = language
                     .as_deref()
                     .ok_or_else(|| anyhow!("补丁缺少目标语言"))?;
-                tx.execute("INSERT INTO translations(project_id,language,status,updated_at) VALUES(?1,?2,'current',?3) ON CONFLICT(project_id,language) DO UPDATE SET status='current',updated_at=excluded.updated_at",params![&project_id,language,now()])?;
-                tx.execute("INSERT INTO translation_segments(project_id,language,segment_id,text) VALUES(?1,?2,?3,?4) ON CONFLICT(project_id,language,segment_id) DO UPDATE SET text=excluded.text",params![&project_id,language,segment_id,&after])?;
+                let source_text: String = tx.query_row(
+                    "SELECT text FROM segments WHERE id=?1 AND project_id=?2",
+                    params![segment_id, &project_id],
+                    |row| row.get(0),
+                )?;
+                let glossary_version: i64 = tx.query_row(
+                    "SELECT current_version FROM project_glossaries WHERE project_id=?1",
+                    [&project_id],
+                    |row| row.get(0),
+                )?;
+                let timestamp = now();
+                tx.execute("INSERT INTO translations(project_id,language,status,updated_at,glossary_version) VALUES(?1,?2,'stale',?3,?4) ON CONFLICT(project_id,language) DO UPDATE SET updated_at=excluded.updated_at,glossary_version=excluded.glossary_version",params![&project_id,language,&timestamp,glossary_version])?;
+                tx.execute("INSERT INTO translation_segments(project_id,language,segment_id,text,source_hash,status,updated_at) VALUES(?1,?2,?3,?4,?5,'current',?6) ON CONFLICT(project_id,language,segment_id) DO UPDATE SET text=excluded.text,source_hash=excluded.source_hash,status='current',updated_at=excluded.updated_at",params![&project_id,language,segment_id,&after,translation::source_hash(&source_text),&timestamp])?;
+                translation::refresh_language_status(
+                    &tx,
+                    &project_id,
+                    language,
+                    glossary_version.max(0) as u32,
+                )?;
             }
             "summary" => {
                 tx.execute("INSERT INTO summaries(project_id,text,updated_at) VALUES(?1,?2,?3) ON CONFLICT(project_id) DO UPDATE SET text=excluded.text,updated_at=excluded.updated_at",params![&project_id,&after,now()])?;

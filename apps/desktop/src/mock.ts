@@ -82,11 +82,16 @@ export const sampleProject: Project = {
     en: {
       status: "current",
       updatedAt: "2026-07-16T10:07:00Z",
+      glossaryVersion: 0,
       segments: [
-        { segmentId: "s2", text: "Today I want to explain why we are building a local-first editing workbench." },
+        { segmentId: "s1", text: "Um,", sourceHash: "demo-s1", status: "current", updatedAt: "2026-07-16T10:07:00Z" },
+        { segmentId: "s2", text: "Today I want to explain why we are building a local-first editing workbench.", sourceHash: "demo", status: "current", updatedAt: "2026-07-16T10:07:00Z" },
+        { segmentId: "s3", text: "It does not decide the content for you. It keeps every decision on a timeline you can review.", sourceHash: "demo-s3", status: "current", updatedAt: "2026-07-16T10:07:00Z" },
+        { segmentId: "s4", text: "You can review suggestions first and then decide what to remove.", sourceHash: "demo-s4", status: "current", updatedAt: "2026-07-16T10:07:00Z" },
       ],
     },
   },
+  glossary: { version: 0, updatedAt: "", entries: [] },
   edits: [
     { id: "e1", kind: "word_cut", status: "proposed", segmentId: "s1", start: 12.4, end: 13.1, reason: "句内口头语：嗯", cutRange: { fromWordId: "w1", toWordId: "w1", selectedStart: 12.4, selectedEnd: 13.0, paddingMs: 100, transcriptHash: "demo", stale: false }, suggestion: { suggestionType: "standalone_filler", confidence: 0.99, detectorVersion: "heuristic-v1" } },
   ],

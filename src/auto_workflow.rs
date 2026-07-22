@@ -1,7 +1,7 @@
 use crate::{
     cuts, db, export, media,
     model::{AutoWorkflow, AutoWorkflowEvent, SubtitleMode},
-    project, source_import, tasks,
+    project, source_import, tasks, translation,
     util::{new_id, now},
     video_export::{self, ExportRequest},
 };
@@ -702,6 +702,32 @@ fn run_suggestions(db: &mut Connection, workflow: &AutoWorkflow) -> Result<bool>
         .ok_or_else(|| anyhow!("auto_workflow_state_invalid: 粗剪阶段缺少项目"))?;
     let suggestions = cuts::detect(db, project_id)?;
     if let Some(language) = workflow.translation_language.clone() {
+        let project = project::load(db, project_id)?;
+        if translation::target_segment_ids(&project, &language).is_empty() {
+            if suggestions.is_empty() {
+                set_state(
+                    db,
+                    &workflow.id,
+                    "audit",
+                    "running",
+                    0.78,
+                    "现有译文已是最新，未发现粗剪建议",
+                )?;
+                return Ok(false);
+            }
+            set_state(
+                db,
+                &workflow.id,
+                "review",
+                "needs_review",
+                0.7,
+                &format!(
+                    "现有译文已是最新；{} 条粗剪建议等待人工确认",
+                    suggestions.len()
+                ),
+            )?;
+            return Ok(true);
+        }
         let task_id = workflow
             .agent_task_id
             .clone()
@@ -822,6 +848,7 @@ fn run_audit(db: &mut Connection, workflow: &AutoWorkflow) -> Result<()> {
             language: workflow.translation_language.as_deref(),
             subtitle_mode: workflow.subtitle_mode,
             include_cuts: false,
+            allow_stale_translation: false,
         },
     );
     db.execute(
@@ -841,6 +868,7 @@ fn run_audit(db: &mut Connection, workflow: &AutoWorkflow) -> Result<()> {
                 burn_subtitles: workflow.burn_subtitles,
                 language: workflow.translation_language.clone(),
                 subtitle_mode: workflow.subtitle_mode,
+                allow_stale_translation: false,
                 start_delay_ms: None,
                 job_id: Some(job_id.clone()),
             },

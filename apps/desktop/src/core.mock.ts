@@ -65,7 +65,12 @@ function recordMockSnapshot() {
 }
 
 function markTextDependentsStale(project: Project, segmentIds: string[]) {
-  Object.values(project.translations).forEach((translation) => { translation.status = "stale"; });
+  Object.values(project.translations).forEach((translation) => {
+    translation.segments.forEach((segment) => {
+      if (segmentIds.includes(segment.segmentId)) segment.status = "stale";
+    });
+    if (translation.segments.some((segment) => segment.status !== "current")) translation.status = "stale";
+  });
   project.edits.forEach((edit) => {
     if (edit.segmentId && segmentIds.includes(edit.segmentId) && edit.cutRange) edit.cutRange.stale = true;
   });
@@ -359,6 +364,30 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
     mockProjects = mockProjects.map((item) => item.id === relinked.id ? relinked : item);
     return { apiVersion: "0.1", status: "ok", project: structuredClone(relinked), message: "已重新定位原片，并校验内容与项目记录一致。" };
   }
+  if (command === "glossary" && subcommand === "show") {
+    return { apiVersion: "0.1", status: "ok", projectId: args[2], glossary: structuredClone(mockProject.glossary) };
+  }
+  if (command === "glossary" && subcommand === "replace") {
+    const language = valueAfter("--lang") ?? "en";
+    const expectedVersion = Number(valueAfter("--expected-version"));
+    if (expectedVersion !== mockProject.glossary.version) throw new Error("glossary_version_conflict: 术语表版本已变化");
+    const replacements = args.flatMap((value, index) => {
+      if (value !== "--entry") return [];
+      const [source, target] = (args[index + 1] ?? "").split("=");
+      return source && target ? [{ language, source, target }] : [];
+    });
+    mockProject.glossary = {
+      version: mockProject.glossary.version + 1,
+      updatedAt: new Date().toISOString(),
+      entries: [...mockProject.glossary.entries.filter((entry) => entry.language !== language), ...replacements],
+    };
+    const translation = mockProject.translations[language];
+    if (translation) {
+      translation.status = "stale";
+      translation.segments.forEach((segment) => { segment.status = "stale"; });
+    }
+    return { apiVersion: "0.1", status: "ok", project: syncMockProject(mockProject), glossary: structuredClone(mockProject.glossary) };
+  }
   if (command === "canvas" && subcommand === "set") {
     mockProject.canvasSettings = {
       aspectRatio: args[args.indexOf("--aspect-ratio") + 1] as Project["canvasSettings"]["aspectRatio"],
@@ -632,7 +661,7 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
     const subtitleModeIndex = args.indexOf("--subtitle-mode");
     const subtitleMode = (subtitleModeIndex >= 0 ? args[subtitleModeIndex + 1] : "source") as ExportJob["subtitleMode"];
     const language = args.includes("--lang") ? args[args.indexOf("--lang") + 1] : null;
-    const job: ExportJob = { id, projectId: mockProject.id, outputPath: args[args.indexOf("--output") + 1], status: "completed", progress: 1, burnSubtitles: args.includes("--burn-subtitles"), language, bilingual: subtitleMode === "bilingual", subtitleMode, canvasSettings: structuredClone(mockProject.canvasSettings), subtitleStyle: structuredClone(mockProject.subtitleStyle), cancelRequestedAt: null, errorMessage: null, manifestPath: "demo.siaocut.json", createdAt: now, updatedAt: now, completedAt: now };
+    const job: ExportJob = { id, projectId: mockProject.id, outputPath: args[args.indexOf("--output") + 1], status: "completed", progress: 1, burnSubtitles: args.includes("--burn-subtitles"), language, bilingual: subtitleMode === "bilingual", subtitleMode, allowStaleTranslation: args.includes("--confirm-stale-translation"), canvasSettings: structuredClone(mockProject.canvasSettings), subtitleStyle: structuredClone(mockProject.subtitleStyle), cancelRequestedAt: null, errorMessage: null, manifestPath: "demo.siaocut.json", createdAt: now, updatedAt: now, completedAt: now };
     mockJobs.set(id, job);
     return { apiVersion: "0.1", status: "ok", job, jobId: id };
   }
@@ -1101,7 +1130,7 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
       if (action === "apply" && item.segmentId) {
         const segment = mockProject.transcript.segments.find((candidate) => candidate.id === item.segmentId);
         if (segment) segment.text = item.afterText;
-        Object.values(mockProject.translations).forEach((translation) => { translation.status = "stale"; });
+        markTextDependentsStale(mockProject, [item.segmentId]);
       }
       const set = mockProject.patchSets.find((candidate) => candidate.items.includes(item));
       if (set) set.status = item.status;

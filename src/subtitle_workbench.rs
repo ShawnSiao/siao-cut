@@ -578,10 +578,14 @@ mod tests {
             [&project_id],
         )
         .unwrap();
-        for (segment_id, text) in [("s1", "one"), ("s2", "two"), ("s3", "three")] {
+        for (segment_id, text, source) in [
+            ("s1", "one", "hello world"),
+            ("s2", "two", "second"),
+            ("s3", "three", "third"),
+        ] {
             db.execute(
-                "INSERT INTO translation_segments(project_id,language,segment_id,text) VALUES(?1,'en',?2,?3)",
-                params![&project_id, segment_id, text],
+                "INSERT INTO translation_segments(project_id,language,segment_id,text,source_hash,status,updated_at) VALUES(?1,'en',?2,?3,?4,'current','fixture')",
+                params![&project_id, segment_id, text, crate::translation::source_hash(source)],
             )
             .unwrap();
         }
