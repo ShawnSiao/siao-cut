@@ -29,6 +29,7 @@ mod subtitle_workbench;
 mod tasks;
 mod timeline;
 mod transcription;
+mod translation;
 mod util;
 mod video_export;
 mod workflows;
@@ -56,6 +57,8 @@ enum Commands {
     },
     #[command(subcommand)]
     Project(ProjectCommand),
+    #[command(subcommand)]
+    Glossary(GlossaryCommand),
     #[command(subcommand)]
     Canvas(CanvasCommand),
     #[command(subcommand)]
@@ -118,6 +121,28 @@ enum ProjectCommand {
     Relink {
         project_id: String,
         media: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum GlossaryCommand {
+    Show {
+        project_id: String,
+    },
+    Replace {
+        project_id: String,
+        #[arg(long)]
+        lang: String,
+        #[arg(long)]
+        expected_version: u32,
+        #[arg(long = "entry")]
+        entries: Vec<String>,
+    },
+    Restore {
+        project_id: String,
+        version: u32,
+        #[arg(long)]
+        expected_version: u32,
     },
 }
 
@@ -398,6 +423,8 @@ struct ExportArgs {
     subtitle_mode: Option<String>,
     #[arg(long = "include-cuts")]
     include_cuts: bool,
+    #[arg(long)]
+    confirm_stale_translation: bool,
 }
 
 #[derive(Subcommand)]
@@ -611,6 +638,8 @@ enum VideoCommand {
         bilingual: bool,
         #[arg(long)]
         subtitle_mode: Option<String>,
+        #[arg(long)]
+        confirm_stale_translation: bool,
         #[arg(long, hide = true)]
         start_delay_ms: Option<u64>,
         #[arg(long, hide = true)]
@@ -867,6 +896,55 @@ fn run(cli: Cli) -> Result<Value> {
                 })))
             }
         },
+        Commands::Glossary(command) => match command {
+            GlossaryCommand::Show { project_id } => Ok(envelope(json!({
+                "projectId": project_id,
+                "glossary": translation::load_glossary(&database, &project_id)?
+            }))),
+            GlossaryCommand::Replace {
+                project_id,
+                lang,
+                expected_version,
+                entries,
+            } => {
+                let entries = entries
+                    .into_iter()
+                    .map(|entry| {
+                        let (source, target) = entry.split_once('=').ok_or_else(|| {
+                            anyhow!("glossary_invalid: --entry 必须使用 原文=目标文本")
+                        })?;
+                        Ok((source.to_owned(), target.to_owned()))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let glossary = translation::replace_language(
+                    &mut database,
+                    &project_id,
+                    &lang,
+                    expected_version,
+                    entries,
+                )?;
+                Ok(envelope(json!({
+                    "projectId": project_id,
+                    "glossary": glossary,
+                    "project": project::load(&database, &project_id)?,
+                    "message": "术语表已创建新版本；对应语言的译文段已标记为待更新。"
+                })))
+            }
+            GlossaryCommand::Restore {
+                project_id,
+                version,
+                expected_version,
+            } => {
+                let glossary =
+                    translation::restore(&mut database, &project_id, version, expected_version)?;
+                Ok(envelope(json!({
+                    "projectId": project_id,
+                    "glossary": glossary,
+                    "project": project::load(&database, &project_id)?,
+                    "message": "术语表历史版本已恢复为新的当前版本；译文需要重新检查。"
+                })))
+            }
+        },
         Commands::Canvas(command) => match command {
             CanvasCommand::Show { project_id } => {
                 let project = project::load(&database, &project_id)?;
@@ -1067,6 +1145,7 @@ fn run(cli: Cli) -> Result<Value> {
                     language: arguments.lang.as_deref(),
                     subtitle_mode,
                     include_cuts: arguments.include_cuts,
+                    allow_stale_translation: arguments.confirm_stale_translation,
                 };
                 let report = export::audit_for_options(&project, &options);
                 if report["ready"] != Value::Bool(true) {
@@ -1504,6 +1583,7 @@ fn run(cli: Cli) -> Result<Value> {
                 lang,
                 bilingual,
                 subtitle_mode,
+                confirm_stale_translation,
                 start_delay_ms,
                 job_id,
             } => {
@@ -1520,6 +1600,7 @@ fn run(cli: Cli) -> Result<Value> {
                         burn_subtitles,
                         language: lang,
                         subtitle_mode,
+                        allow_stale_translation: confirm_stale_translation,
                         start_delay_ms,
                         job_id,
                     },

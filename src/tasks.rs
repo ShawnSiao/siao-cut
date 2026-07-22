@@ -1,12 +1,13 @@
 use crate::{
     model::{AgentPatchSet, Lease, Project, Task, TaskEvent},
-    patches, project,
+    patches, project, translation,
     util::{new_id, now},
 };
 use anyhow::{Result, anyhow, bail};
 use chrono::{Duration, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
 
 type SubmissionRow = (
     String,
@@ -17,6 +18,7 @@ type SubmissionRow = (
     Option<String>,
     Option<String>,
     Option<String>,
+    Option<i64>,
 );
 
 const LEASE_MINUTES: i64 = 10;
@@ -70,6 +72,22 @@ pub(crate) fn create_for_workflow(
         bail!("instruction_locale_invalid: --locale 必须为 zh-CN 或 en-US")
     }
     let project = project::load(db, project_id)?;
+    let segment_ids = if kind == "translate" {
+        let language = language.as_deref().expect("translation language checked");
+        let selected = translation::target_segment_ids(&project, language);
+        if selected.is_empty() {
+            bail!("translation_up_to_date: 当前译文没有过期段或质量失败段")
+        }
+        selected
+    } else {
+        project
+            .transcript
+            .segments
+            .iter()
+            .map(|segment| segment.id.clone())
+            .collect()
+    };
+    let glossary_version = (kind == "translate").then_some(project.glossary.version);
     let task = Task {
         id: new_id("t"),
         kind: kind.to_owned(),
@@ -88,11 +106,14 @@ pub(crate) fn create_for_workflow(
         workflow_id: workflow_id.map(str::to_owned),
         instruction_locale: instruction_locale.to_owned(),
     };
-    db.execute(
-        "INSERT INTO tasks(id,project_id,kind,language,status,created_at,base_version_id,progress,attempt_count,workflow_id,instruction_locale) VALUES(?1,?2,?3,?4,?5,?6,?7,0,0,?8,?9)",
-        params![&task.id, project_id, &task.kind, &task.language, &task.status, &task.created_at, &task.base_version_id, &task.workflow_id, &task.instruction_locale],
+    let tx = db.transaction()?;
+    tx.execute(
+        "INSERT INTO tasks(id,project_id,kind,language,status,created_at,base_version_id,progress,attempt_count,workflow_id,instruction_locale,glossary_version) VALUES(?1,?2,?3,?4,?5,?6,?7,0,0,?8,?9,?10)",
+        params![&task.id, project_id, &task.kind, &task.language, &task.status, &task.created_at, &task.base_version_id, &task.workflow_id, &task.instruction_locale, glossary_version.map(i64::from)],
     )?;
-    append_event(db, &task.id, project_id, "queued", Some(0.0), "任务已创建")?;
+    store_task_segments(&tx, &project, &task.id, &segment_ids)?;
+    append_event(&tx, &task.id, project_id, "queued", Some(0.0), "任务已创建")?;
+    tx.commit()?;
     Ok(task)
 }
 
@@ -168,12 +189,25 @@ pub fn claim(
     )?;
     let project = project::load(db, &project_id)?;
     let task = find_task(&project, &task_id)?;
+    let task_segment_ids = translation::task_segment_ids(db, &task.id)?;
+    let task_segment_set = task_segment_ids.iter().collect::<BTreeSet<_>>();
+    let task_glossary_version: Option<i64> = db.query_row(
+        "SELECT glossary_version FROM tasks WHERE id=?1",
+        [&task.id],
+        |row| row.get(0),
+    )?;
+    if task.kind == "translate"
+        && task_glossary_version != Some(i64::from(project.glossary.version))
+    {
+        bail!("glossary_version_conflict: 术语表版本已变化，请重新创建翻译任务")
+    }
     let instructions = task_instructions(&task.kind, &task.instruction_locale);
     let include_words = !matches!(task.kind.as_str(), "punctuate" | "speaker_names");
     let segments = project
         .transcript
         .segments
         .iter()
+        .filter(|segment| task_segment_set.contains(&segment.id))
         .map(|segment| {
             let words = project
                 .transcript
@@ -182,10 +216,15 @@ pub fn claim(
                 .filter(|word| word.segment_id == segment.id)
                 .map(|word| json!({"text":word.text,"start":word.start,"end":word.end,"confidence":word.confidence}))
                 .collect::<Vec<_>>();
+            let current_translation = task.language.as_deref().and_then(|language| {
+                project.translations.get(language).and_then(|translation| {
+                    translation.segments.iter().find(|item| item.segment_id == segment.id)
+                })
+            });
             if include_words {
-                json!({"id":segment.id,"text":segment.text,"start":segment.start,"end":segment.end,"confidence":segment.confidence,"words":words})
+                json!({"id":segment.id,"text":segment.text,"sourceHash":translation::source_hash(&segment.text),"currentTranslation":current_translation.map(|item| item.text.as_str()),"translationStatus":current_translation.map(|item| item.status.as_str()),"start":segment.start,"end":segment.end,"confidence":segment.confidence,"words":words})
             } else {
-                json!({"id":segment.id,"text":segment.text,"start":segment.start,"end":segment.end})
+                json!({"id":segment.id,"text":segment.text,"sourceHash":translation::source_hash(&segment.text),"start":segment.start,"end":segment.end})
             }
         })
         .collect::<Vec<_>>();
@@ -240,6 +279,25 @@ pub fn claim(
     } else {
         None
     };
+    let translation_context = if task.kind == "translate" {
+        let language = task
+            .language
+            .as_deref()
+            .ok_or_else(|| anyhow!("翻译任务缺少目标语言"))?;
+        Some(json!({
+            "targetLanguage": language,
+            "glossaryVersion": project.glossary.version,
+            "glossary": translation::glossary_entries_for_language(&project.glossary, language),
+            "subtitleConstraints": {
+                "maxLineCharacters": 42,
+                "maxLines": if language.to_ascii_lowercase().starts_with("en") { 2 } else { 0 },
+                "maxCharactersPerSecond": 20
+            },
+            "segmentIds": task_segment_ids
+        }))
+    } else {
+        None
+    };
     let payload = json!({
         "taskId": task.id,
         "projectId": project.id,
@@ -250,6 +308,7 @@ pub fn claim(
         "baseVersionId": task.base_version_id,
         "instructions": instructions,
         "segments": segments,
+        "translationContext": translation_context,
         "speakerEvidence": speaker_evidence,
         "responseSchema": response_schema
     });
@@ -356,52 +415,60 @@ pub fn fail(db: &mut Connection, task_id: &str, worker: &str, message: &str) -> 
 }
 
 pub fn retry(db: &mut Connection, task_id: &str) -> Result<Task> {
-    let project_id: String = db
+    let (project_id, kind, language): (String, String, Option<String>) = db
         .query_row(
-            "SELECT project_id FROM tasks WHERE id=?1 AND status IN ('failed','interrupted')",
+            "SELECT project_id,kind,language FROM tasks WHERE id=?1 AND status IN ('failed','interrupted')",
             [task_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?
         .ok_or_else(|| anyhow!("只有失败或中断的任务可以重试"))?;
-    let latest_version = project::current_version_id(db, &project_id)?;
-    db.execute(
-        "UPDATE tasks SET status='queued',progress=0,error_message=NULL,cancel_requested_at=NULL,base_version_id=?2 WHERE id=?1",
-        params![task_id, latest_version],
+    let project = project::load(db, &project_id)?;
+    let segment_ids = select_task_segments(&project, &kind, language.as_deref())?;
+    let tx = db.transaction()?;
+    tx.execute(
+        "UPDATE tasks SET status='queued',progress=0,error_message=NULL,cancel_requested_at=NULL,base_version_id=?2,glossary_version=?3 WHERE id=?1",
+        params![task_id, &project.history.current_version_id, (kind == "translate").then_some(i64::from(project.glossary.version))],
     )?;
+    store_task_segments(&tx, &project, task_id, &segment_ids)?;
     append_event(
-        db,
+        &tx,
         task_id,
         &project_id,
         "queued",
         Some(0.0),
         "任务已重新排队",
     )?;
+    tx.commit()?;
     find_task(&project::load(db, &project_id)?, task_id)
 }
 
 pub(crate) fn requeue_for_runner(db: &mut Connection, task_id: &str) -> Result<Task> {
-    let project_id: String = db
+    let (project_id, kind, language): (String, String, Option<String>) = db
         .query_row(
-            "SELECT project_id FROM tasks WHERE id=?1 AND status IN ('failed','interrupted','cancelled')",
+            "SELECT project_id,kind,language FROM tasks WHERE id=?1 AND status IN ('failed','interrupted','cancelled')",
             [task_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?
         .ok_or_else(|| anyhow!("agent_run_not_resumable: 当前 Agent 任务不能继续"))?;
-    let latest_version = project::current_version_id(db, &project_id)?;
-    db.execute(
-        "UPDATE tasks SET status='queued',progress=0,error_message=NULL,cancel_requested_at=NULL,base_version_id=?2,lease_worker=NULL,lease_id=NULL,lease_expires_at=NULL WHERE id=?1",
-        params![task_id, latest_version],
+    let project = project::load(db, &project_id)?;
+    let segment_ids = select_task_segments(&project, &kind, language.as_deref())?;
+    let tx = db.transaction()?;
+    tx.execute(
+        "UPDATE tasks SET status='queued',progress=0,error_message=NULL,cancel_requested_at=NULL,base_version_id=?2,lease_worker=NULL,lease_id=NULL,lease_expires_at=NULL,glossary_version=?3 WHERE id=?1",
+        params![task_id, &project.history.current_version_id, (kind == "translate").then_some(i64::from(project.glossary.version))],
     )?;
+    store_task_segments(&tx, &project, task_id, &segment_ids)?;
     append_event(
-        db,
+        &tx,
         task_id,
         &project_id,
         "queued",
         Some(0.0),
         "本机 Agent 任务已重新排队",
     )?;
+    tx.commit()?;
     find_task(&project::load(db, &project_id)?, task_id)
 }
 
@@ -554,9 +621,9 @@ pub fn submit(
 ) -> Result<(String, Task, AgentPatchSet)> {
     let row: Option<SubmissionRow> = db
         .query_row(
-            "SELECT project_id,kind,language,status,lease_expires_at,lease_worker,base_version_id,cancel_requested_at FROM tasks WHERE id=?1",
+            "SELECT project_id,kind,language,status,lease_expires_at,lease_worker,base_version_id,cancel_requested_at,glossary_version FROM tasks WHERE id=?1",
             [task_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?)),
         )
         .optional()?;
     let Some((
@@ -568,6 +635,7 @@ pub fn submit(
         owner,
         base_version_id,
         cancel_requested_at,
+        glossary_version,
     )) = row
     else {
         bail!("任务不存在：{task_id}")
@@ -592,6 +660,34 @@ pub fn submit(
         .ok_or_else(|| anyhow!("任务响应缺少 baseVersionId"))?;
     if base_version_id.as_deref() != Some(response_base) {
         bail!("task_base_version_mismatch: Agent 响应版本与任务基线不一致")
+    }
+    if kind == "translate" {
+        let current_glossary: i64 = db.query_row(
+            "SELECT current_version FROM project_glossaries WHERE project_id=?1",
+            [&project_id],
+            |row| row.get(0),
+        )?;
+        if glossary_version != Some(current_glossary) {
+            bail!("glossary_version_conflict: 术语表版本已变化，Agent 结果未提交")
+        }
+    }
+    if let Some(patches) = response
+        .get("patches")
+        .or_else(|| response.get("segments"))
+        .and_then(Value::as_array)
+    {
+        let allowed = translation::task_segment_ids(db, task_id)?
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        for patch in patches {
+            let segment_id = patch
+                .get("segmentId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("agent_output_invalid: Agent 建议缺少字幕段 ID"))?;
+            if !allowed.contains(segment_id) {
+                bail!("agent_segment_unauthorized: Agent 建议包含任务范围外字幕段")
+            }
+        }
     }
     let patch_set = patches::stage(
         db,
@@ -625,6 +721,54 @@ fn find_task(project: &Project, task_id: &str) -> Result<Task> {
         .find(|task| task.id == task_id)
         .cloned()
         .ok_or_else(|| anyhow!("任务不存在：{task_id}"))
+}
+
+fn select_task_segments(
+    project: &Project,
+    kind: &str,
+    language: Option<&str>,
+) -> Result<Vec<String>> {
+    if kind == "translate" {
+        let language = language.ok_or_else(|| anyhow!("翻译任务缺少目标语言"))?;
+        let selected = translation::target_segment_ids(project, language);
+        if selected.is_empty() {
+            bail!("translation_up_to_date: 当前译文没有过期段或质量失败段")
+        }
+        return Ok(selected);
+    }
+    Ok(project
+        .transcript
+        .segments
+        .iter()
+        .map(|segment| segment.id.clone())
+        .collect())
+}
+
+fn store_task_segments(
+    db: &Connection,
+    project: &Project,
+    task_id: &str,
+    segment_ids: &[String],
+) -> Result<()> {
+    db.execute("DELETE FROM task_segments WHERE task_id=?1", [task_id])?;
+    for (ordinal, segment_id) in segment_ids.iter().enumerate() {
+        let source = project
+            .transcript
+            .segments
+            .iter()
+            .find(|segment| segment.id == *segment_id)
+            .ok_or_else(|| anyhow!("subtitle_segment_not_found: 字幕段不存在：{segment_id}"))?;
+        db.execute(
+            "INSERT INTO task_segments(task_id,segment_id,source_hash,ordinal) VALUES(?1,?2,?3,?4)",
+            params![
+                task_id,
+                segment_id,
+                translation::source_hash(&source.text),
+                ordinal as i64
+            ],
+        )?;
+    }
+    Ok(())
 }
 
 fn append_event(

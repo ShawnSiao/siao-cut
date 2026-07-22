@@ -4,9 +4,10 @@ use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 use std::{
     env, fs,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 23;
+pub const CURRENT_SCHEMA_VERSION: i64 = 24;
 
 struct Migration {
     version: i64,
@@ -106,6 +107,10 @@ const MIGRATIONS: &[Migration] = &[
         version: 23,
         apply: migration_23_agent_runs,
     },
+    Migration {
+        version: 24,
+        apply: migration_24_translation_readiness,
+    },
 ];
 
 pub fn home_dir() -> PathBuf {
@@ -130,10 +135,63 @@ pub fn open() -> Result<Connection> {
 }
 
 pub(crate) fn open_at(path: &Path) -> Result<Connection> {
+    backup_before_upgrade(path)?;
     let mut db = Connection::open(path).context("无法打开 SiaoCut SQLite 数据库")?;
     db.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")?;
     migrate(&mut db)?;
     Ok(db)
+}
+
+fn backup_before_upgrade(path: &Path) -> Result<Option<PathBuf>> {
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let source = Connection::open(path).context("无法读取待升级的 SiaoCut 数据库")?;
+    let has_migrations: bool = source.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_migrations {
+        return Ok(None);
+    }
+    let installed: i64 = source.query_row(
+        "SELECT COALESCE(MAX(version),0) FROM schema_migrations",
+        [],
+        |row| row.get(0),
+    )?;
+    if installed <= 0 || installed >= CURRENT_SCHEMA_VERSION {
+        return Ok(None);
+    }
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("siaocut.db");
+    let backup_path = path.with_file_name(format!("{file_name}.schema-{installed}.bak"));
+    if backup_path.exists() {
+        return Ok(Some(backup_path));
+    }
+    let partial_path =
+        backup_path.with_file_name(format!("{file_name}.schema-{installed}.bak.partial"));
+    if partial_path.is_file() {
+        fs::remove_file(&partial_path).context("无法清理未完成的数据库备份")?;
+    }
+    let backup_result = (|| -> Result<()> {
+        let mut destination =
+            Connection::open(&partial_path).context("无法创建数据库升级前备份")?;
+        let backup = rusqlite::backup::Backup::new(&source, &mut destination)
+            .context("无法初始化数据库升级前备份")?;
+        backup
+            .run_to_completion(128, Duration::from_millis(10), None)
+            .context("数据库升级前备份失败")?;
+        Ok(())
+    })();
+    if let Err(error) = backup_result {
+        let _ = fs::remove_file(&partial_path);
+        return Err(error);
+    }
+    fs::rename(&partial_path, &backup_path).context("无法完成数据库升级前备份")?;
+    Ok(Some(backup_path))
 }
 
 fn migrate(db: &mut Connection) -> Result<()> {
@@ -956,6 +1014,57 @@ fn migration_23_agent_runs(tx: &Transaction<'_>) -> Result<()> {
     Ok(())
 }
 
+fn migration_24_translation_readiness(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute_batch(
+        "ALTER TABLE translations ADD COLUMN glossary_version INTEGER NOT NULL DEFAULT 0;
+         ALTER TABLE translation_segments ADD COLUMN source_hash TEXT NOT NULL DEFAULT '';
+         ALTER TABLE translation_segments ADD COLUMN status TEXT NOT NULL DEFAULT 'stale';
+         ALTER TABLE translation_segments ADD COLUMN updated_at TEXT NOT NULL DEFAULT '';
+         UPDATE translation_segments SET status='stale',source_hash='',updated_at='migration-24';
+         UPDATE translations SET status='stale' WHERE EXISTS (
+             SELECT 1 FROM translation_segments s
+             WHERE s.project_id=translations.project_id AND s.language=translations.language
+         );
+         CREATE TABLE project_glossaries (
+             project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+             current_version INTEGER NOT NULL DEFAULT 0,
+             updated_at TEXT NOT NULL
+         );
+         INSERT INTO project_glossaries(project_id,current_version,updated_at)
+             SELECT id,0,'migration-24' FROM projects;
+         CREATE TABLE glossary_versions (
+             project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+             version INTEGER NOT NULL,
+             created_at TEXT NOT NULL,
+             PRIMARY KEY(project_id,version)
+         );
+         INSERT INTO glossary_versions(project_id,version,created_at)
+             SELECT id,0,'migration-24' FROM projects;
+         CREATE TABLE glossary_entries (
+             project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+             version INTEGER NOT NULL,
+             language TEXT NOT NULL,
+             source TEXT NOT NULL,
+             target TEXT NOT NULL,
+             ordinal INTEGER NOT NULL,
+             PRIMARY KEY(project_id,version,language,source)
+         );
+         CREATE INDEX idx_glossary_entries_current
+             ON glossary_entries(project_id,version,language,ordinal);
+         ALTER TABLE tasks ADD COLUMN glossary_version INTEGER;
+         CREATE TABLE task_segments (
+             task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+             segment_id TEXT NOT NULL REFERENCES segments(id) ON DELETE CASCADE,
+             source_hash TEXT NOT NULL,
+             ordinal INTEGER NOT NULL,
+             PRIMARY KEY(task_id,segment_id)
+         );
+         CREATE INDEX idx_task_segments_task ON task_segments(task_id,ordinal);
+         ALTER TABLE export_jobs ADD COLUMN allow_stale_translation INTEGER NOT NULL DEFAULT 0;",
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1065,6 +1174,94 @@ mod tests {
             )
             .unwrap();
         assert!(export_style_column);
+    }
+
+    #[test]
+    fn migration_24_marks_legacy_translations_stale_and_preserves_their_text() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("schema-23.db");
+        let mut database = Connection::open(&path).unwrap();
+        database.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);",
+        )
+        .unwrap();
+        for migration in MIGRATIONS
+            .iter()
+            .filter(|migration| migration.version <= 23)
+        {
+            let tx = database.transaction().unwrap();
+            (migration.apply)(&tx).unwrap();
+            tx.execute(
+                "INSERT INTO schema_migrations(version,applied_at) VALUES(?1,'test')",
+                [migration.version],
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+        database
+            .execute(
+                "INSERT INTO projects(id,title,created_at,updated_at) VALUES('p','legacy','now','now')",
+                [],
+            )
+            .unwrap();
+        database
+            .execute(
+                "INSERT INTO segments(id,project_id,start_seconds,end_seconds,text) VALUES('s','p',0,1,'source')",
+                [],
+            )
+            .unwrap();
+        database
+            .execute(
+                "INSERT INTO translations(project_id,language,status,updated_at) VALUES('p','en','current','now')",
+                [],
+            )
+            .unwrap();
+        database
+            .execute(
+                "INSERT INTO translation_segments(project_id,language,segment_id,text) VALUES('p','en','s','legacy translation')",
+                [],
+            )
+            .unwrap();
+        drop(database);
+
+        let migrated = open_at(&path).unwrap();
+        let backup_path = path.with_file_name("schema-23.db.schema-23.bak");
+        assert!(backup_path.is_file());
+        let backup = Connection::open(&backup_path).unwrap();
+        let backup_version: i64 = backup
+            .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(backup_version, 23);
+        let backup_translation: String = backup
+            .query_row(
+                "SELECT text FROM translation_segments WHERE project_id='p' AND language='en' AND segment_id='s'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(backup_translation, "legacy translation");
+        let row: (String, String, String, String) = migrated
+            .query_row(
+                "SELECT text,source_hash,status,updated_at FROM translation_segments WHERE project_id='p' AND language='en' AND segment_id='s'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(row.0, "legacy translation");
+        assert!(row.1.is_empty());
+        assert_eq!(row.2, "stale");
+        assert_eq!(row.3, "migration-24");
+        let glossary_version: i64 = migrated
+            .query_row(
+                "SELECT current_version FROM project_glossaries WHERE project_id='p'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(glossary_version, 0);
     }
 
     #[test]

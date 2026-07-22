@@ -107,7 +107,20 @@ export type SpeechInsights = {
 export type Translation = {
   status: "current" | "stale" | string;
   updatedAt: string;
-  segments: Array<{ segmentId: string; text: string }>;
+  glossaryVersion: number;
+  segments: Array<{
+    segmentId: string;
+    text: string;
+    sourceHash: string;
+    status: "current" | "stale" | "quality_failed" | string;
+    updatedAt: string;
+  }>;
+};
+
+export type Glossary = {
+  version: number;
+  updatedAt: string;
+  entries: Array<{ language: string; source: string; target: string }>;
 };
 
 export type UiLocale = "zh-CN" | "en-US";
@@ -226,6 +239,7 @@ export type ExportJob = {
   language: string | null;
   bilingual: boolean;
   subtitleMode: "source" | "translated" | "bilingual";
+  allowStaleTranslation: boolean;
   canvasSettings: CanvasSettings;
   subtitleStyle: SubtitleStyle;
   cancelRequestedAt: string | null;
@@ -613,6 +627,7 @@ export type Project = {
   subtitleQuality: SubtitleQualityReport;
   speechInsights: SpeechInsights;
   translations: Record<string, Translation>;
+  glossary: Glossary;
   edits: Edit[];
   tasks: Task[];
   versions: Version[];

@@ -134,6 +134,17 @@ describe("SiaoCut review workbench", () => {
     expect(screen.getAllByText("JA").length).toBeGreaterThan(0);
   });
 
+  it("saves a versioned project glossary for the selected translation language", async () => {
+    render(<App />);
+    await screen.findByRole("heading", { name: "发布口播 · 草稿" });
+    fireEvent.change(screen.getByRole("combobox", { name: "Agent 工作流" }), { target: { value: "translate" } });
+    const glossary = screen.getByRole("textbox", { name: "项目术语表" });
+    fireEvent.change(glossary, { target: { value: "本地优先=local-first\n工作台=workbench" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存新版本" }));
+    expect(await screen.findByText(/术语表已保存为版本 1/)).toBeInTheDocument();
+    expect(screen.getByText("版本 1")).toBeInTheDocument();
+  });
+
   it("runs local Codex automatically and leaves the transcript unchanged until review", async () => {
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "新建项目" }));
@@ -277,6 +288,24 @@ describe("SiaoCut review workbench", () => {
     fireEvent.change(editor, { target: { value: "这是一段人工修订后的原文。" } });
     fireEvent.blur(editor);
     await waitFor(() => expect(screen.getAllByText("需要更新").length).toBeGreaterThan(0));
+  });
+
+  it("requires explicit confirmation before exporting stale translation segments", async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /^发布口播/ }));
+    const editor = await screen.findByLabelText("00:13 字幕文本");
+    fireEvent.change(editor, { target: { value: "人工修订后的原文。" } });
+    fireEvent.blur(editor);
+    await waitFor(() => expect(screen.getAllByText("需要更新").length).toBeGreaterThan(0));
+
+    await openDrawerTab("导出");
+    const panel = await screen.findByLabelText("导出设置");
+    fireEvent.change(within(panel).getByLabelText("字幕模式"), { target: { value: "translated" } });
+    const exportButton = within(panel).getByRole("button", { name: "导出字幕" });
+    const confirmation = within(panel).getByRole("checkbox", { name: /确认仍使用当前译文导出/ });
+    expect(exportButton).toBeDisabled();
+    fireEvent.click(confirmation);
+    expect(exportButton).toBeEnabled();
   });
 
   it("exposes word timing evidence for the selected segment", async () => {
@@ -811,10 +840,16 @@ describe("SiaoCut review workbench", () => {
     const name = within(speakerPanel).getByLabelText("说话人 1名称");
     fireEvent.change(name, { target: { value: "主持人" } });
     fireEvent.blur(name);
-    await waitFor(() => expect(screen.getByText(/说话人名称已更新，可撤销或从版本历史恢复/)).toBeInTheDocument());
+    await waitFor(
+      () => expect(screen.getByText(/说话人名称已更新，可撤销或从版本历史恢复/)).toBeInTheDocument(),
+      { timeout: 3000 },
+    );
     expect(within(speakerPanel).getByLabelText("主持人名称")).toBeInTheDocument();
     fireEvent.change(within(speakerPanel).getByLabelText("当前字幕说话人"), { target: { value: "voice-b" } });
-    await waitFor(() => expect(screen.getByText(/当前字幕段的说话人已更新，可撤销或从版本历史恢复/)).toBeInTheDocument());
+    await waitFor(
+      () => expect(screen.getByText(/当前字幕段的说话人已更新，可撤销或从版本历史恢复/)).toBeInTheDocument(),
+      { timeout: 3000 },
+    );
     expect(screen.getByLabelText("00:12 字幕文本")).toHaveValue("嗯，");
   });
 

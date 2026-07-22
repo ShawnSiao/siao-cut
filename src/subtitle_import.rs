@@ -463,8 +463,8 @@ mod tests {
         )
         .unwrap();
         db.execute(
-            "INSERT INTO translation_segments(project_id,language,segment_id,text) VALUES(?1,'en',?2,'translated')",
-            params![&project.id, &original.id],
+            "INSERT INTO translation_segments(project_id,language,segment_id,text,source_hash,status,updated_at) VALUES(?1,'en',?2,'translated',?3,'current','fixture')",
+            params![&project.id, &original.id, crate::translation::source_hash("original")],
         )
         .unwrap();
         db.execute(

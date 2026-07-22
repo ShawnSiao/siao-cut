@@ -15,6 +15,7 @@ import { backgroundTaskClient } from "../domains/background-task-client";
 import { exportRuntimeClient } from "../domains/export-runtime-client";
 import { projectSessionClient } from "../domains/project-session-client";
 import { transcriptEditingClient } from "../domains/transcript-editing-client";
+import { translationClient } from "../domains/translation-client";
 import { useBackgroundTaskRegistry } from "../hooks/use-background-task-registry";
 import { useWorkbenchFeedback } from "../hooks/use-workbench-feedback";
 
@@ -151,6 +152,8 @@ function WorkbenchController() {
     const [exportFormat, setExportFormat] = useState<"srt" | "vtt" | "ass" | "markdown" | "json">(() => parseExportPreferences(localStorage.getItem("siaocut.exportPreferences.v1")).transcriptFormat);
     const [includeSpeakerLabels, setIncludeSpeakerLabels] = useState(true);
     const [confirmTranscriptionWarnings, setConfirmTranscriptionWarnings] = useState(false);
+    const [confirmStaleTranslation, setConfirmStaleTranslation] = useState(false);
+    const [glossaryDraft, setGlossaryDraft] = useState("");
     const [subtitleMode, setSubtitleMode] = useState<"source" | "translated" | "bilingual">(() => parseExportPreferences(localStorage.getItem("siaocut.exportPreferences.v1")).subtitleMode);
     const [subtitleLanguage, setSubtitleLanguage] = useState(() => parseExportPreferences(localStorage.getItem("siaocut.exportPreferences.v1")).subtitleLanguage);
     const [wordRange, setWordRange] = useState<{
@@ -580,7 +583,14 @@ function WorkbenchController() {
     const selectedSubtitleLanguage = translationLanguageOptions.includes(subtitleLanguage) ? subtitleLanguage : translationLanguageOptions[0] ?? "";
     const selectedTranslation = selectedSubtitleLanguage ? project?.translations[selectedSubtitleLanguage] : undefined;
     const translation = selectedTranslation ? [selectedSubtitleLanguage, selectedTranslation] as const : undefined;
-    const selectedTranslationPending = Boolean(selectedSubtitleLanguage && !selectedTranslation);
+    const selectedTranslationIncomplete = Boolean(selectedTranslation && project?.transcript.segments.some(
+        (source) => !selectedTranslation.segments.some((translated) => translated.segmentId === source.id),
+    ));
+    const selectedTranslationPending = Boolean(subtitleMode !== "source" && selectedSubtitleLanguage && (!selectedTranslation || selectedTranslationIncomplete));
+    const selectedTranslationStale = Boolean(subtitleMode !== "source" && !selectedTranslationIncomplete && selectedTranslation && (
+        selectedTranslation.status !== "current"
+        || selectedTranslation.segments.some((segment) => segment.status !== "current")
+    ));
     const capabilities = useMemo(() => getProjectCapabilities(project, {
         mediaUrl,
         modelPath,
@@ -665,6 +675,10 @@ function WorkbenchController() {
         if (!translationLanguageOptions.includes(subtitleLanguage))
             setSubtitleLanguage(translationLanguageOptions[0]);
     }, [project, subtitleLanguage, subtitleMode, translationLanguageOptions]);
+    useEffect(() => {
+        const entries = project?.glossary.entries.filter((entry) => entry.language === subtitleLanguage) ?? [];
+        setGlossaryDraft(entries.map((entry) => `${entry.source}=${entry.target}`).join("\n"));
+    }, [project?.id, project?.glossary.version, subtitleLanguage]);
     useEffect(() => {
         if (!showExportPanel)
             return;
@@ -1410,18 +1424,18 @@ function WorkbenchController() {
         }
         else {
             const subtitle = subtitleExportOptions();
-            await exportRuntimeClient.exportTranscript(project.id, exportFormat, output, subtitle.mode, subtitle.language);
+            await exportRuntimeClient.exportTranscript(project.id, exportFormat, output, subtitle.mode, subtitle.language, subtitle.confirmStaleTranslation);
         }
         setNotice(tr("app.s0173", { "0": exportFormat === "markdown" ? tr("app.s0174") : exportFormat === "json" ? tr("app.moss.export.json") : tr("app.s0175"), "1": output }));
     });
     const subtitleExportOptions = () => {
         if (subtitleMode === "source")
-            return { mode: "source" as const, language: undefined };
+            return { mode: "source" as const, language: undefined, confirmStaleTranslation: false };
         if (!selectedSubtitleLanguage)
             throw new Error(tr("app.s0176"));
         if (selectedTranslationPending)
             throw new Error(tr("app.s0177", { "0": selectedSubtitleLanguage.toUpperCase() }));
-        return { mode: subtitleMode, language: selectedSubtitleLanguage };
+        return { mode: subtitleMode, language: selectedSubtitleLanguage, confirmStaleTranslation };
     };
     const changeCanvas = (settings: CanvasSettings) => project && withBusy(tr("app.s0178"), async () => {
         const envelope = await transcriptEditingClient.setCanvas(project.id, settings);
@@ -1456,7 +1470,7 @@ function WorkbenchController() {
         if (!output)
             return;
         const subtitle = subtitleExportOptions();
-        const envelope = await exportRuntimeClient.exportVideo(project.id, output, subtitle.mode, subtitle.language);
+        const envelope = await exportRuntimeClient.exportVideo(project.id, output, subtitle.mode, subtitle.language, subtitle.confirmStaleTranslation);
         if (!envelope.job)
             throw new Error(tr("app.s0187"));
         setActiveExport(envelope.job);
@@ -1724,6 +1738,30 @@ function WorkbenchController() {
         if (agentWorkflowKind === "translate" && !capabilities.hasTranslationTarget)
             throw new Error(tr("app.capability.translationTargetRequired"));
     };
+    const saveGlossary = () => project && withBusy(tr("app.creator.glossary.saving"), async () => {
+        const entries = glossaryDraft
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter(Boolean)
+            .map((line) => {
+                const separator = line.indexOf("=");
+                if (separator <= 0 || separator === line.length - 1)
+                    throw new Error(tr("app.creator.glossary.invalid"));
+                return { source: line.slice(0, separator).trim(), target: line.slice(separator + 1).trim() };
+            });
+        const envelope = await translationClient.replaceGlossary(
+            project.id,
+            subtitleLanguage,
+            project.glossary.version,
+            entries,
+        );
+        if (!envelope.project)
+            throw new Error(tr("app.canvas.projectMissing"));
+        setProject(envelope.project);
+        setProjects((current) => current.map((item) => item.id === envelope.project!.id ? envelope.project! : item));
+        setConfirmStaleTranslation(false);
+        setNotice(tr("app.creator.glossary.saved", { version: envelope.project.glossary.version }));
+    });
     const createAgentTask = () => project && withBusy(tr("app.s0222"), async () => {
         assertAgentWorkflowReady();
         const envelope = await agentReviewClient.createWorkflow(project.id, agentWorkflowKind, uiLocale, agentWorkflowKind === "translate" ? subtitleLanguage : undefined);
@@ -1991,7 +2029,14 @@ function WorkbenchController() {
 	                    <section className="creator-agent-control">
 	                      <header><span><Bot size={15}/><strong>{tr("app.creator.agent.title")}</strong><small>{codexHealth?.available && codexHealth.authenticated ? tr("app.creator.agent.ready", { version: codexHealth.version ?? "Codex CLI" }) : tr("app.creator.agent.unavailable")}</small></span>{agentRunActive && agentRun ? <StatusBadge tone="agent">{Math.round(agentRun.progress * 100)}%</StatusBadge> : null}</header>
 	                      <label><span>{tr("app.workflow.label")}</span><select aria-label={tr("app.workflow.label")} value={agentWorkflowKind} disabled={agentRunActive} onChange={(event) => setAgentWorkflowKind(event.target.value as typeof agentWorkflowKind)}><option value="polish">{tr("app.workflow.polish")}</option><option value="proofread">{tr("app.workflow.proofread")}</option><option value="punctuate">{tr("app.workflow.punctuate")}</option><option value="edit">{tr("app.workflow.edit")}</option><option value="translate">{tr("app.workflow.translate")}</option><option value="speaker_names">{tr("app.workflow.speakerNames")}</option></select></label>
-	                      {agentWorkflowKind === "translate" && <label><span>{tr("app.workflow.targetLanguage")}</span><select aria-label={tr("app.workflow.targetLanguage")} value={subtitleLanguage} disabled={agentRunActive} onChange={(event) => setSubtitleLanguage(event.target.value)}><option value="en">EN</option><option value="zh">ZH</option><option value="ja">JA</option><option value="ko">KO</option></select></label>}
+	                      {agentWorkflowKind === "translate" && <>
+	                        <label><span>{tr("app.workflow.targetLanguage")}</span><select aria-label={tr("app.workflow.targetLanguage")} value={subtitleLanguage} disabled={agentRunActive} onChange={(event) => setSubtitleLanguage(event.target.value)}><option value="en">EN</option><option value="zh">ZH</option><option value="ja">JA</option><option value="ko">KO</option></select></label>
+	                        <div className="creator-glossary">
+	                          <div><strong>{tr("app.creator.glossary.title")}</strong><small>{tr("app.creator.glossary.version", { version: project.glossary.version })}</small></div>
+	                          <textarea aria-label={tr("app.creator.glossary.title")} value={glossaryDraft} disabled={agentRunActive || Boolean(busy)} placeholder={tr("app.creator.glossary.placeholder")} onChange={(event) => setGlossaryDraft(event.target.value)}/>
+	                          <button className="button quiet" disabled={agentRunActive || Boolean(busy)} onClick={saveGlossary}>{tr("app.creator.glossary.save")}</button>
+	                        </div>
+	                      </>}
 	                      {agentRun && <div className={`creator-agent-run ${agentRun.status}`} role="status"><span><strong>{tr(`app.creator.agent.status.${agentRun.status}` as Parameters<typeof tr>[0])}</strong><small>{tr("app.creator.agent.batch", { current: agentRun.currentBatch, total: agentRun.batchCount })}</small></span><progress max={1} value={agentRun.progress}/>{["queued", "running", "submitting"].includes(agentRun.status) ? <button onClick={() => void cancelCodexAgent()}>{tr("app.creator.agent.cancel")}</button> : ["failed", "interrupted", "cancelled"].includes(agentRun.status) ? <button onClick={() => void resumeCodexAgent()}><RefreshCw size={12}/>{tr("app.creator.agent.resume")}</button> : null}{agentRun.errorMessage && <JobFailureDetails context="agent" status={agentRun.status} errorCode={agentRun.errorCode} errorMessage={agentRun.errorMessage}/>}</div>}
 	                      <div className="creator-agent-actions"><Button ref={agentButtonRef} variant="agent" disabled={!capabilities.canCreateAgentTask || agentRunActive || Boolean(busy) || (agentWorkflowKind === "speaker_names" && speakerTrack?.status !== "ready")} title={agentCapabilityTitle} onClick={startCodexAgent}><Bot size={14}/>{tr("app.creator.agent.start")}</Button><button className="button quiet" disabled={agentRunActive || Boolean(busy)} onClick={openAgentHandoff}>{tr("app.creator.agent.manual")}</button></div>
 	                      <p className="runtime-disclosure"><ShieldCheck size={13}/>{tr("app.creator.agent.boundary")}</p>
@@ -2018,7 +2063,7 @@ function WorkbenchController() {
 	                    </section>}
 	                  </div>}
 	                  {drawerTab === "history" && <div className="inspector-view"><div className="version-block"><div className="section-title"><div><p className="eyebrow">{tr("app.s0385")}</p><h2>{tr("app.s0386")}</h2></div><History size={16}/></div>{project.versions.slice().reverse().map((version) => <button className="version-row" key={version.id} onClick={() => restoreVersion(version.id)}><span><strong>{versionReasonLabel(version.reason)}</strong><small>{new Date(version.createdAt).toLocaleString(uiLocale)}</small></span><RotateCcw size={14}/></button>)}</div></div>}
-	                  {drawerTab === "export" && showExportPanel && <Suspense fallback={null}><ExportPanel embedded ref={exportPanelRef} project={project} busy={Boolean(busy)} subtitleMode={subtitleMode} translationLanguageOptions={translationLanguageOptions} translationLanguages={translationLanguages} selectedSubtitleLanguage={selectedSubtitleLanguage} selectedTranslationPending={selectedTranslationPending} exportFormat={exportFormat} structuredExport={structuredExport} includeSpeakerLabels={includeSpeakerLabels} transcriptionExportErrorCount={transcriptionExportErrors.length} transcriptionExportWarningCount={transcriptionExportWarnings.length} confirmTranscriptionWarnings={confirmTranscriptionWarnings} showSubtitleSafeArea={showSubtitleSafeArea} transcriptionExportBlocked={transcriptionExportBlocked} canExportVideo={capabilities.canExportVideo} activeExportRunning={Boolean(activeExport && ["queued", "running"].includes(activeExport.status))} mediaCapabilityTitle={mediaCapabilityTitle} onClose={() => { setShowExportPanel(false); setDrawerTab("quality"); }} onChangeCanvas={(settings) => void changeCanvas(settings)} onSubtitleModeChange={setSubtitleMode} onSubtitleLanguageChange={setSubtitleLanguage} onExportFormatChange={(format) => { setExportFormat(format); setConfirmTranscriptionWarnings(false); }} onIncludeSpeakerLabelsChange={setIncludeSpeakerLabels} onConfirmWarningsChange={setConfirmTranscriptionWarnings} onSubtitleStyleChange={(preset, position) => void changeSubtitleStyle(preset, position)} onShowSafeAreaChange={setShowSubtitleSafeArea} onExportTranscript={exportTranscript} onExportVideo={exportVideo}/></Suspense>}
+	                  {drawerTab === "export" && showExportPanel && <Suspense fallback={null}><ExportPanel embedded ref={exportPanelRef} project={project} busy={Boolean(busy)} subtitleMode={subtitleMode} translationLanguageOptions={translationLanguageOptions} translationLanguages={translationLanguages} selectedSubtitleLanguage={selectedSubtitleLanguage} selectedTranslationPending={selectedTranslationPending} selectedTranslationStale={selectedTranslationStale} confirmStaleTranslation={confirmStaleTranslation} exportFormat={exportFormat} structuredExport={structuredExport} includeSpeakerLabels={includeSpeakerLabels} transcriptionExportErrorCount={transcriptionExportErrors.length} transcriptionExportWarningCount={transcriptionExportWarnings.length} confirmTranscriptionWarnings={confirmTranscriptionWarnings} showSubtitleSafeArea={showSubtitleSafeArea} transcriptionExportBlocked={transcriptionExportBlocked} canExportVideo={capabilities.canExportVideo} activeExportRunning={Boolean(activeExport && ["queued", "running"].includes(activeExport.status))} mediaCapabilityTitle={mediaCapabilityTitle} onClose={() => { setShowExportPanel(false); setDrawerTab("quality"); }} onChangeCanvas={(settings) => void changeCanvas(settings)} onSubtitleModeChange={(mode) => { setSubtitleMode(mode); setConfirmStaleTranslation(false); }} onSubtitleLanguageChange={(language) => { setSubtitleLanguage(language); setConfirmStaleTranslation(false); }} onExportFormatChange={(format) => { setExportFormat(format); setConfirmTranscriptionWarnings(false); }} onIncludeSpeakerLabelsChange={setIncludeSpeakerLabels} onConfirmWarningsChange={setConfirmTranscriptionWarnings} onConfirmStaleTranslationChange={setConfirmStaleTranslation} onSubtitleStyleChange={(preset, position) => void changeSubtitleStyle(preset, position)} onShowSafeAreaChange={setShowSubtitleSafeArea} onExportTranscript={exportTranscript} onExportVideo={exportVideo}/></Suspense>}
 	                </div>
 	              </aside>
 	            </section>

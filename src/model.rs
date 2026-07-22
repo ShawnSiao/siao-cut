@@ -456,6 +456,8 @@ pub struct ExportJob {
     pub language: Option<String>,
     pub bilingual: bool,
     pub subtitle_mode: SubtitleMode,
+    #[serde(default)]
+    pub allow_stale_translation: bool,
     pub canvas_settings: CanvasSettings,
     pub subtitle_style: SubtitleStyle,
     pub cancel_requested_at: Option<String>,
@@ -473,6 +475,8 @@ pub struct ExportJob {
 pub struct Translation {
     pub status: String,
     pub updated_at: String,
+    #[serde(default)]
+    pub glossary_version: u32,
     pub segments: Vec<TranslationSegment>,
 }
 
@@ -481,6 +485,32 @@ pub struct Translation {
 pub struct TranslationSegment {
     pub segment_id: String,
     pub text: String,
+    #[serde(default)]
+    pub source_hash: String,
+    #[serde(default = "default_stale_translation_status")]
+    pub status: String,
+    #[serde(default)]
+    pub updated_at: String,
+}
+
+fn default_stale_translation_status() -> String {
+    "stale".to_owned()
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Glossary {
+    pub version: u32,
+    pub updated_at: String,
+    pub entries: Vec<GlossaryEntry>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GlossaryEntry {
+    pub language: String,
+    pub source: String,
+    pub target: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -762,6 +792,8 @@ pub struct Project {
     #[serde(default)]
     pub speech_insights: SpeechInsights,
     pub translations: BTreeMap<String, Translation>,
+    #[serde(default)]
+    pub glossary: Glossary,
     pub edits: Vec<Edit>,
     pub tasks: Vec<Task>,
     pub versions: Vec<Version>,

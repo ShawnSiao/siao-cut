@@ -214,6 +214,7 @@ fn validate_core_args(args: &[String]) -> Result<(), String> {
         "health",
         "import",
         "project",
+        "glossary",
         "transcript",
         "task",
         "agent",
@@ -234,7 +235,12 @@ fn validate_core_args(args: &[String]) -> Result<(), String> {
     if args.is_empty() || !ALLOWED.contains(&args[0].as_str()) {
         return Err("桌面应用拒绝了未知 Core 命令。".to_owned());
     }
-    if args.len() > 32 {
+    let max_args = if args.first().is_some_and(|command| command == "glossary") {
+        410
+    } else {
+        32
+    };
+    if args.len() > max_args {
         return Err("Core 命令参数过多。".to_owned());
     }
     Ok(())
@@ -608,6 +614,7 @@ mod tests {
         assert!(validate_core_args(&["speaker".into(), "package".into()]).is_ok());
         assert!(validate_core_args(&["transcription".into(), "providers".into()]).is_ok());
         assert!(validate_core_args(&["agent".into(), "health".into()]).is_ok());
+        assert!(validate_core_args(&["glossary".into(), "show".into(), "p1".into()]).is_ok());
     }
 
     #[test]

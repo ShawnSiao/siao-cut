@@ -8,7 +8,7 @@ const BILINGUAL_SEPARATOR: char = '\u{001e}';
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     path::Path,
 };
 
@@ -17,6 +17,7 @@ pub struct ExportOptions<'a> {
     pub language: Option<&'a str>,
     pub subtitle_mode: SubtitleMode,
     pub include_cuts: bool,
+    pub allow_stale_translation: bool,
 }
 
 pub fn resolve_subtitle_mode(
@@ -58,7 +59,7 @@ pub fn validate_subtitle_mode(project: &Project, options: &ExportOptions<'_>) ->
         .translations
         .get(language)
         .ok_or_else(|| anyhow::anyhow!("translation_missing: 项目中没有 {language} 译文"))?;
-    if translation.status == "stale" {
+    if translation.status == "stale" && !options.allow_stale_translation {
         bail!("translation_stale: {language} 译文已过期，请先更新译文")
     }
     let translated = translation
@@ -147,7 +148,62 @@ pub fn quality_reports(project: &Project, options: &ExportOptions<'_>) -> Value 
 
 pub fn audit_for_options(project: &Project, options: &ExportOptions<'_>) -> Value {
     let mut report = audit(project);
-    report["subtitleQuality"] = quality_reports(project, options);
+    let subtitle_quality = quality_reports(project, options);
+    report["subtitleQuality"] = subtitle_quality.clone();
+    let mut blockers = report["blockers"].as_array().cloned().unwrap_or_default();
+    for track in subtitle_quality.as_array().into_iter().flatten() {
+        for issue in track["report"]["issues"].as_array().into_iter().flatten() {
+            if issue["severity"] == "error" {
+                blockers.push(json!({
+                    "code": "subtitle-quality-error",
+                    "track": track["track"],
+                    "language": track["language"],
+                    "segmentId": issue["segmentId"],
+                    "kind": issue["kind"]
+                }));
+            }
+        }
+    }
+    if options.subtitle_mode != SubtitleMode::Source {
+        let language = options.language.unwrap_or("");
+        match project.translations.get(language) {
+            None => blockers.push(json!({"code":"translation-missing","language":language})),
+            Some(translation) => {
+                let translated = translation
+                    .segments
+                    .iter()
+                    .map(|segment| segment.segment_id.as_str())
+                    .collect::<HashSet<_>>();
+                for source in &project.transcript.segments {
+                    if !translated.contains(source.id.as_str()) {
+                        blockers.push(json!({"code":"translation-incomplete","language":language,"segmentId":source.id}));
+                    }
+                }
+            }
+        }
+    }
+    report["blockers"] = Value::Array(blockers.clone());
+    report["ready"] = Value::Bool(blockers.is_empty());
+    report["readiness"] = Value::String(
+        if blockers.is_empty() {
+            if report["warnings"]
+                .as_array()
+                .is_some_and(|items| !items.is_empty())
+            {
+                "needs_confirmation"
+            } else {
+                "ready"
+            }
+        } else {
+            "blocked"
+        }
+        .to_owned(),
+    );
+    let warning_slice = report["warnings"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    report["nextActions"] = Value::Array(next_actions(&blockers, warning_slice));
     report
 }
 
@@ -188,8 +244,25 @@ pub fn audit(project: &Project) -> Value {
         }
     }
     for (language, translation) in &project.translations {
-        if translation.status == "stale" {
-            issues.push(json!({"code":"stale-translation","language":language}))
+        let stale_segments = translation
+            .segments
+            .iter()
+            .filter(|segment| segment.status == "stale")
+            .map(|segment| segment.segment_id.as_str())
+            .collect::<Vec<_>>();
+        let quality_failed_segments = translation
+            .segments
+            .iter()
+            .filter(|segment| segment.status == "quality_failed")
+            .map(|segment| segment.segment_id.as_str())
+            .collect::<Vec<_>>();
+        if translation.status == "stale" || !stale_segments.is_empty() {
+            issues.push(
+                json!({"code":"stale-translation","language":language,"segmentIds":stale_segments}),
+            )
+        }
+        if !quality_failed_segments.is_empty() {
+            issues.push(json!({"code":"translation-quality-failed","language":language,"segmentIds":quality_failed_segments}))
         }
     }
     for edit in project.edits.iter().filter(|edit| edit.status == "applied") {
@@ -246,17 +319,57 @@ pub fn audit(project: &Project) -> Value {
         .filter(|issue| !blocks_export(issue))
         .cloned()
         .collect::<Vec<_>>();
+    let blockers = issues
+        .iter()
+        .filter(|issue| blocks_export(issue))
+        .cloned()
+        .collect::<Vec<_>>();
+    let readiness = if !blockers.is_empty() {
+        "blocked"
+    } else if !warnings.is_empty() {
+        "needs_confirmation"
+    } else {
+        "ready"
+    };
     json!({
-        "ready": !issues.iter().any(blocks_export),
+        "ready": blockers.is_empty(),
+        "readiness": readiness,
         "issues": issues,
-        "warnings": warnings
+        "blockers": blockers,
+        "warnings": warnings,
+        "nextActions": next_actions(&blockers, &warnings)
     })
+}
+
+fn next_actions(blockers: &[Value], warnings: &[Value]) -> Vec<Value> {
+    let mut actions = BTreeSet::new();
+    for issue in blockers.iter().chain(warnings) {
+        let action = match issue["code"].as_str().unwrap_or_default() {
+            "media-missing" | "media-hash-changed" | "media-unreadable" => "relink-media",
+            "stale-translation" | "translation-quality-failed" => "refresh-translation",
+            "word-cut-stale" | "word-cut-boundary-mismatch" | "cut-boundary-mismatch" => {
+                "review-cuts"
+            }
+            "translation-missing" | "translation-incomplete" => "complete-translation",
+            _ => "fix-subtitles",
+        };
+        actions.insert(action);
+    }
+    actions
+        .into_iter()
+        .map(|code| json!({"code":code}))
+        .collect()
 }
 
 fn blocks_export(issue: &Value) -> bool {
     !matches!(
         issue["code"].as_str(),
-        Some("stale-translation" | "caption-too-long" | "overlapping-caption")
+        Some(
+            "stale-translation"
+                | "translation-quality-failed"
+                | "caption-too-long"
+                | "overlapping-caption"
+        )
     )
 }
 
@@ -640,6 +753,7 @@ mod tests {
             subtitle_quality: Default::default(),
             speech_insights: Default::default(),
             translations: BTreeMap::new(),
+            glossary: Default::default(),
             edits: vec![Edit {
                 id: "cut".into(),
                 kind: "cut".into(),
@@ -665,6 +779,7 @@ mod tests {
                 language: None,
                 subtitle_mode: SubtitleMode::Source,
                 include_cuts: false,
+                allow_stale_translation: false,
             },
         )
         .unwrap();
@@ -745,6 +860,7 @@ mod tests {
             subtitle_quality: Default::default(),
             speech_insights: Default::default(),
             translations: BTreeMap::new(),
+            glossary: Default::default(),
             edits: Vec::new(),
             tasks: Vec::new(),
             versions: Vec::new(),
@@ -757,9 +873,13 @@ mod tests {
             Translation {
                 status: "current".into(),
                 updated_at: String::new(),
+                glossary_version: 0,
                 segments: vec![TranslationSegment {
                     segment_id: "a".into(),
                     text: "Translation".into(),
+                    source_hash: crate::translation::source_hash("原文"),
+                    status: "current".into(),
+                    updated_at: String::new(),
                 }],
             },
         );
@@ -771,6 +891,7 @@ mod tests {
                 language: Some("en"),
                 subtitle_mode: SubtitleMode::Translated,
                 include_cuts: false,
+                allow_stale_translation: false,
             },
         )
         .unwrap();
@@ -784,6 +905,7 @@ mod tests {
                 language: Some("en"),
                 subtitle_mode: SubtitleMode::Bilingual,
                 include_cuts: false,
+                allow_stale_translation: false,
             },
         )
         .unwrap();
@@ -797,6 +919,7 @@ mod tests {
                 language: Some("en"),
                 subtitle_mode: SubtitleMode::Bilingual,
                 include_cuts: false,
+                allow_stale_translation: false,
             },
         );
         assert_eq!(reports.as_array().unwrap().len(), 2);
@@ -821,6 +944,7 @@ mod tests {
                 language: Some("en"),
                 subtitle_mode: SubtitleMode::Bilingual,
                 include_cuts: false,
+                allow_stale_translation: false,
             },
         )
         .unwrap();
@@ -840,11 +964,46 @@ mod tests {
                 language: Some("en"),
                 subtitle_mode: SubtitleMode::Translated,
                 include_cuts: false,
+                allow_stale_translation: false,
             },
         )
         .unwrap_err()
         .to_string();
         assert!(error.contains("translation_stale"));
+
+        let report = audit_for_options(
+            &project,
+            &ExportOptions {
+                format: "srt",
+                language: Some("en"),
+                subtitle_mode: SubtitleMode::Translated,
+                include_cuts: false,
+                allow_stale_translation: true,
+            },
+        );
+        assert!(report["readiness"].is_string());
+        assert!(report["blockers"].is_array());
+        assert!(
+            report["nextActions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|action| action["code"] == "refresh-translation")
+        );
+        assert!(
+            render(
+                &project,
+                &ExportOptions {
+                    format: "srt",
+                    language: Some("en"),
+                    subtitle_mode: SubtitleMode::Translated,
+                    include_cuts: false,
+                    allow_stale_translation: true,
+                },
+            )
+            .unwrap()
+            .contains("Translation")
+        );
     }
 
     #[test]
@@ -892,6 +1051,7 @@ mod tests {
             subtitle_quality: Default::default(),
             speech_insights: Default::default(),
             translations: BTreeMap::new(),
+            glossary: Default::default(),
             edits: Vec::new(),
             tasks: Vec::new(),
             versions: Vec::new(),
@@ -927,6 +1087,7 @@ mod tests {
                 language: None,
                 subtitle_mode: SubtitleMode::Source,
                 include_cuts: false,
+                allow_stale_translation: false,
             },
         )
         .unwrap();
