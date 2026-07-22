@@ -12,6 +12,17 @@ export const backgroundJobStatuses = [
 ] as const;
 export type BackgroundJobStatus = typeof backgroundJobStatuses[number];
 
+export const agentRunStatuses = [
+  "queued",
+  "running",
+  "submitting",
+  "completed",
+  "cancelled",
+  "interrupted",
+  "failed"
+] as const;
+export type AgentRunStatus = typeof agentRunStatuses[number];
+
 export const transcriptionJobStatuses = [
   "queued",
   "running",

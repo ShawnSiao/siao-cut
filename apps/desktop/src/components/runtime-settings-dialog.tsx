@@ -29,6 +29,8 @@ type RuntimeSettingsDialogProps = {
   modelPath: string | null;
   transcriptionConfig: TranscriptionProviderConfig | null;
   transcriptionHealth: TranscriptionProviderHealth | null;
+  transcriptionMode: "quick" | "multispeaker";
+  transcriptionLanguage: "auto" | "en" | "zh";
   busy: boolean;
   models: ModelStatus[];
   modelJob: ModelDownloadJob | null;
@@ -42,6 +44,8 @@ type RuntimeSettingsDialogProps = {
   onChooseModel: () => void;
   onSaveTranscriptionProvider: (endpoint: string, modelId: string) => void;
   onCheckTranscriptionProvider: () => void;
+  onSelectTranscriptionMode: (mode: "quick" | "multispeaker") => void;
+  onSelectTranscriptionLanguage: (language: "auto" | "en" | "zh") => void;
   onSelectAsrBackend: (backend: "cpu" | "vulkan") => void;
   onSelectModel: (path: string) => void;
   onInstallModel: (modelId: string) => void;
@@ -66,7 +70,8 @@ export default function RuntimeSettingsDialog(props: RuntimeSettingsDialogProps)
       <div className="runtime-dialog-content">
         <p className="dialog-copy">{tr("app.s0506")}</p>
         <RuntimeChecklist runtime={props.runtime} modelPath={props.modelPath} onChooseModel={props.onChooseModel}/>
-        <TranscriptionProviderSettings config={props.transcriptionConfig} health={props.transcriptionHealth} busy={props.busy} onSave={props.onSaveTranscriptionProvider} onCheck={props.onCheckTranscriptionProvider}/>
+        <section className="creator-advanced-transcription" aria-label={tr("app.creator.advancedTranscription")}><header><strong>{tr("app.creator.advancedTranscription")}</strong><small>{tr("app.creator.advancedTranscriptionHelp")}</small></header><div><label><span>{tr("app.moss.mode.label")}</span><select aria-label={tr("app.moss.mode.label")} value={props.transcriptionMode} onChange={(event) => props.onSelectTranscriptionMode(event.target.value as "quick" | "multispeaker")}><option value="quick">{tr("app.moss.mode.quick")}</option><option value="multispeaker">{tr("app.moss.mode.multispeaker")}</option></select></label><label><span>{tr("app.transcription.language")}</span><select aria-label={tr("app.transcription.language")} value={props.transcriptionLanguage} onChange={(event) => props.onSelectTranscriptionLanguage(event.target.value as "auto" | "en" | "zh")}><option value="auto">{tr("app.transcription.auto")}</option><option value="en">{tr("app.transcription.english")}</option><option value="zh">{tr("app.transcription.chinese")}</option></select></label></div></section>
+        {props.transcriptionMode === "multispeaker" && <TranscriptionProviderSettings config={props.transcriptionConfig} health={props.transcriptionHealth} busy={props.busy} onSave={props.onSaveTranscriptionProvider} onCheck={props.onCheckTranscriptionProvider}/>}
         <AsrBackendPicker runtime={props.runtime} onSelect={props.onSelectAsrBackend}/>
         <ModelManager models={props.models} selectedPath={props.modelPath} job={props.modelJob} onSelect={props.onSelectModel} onInstall={props.onInstallModel} onCancel={props.onCancelModel} onRemove={props.onRemoveModel}/>
         <SpeakerPackageManager packageStatus={props.speakerPackage} job={props.speakerJob} disabled={props.busy} onInstall={props.onInstallSpeakerPackage} onCancel={props.onCancelSpeakerJob} onResume={props.onResumeSpeakerJob}/>

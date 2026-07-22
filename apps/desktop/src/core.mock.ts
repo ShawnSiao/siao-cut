@@ -1,5 +1,5 @@
 import { sampleProject } from "./mock";
-import type { AudioAnalysisJob, AutoWorkflow, CoreEnvelope, ExportJob, ModelDownloadJob, ModelStatus, Project, RuntimeInfo, SourceImportJob, SourcePreview, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SubtitleImportPreview, SubtitleStructureEdit, TranscriptionJob, TranscriptionProviderConfig, TranscriptionProviderHealth, TranscriptionReviewItem, UpdateDownloadEvent, UpdateMetadata, UpdatePolicy } from "./types";
+import type { AgentRun, AudioAnalysisJob, AutoWorkflow, CoreEnvelope, ExportJob, ModelDownloadJob, ModelStatus, Project, RuntimeInfo, SourceImportJob, SourcePreview, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SubtitleImportPreview, SubtitleStructureEdit, TranscriptionJob, TranscriptionProviderConfig, TranscriptionProviderHealth, TranscriptionReviewItem, UpdateDownloadEvent, UpdateMetadata, UpdatePolicy } from "./types";
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
 const mockSubtitleStylePresets = [
@@ -40,6 +40,8 @@ const mockAudioJobs = new Map<string, AudioAnalysisJob>();
 const mockSpeakerJobs = new Map<string, SpeakerJob>();
 const mockSpeakerTracks = new Map<string, SpeakerTrack>();
 const mockTranscriptionJobs = new Map<string, TranscriptionJob>();
+const mockAgentRuns = new Map<string, AgentRun>();
+const mockAgentPolls = new Map<string, number>();
 let mockTranscriptionConfig: TranscriptionProviderConfig = { providerId: "moss_openai", endpoint: "http://127.0.0.1:8000", modelId: "OpenMOSS-Team/MOSS-Transcribe-Diarize", updatedAt: new Date().toISOString() };
 let mockTranscriptionHealth: TranscriptionProviderHealth = { ...mockTranscriptionConfig, state: "healthy", detail: "本机 MOSS 服务可用。", checkedAt: new Date().toISOString() };
 let mockTranscriptionReviews: TranscriptionReviewItem[] = [];
@@ -300,6 +302,8 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
     mockSpeakerJobs.clear();
     mockSpeakerTracks.clear();
     mockTranscriptionJobs.clear();
+    mockAgentRuns.clear();
+    mockAgentPolls.clear();
     mockTranscriptionReviews = [];
     mockStructureCounter = 0;
     mockSpeakerPackage = { ...mockSpeakerPackage, installed: false, verified: null, verificationStatus: "not_installed", assets: speakerAssets.map((asset) => ({ ...asset, installed: false, verified: null, verificationStatus: "not_installed" as const })) };
@@ -970,6 +974,124 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
     mockProject.tasks.push({ id: taskId, kind: args[args.indexOf("--kind") + 1], language, status: "queued", progress: 0, errorMessage: null, workflowId, instructionLocale });
     mockProject.workflows.push({ id: workflowId, kind: args[args.indexOf("--kind") + 1], language, status: "waiting_agent", taskId, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), instructionLocale });
     return { apiVersion: "0.1", status: "ok", project: mockProject, workflowId, taskId, message: "工作流已创建，需要 Agent 继续。" };
+  }
+  if (command === "agent" && subcommand === "health") {
+    return { apiVersion: "0.1", status: "ok", codex: { available: true, authenticated: true, version: "codex-cli 0.144.5", authMode: "chatgpt" }, message: "Codex CLI 已就绪。" };
+  }
+  if (command === "agent" && subcommand === "start") {
+    const task = mockProject.tasks.find((candidate) => candidate.id === args[2]);
+    if (!task) return { apiVersion: "0.1", status: "error", error: { code: "invalid_request", message: "Agent 任务不存在。" } };
+    const now = new Date().toISOString();
+    const run: AgentRun = {
+      id: `agent-run-${mockAgentRuns.size + 1}`,
+      taskId: task.id,
+      projectId: mockProject.id,
+      provider: "codex-cli",
+      status: "running",
+      baseVersionId: mockProject.history.currentVersionId ?? mockProject.versions.at(-1)?.id ?? "v1",
+      progress: 0.08,
+      currentBatch: 1,
+      batchCount: 1,
+      timeoutSeconds: Number(valueAfter("--timeout-seconds") ?? 900),
+      cliVersion: "codex-cli 0.144.5",
+      authMode: "chatgpt",
+      codexThreadId: null,
+      cancelRequestedAt: null,
+      errorCode: null,
+      errorMessage: null,
+      createdAt: now,
+      updatedAt: now,
+      startedAt: now,
+      completedAt: null,
+      workerPid: 2468,
+      attemptCount: 1,
+      batches: [{ id: `agent-batch-${mockAgentRuns.size + 1}`, ordinal: 0, status: "running", segmentIds: mockProject.transcript.segments.map((segment) => segment.id), codexThreadId: null, errorCode: null, errorMessage: null, startedAt: now, completedAt: null, attemptCount: 1 }],
+    };
+    task.status = "running";
+    task.progress = run.progress;
+    mockAgentRuns.set(run.id, run);
+    mockAgentPolls.set(run.id, 0);
+    syncMockProject(mockProject);
+    return { apiVersion: "0.1", status: "ok", taskId: task.id, agentRunId: run.id, agentRun: structuredClone(run) };
+  }
+  if (command === "agent" && subcommand === "status") {
+    const run = mockAgentRuns.get(args[2]);
+    if (run && ["queued", "running", "submitting"].includes(run.status)) {
+      const polls = (mockAgentPolls.get(run.id) ?? 0) + 1;
+      mockAgentPolls.set(run.id, polls);
+      const task = mockProject.tasks.find((candidate) => candidate.id === run.taskId);
+      if (polls >= 2) {
+        const now = new Date().toISOString();
+        run.status = "completed";
+        run.progress = 1;
+        run.currentBatch = run.batchCount;
+        run.completedAt = now;
+        run.updatedAt = now;
+        run.workerPid = null;
+        run.codexThreadId = "mock-codex-thread";
+        run.batches = run.batches.map((batch) => ({ ...batch, status: "completed", codexThreadId: "mock-codex-thread", completedAt: now }));
+        if (task) {
+          task.status = "review";
+          task.progress = 1;
+        }
+        if (!mockProject.patchSets.some((set) => set.taskId === run.taskId)) {
+          const segment = mockProject.transcript.segments[0];
+          mockProject.patchSets.push({
+            id: `patch-${run.id}`,
+            taskId: run.taskId,
+            kind: task?.kind ?? "polish",
+            language: task?.language ?? null,
+            status: "pending_review",
+            baseVersionId: run.baseVersionId,
+            createdAt: now,
+            items: [{ id: `patch-item-${run.id}`, segmentId: segment.id, target: "transcript", beforeText: segment.text, afterText: `${segment.text}（已润色）`, currentText: segment.text, reason: "本机 Codex 提供的待审建议", confidence: 0.9, status: "pending" }],
+          });
+        }
+        syncMockProject(mockProject);
+      } else {
+        run.progress = 0.62;
+        run.updatedAt = new Date().toISOString();
+        if (task) task.progress = run.progress;
+      }
+    }
+    return { apiVersion: "0.1", status: "ok", agentRunId: run?.id, agentRun: structuredClone(run) };
+  }
+  if (command === "agent" && subcommand === "list") {
+    const projectId = args[2];
+    const runs = Array.from(mockAgentRuns.values()).filter((run) => !projectId || run.projectId === projectId).reverse();
+    return { apiVersion: "0.1", status: "ok", agentRuns: structuredClone(runs) };
+  }
+  if (command === "agent" && subcommand === "cancel") {
+    const run = mockAgentRuns.get(args[2]);
+    if (run) {
+      run.status = "cancelled";
+      run.cancelRequestedAt = new Date().toISOString();
+      run.completedAt = run.cancelRequestedAt;
+      run.workerPid = null;
+      run.batches = run.batches.map((batch) => ["queued", "running"].includes(batch.status) ? { ...batch, status: "cancelled", completedAt: run.completedAt } : batch);
+      const task = mockProject.tasks.find((candidate) => candidate.id === run.taskId);
+      if (task) task.status = "cancelled";
+      syncMockProject(mockProject);
+    }
+    return { apiVersion: "0.1", status: "ok", agentRunId: run?.id, agentRun: structuredClone(run) };
+  }
+  if (command === "agent" && subcommand === "resume") {
+    const run = mockAgentRuns.get(args[2]);
+    if (run) {
+      run.status = "running";
+      run.progress = 0.05;
+      run.cancelRequestedAt = null;
+      run.completedAt = null;
+      run.workerPid = 9753;
+      run.attemptCount += 1;
+      run.updatedAt = new Date().toISOString();
+      run.batches = run.batches.map((batch) => ({ ...batch, status: "running", completedAt: null, attemptCount: batch.attemptCount + 1 }));
+      mockAgentPolls.set(run.id, 0);
+      const task = mockProject.tasks.find((candidate) => candidate.id === run.taskId);
+      if (task) task.status = "running";
+      syncMockProject(mockProject);
+    }
+    return { apiVersion: "0.1", status: "ok", agentRunId: run?.id, agentRun: structuredClone(run) };
   }
   if (command === "task" && subcommand === "review") {
     const item = mockProject.patchSets.flatMap((set) => set.items).find((candidate) => candidate.id === args[2]);

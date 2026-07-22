@@ -2,7 +2,7 @@ import { changeUiLocale, getUiLocale, tr, type UiLocale } from "../i18n";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type SyntheticEvent } from "react";
 import { Activity, Bot, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Clock3, Copy, Cpu, Database, Download, FileVideo2, FileText, Film, FolderOpen, FolderPlus, HardDrive, History, Link2, LoaderCircle, Play, RefreshCw, RotateCcw, Search, Scissors, Settings2, ShieldCheck, Sparkles, Trash2, Undo2, Redo2, Headphones, ListChecks, MoreHorizontal, MoveHorizontal, Users, X, } from "lucide-react";
 import { authorizeArtifact, authorizeMedia, openLogDirectory, pickMedia, pickModel, pickSubtitleFile, pickTranscriptPath, pickVideoPath, runtimeInfo, selectAsrBackend, updaterPolicy } from "../core";
-import type { AudioAnalysisJob, AudioRisk, AutoWorkflow, CanvasSettings, CutPreview, ExportJob, ModelDownloadJob, ModelStatus, Project, ProjectDeletionPreflight, RuntimeInfo, Segment, SourceImportJob, SourcePreview, SpeakerIdentity, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SpeechEvidence, SpeechInsights, SpeechPause, SubtitleImportPreview, SubtitleQualityIssue, TranscriptionJob, TranscriptionLanguage, TranscriptionProviderConfig, TranscriptionProviderHealth, TranscriptionReviewItem } from "../types";
+import type { AgentRun, AudioAnalysisJob, AudioRisk, AutoWorkflow, CanvasSettings, CodexHealth, CutPreview, ExportJob, ModelDownloadJob, ModelStatus, Project, ProjectDeletionPreflight, RuntimeInfo, Segment, SourceImportJob, SourcePreview, SpeakerIdentity, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SpeechEvidence, SpeechInsights, SpeechPause, SubtitleImportPreview, SubtitleQualityIssue, TranscriptionJob, TranscriptionLanguage, TranscriptionProviderConfig, TranscriptionProviderHealth, TranscriptionReviewItem } from "../types";
 import { Button, Dialog, IconButton, StatusBadge } from "../components/ui";
 import { JobFailureDetails } from "../components/job-failure";
 import RuntimeSettingsDialog from "../components/runtime-settings-dialog";
@@ -112,6 +112,8 @@ function WorkbenchController() {
     const [autoTranslationLanguage, setAutoTranslationLanguage] = useState("en");
     const [transcriptionLanguage, setTranscriptionLanguage] = useState<TranscriptionLanguage>(() => parseTranscriptionLanguage(localStorage.getItem(TRANSCRIPTION_LANGUAGE_STORAGE_KEY)));
     const [agentWorkflowKind, setAgentWorkflowKind] = useState<"polish" | "proofread" | "edit" | "translate" | "punctuate" | "speaker_names">("polish");
+    const [codexHealth, setCodexHealth] = useState<CodexHealth | null>(null);
+    const [agentRun, setAgentRun] = useState<AgentRun | null>(null);
     const [showAgentHandoff, setShowAgentHandoff] = useState(false);
     const [agentHandoffTaskId, setAgentHandoffTaskId] = useState<string | null>(null);
     const [agentIdentity, setAgentIdentity] = useState("external-agent");
@@ -124,12 +126,14 @@ function WorkbenchController() {
     const [modelPath, setModelPath] = useState<string | null>(() => localStorage.getItem("siaocut.modelPath"));
     const [showRuntime, setShowRuntime] = useState(false);
     const [showExportPanel, setShowExportPanel] = useState(false);
+    const [drawerTab, setDrawerTab] = useState<"review" | "quality" | "analysis" | "history" | "export">("review");
+    const [playerExpanded, setPlayerExpanded] = useState(true);
+    const [timelineExpanded, setTimelineExpanded] = useState(false);
     const [showSubtitleSafeArea, setShowSubtitleSafeArea] = useState(true);
     const [showMoreMenu, setShowMoreMenu] = useState(false);
     const [search, setSearch] = useState("");
     const [replacement, setReplacement] = useState("");
     const [emptyReplacementConfirmed, setEmptyReplacementConfirmed] = useState(false);
-    const [inspectorTab, setInspectorTab] = useState<"segment" | "analysis" | "history">("segment");
     const [qualityFilter, setQualityFilter] = useState<"all" | "warning" | "error">("all");
     const [showSubtitleImport, setShowSubtitleImport] = useState(false);
     const [subtitleImportPath, setSubtitleImportPath] = useState("");
@@ -213,12 +217,19 @@ function WorkbenchController() {
         setProject(next);
         setProjects((current) => current.map((item) => item.id === next.id ? next : item));
         setSelectedId((current) => next.transcript.segments.some((segment) => segment.id === current) ? current : next.transcript.segments[0]?.id ?? null);
-        await Promise.all([refreshLatestExport(next.id), refreshLatestAudioAnalysis(next.id), refreshSpeakerTrack(next.id), refreshTranscription(next.id)]);
+        const [, , , , runs] = await Promise.all([
+            refreshLatestExport(next.id),
+            refreshLatestAudioAnalysis(next.id),
+            refreshSpeakerTrack(next.id),
+            refreshTranscription(next.id),
+            agentReviewClient.listAgentRuns(next.id).catch(() => null),
+        ]);
+        setAgentRun(runs?.agentRuns?.[0] ?? null);
     }, [refreshLatestAudioAnalysis, refreshLatestExport, refreshSpeakerTrack, refreshTranscription]);
     const initialize = useCallback(async () => {
         setBusy(tr("app.s0039"));
         setError(null);
-        const [projectsResult, runtimeResult, modelsResult, modelJobsResult, sourceJobsResult, autoWorkflowsResult, updatePolicyResult, speakerPackageResult, speakerJobsResult, transcriptionHealthResult] = await Promise.allSettled([
+        const [projectsResult, runtimeResult, modelsResult, modelJobsResult, sourceJobsResult, autoWorkflowsResult, updatePolicyResult, speakerPackageResult, speakerJobsResult, transcriptionHealthResult, codexHealthResult] = await Promise.allSettled([
             projectSessionClient.listProjects(),
             runtimeInfo(),
             backgroundTaskClient.listModels(true),
@@ -229,6 +240,7 @@ function WorkbenchController() {
             backgroundTaskClient.getSpeakerPackage(),
             backgroundTaskClient.listSpeakerJobs(),
             backgroundTaskClient.getTranscriptionHealth(),
+            agentReviewClient.getCodexHealth(),
         ]);
         const errors: string[] = [];
         let activeAutoWorkflow: AutoWorkflow | null = null;
@@ -271,6 +283,7 @@ function WorkbenchController() {
             setTranscriptionHealth(next);
             setTranscriptionConfig({ providerId: next.providerId, endpoint: next.endpoint, modelId: next.modelId, updatedAt: next.checkedAt });
         }
+        setCodexHealth(codexHealthResult.status === "fulfilled" ? codexHealthResult.value.codex ?? null : null);
         if (sourceJobsResult.status === "fulfilled") {
             const jobs = (sourceJobsResult.value.sourceJobs ?? []).filter((item) => item.id !== activeAutoWorkflow?.sourceImportId);
             setSourceJob(jobs.find((item) => ["queued", "running", "finalizing"].includes(item.status)) ?? jobs[0] ?? null);
@@ -303,6 +316,8 @@ function WorkbenchController() {
                     setMediaUrl(await authorizeArtifact(first.id, "preview") ?? await authorizeMedia(first.id));
                     setWaveformUrl(await authorizeArtifact(first.id, "waveform"));
                     await Promise.all([refreshLatestExport(first.id), refreshLatestAudioAnalysis(first.id), refreshSpeakerTrack(first.id), refreshTranscription(first.id)]);
+                    const runs = await agentReviewClient.listAgentRuns(first.id).catch(() => null);
+                    setAgentRun(runs?.agentRuns?.[0] ?? null);
                 }
                 catch (cause) {
                     errors.push(tr("app.s0045", { "0": cause instanceof Error ? cause.message : String(cause) }));
@@ -319,6 +334,25 @@ function WorkbenchController() {
         void initialize();
     }, [initialize]);
     useBackgroundTaskRegistry([
+        agentRun && ["queued", "running", "submitting"].includes(agentRun.status) ? {
+            key: `codex-agent:${agentRun.id}`,
+            intervalMs: 1200,
+            poll: () => agentReviewClient.getAgentRun(agentRun.id).then(async (envelope) => {
+                if (!envelope.agentRun)
+                    return;
+                const next = envelope.agentRun;
+                setAgentRun(next);
+                if (next.status === "completed") {
+                    await refreshProject(next.projectId);
+                    setDrawerTab("review");
+                    setNotice(tr("app.creator.agent.completed"));
+                }
+                if (["failed", "interrupted"].includes(next.status))
+                    setError(next.errorMessage ?? tr("app.creator.agent.failed"));
+                if (next.status === "cancelled")
+                    setNotice(tr("app.creator.agent.cancelled"));
+            }).catch((cause) => setError(cause instanceof Error ? cause.message : String(cause))),
+        } : null,
         project?.tasks.some((task) => ["queued", "claimed", "running", "interrupted"].includes(task.status)) ? {
             key: `agent-project:${project.id}`,
             intervalMs: 2500,
@@ -1162,23 +1196,35 @@ function WorkbenchController() {
         setEmptyReplacementConfirmed(false);
         setNotice(Number(result.changedSegments ?? 0) === 0 ? tr("app.s0156") : tr("app.s0157", { "0": result.changedSegments }));
     });
-    const openStructureEdit = (mode: StructureEditMode) => {
-        const target = selectedSegments[0];
+    const openStructureEdit = (mode: StructureEditMode, targetOverride?: Segment, textOffsetOverride?: number, useWordTiming = true) => {
+        const target = targetOverride ?? selectedSegments[0];
         if (!project || !target)
             return;
+        if (targetOverride) {
+            setSelectedId(target.id);
+            setSelectedSegmentIds([target.id]);
+            setSelectionAnchorId(target.id);
+        }
         setStructureError(null);
         if (mode === "split") {
             const characterCount = Array.from(target.text).length;
-            let splitAt = target.start + (target.end - target.start) / 2;
-            const crossingWord = project.transcript.words.find((word) => word.segmentId === target.id && word.start < splitAt && word.end > splitAt);
-            if (crossingWord) {
-                if (crossingWord.end < target.end)
-                    splitAt = crossingWord.end;
-                else if (crossingWord.start > target.start)
-                    splitAt = crossingWord.start;
-            }
-            setStructureTextOffset(String(Math.max(1, Math.floor(characterCount / 2))));
-            setStructureStart(splitAt.toFixed(3));
+            const requestedOffset = Math.max(1, Math.min(characterCount - 1, textOffsetOverride ?? Math.floor(characterCount / 2)));
+            const targetWords = useWordTiming ? project.transcript.words
+                .filter((word) => word.segmentId === target.id && Number.isFinite(word.start) && Number.isFinite(word.end) && word.start >= target.start && word.end <= target.end && word.end > word.start)
+                .sort((left, right) => left.start - right.start) : [];
+            let scanFrom = 0;
+            const wordBoundaries = targetWords.slice(0, -1).flatMap((word) => {
+                const index = target.text.indexOf(word.text, scanFrom);
+                if (index < 0)
+                    return [];
+                scanFrom = index + word.text.length;
+                return [{ textOffset: Array.from(target.text.slice(0, scanFrom)).length, at: word.end }];
+            });
+            const credibleBoundary = wordBoundaries
+                .filter((boundary) => boundary.textOffset > 0 && boundary.textOffset < characterCount && boundary.at > target.start && boundary.at < target.end)
+                .sort((left, right) => Math.abs(left.textOffset - requestedOffset) - Math.abs(right.textOffset - requestedOffset))[0];
+            setStructureTextOffset(String(credibleBoundary?.textOffset ?? requestedOffset));
+            setStructureStart(credibleBoundary ? credibleBoundary.at.toFixed(3) : "");
         }
         else if (mode === "timing") {
             setStructureStart(target.start.toFixed(3));
@@ -1188,6 +1234,44 @@ function WorkbenchController() {
             setStructureDelta("0.100");
         }
         setStructureEditMode(mode);
+    };
+    const saveBeforeStructureEdit = async (segment: Segment, draft: string) => {
+        const text = draft.trim();
+        if (!project || text === segment.text)
+            return { saved: true, segment };
+        let saved = false;
+        await withBusy(tr("app.s0153"), async () => {
+            await transcriptEditingClient.editSegment(project.id, segment.id, text);
+            await refreshProject(project.id);
+            setNotice(tr("app.s0154"));
+            saved = true;
+        });
+        return { saved, segment: { ...segment, text } };
+    };
+    const splitSegmentFromEditor = async (segment: Segment, draft: string, textOffset: number) => {
+        const changed = draft.trim() !== segment.text;
+        const result = await saveBeforeStructureEdit(segment, draft);
+        if (!result.saved)
+            return;
+        openStructureEdit("split", result.segment, textOffset, !changed);
+    };
+    const mergePreviousFromEditor = async (segment: Segment, draft: string) => {
+        if (!project)
+            return;
+        const result = await saveBeforeStructureEdit(segment, draft);
+        if (!result.saved)
+            return;
+        const index = project.transcript.segments.findIndex((candidate) => candidate.id === segment.id);
+        const previous = project.transcript.segments[index - 1];
+        if (!previous) {
+            setNotice(tr("app.creator.editor.noPrevious"));
+            return;
+        }
+        setSelectedId(previous.id);
+        setSelectedSegmentIds([previous.id, segment.id]);
+        setSelectionAnchorId(previous.id);
+        setStructureError(null);
+        setStructureEditMode("merge");
     };
     const applyStructureEdit = async () => {
         if (!project || !structureEditMode || !selectedSegments.length)
@@ -1519,8 +1603,10 @@ function WorkbenchController() {
             }
             if (!dialogOpen && modifier && event.shiftKey && key === "e") {
                 event.preventDefault();
-                if (project)
+                if (project) {
+                    setDrawerTab("export");
                     setShowExportPanel(true);
+                }
                 return;
             }
             if (!dialogOpen && !busy && !editingTarget && modifier && event.shiftKey && ["s", "m", "t", "o"].includes(key)) {
@@ -1630,13 +1716,16 @@ function WorkbenchController() {
         setAgentHandoffCopied(false);
         setShowAgentHandoff(true);
     };
-    const createAgentTask = () => project && withBusy(tr("app.s0222"), async () => {
+    const assertAgentWorkflowReady = () => {
         if (!capabilities.hasBoundMedia)
             throw new Error(tr("app.capability.mediaRequired"));
         if (!capabilities.hasTranscript)
             throw new Error(tr("app.capability.transcriptRequired"));
         if (agentWorkflowKind === "translate" && !capabilities.hasTranslationTarget)
             throw new Error(tr("app.capability.translationTargetRequired"));
+    };
+    const createAgentTask = () => project && withBusy(tr("app.s0222"), async () => {
+        assertAgentWorkflowReady();
         const envelope = await agentReviewClient.createWorkflow(project.id, agentWorkflowKind, uiLocale, agentWorkflowKind === "translate" ? subtitleLanguage : undefined);
         await refreshProject(project.id);
         setAgentHandoffTaskId(envelope.taskId ?? null);
@@ -1648,6 +1737,43 @@ function WorkbenchController() {
             punctuate: tr("app.workflow.created.punctuate"),
             speaker_names: tr("app.workflow.created.speakerNames"),
         }[agentWorkflowKind]);
+    });
+    const startCodexAgent = () => project && withBusy(tr("app.creator.agent.starting"), async () => {
+        assertAgentWorkflowReady();
+        const workflow = await agentReviewClient.createWorkflow(project.id, agentWorkflowKind, uiLocale, agentWorkflowKind === "translate" ? subtitleLanguage : undefined);
+        if (!workflow.taskId)
+            throw new Error(tr("app.creator.agent.taskMissing"));
+        await refreshProject(project.id);
+        if (!codexHealth?.available || !codexHealth.authenticated) {
+            setAgentHandoffTaskId(workflow.taskId);
+            setAgentHandoffReady(true);
+            setAgentHandoffCopied(false);
+            setShowAgentHandoff(true);
+            setNotice(tr("app.creator.agent.manualFallback"));
+            return;
+        }
+        const envelope = await agentReviewClient.startAgent(workflow.taskId);
+        if (!envelope.agentRun)
+            throw new Error(tr("app.creator.agent.runMissing"));
+        setAgentRun(envelope.agentRun);
+        setDrawerTab("review");
+        setNotice(tr("app.creator.agent.started"));
+    });
+    const cancelCodexAgent = () => agentRun && withBusy(tr("app.creator.agent.cancelling"), async () => {
+        const envelope = await agentReviewClient.cancelAgent(agentRun.id);
+        if (envelope.agentRun)
+            setAgentRun(envelope.agentRun);
+        if (project)
+            await refreshProject(project.id);
+        setNotice(tr("app.creator.agent.cancelled"));
+    });
+    const resumeCodexAgent = () => agentRun && withBusy(tr("app.creator.agent.resuming"), async () => {
+        const envelope = await agentReviewClient.resumeAgent(agentRun.id);
+        if (!envelope.agentRun)
+            throw new Error(tr("app.creator.agent.runMissing"));
+        setAgentRun(envelope.agentRun);
+        setDrawerTab("review");
+        setNotice(tr("app.creator.agent.resumed"));
     });
     const handoffTask = agentHandoffTaskId ? project?.tasks.find((task) => task.id === agentHandoffTaskId) ?? null : null;
     const handoffIdentity = agentIdentity.trim();
@@ -1686,24 +1812,54 @@ function WorkbenchController() {
         await refreshProject(project.id);
         setNotice(action === "apply" ? tr("app.s0234") : tr("app.s0235"));
     });
-    const inspectorTabs = ["segment", "analysis", "history"] as const;
-    const changeInspectorTabFromKeyboard = (event: ReactKeyboardEvent<HTMLButtonElement>, tab: typeof inspectorTabs[number]) => {
+    const drawerTabs = ["review", "quality", "analysis", "history", "export"] as const;
+    const changeDrawerTabFromKeyboard = (event: ReactKeyboardEvent<HTMLButtonElement>, tab: typeof drawerTabs[number]) => {
         if (event.key !== "ArrowLeft" && event.key !== "ArrowRight")
             return;
         event.preventDefault();
-        const currentIndex = inspectorTabs.indexOf(tab);
+        const currentIndex = drawerTabs.indexOf(tab);
         const direction = event.key === "ArrowRight" ? 1 : -1;
-        const nextTab = inspectorTabs[(currentIndex + direction + inspectorTabs.length) % inspectorTabs.length];
-        setInspectorTab(nextTab);
-        requestAnimationFrame(() => document.getElementById(`inspector-tab-${nextTab}`)?.focus());
+        const nextTab = drawerTabs[(currentIndex + direction + drawerTabs.length) % drawerTabs.length];
+        setDrawerTab(nextTab);
+        setShowExportPanel(nextTab === "export");
+        requestAnimationFrame(() => document.getElementById(`creator-drawer-tab-${nextTab}`)?.focus());
     };
+    const openCreatorDrawer = (tab: typeof drawerTabs[number]) => {
+        setDrawerTab(tab);
+        setShowExportPanel(tab === "export");
+    };
+    const agentRunActive = Boolean(agentRun && ["queued", "running", "submitting"].includes(agentRun.status));
+    const creatorPhase = !project ? "prepare"
+        : !capabilities.hasTranscript || transcriptionActive ? "transcribe"
+            : agentRunActive ? "agent"
+                : actionableReviewCount > 0 ? "review" : "export";
+    const creatorSteps = ["prepare", "transcribe", "agent", "review", "export"] as const;
+    const creatorStepIndex = creatorSteps.indexOf(creatorPhase);
+    const runCreatorPrimaryAction = () => {
+        if (!project) {
+            void importMedia();
+            return;
+        }
+        if (!capabilities.hasTranscript) {
+            void transcribe();
+            return;
+        }
+        if (agentRunActive || actionableReviewCount > 0) {
+            openCreatorDrawer("review");
+            return;
+        }
+        openCreatorDrawer("quality");
+    };
+    const creatorPrimaryLabel = !project ? tr("app.creator.action.import")
+        : !capabilities.hasTranscript ? tr("app.creator.action.transcribe")
+            : agentRunActive ? tr("app.creator.action.viewAgent")
+                : actionableReviewCount > 0 ? tr("app.creator.action.review") : tr("app.creator.action.checkExport");
     return (<main className="app-shell">
       <aside className="rail">
         <div className="brand"><span className="brand-mark">S</span><span>SiaoCut</span></div>
         <div className="new-project-actions">
-          <button ref={autoButtonRef} className="new-project auto" onClick={() => setShowAutoWorkflow(true)}><Sparkles size={16}/>{tr("app.s0236")}</button>
-          <button className="new-project" onClick={importMedia}><FolderPlus size={16}/>{tr("app.s0237")}</button>
-          <button ref={sourceButtonRef} className="new-project url" onClick={() => setShowSourceImport(true)}><Link2 size={16}/>{tr("app.s0238")}</button>
+          <button className="new-project auto" aria-label={tr("app.s0237")} onClick={importMedia}><FolderPlus size={16}/>{tr("app.creator.action.import")}</button>
+          <details className="rail-advanced-actions"><summary><Settings2 size={14}/>{tr("app.creator.advanced")}</summary><div><button ref={sourceButtonRef} onClick={() => setShowSourceImport(true)}><Link2 size={14}/>{tr("app.s0238")}</button><button ref={autoButtonRef} onClick={() => setShowAutoWorkflow(true)}><Sparkles size={14}/>{tr("app.s0236")}</button></div></details>
         </div>
         <div className="rail-heading">{tr("app.s0239")}</div>
         <nav aria-label={tr("app.s0240")}>
@@ -1715,7 +1871,14 @@ function WorkbenchController() {
             </div>))}
           {!projects.length && !busy && <p className="empty-rail">{tr("app.s0244")}</p>}
         </nav>
-        <button ref={runtimeButtonRef} className="runtime-link" onClick={() => setShowRuntime(true)}><Settings2 size={15}/><span>{tr("app.s0245")}</span></button>
+        <section className="creator-readiness" aria-label={tr("app.creator.readiness.title")}>
+          <header><Cpu size={14}/><strong>{tr("app.creator.readiness.title")}</strong></header>
+          <span className={runtime ? "ready" : "pending"}><i/>{tr("app.creator.readiness.core")}</span>
+          <span className={runtime?.ffmpegConfigured ? "ready" : "pending"}><i/>{tr("app.creator.readiness.ffmpeg")}</span>
+          <span className={runtime?.asrBackend === "vulkan" ? "ready" : "default"}><i/>{runtime?.asrBackend === "vulkan" ? tr("app.creator.readiness.vulkan") : tr("app.creator.readiness.cpu")}</span>
+          <span className={codexHealth?.available && codexHealth.authenticated ? "ready" : "optional"}><i/>{codexHealth?.available && codexHealth.authenticated ? tr("app.creator.readiness.codexReady") : tr("app.creator.readiness.codexOptional")}</span>
+        </section>
+        <button ref={runtimeButtonRef} className="runtime-link" aria-label={tr("app.s0245")} onClick={() => setShowRuntime(true)}><Settings2 size={15}/><span>{tr("app.creator.advancedSettings")}</span></button>
         <label className="locale-switch"><span>{tr("app.locale.label")}</span><select aria-label={tr("app.locale.label")} value={uiLocale} onChange={(event) => selectUiLocale(event.target.value as UiLocale)}><option value="zh-CN">{tr("app.locale.zhCN")}</option><option value="en-US">{tr("app.locale.enUS")}</option></select></label>
         <div className="privacy"><ShieldCheck size={15}/><span>{tr("app.s0246")}</span></div>
       </aside>
@@ -1723,30 +1886,17 @@ function WorkbenchController() {
       <section className="workbench">
         <header className="topbar">
           <div className="topbar-heading"><p className="eyebrow">{tr("app.s0247")}</p><h1>{project?.title ?? tr("app.s0248")}</h1></div>
-          <div className="command-bar" aria-label={tr("app.s0249")}>
-            <div className="command-primary">
-              <StatusBadge tone={humanStateTone}>{humanState}</StatusBadge>
-              <div className="command-history" aria-label={tr("app.s0250")}>
-                <IconButton label={tr("app.s0251")} shortcut="Ctrl+Z" disabled={!project?.history.canUndo || Boolean(busy)} onClick={() => navigateHistory("undo")}><Undo2 size={15}/></IconButton>
-                <IconButton label={tr("app.s0252")} shortcut="Ctrl+Shift+Z" disabled={!project?.history.canRedo || Boolean(busy)} onClick={() => navigateHistory("redo")}><Redo2 size={15}/></IconButton>
-              </div>
-              <label className="command-select transcription-mode"><span>{tr("app.moss.mode.label")}</span><select aria-label={tr("app.moss.mode.label")} value={transcriptionMode} onChange={(event) => selectTranscriptionMode(event.target.value as "quick" | "multispeaker")}><option value="quick">{tr("app.moss.mode.quick")}</option><option value="multispeaker">{tr("app.moss.mode.multispeaker")}</option></select></label>
-              <label className="command-select"><span>{tr("app.transcription.language")}</span><select aria-label={tr("app.transcription.language")} value={transcriptionLanguage} onChange={(event) => selectTranscriptionLanguage(event.target.value as TranscriptionLanguage)}><option value="auto">{tr("app.transcription.auto")}</option><option value="en">{tr("app.transcription.english")}</option><option value="zh">{tr("app.transcription.chinese")}</option></select></label>
-              <Button disabled={!canStartTranscription || transcriptionActive || Boolean(busy)} title={transcribeCapabilityTitle} onClick={transcribe}><RefreshCw size={15}/>{transcriptionMode === "multispeaker" ? tr("app.moss.action.start") : tr("app.s0253")}</Button>
-            </div>
-            <div className="command-secondary">
-              <div className="agent-command"><select aria-label={tr("app.workflow.label")} value={agentWorkflowKind} onChange={(event) => setAgentWorkflowKind(event.target.value as typeof agentWorkflowKind)}><option value="polish">{tr("app.workflow.polish")}</option><option value="proofread">{tr("app.workflow.proofread")}</option><option value="punctuate">{tr("app.workflow.punctuate")}</option><option value="speaker_names">{tr("app.workflow.speakerNames")}</option><option value="edit">{tr("app.workflow.edit")}</option><option value="translate">{tr("app.workflow.translate")}</option></select>{agentWorkflowKind === "translate" && <select className="agent-language" aria-label={tr("app.workflow.targetLanguage")} value={subtitleLanguage} onChange={(event) => setSubtitleLanguage(event.target.value)}><option value="en">EN</option><option value="zh">ZH</option><option value="ja">JA</option><option value="ko">KO</option></select>}<Button ref={agentButtonRef} variant="agent" disabled={!capabilities.canCreateAgentTask || Boolean(busy) || (agentWorkflowKind === "speaker_names" && speakerTrack?.status !== "ready")} title={agentWorkflowKind === "speaker_names" && speakerTrack?.status !== "ready" ? tr("app.workflow.speakerNamesUnavailable") : agentCapabilityTitle} onClick={openAgentHandoff}><Bot size={15}/>{tr("app.agent.handoff.open")}</Button></div>
-              <div className="command-more" ref={commandMoreRef}>
-              <IconButton label={tr("app.s0256")} onClick={() => setShowMoreMenu((current) => !current)}><MoreHorizontal size={17}/></IconButton>
-              {showMoreMenu && <Suspense fallback={null}><AppCommandMenu canDetectSuggestions={Boolean(project?.transcript.words.length) && !busy} canPreparePreview={capabilities.canPreparePreview && !busy} canRelinkMedia={capabilities.canRelinkMedia && !busy} mediaCapabilityTitle={mediaCapabilityTitle} onDetectSuggestions={() => { setShowMoreMenu(false); void detectSuggestions(); }} onPreparePreview={() => { setShowMoreMenu(false); void preparePreview(); }} onRelinkMedia={() => { setShowMoreMenu(false); void relinkMedia(); }}/></Suspense>}
-              </div>
-              <div className="export-split">
-              <Button ref={exportButtonRef} variant="primary" className="export-main" disabled={!capabilities.canExportVideo || Boolean(busy) || selectedTranslationPending || Boolean(activeExport && ["queued", "running"].includes(activeExport.status))} title={mediaCapabilityTitle} onClick={exportVideo}><Download size={15}/>{tr("app.s0259")}</Button>
-              <button className="export-settings" aria-label={tr("app.s0260")} title={tr("app.s0261")} disabled={!project} onClick={() => setShowExportPanel(true)}><ChevronDown size={15}/></button>
-              </div>
-            </div>
-          </div>
-        </header>
+	          <div className="command-bar creator-command-bar" aria-label={tr("app.s0249")}>
+	            <StatusBadge tone={humanStateTone}>{humanState}</StatusBadge>
+	            <div className="command-history" aria-label={tr("app.s0250")}>
+	              <IconButton label={tr("app.s0251")} shortcut="Ctrl+Z" disabled={!project?.history.canUndo || Boolean(busy)} onClick={() => navigateHistory("undo")}><Undo2 size={15}/></IconButton>
+	              <IconButton label={tr("app.s0252")} shortcut="Ctrl+Shift+Z" disabled={!project?.history.canRedo || Boolean(busy)} onClick={() => navigateHistory("redo")}><Redo2 size={15}/></IconButton>
+	            </div>
+	            <Button variant="primary" className="creator-primary-action" disabled={Boolean(busy) || (creatorPhase === "transcribe" && (!canStartTranscription || transcriptionActive))} title={creatorPhase === "transcribe" ? transcribeCapabilityTitle : undefined} onClick={runCreatorPrimaryAction}>{creatorPhase === "review" ? <ListChecks size={15}/> : creatorPhase === "export" ? <Download size={15}/> : <Sparkles size={15}/>} {creatorPrimaryLabel}</Button>
+	            <div className="command-more" ref={commandMoreRef}><IconButton label={tr("app.s0256")} onClick={() => setShowMoreMenu((current) => !current)}><MoreHorizontal size={17}/></IconButton>{showMoreMenu && <Suspense fallback={null}><AppCommandMenu canDetectSuggestions={Boolean(project?.transcript.words.length) && !busy} canPreparePreview={capabilities.canPreparePreview && !busy} canRelinkMedia={capabilities.canRelinkMedia && !busy} mediaCapabilityTitle={mediaCapabilityTitle} onDetectSuggestions={() => { setShowMoreMenu(false); void detectSuggestions(); }} onPreparePreview={() => { setShowMoreMenu(false); void preparePreview(); }} onRelinkMedia={() => { setShowMoreMenu(false); void relinkMedia(); }}/></Suspense>}</div>
+	          </div>
+	        </header>
+	        <nav className="creator-flow" aria-label={tr("app.creator.flow.label")}>{creatorSteps.map((step, index) => <span key={step} className={index < creatorStepIndex ? "done" : index === creatorStepIndex ? "active" : "pending"}><i>{index < creatorStepIndex ? <Check size={12}/> : index + 1}</i>{tr(`app.creator.step.${step}`)}</span>)}</nav>
 
         {(notice || error) && <div className={`notice ${error ? "error" : ""}`} role="status" aria-live="polite">{error && <CircleAlert size={15}/>}<span>{error ? tr("app.error.unknownSummary") : notice}</span>{error && <details><summary>{tr("app.error.technicalDetails")}</summary><code>{error}</code></details>}{error && <button className="notice-action" onClick={() => void initialize()}>{tr("app.s0262")}</button>}<button aria-label={tr("app.s0263")} title={tr("app.s0263")} onClick={() => { setNotice(null); setError(null); }}>×</button></div>}
         {busy && <div className="progress-strip" role="status" aria-live="polite"><LoaderCircle size={14} className="spin"/>{busy}</div>}
@@ -1774,11 +1924,13 @@ function WorkbenchController() {
             <p className="eyebrow">{tr("app.s0281")}</p><h2>{tr("app.s0282")}</h2>
             <p>{tr("app.s0283")}</p>
             <RuntimeChecklist runtime={runtime} modelPath={modelPath} onChooseModel={chooseModel} compact/>
-            <div className="welcome-actions"><button className="button primary" onClick={() => setShowAutoWorkflow(true)}><Sparkles size={16}/>{tr("app.s0236")}</button><button className="button quiet" onClick={importMedia}><FolderPlus size={16}/>{tr("app.s0284")}</button><button className="button quiet" onClick={() => setShowSourceImport(true)}><Link2 size={16}/>{tr("app.s0285")}</button></div>
+	            <div className="welcome-actions"><button className="button primary" onClick={importMedia}><FolderPlus size={16}/>{tr("app.creator.action.import")}</button><button className="button quiet" onClick={() => setShowSourceImport(true)}><Link2 size={16}/>{tr("app.s0285")}</button></div>
           </section>) : (<>
-            <section className="stage-grid">
-              <article className="video-panel">
-                <div className="video-frame">
+	            <section className="stage-grid">
+	              <article className={`video-panel creator-player ${playerExpanded ? "expanded" : "collapsed"}`}>
+	                <header className="creator-player-header"><span><Play size={14}/><strong>{tr("app.creator.player.title")}</strong><small>{selected ? `${formatTime(selected.start)} — ${formatTime(selected.end)}` : tr("app.s0288")}</small></span><button aria-expanded={playerExpanded} onClick={() => setPlayerExpanded((current) => !current)}>{playerExpanded ? <ChevronUp size={14}/> : <ChevronDown size={14}/>}{playerExpanded ? tr("app.creator.player.collapse") : tr("app.creator.player.expand")}</button></header>
+	                {playerExpanded && <>
+	                <div className="video-frame">
                   {mediaUrl ? <video key={project.id} ref={videoRef} src={mediaUrl} controls preload="metadata" onLoadedMetadata={handleVideoLoadedMetadata} onPlay={() => setPlayback((current) => ({ ...current, playing: true }))} onPause={() => setPlayback((current) => ({ ...current, playing: false }))} onTimeUpdate={handleVideoTimeUpdate}/> : <div className="video-placeholder"><Play size={30}/><span>{tr("app.s0286")}</span></div>}
                   {showSubtitleSafeArea && <div className="subtitle-safe-area" aria-label={tr("app.s0287")} style={{ inset: `${project.subtitleStyle.safeMarginPercent}% 6%` }}/>}
                   {selected && captionPrimaryText && <div className={`caption-overlay ${project.subtitleStyle.position}`} data-preset={project.subtitleStyle.preset} data-position={project.subtitleStyle.position} data-outline-width={project.subtitleStyle.outlineWidth} style={captionPreviewStyle}>
@@ -1786,47 +1938,16 @@ function WorkbenchController() {
                     {captionSecondaryText && <span className="caption-secondary" style={{ color: project.subtitleStyle.secondaryColor, fontSize: `${Math.max(12, Math.round(project.subtitleStyle.secondaryFontSize * 0.36))}px` }}>{captionSecondaryText}</span>}
                   </div>}
                 </div>
-                <div className="transport-summary"><Clock3 size={14}/><span>{selected ? `${formatTime(selected.start)} — ${formatTime(selected.end)}` : tr("app.s0288")}</span><span className="playback-state" role="status" aria-live="polite" aria-label={tr("app.playback.status")}>{playback.playing ? tr("app.playback.playing") : tr("app.playback.paused")} · {formatTime(playback.currentTime)} / {formatTime(playback.duration || project.media.durationSeconds || 0)}</span><button className="relink-media" onClick={relinkMedia}>{tr("app.s0258")}</button><span className="shortcut-hint">{tr("app.s0289")}</span><span className="spacer"/><span>{tr("app.composite.timelineSummary", { output: formatTime(project.timeline.outputDuration), source: formatTime(project.timeline.sourceDuration) })}</span></div>
-                {audioRisks.length > 0 && <div className="audio-risk-strip" role="status"><CircleAlert size={14}/><strong>{tr("app.composite.audioRiskCount", { count: audioRisks.length })}</strong><span>{audioRiskLabel(audioRisks[0].kind)} · {formatTime(audioRisks[0].start)}</span><button onClick={() => locateAudioRisk(audioRisks[0])}>{tr("app.s0293")}</button></div>}
-              </article>
+	                <div className="transport-summary"><Clock3 size={14}/><span>{selected ? `${formatTime(selected.start)} — ${formatTime(selected.end)}` : tr("app.s0288")}</span><span className="playback-state" role="status" aria-live="polite" aria-label={tr("app.playback.status")}>{playback.playing ? tr("app.playback.playing") : tr("app.playback.paused")} · {formatTime(playback.currentTime)} / {formatTime(playback.duration || project.media.durationSeconds || 0)}</span><button className="relink-media" onClick={relinkMedia}>{tr("app.s0258")}</button><span className="shortcut-hint">{tr("app.s0289")}</span><span className="spacer"/><span>{tr("app.composite.timelineSummary", { output: formatTime(project.timeline.outputDuration), source: formatTime(project.timeline.sourceDuration) })}</span></div>
+	                {audioRisks.length > 0 && <div className="audio-risk-strip" role="status"><CircleAlert size={14}/><strong>{tr("app.composite.audioRiskCount", { count: audioRisks.length })}</strong><span>{audioRiskLabel(audioRisks[0].kind)} · {formatTime(audioRisks[0].start)}</span><button onClick={() => locateAudioRisk(audioRisks[0])}>{tr("app.s0293")}</button></div>}
+	                </>}
+	              </article>
 
-              <aside className="review-panel">
-                <div className="section-title"><div><p className="eyebrow">{tr("app.s0294")}</p><h2>{tr("app.s0295")}</h2></div>{actionableReviewCount > 0 && <span className="state-count" aria-label={tr("app.s0296", { "0": actionableReviewCount })}>{actionableReviewCount}</span>}</div>
-                <div className="review-panel-scroll" role="region" aria-label={tr("app.s0297")} tabIndex={0}>
-                  {agentTask && <section className={`agent-task-status ${agentTask.status}`} aria-label={agentStatus ?? undefined}>
-                    <header><Bot size={14}/><strong>{agentStatus}</strong><StatusBadge tone={agentTask.status === "running" && !agentActivityStale ? "agent" : "warning"}>{agentTask.kind}{agentTask.language ? ` · ${agentTask.language.toUpperCase()}` : ""}</StatusBadge></header>
-                    <p>{tr("app.agent.task.privacy")}</p>
-                    {agentTask.status === "queued" && <p className="agent-task-next">{tr("app.agent.task.queuedHelp")}</p>}
-                    {agentTask.status === "claimed" && <p className="agent-task-next">{tr("app.agent.task.claimedHelp", { worker: agentTask.lease?.worker ?? tr("app.agent.task.unknownWorker") })}</p>}
-                    {agentTask.status === "running" && <p className="agent-task-next">{agentActivityStale ? tr("app.agent.task.staleHelp") : agentTask.lastActivity?.message ?? tr("app.agent.task.runningHelp")}</p>}
-                    {agentTask.lastActivity && <small>{tr("app.agent.task.lastActivity", { time: new Date(agentTask.lastActivity.createdAt).toLocaleTimeString(uiLocale, { hour: "2-digit", minute: "2-digit" }) })}</small>}
-                    <div className="agent-task-actions"><button type="button" onClick={() => openExistingAgentHandoff(agentTask.id)}><Copy size={12}/>{tr("app.agent.task.copyHandoff")}</button><button type="button" onClick={() => updateTask(agentTask.id, "cancel")}>{tr("app.s0328")}</button></div>
-                    <details><summary>{tr("app.agent.task.technical")}</summary><dl><div><dt>{tr("app.agent.task.id")}</dt><dd><code>{agentTask.id}</code></dd></div>{agentTask.lease && <div><dt>{tr("app.agent.task.worker")}</dt><dd>{agentTask.lease.worker}</dd></div>}{agentTask.lease && <div><dt>{tr("app.agent.task.lease")}</dt><dd>{new Date(agentTask.lease.expiresAt).toLocaleTimeString(uiLocale, { hour: "2-digit", minute: "2-digit" })}</dd></div>}</dl></details>
-                  </section>}
-                  {orderedPatchSets.map((set) => <section className="patch-set" key={set.id}>
-                    <header><span>{set.kind}{set.language ? ` · ${set.language.toUpperCase()}` : ""}</span>{set.items.length > 1 && <div><button onClick={() => reviewAll(set.taskId, "keep")}>{tr("app.s0298")}</button><button onClick={() => reviewAll(set.taskId, "apply")}>{tr("app.s0299")}</button></div>}</header>
-                    {set.items.map((item) => <PatchReviewCard key={item.id} item={item} onReview={(action) => reviewPatch(item.id, action)} onSelect={() => { const segment = project.transcript.segments.find((candidate) => candidate.id === item.segmentId); if (segment)
-                selectSegment(segment); }}/>)}
-                  </section>)}
-                  {pendingEdits.map((edit) => <article className="review-item" key={edit.id}><span className="review-tag">{tr("app.composite.reviewSuggestion", { kind: cutSuggestionLabel(edit.suggestion?.suggestionType) })}</span><strong>{editReasonLabel(edit)}</strong><p>{edit.suggestion ? tr("app.composite.suggestionEvidence", { range: `${formatTime(edit.start)} — ${formatTime(edit.end)}`, confidence: Math.round(edit.suggestion.confidence * 100) }) : `${formatTime(edit.start)} — ${formatTime(edit.end)} ${tr("app.s0302")}`}</p><div className="cut-actions"><button onClick={() => selectSegment(project.transcript.segments.find((segment) => segment.id === edit.segmentId)!)}>{tr("app.s0303")}</button>{edit.kind === "word_cut" && <button onClick={() => previewCut(edit.id)}><Headphones size={11}/>{tr("app.s0304")}</button>}<button onClick={() => updateCut(edit.id, "apply")}>{tr("app.s0305")}</button></div></article>)}
-                  {audioRisks.map((risk, index) => <article className="review-item audio-risk-item" key={`${risk.kind}-${risk.start}-${index}`}><span className="review-tag warning"><CircleAlert size={12}/>{tr("app.s0306")}</span><strong>{audioRiskLabel(risk.kind)}</strong><p>{tr("app.composite.audioRiskEvidence", { range: `${formatTime(risk.start)} — ${formatTime(risk.end)}`, measured: risk.measuredValue, threshold: risk.threshold, unit: audioUnitLabel(risk.unit) })}</p><button onClick={() => locateAudioRisk(risk)}>{tr("app.s0309")}</button></article>)}
-                  <TranscriptionReviewPanel items={transcriptionReviews} disabled={Boolean(busy)} onLocate={(segmentId) => { const segment = project.transcript.segments.find((item) => item.id === segmentId); if (segment) selectSegment(segment); }} onResolve={resolveTranscriptionReview}/>
-                  {audioAnalysisJob && ["failed", "interrupted"].includes(audioAnalysisJob.status) && <article className="review-item task-item failure"><span className="review-tag failure"><CircleAlert size={12}/>{tr("app.s0310")}{audioAnalysisJob.status === "interrupted" ? tr("app.s0018") : tr("app.s0311")}</span><strong>{tr("app.s0312")}</strong><JobFailureDetails context="audio" status={audioAnalysisJob.status} errorCode={audioAnalysisJob.errorCode} errorMessage={audioAnalysisJob.errorMessage}/><button onClick={resumeAudioAnalysis}><RefreshCw size={11}/>{tr("app.s0279")}</button></article>}
-                  {audioAnalysisJob && ["queued", "running"].includes(audioAnalysisJob.status) && <article className="review-item task-item processing"><span className="review-tag info"><Activity size={12}/>{tr("app.s0314")}</span><strong>{tr("app.s0315")}</strong><p>{Math.round(audioAnalysisJob.progress * 100)}{tr("app.s0316")}</p><button disabled={Boolean(audioAnalysisJob.cancelRequestedAt)} onClick={cancelAudioAnalysis}>{audioAnalysisJob.cancelRequestedAt ? tr("app.s0317") : tr("app.s0318")}</button></article>}
-                  {projectSpeakerJob && ["failed", "interrupted"].includes(projectSpeakerJob.status) && <article className="review-item task-item failure"><span className="review-tag failure"><CircleAlert size={12}/>{tr("app.s0319")}{projectSpeakerJob.status === "interrupted" ? tr("app.s0018") : tr("app.s0311")}</span><strong>{tr("app.s0320")}</strong><JobFailureDetails context="speaker" status={projectSpeakerJob.status} errorCode={projectSpeakerJob.errorCode} errorMessage={projectSpeakerJob.errorMessage}/><button onClick={resumeSpeakerJob}><RefreshCw size={11}/>{tr("app.s0279")}</button></article>}
-                  {projectSpeakerJob && ["queued", "running"].includes(projectSpeakerJob.status) && <article className="review-item task-item processing"><span className="review-tag info"><Users size={12}/>{tr("app.s0314")}</span><strong>{tr("app.s0322")}</strong><p>{projectSpeakerJob.stage} · {Math.round(projectSpeakerJob.progress * 100)}{tr("app.s0323")}</p><button onClick={cancelSpeakerJob}>{tr("app.s0318")}</button></article>}
-                  {failedTasks.map((task) => <article className="review-item task-item failure" key={task.id}><span className="review-tag failure"><CircleAlert size={12}/>Agent {task.status === "interrupted" ? tr("app.s0018") : tr("app.s0324")}</span><strong>{task.kind} · {Math.round(task.progress * 100)}%</strong><JobFailureDetails context="agent" status={task.status} errorCode={task.errorCode} errorMessage={task.errorMessage}/><button onClick={() => updateTask(task.id, "retry")}><RefreshCw size={11}/>{tr("app.s0325")}</button></article>)}
-                  {processingTasks.filter((task) => task.id !== agentTask?.id).map((task) => <article className="review-item task-item processing" key={task.id}><span className="review-tag agent"><Bot size={12}/>{task.status === "queued" ? tr("app.s0326") : tr("app.s0327")}</span><strong>{task.kind}</strong><p>{Math.round(task.progress * 100)}%</p><button onClick={() => updateTask(task.id, "cancel")}>{tr("app.s0328")}</button></article>)}
-                  {actionableReviewCount === 0 && processingTasks.length === 0 && !audioAnalysisJob?.status.match(/queued|running|failed|interrupted/) && !projectSpeakerJob?.status.match(/queued|running|failed|interrupted/) && !transcriptionJob?.status.match(/queued|running|finalizing|failed|interrupted/) && <div className="all-clear"><Check size={20}/><span>{tr("app.s0329")}</span></div>}
-                  {recentTasks.length > 0 && <details className="review-history"><summary>{tr("app.s0330") + " "}{recentTasks.length}</summary><div>{recentTasks.map((task) => <article className="review-item recent" key={task.id}><span className="review-tag success"><Check size={12}/>{task.status === "completed" ? tr("app.s0032") : tr("app.s0017")}</span><strong>{task.kind}</strong><p>{Math.round(task.progress * 100)}%</p></article>)}</div></details>}
-                  <div className="review-principle"><Sparkles size={16}/><span>{tr("app.s0331")}</span></div>
-                </div>
-              </aside>
             </section>
 
             <section className="editor-grid">
               <article className="transcript-panel">
-                <header className="panel-header"><div><p className="eyebrow">{tr("app.s0332")}</p><h2>{tr("app.s0253")}</h2></div><div className="find-replace"><button ref={subtitleImportButtonRef} className="subtitle-import-command" disabled={Boolean(busy)} onClick={openSubtitleImport}><FileText size={12}/>{tr("app.s0333")}</button><button className="detect-suggestions" disabled={!project.transcript.words.length || Boolean(busy)} onClick={detectSuggestions}><Scissors size={12}/>{tr("app.s0334")}</button><label className="search"><Search size={14}/><input ref={searchInputRef} value={search} onChange={(event) => { setSearch(event.target.value); setEmptyReplacementConfirmed(false); }} placeholder={tr("app.s0335")} title="Ctrl+F"/></label><input ref={replacementInputRef} aria-label={tr("app.s0336")} value={replacement} onChange={(event) => { setReplacement(event.target.value); setEmptyReplacementConfirmed(false); }} placeholder={tr("app.s0336")} title="Ctrl+H"/>{search && <span className="replace-match-count">{tr("app.replace.matches", { count: replaceMatchCount })}</span>}{search && !replacement && <label className="replace-empty-confirm"><input type="checkbox" checked={emptyReplacementConfirmed} onChange={(event) => setEmptyReplacementConfirmed(event.target.checked)}/><span>{tr("app.replace.confirmDelete")}</span></label>}<button disabled={!search || (!replacement && !emptyReplacementConfirmed) || Boolean(busy)} onClick={replaceAll}>{tr("app.s0337")}</button></div></header>
+	                <header className="panel-header"><div><p className="eyebrow">{tr("app.s0332")}</p><h2>{tr("app.s0253")}</h2></div><div className="find-replace">{transcriptionMode === "multispeaker" && <button className="moss-transcribe-command" disabled={!canStartTranscription || transcriptionActive || Boolean(busy)} title={transcribeCapabilityTitle} onClick={transcribe}><Users size={12}/>{tr("app.moss.action.start")}</button>}<button ref={subtitleImportButtonRef} className="subtitle-import-command" disabled={Boolean(busy)} onClick={openSubtitleImport}><FileText size={12}/>{tr("app.s0333")}</button><button className="detect-suggestions" disabled={!project.transcript.words.length || Boolean(busy)} onClick={detectSuggestions}><Scissors size={12}/>{tr("app.s0334")}</button><label className="search"><Search size={14}/><input ref={searchInputRef} value={search} onChange={(event) => { setSearch(event.target.value); setEmptyReplacementConfirmed(false); }} placeholder={tr("app.s0335")} title="Ctrl+F"/></label><input ref={replacementInputRef} aria-label={tr("app.s0336")} value={replacement} onChange={(event) => { setReplacement(event.target.value); setEmptyReplacementConfirmed(false); }} placeholder={tr("app.s0336")} title="Ctrl+H"/>{search && <span className="replace-match-count">{tr("app.replace.matches", { count: replaceMatchCount })}</span>}{search && !replacement && <label className="replace-empty-confirm"><input type="checkbox" checked={emptyReplacementConfirmed} onChange={(event) => setEmptyReplacementConfirmed(event.target.checked)}/><span>{tr("app.replace.confirmDelete")}</span></label>}<button disabled={!search || (!replacement && !emptyReplacementConfirmed) || Boolean(busy)} onClick={replaceAll}>{tr("app.s0337")}</button></div></header>
                 <div className="transcript-meta"><span>{tr("app.s0338")}</span><span>{tr("app.composite.transcriptStats", { language: project.transcript.sourceLanguage.toUpperCase(), segments: segmentCountLabel(project.transcript.segments.length), words: wordCountLabel(project.transcript.words.length) })}</span></div>
                 {transcriptionMode === "multispeaker" && <details className="moss-advanced"><summary>{tr("app.moss.advanced.title")}</summary><div><label><span>{tr("app.moss.advanced.prompt")}</span><textarea value={transcriptionPrompt} maxLength={1200} onChange={(event) => setTranscriptionPrompt(event.target.value)} placeholder={tr("app.moss.advanced.promptPlaceholder")}/></label><label><span>{tr("app.moss.advanced.hotwords")}</span><input value={transcriptionHotwords} maxLength={500} onChange={(event) => setTranscriptionHotwords(event.target.value)} placeholder={tr("app.moss.advanced.hotwordsPlaceholder")}/></label><p>{tr("app.moss.advanced.experimental")}</p></div></details>}
                 {mossWordTimingUnavailable && <div className="capability-notice"><CircleAlert size={14}/><span><strong>{tr("app.moss.words.unavailable")}</strong><small>{tr("app.moss.words.explanation")}</small></span></div>}
@@ -1855,39 +1976,60 @@ function WorkbenchController() {
                     <button disabled={!selectedSegments.length || Boolean(busy)} title={tr("app.s0355")} onClick={() => openStructureEdit("offset")}><MoveHorizontal size={13}/>{tr("app.s0356")}</button>
                   </div>
                 </section>
-                <section className={`subtitle-quality-summary ${project.subtitleQuality.status}`} aria-label={tr("app.s0357")}>
-                  <div className="subtitle-quality-state">{project.subtitleQuality.status === "good" ? <Check size={15}/> : <CircleAlert size={15}/>}<span><strong>{subtitleQualityStatusLabel(project.subtitleQuality)}</strong><small>{project.subtitleQuality.errorCount}{tr("app.s0358") + " "}{project.subtitleQuality.warningCount}{tr("app.s0359")}</small></span></div>
-                  <div className="subtitle-quality-filters" aria-label={tr("app.s0360")}><button className={qualityFilter === "all" ? "active" : ""} onClick={() => setQualityFilter("all")}>{tr("app.s0361")}</button><button className={qualityFilter === "error" ? "active" : ""} disabled={!project.subtitleQuality.errorCount} onClick={() => setQualityFilter("error")}>{tr("app.s0362") + " "}{project.subtitleQuality.errorCount}</button><button className={qualityFilter === "warning" ? "active" : ""} disabled={!project.subtitleQuality.warningCount} onClick={() => setQualityFilter("warning")}>{tr("app.s0363") + " "}{project.subtitleQuality.warningCount}</button></div>
-                  {visibleQualityIssues.length > 0 && <div className="subtitle-quality-issues">{visibleQualityIssues.slice(0, 4).map((issue) => <button className={issue.severity} key={issue.id} onClick={() => locateSubtitleIssue(issue)}><CircleAlert size={12}/><span><strong>{subtitleIssueLabel(issue.kind)}</strong><small>{formatTime(issue.start)}{tr("app.s0364")}</small></span></button>)}</div>}
-                </section>
                 <div className="segment-list" aria-label={tr("app.s0365")}>
-                  {filteredSegments.map((segment) => { const association = associationBySegment.get(segment.id); return <SegmentRow key={segment.id} segment={segment} speaker={association ? speakerById.get(association.speakerId) : undefined} speakerManual={association?.source === "manual"} selected={selectedSegmentIds.includes(segment.id)} active={segment.id === selectedId} translation={translation?.[1]} onSelect={(mode) => selectSegmentInWorkbench(segment, mode)} onSave={(text) => editSegment(segment, text)}/>; })}
+                  {filteredSegments.map((segment) => { const association = associationBySegment.get(segment.id); return <SegmentRow key={segment.id} segment={segment} speaker={association ? speakerById.get(association.speakerId) : undefined} speakerManual={association?.source === "manual"} selected={selectedSegmentIds.includes(segment.id)} active={segment.id === selectedId} translation={translation?.[1]} onSelect={(mode) => selectSegmentInWorkbench(segment, mode)} onSave={(text) => editSegment(segment, text)} onSplitAt={(text, offset) => void splitSegmentFromEditor(segment, text, offset)} onMergePrevious={(text) => void mergePreviousFromEditor(segment, text)}/>; })}
                   {!filteredSegments.length && <p className="empty-list">{project.transcript.segments.length ? tr("app.s0366") : tr("app.s0367")}</p>}
                 </div>
               </article>
 
-              <aside className="context-panel">
-                <div className="inspector-tabs" role="tablist" aria-label={tr("app.s0368")}>
-                  {inspectorTabs.map((tab) => <button id={`inspector-tab-${tab}`} key={tab} role="tab" aria-controls={`inspector-panel-${tab}`} aria-selected={inspectorTab === tab} tabIndex={inspectorTab === tab ? 0 : -1} className={inspectorTab === tab ? "active" : ""} onKeyDown={(event) => changeInspectorTabFromKeyboard(event, tab)} onClick={() => setInspectorTab(tab)}>{tr(`app.inspector.${tab}`)}</button>)}
-                </div>
-                {inspectorTab === "segment" && <div id="inspector-panel-segment" aria-labelledby="inspector-tab-segment" className="inspector-view" role="tabpanel">
-                  <p className="eyebrow">{tr("app.s0368")}</p><h2>{selected?.text ?? tr("app.s0369")}</h2>
-                  <dl><div><dt>{tr("app.s0354")}</dt><dd>{selected ? `${formatTime(selected.start)} — ${formatTime(selected.end)}` : "—"}</dd></div><div><dt>{tr("app.s0370")}</dt><dd>{selected?.confidence == null ? tr("app.s0371") : `${Math.round(selected.confidence * 100)}%`}</dd></div><div><dt>{tr("app.s0372")}</dt><dd className={translation?.[1].status === "stale" ? "stale" : ""}>{translation ? (translation[1].status === "stale" ? tr("app.s0373") : tr("app.s0374", { "0": translation[0].toUpperCase() })) : tr("app.s0375")}</dd></div></dl>
-                  {selectedWords.length > 0 && <section className="word-evidence" aria-label={tr("app.s0376")}><div className="word-heading"><div><p className="eyebrow">{tr("app.s0376")}</p><small>{tr("app.s0377")}</small></div>{activeWordRange && <button className="clear-range" onClick={() => setWordRange(null)}>{tr("app.s0378")}</button>}</div><div className="word-tokens">{selectedWords.map((word, index) => <button className={activeWordRange && index >= activeWordRange.start && index <= activeWordRange.end ? "selected" : ""} key={word.id} onClick={() => selectWordForCut(index)} title={`${formatTime(word.start)} — ${formatTime(word.end)}${word.confidence == null ? "" : ` · ${Math.round(word.confidence * 100)}%`}`}>{word.text}</button>)}</div>{activeWordRange && <div className="word-cut-controls"><label>{tr("app.s0379")}<input aria-label={tr("app.s0380")} type="range" min="0" max={selectedWords.length - 1} value={activeWordRange.start} onChange={(event) => setWordRange({ ...activeWordRange, start: Math.min(Number(event.target.value), activeWordRange.end) })}/><small>{selectedWords[activeWordRange.start]?.text}</small></label><label>{tr("app.s0381")}<input aria-label={tr("app.s0382")} type="range" min="0" max={selectedWords.length - 1} value={activeWordRange.end} onChange={(event) => setWordRange({ ...activeWordRange, end: Math.max(Number(event.target.value), activeWordRange.start) })}/><small>{selectedWords[activeWordRange.end]?.text}</small></label><label className="padding-select">{tr("app.s0383")}<select aria-label={tr("app.s0383")} value={cutPadding} onChange={(event) => setCutPadding(Number(event.target.value) as 30 | 100 | 200)}><option value="30">30 ms</option><option value="100">100 ms</option><option value="200">200 ms</option></select></label><button className="create-word-cut" disabled={Boolean(busy)} onClick={createWordCut}><Scissors size={12}/>{tr("app.s0384")}</button></div>}</section>}
-                </div>}
-                {inspectorTab === "analysis" && <div id="inspector-panel-analysis" aria-labelledby="inspector-tab-analysis" className="inspector-view" role="tabpanel"><SpeechInsightsPanel insights={project.speechInsights} onLocateEvidence={locateSpeechEvidence} onLocatePause={locateSpeechPause}/><AudioQualityPanel job={audioAnalysisJob} onStart={startAudioAnalysis} onCancel={cancelAudioAnalysis} onResume={resumeAudioAnalysis} onLocate={locateAudioRisk} disabled={!capabilities.canAnalyzeAudio || Boolean(busy)}/><SpeakerTrackPanel packageStatus={speakerPackage} track={speakerTrack} job={projectSpeakerJob} selectedSegmentId={selectedId} disabled={Boolean(busy)} onOpenRuntime={() => setShowRuntime(true)} onAnalyze={startSpeakerAnalysis} onCancel={cancelSpeakerJob} onResume={resumeSpeakerJob} onRename={renameSpeaker} onMerge={mergeSpeaker} onAssign={assignSpeaker}/></div>}
-                {inspectorTab === "history" && <div id="inspector-panel-history" aria-labelledby="inspector-tab-history" className="inspector-view" role="tabpanel"><div className="version-block"><div className="section-title"><div><p className="eyebrow">{tr("app.s0385")}</p><h2>{tr("app.s0386")}</h2></div><div className="history-controls"><button aria-label={tr("app.s0251")} title="Ctrl+Z" disabled={!project.history.canUndo || Boolean(busy)} onClick={() => navigateHistory("undo")}><Undo2 size={14}/></button><button aria-label={tr("app.s0252")} title="Ctrl+Shift+Z / Ctrl+Y" disabled={!project.history.canRedo || Boolean(busy)} onClick={() => navigateHistory("redo")}><Redo2 size={14}/></button><History size={16}/></div></div>{project.versions.slice().reverse().slice(0, 4).map((version) => <button className="version-row" key={version.id} onClick={() => restoreVersion(version.id)}><span><strong>{versionReasonLabel(version.reason)}</strong><small>{new Date(version.createdAt).toLocaleString(uiLocale)}</small></span><RotateCcw size={14}/></button>)}</div></div>}
-              </aside>
-            </section>
+	              <aside className="creator-drawer" aria-label={tr("app.creator.drawer.label")}>
+	                <div className="creator-drawer-tabs" role="tablist" aria-label={tr("app.creator.drawer.tabs")}>
+	                  {drawerTabs.map((tab) => <button id={`creator-drawer-tab-${tab}`} key={tab} role="tab" aria-controls={`creator-drawer-panel-${tab}`} aria-selected={drawerTab === tab} tabIndex={drawerTab === tab ? 0 : -1} className={drawerTab === tab ? "active" : ""} onKeyDown={(event) => changeDrawerTabFromKeyboard(event, tab)} onClick={() => openCreatorDrawer(tab)}>{tr(({ review: "app.creator.drawer.review", quality: "app.creator.drawer.quality", analysis: "app.creator.drawer.analysis", history: "app.creator.drawer.history", export: "app.creator.drawer.export" } as const)[tab])}{tab === "review" && actionableReviewCount > 0 ? <i>{actionableReviewCount}</i> : null}{tab === "quality" && project.subtitleQuality.issueCount > 0 ? <i>{project.subtitleQuality.issueCount}</i> : null}</button>)}
+	                </div>
+	                <div className="creator-drawer-body" id={`creator-drawer-panel-${drawerTab}`} role="tabpanel" aria-labelledby={`creator-drawer-tab-${drawerTab}`}>
+	                  {drawerTab === "review" && <>
+	                    <section className="creator-agent-control">
+	                      <header><span><Bot size={15}/><strong>{tr("app.creator.agent.title")}</strong><small>{codexHealth?.available && codexHealth.authenticated ? tr("app.creator.agent.ready", { version: codexHealth.version ?? "Codex CLI" }) : tr("app.creator.agent.unavailable")}</small></span>{agentRunActive && agentRun ? <StatusBadge tone="agent">{Math.round(agentRun.progress * 100)}%</StatusBadge> : null}</header>
+	                      <label><span>{tr("app.workflow.label")}</span><select aria-label={tr("app.workflow.label")} value={agentWorkflowKind} disabled={agentRunActive} onChange={(event) => setAgentWorkflowKind(event.target.value as typeof agentWorkflowKind)}><option value="polish">{tr("app.workflow.polish")}</option><option value="proofread">{tr("app.workflow.proofread")}</option><option value="punctuate">{tr("app.workflow.punctuate")}</option><option value="edit">{tr("app.workflow.edit")}</option><option value="translate">{tr("app.workflow.translate")}</option><option value="speaker_names">{tr("app.workflow.speakerNames")}</option></select></label>
+	                      {agentWorkflowKind === "translate" && <label><span>{tr("app.workflow.targetLanguage")}</span><select aria-label={tr("app.workflow.targetLanguage")} value={subtitleLanguage} disabled={agentRunActive} onChange={(event) => setSubtitleLanguage(event.target.value)}><option value="en">EN</option><option value="zh">ZH</option><option value="ja">JA</option><option value="ko">KO</option></select></label>}
+	                      {agentRun && <div className={`creator-agent-run ${agentRun.status}`} role="status"><span><strong>{tr(`app.creator.agent.status.${agentRun.status}` as Parameters<typeof tr>[0])}</strong><small>{tr("app.creator.agent.batch", { current: agentRun.currentBatch, total: agentRun.batchCount })}</small></span><progress max={1} value={agentRun.progress}/>{["queued", "running", "submitting"].includes(agentRun.status) ? <button onClick={() => void cancelCodexAgent()}>{tr("app.creator.agent.cancel")}</button> : ["failed", "interrupted", "cancelled"].includes(agentRun.status) ? <button onClick={() => void resumeCodexAgent()}><RefreshCw size={12}/>{tr("app.creator.agent.resume")}</button> : null}{agentRun.errorMessage && <JobFailureDetails context="agent" status={agentRun.status} errorCode={agentRun.errorCode} errorMessage={agentRun.errorMessage}/>}</div>}
+	                      <div className="creator-agent-actions"><Button ref={agentButtonRef} variant="agent" disabled={!capabilities.canCreateAgentTask || agentRunActive || Boolean(busy) || (agentWorkflowKind === "speaker_names" && speakerTrack?.status !== "ready")} title={agentCapabilityTitle} onClick={startCodexAgent}><Bot size={14}/>{tr("app.creator.agent.start")}</Button><button className="button quiet" disabled={agentRunActive || Boolean(busy)} onClick={openAgentHandoff}>{tr("app.creator.agent.manual")}</button></div>
+	                      <p className="runtime-disclosure"><ShieldCheck size={13}/>{tr("app.creator.agent.boundary")}</p>
+	                    </section>
+	                    <div className="review-panel-scroll creator-review-list" role="region" aria-label={tr("app.s0297")} tabIndex={0}>
+	                      {orderedPatchSets.map((set) => <section className="patch-set" key={set.id}><header><span>{set.kind}{set.language ? ` · ${set.language.toUpperCase()}` : ""}</span>{set.items.length > 1 && <div><button onClick={() => reviewAll(set.taskId, "keep")}>{tr("app.s0298")}</button><button onClick={() => reviewAll(set.taskId, "apply")}>{tr("app.s0299")}</button></div>}</header>{set.items.map((item) => <PatchReviewCard key={item.id} item={item} onReview={(action) => reviewPatch(item.id, action)} onSelect={() => { const segment = project.transcript.segments.find((candidate) => candidate.id === item.segmentId); if (segment) selectSegment(segment); }}/>)}</section>)}
+	                      {pendingEdits.map((edit) => <article className="review-item" key={edit.id}><span className="review-tag">{tr("app.composite.reviewSuggestion", { kind: cutSuggestionLabel(edit.suggestion?.suggestionType) })}</span><strong>{editReasonLabel(edit)}</strong><p>{edit.suggestion ? tr("app.composite.suggestionEvidence", { range: `${formatTime(edit.start)} — ${formatTime(edit.end)}`, confidence: Math.round(edit.suggestion.confidence * 100) }) : `${formatTime(edit.start)} — ${formatTime(edit.end)}`}</p><div className="cut-actions"><button onClick={() => selectSegment(project.transcript.segments.find((segment) => segment.id === edit.segmentId)!)}>{tr("app.s0303")}</button>{edit.kind === "word_cut" && <button onClick={() => previewCut(edit.id)}><Headphones size={11}/>{tr("app.s0304")}</button>}<button onClick={() => updateCut(edit.id, "apply")}>{tr("app.s0305")}</button></div></article>)}
+	                      {audioRisks.map((risk, index) => <article className="review-item audio-risk-item" key={`${risk.kind}-${risk.start}-${index}`}><span className="review-tag warning"><CircleAlert size={12}/>{tr("app.s0306")}</span><strong>{audioRiskLabel(risk.kind)}</strong><p>{tr("app.composite.audioRiskEvidence", { range: `${formatTime(risk.start)} — ${formatTime(risk.end)}`, measured: risk.measuredValue, threshold: risk.threshold, unit: audioUnitLabel(risk.unit) })}</p><button onClick={() => locateAudioRisk(risk)}>{tr("app.s0309")}</button></article>)}
+	                      <TranscriptionReviewPanel items={transcriptionReviews} disabled={Boolean(busy)} onLocate={(segmentId) => { const segment = project.transcript.segments.find((item) => item.id === segmentId); if (segment) selectSegment(segment); }} onResolve={resolveTranscriptionReview}/>
+	                      {failedTasks.map((task) => <article className="review-item task-item failure" key={task.id}><span className="review-tag failure"><CircleAlert size={12}/>Agent {task.status === "interrupted" ? tr("app.s0018") : tr("app.s0324")}</span><strong>{task.kind}</strong><JobFailureDetails context="agent" status={task.status} errorCode={task.errorCode} errorMessage={task.errorMessage}/><button onClick={() => updateTask(task.id, "retry")}><RefreshCw size={11}/>{tr("app.s0325")}</button></article>)}
+	                      {processingTasks.filter((task) => task.id !== agentRun?.taskId).map((task) => <article className="review-item task-item processing" key={task.id}><span className="review-tag agent"><Bot size={12}/>{task.status === "queued" ? tr("app.s0326") : tr("app.s0327")}</span><strong>{task.kind}</strong><p>{Math.round(task.progress * 100)}%</p><button onClick={() => updateTask(task.id, "cancel")}>{tr("app.s0328")}</button></article>)}
+	                      {actionableReviewCount === 0 && !agentRunActive && <div className="all-clear"><Check size={20}/><span>{tr("app.s0329")}</span></div>}
+	                    </div>
+	                  </>}
+	                  {drawerTab === "quality" && <section className={`subtitle-quality-summary creator-quality ${project.subtitleQuality.status}`} aria-label={tr("app.s0357")}><div className="subtitle-quality-state">{project.subtitleQuality.status === "good" ? <Check size={15}/> : <CircleAlert size={15}/>}<span><strong>{subtitleQualityStatusLabel(project.subtitleQuality)}</strong><small>{project.subtitleQuality.errorCount}{tr("app.s0358") + " "}{project.subtitleQuality.warningCount}{tr("app.s0359")}</small></span></div><div className="subtitle-quality-filters" aria-label={tr("app.s0360")}><button className={qualityFilter === "all" ? "active" : ""} onClick={() => setQualityFilter("all")}>{tr("app.s0361")}</button><button className={qualityFilter === "error" ? "active" : ""} disabled={!project.subtitleQuality.errorCount} onClick={() => setQualityFilter("error")}>{tr("app.s0362") + " "}{project.subtitleQuality.errorCount}</button><button className={qualityFilter === "warning" ? "active" : ""} disabled={!project.subtitleQuality.warningCount} onClick={() => setQualityFilter("warning")}>{tr("app.s0363") + " "}{project.subtitleQuality.warningCount}</button></div>{visibleQualityIssues.length > 0 ? <div className="subtitle-quality-issues">{visibleQualityIssues.map((issue) => <button className={issue.severity} key={issue.id} onClick={() => locateSubtitleIssue(issue)}><CircleAlert size={12}/><span><strong>{subtitleIssueLabel(issue.kind)}</strong><small>{formatTime(issue.start)}{tr("app.s0364")}</small></span></button>)}</div> : <div className="all-clear"><Check size={20}/><span>{tr("app.creator.quality.ready")}</span></div>}<button className="button primary full" onClick={() => openCreatorDrawer("export")}>{tr("app.creator.quality.continue")}</button></section>}
+	                  {drawerTab === "analysis" && <div className="inspector-view creator-analysis">
+	                    <SpeechInsightsPanel insights={project.speechInsights} onLocateEvidence={locateSpeechEvidence} onLocatePause={locateSpeechPause}/>
+	                    <AudioQualityPanel job={audioAnalysisJob} onStart={startAudioAnalysis} onCancel={cancelAudioAnalysis} onResume={resumeAudioAnalysis} onLocate={locateAudioRisk} disabled={!capabilities.canAnalyzeAudio || Boolean(busy)}/>
+	                    <SpeakerTrackPanel packageStatus={speakerPackage} track={speakerTrack} job={projectSpeakerJob} selectedSegmentId={selectedId} disabled={Boolean(busy)} onOpenRuntime={() => setShowRuntime(true)} onAnalyze={startSpeakerAnalysis} onCancel={cancelSpeakerJob} onResume={resumeSpeakerJob} onRename={renameSpeaker} onMerge={mergeSpeaker} onAssign={assignSpeaker}/>
+	                    {selectedWords.length > 0 && <section className="word-evidence" aria-label={tr("app.s0376")}>
+	                      <div className="word-heading"><div><p className="eyebrow">{tr("app.s0376")}</p><small>{tr("app.s0377")}</small></div>{activeWordRange && <button className="clear-range" onClick={() => setWordRange(null)}>{tr("app.s0378")}</button>}</div>
+	                      <div className="word-tokens">{selectedWords.map((word, index) => <button className={activeWordRange && index >= activeWordRange.start && index <= activeWordRange.end ? "selected" : ""} key={word.id} onClick={() => selectWordForCut(index)} title={`${formatTime(word.start)} — ${formatTime(word.end)}${word.confidence == null ? "" : ` · ${Math.round(word.confidence * 100)}%`}`}>{word.text}</button>)}</div>
+	                      {activeWordRange && <div className="word-cut-controls"><label>{tr("app.s0379")}<input aria-label={tr("app.s0380")} type="range" min="0" max={selectedWords.length - 1} value={activeWordRange.start} onChange={(event) => setWordRange({ ...activeWordRange, start: Math.min(Number(event.target.value), activeWordRange.end) })}/><small>{selectedWords[activeWordRange.start]?.text}</small></label><label>{tr("app.s0381")}<input aria-label={tr("app.s0382")} type="range" min="0" max={selectedWords.length - 1} value={activeWordRange.end} onChange={(event) => setWordRange({ ...activeWordRange, end: Math.max(Number(event.target.value), activeWordRange.start) })}/><small>{selectedWords[activeWordRange.end]?.text}</small></label><label className="padding-select">{tr("app.s0383")}<select aria-label={tr("app.s0383")} value={cutPadding} onChange={(event) => setCutPadding(Number(event.target.value) as 30 | 100 | 200)}><option value="30">30 ms</option><option value="100">100 ms</option><option value="200">200 ms</option></select></label><button className="create-word-cut" disabled={Boolean(busy)} onClick={createWordCut}><Scissors size={12}/>{tr("app.s0384")}</button></div>}
+	                    </section>}
+	                  </div>}
+	                  {drawerTab === "history" && <div className="inspector-view"><div className="version-block"><div className="section-title"><div><p className="eyebrow">{tr("app.s0385")}</p><h2>{tr("app.s0386")}</h2></div><History size={16}/></div>{project.versions.slice().reverse().map((version) => <button className="version-row" key={version.id} onClick={() => restoreVersion(version.id)}><span><strong>{versionReasonLabel(version.reason)}</strong><small>{new Date(version.createdAt).toLocaleString(uiLocale)}</small></span><RotateCcw size={14}/></button>)}</div></div>}
+	                  {drawerTab === "export" && showExportPanel && <Suspense fallback={null}><ExportPanel embedded ref={exportPanelRef} project={project} busy={Boolean(busy)} subtitleMode={subtitleMode} translationLanguageOptions={translationLanguageOptions} translationLanguages={translationLanguages} selectedSubtitleLanguage={selectedSubtitleLanguage} selectedTranslationPending={selectedTranslationPending} exportFormat={exportFormat} structuredExport={structuredExport} includeSpeakerLabels={includeSpeakerLabels} transcriptionExportErrorCount={transcriptionExportErrors.length} transcriptionExportWarningCount={transcriptionExportWarnings.length} confirmTranscriptionWarnings={confirmTranscriptionWarnings} showSubtitleSafeArea={showSubtitleSafeArea} transcriptionExportBlocked={transcriptionExportBlocked} canExportVideo={capabilities.canExportVideo} activeExportRunning={Boolean(activeExport && ["queued", "running"].includes(activeExport.status))} mediaCapabilityTitle={mediaCapabilityTitle} onClose={() => { setShowExportPanel(false); setDrawerTab("quality"); }} onChangeCanvas={(settings) => void changeCanvas(settings)} onSubtitleModeChange={setSubtitleMode} onSubtitleLanguageChange={setSubtitleLanguage} onExportFormatChange={(format) => { setExportFormat(format); setConfirmTranscriptionWarnings(false); }} onIncludeSpeakerLabelsChange={setIncludeSpeakerLabels} onConfirmWarningsChange={setConfirmTranscriptionWarnings} onSubtitleStyleChange={(preset, position) => void changeSubtitleStyle(preset, position)} onShowSafeAreaChange={setShowSubtitleSafeArea} onExportTranscript={exportTranscript} onExportVideo={exportVideo}/></Suspense>}
+	                </div>
+	              </aside>
+	            </section>
 
-            <section className="timeline-panel">
-              <div className="section-title"><div><p className="eyebrow">{tr("app.s0387")}</p><h2>{tr("app.s0388")}</h2></div><span className="timeline-note">{tr("app.s0389")}</span></div>
-              {waveformUrl && <img className="waveform" src={waveformUrl} alt={tr("app.s0390")}/>}
-              <div className="timeline-track">{project.transcript.segments.map((segment) => { const edit = project.edits.find((candidate) => candidate.segmentId === segment.id && ["suggested", "proposed", "applied"].includes(candidate.status)); const association = associationBySegment.get(segment.id); const speaker = association ? speakerById.get(association.speakerId) : undefined; return <div className="timeline-segment-shell" key={segment.id} style={{ flexGrow: Math.max(1, segment.end - segment.start) }}><button className={`timeline-segment ${edit && ["suggested", "proposed"].includes(edit.status) ? "suggested" : ""} ${edit?.status === "applied" ? "applied" : ""} ${selectedSegmentIds.includes(segment.id) ? "selected" : ""} ${selectedId === segment.id ? "active" : ""}`} onClick={() => selectSegment(segment)} title={`${speaker ? `${speaker.label} · ` : ""}${segment.text}`}>{speaker && <i className={`speaker-color speaker-${speaker.colorIndex % 6}`}/>}{segment.text}</button>{edit?.status === "applied" && <button className="timeline-restore" onClick={() => void updateCut(edit.id, "restore")}><Scissors size={11}/>{tr("app.s0391")}</button>}</div>; })}</div>
+            <section className={`timeline-panel ${timelineExpanded ? "expanded" : "collapsed"}`}>
+              <div className="section-title"><div><p className="eyebrow">{tr("app.s0387")}</p><h2>{tr("app.s0388")}</h2></div><button className="timeline-toggle" aria-expanded={timelineExpanded} onClick={() => setTimelineExpanded((current) => !current)}>{timelineExpanded ? <ChevronDown size={14}/> : <ChevronUp size={14}/>}{timelineExpanded ? tr("app.creator.timeline.collapse") : tr("app.creator.timeline.expand")}</button></div>
+              {timelineExpanded && <>{waveformUrl && <img className="waveform" src={waveformUrl} alt={tr("app.s0390")}/>}
+              <div className="timeline-track">{project.transcript.segments.map((segment) => { const edit = project.edits.find((candidate) => candidate.segmentId === segment.id && ["suggested", "proposed", "applied"].includes(candidate.status)); const association = associationBySegment.get(segment.id); const speaker = association ? speakerById.get(association.speakerId) : undefined; return <div className="timeline-segment-shell" key={segment.id} style={{ flexGrow: Math.max(1, segment.end - segment.start) }}><button className={`timeline-segment ${edit && ["suggested", "proposed"].includes(edit.status) ? "suggested" : ""} ${edit?.status === "applied" ? "applied" : ""} ${selectedSegmentIds.includes(segment.id) ? "selected" : ""} ${selectedId === segment.id ? "active" : ""}`} onClick={() => selectSegment(segment)} title={`${speaker ? `${speaker.label} · ` : ""}${segment.text}`}>{speaker && <i className={`speaker-color speaker-${speaker.colorIndex % 6}`}/>}{segment.text}</button>{edit?.status === "applied" && <button className="timeline-restore" onClick={() => void updateCut(edit.id, "restore")}><Scissors size={11}/>{tr("app.s0391")}</button>}</div>; })}</div></>}
             </section>
           </>)}
       </section>
-      {showExportPanel && project && <Suspense fallback={null}><ExportPanel ref={exportPanelRef} project={project} busy={Boolean(busy)} subtitleMode={subtitleMode} translationLanguageOptions={translationLanguageOptions} translationLanguages={translationLanguages} selectedSubtitleLanguage={selectedSubtitleLanguage} selectedTranslationPending={selectedTranslationPending} exportFormat={exportFormat} structuredExport={structuredExport} includeSpeakerLabels={includeSpeakerLabels} transcriptionExportErrorCount={transcriptionExportErrors.length} transcriptionExportWarningCount={transcriptionExportWarnings.length} confirmTranscriptionWarnings={confirmTranscriptionWarnings} showSubtitleSafeArea={showSubtitleSafeArea} transcriptionExportBlocked={transcriptionExportBlocked} canExportVideo={capabilities.canExportVideo} activeExportRunning={Boolean(activeExport && ["queued", "running"].includes(activeExport.status))} mediaCapabilityTitle={mediaCapabilityTitle} onClose={() => setShowExportPanel(false)} onChangeCanvas={(settings) => void changeCanvas(settings)} onSubtitleModeChange={setSubtitleMode} onSubtitleLanguageChange={setSubtitleLanguage} onExportFormatChange={(format) => { setExportFormat(format); setConfirmTranscriptionWarnings(false); }} onIncludeSpeakerLabelsChange={setIncludeSpeakerLabels} onConfirmWarningsChange={setConfirmTranscriptionWarnings} onSubtitleStyleChange={(preset, position) => void changeSubtitleStyle(preset, position)} onShowSafeAreaChange={setShowSubtitleSafeArea} onExportTranscript={exportTranscript} onExportVideo={exportVideo}/></Suspense>}
       {showAgentHandoff && project && <Dialog label={tr("app.agent.handoff.title")} className="runtime-dialog agent-handoff-dialog" onClose={() => setShowAgentHandoff(false)} returnFocusRef={agentButtonRef}>
         <button autoFocus className="dialog-close" aria-label={tr("app.agent.handoff.close")} title={tr("app.agent.handoff.close")} onClick={() => setShowAgentHandoff(false)}><X size={18}/></button>
         <p className="eyebrow">{tr("app.agent.handoff.eyebrow")}</p><h2>{agentHandoffTaskId ? tr("app.agent.handoff.readyTitle") : tr("app.agent.handoff.title")}</h2>
@@ -1913,7 +2055,8 @@ function WorkbenchController() {
         </section>
         {structureEditMode === "split" && selectedSegments[0] && <div className="subtitle-structure-form">
           <label><span>{tr("app.s0440")}</span><input type="number" min="1" max={Math.max(1, Array.from(selectedSegments[0].text).length - 1)} step="1" value={structureTextOffset} onChange={(event) => setStructureTextOffset(event.target.value)}/><small>{tr("app.s0441")}</small></label>
-          <label><span>{tr("app.s0442")}</span><input type="number" min={selectedSegments[0].start} max={selectedSegments[0].end} step="0.001" value={structureStart} onChange={(event) => setStructureStart(event.target.value)}/><small>{tr("app.s0443")}</small></label>
+	          <label><span>{tr("app.s0442")}</span><input type="number" min={selectedSegments[0].start} max={selectedSegments[0].end} step="0.001" value={structureStart} onChange={(event) => setStructureStart(event.target.value)}/><small>{tr("app.s0443")}</small></label>
+	          {!structureStart && <p className="split-time-confirmation"><Clock3 size={14}/>{tr("app.creator.editor.confirmSplitTime")}</p>}
           <div className="subtitle-split-preview" role="region" aria-label={tr("app.s0444")}><span><small>{tr("app.s0445")}</small>{Array.from(selectedSegments[0].text).slice(0, Number(structureTextOffset) || 0).join("")}</span><span><small>{tr("app.s0446")}</small>{Array.from(selectedSegments[0].text).slice(Number(structureTextOffset) || 0).join("")}</span></div>
           {!hasMeaningfulSubtitleText(splitLeftText) || !hasMeaningfulSubtitleText(splitRightText) ? <p className="source-error" role="alert">{tr("app.structure.splitMeaningful")}</p> : null}
         </div>}
@@ -1971,8 +2114,10 @@ function WorkbenchController() {
         returnFocusRef={runtimeButtonRef}
         runtime={runtime}
         modelPath={modelPath}
-        transcriptionConfig={transcriptionConfig}
-        transcriptionHealth={transcriptionHealth}
+	        transcriptionConfig={transcriptionConfig}
+	        transcriptionHealth={transcriptionHealth}
+	        transcriptionMode={transcriptionMode}
+	        transcriptionLanguage={transcriptionLanguage}
         busy={Boolean(busy)}
         models={models}
         modelJob={modelJob}
@@ -1985,7 +2130,9 @@ function WorkbenchController() {
         onClose={() => setShowRuntime(false)}
         onChooseModel={chooseModel}
         onSaveTranscriptionProvider={saveTranscriptionProvider}
-        onCheckTranscriptionProvider={checkTranscriptionProvider}
+	        onCheckTranscriptionProvider={checkTranscriptionProvider}
+	        onSelectTranscriptionMode={selectTranscriptionMode}
+	        onSelectTranscriptionLanguage={selectTranscriptionLanguage}
         onSelectAsrBackend={changeAsrBackend}
         onSelectModel={(path) => { localStorage.setItem("siaocut.modelPath", path); setModelPath(path); }}
         onInstallModel={installModel}

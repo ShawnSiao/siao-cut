@@ -1,5 +1,5 @@
-import type { AutoWorkflowStage, AutoWorkflowStatus, BackgroundJobStatus, CoreErrorCode, TaskStatus, TranscriptionJobStatus, WorkflowStatus } from "./generated/core-contract";
-export type { AutoWorkflowStage, AutoWorkflowStatus, BackgroundJobStatus, CoreErrorCode, KnownCoreErrorCode, TaskStatus, TranscriptionJobStatus, WorkflowStatus } from "./generated/core-contract";
+import type { AgentRunStatus, AutoWorkflowStage, AutoWorkflowStatus, BackgroundJobStatus, CoreErrorCode, TaskStatus, TranscriptionJobStatus, WorkflowStatus } from "./generated/core-contract";
+export type { AgentRunStatus, AutoWorkflowStage, AutoWorkflowStatus, BackgroundJobStatus, CoreErrorCode, KnownCoreErrorCode, TaskStatus, TranscriptionJobStatus, WorkflowStatus } from "./generated/core-contract";
 
 export type Segment = {
   id: string;
@@ -7,6 +7,52 @@ export type Segment = {
   end: number;
   text: string;
   confidence: number | null;
+};
+
+export type CodexHealth = {
+  available: boolean;
+  authenticated: boolean;
+  version: string | null;
+  authMode: string | null;
+};
+
+export type AgentRunBatch = {
+  id: string;
+  ordinal: number;
+  status: AgentRunStatus;
+  segmentIds: string[];
+  codexThreadId: string | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  attemptCount: number;
+};
+
+export type AgentRun = {
+  id: string;
+  taskId: string;
+  projectId: string;
+  provider: string;
+  status: AgentRunStatus;
+  baseVersionId: string;
+  progress: number;
+  currentBatch: number;
+  batchCount: number;
+  timeoutSeconds: number;
+  cliVersion: string | null;
+  authMode: string | null;
+  codexThreadId: string | null;
+  cancelRequestedAt: string | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  createdAt: string;
+  updatedAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  workerPid: number | null;
+  attemptCount: number;
+  batches: AgentRunBatch[];
 };
 
 export type WordTiming = {
@@ -644,6 +690,10 @@ export type CoreEnvelope = {
   code?: CoreErrorCode;
   message?: string;
   taskId?: string;
+  agentRunId?: string;
+  codex?: CodexHealth;
+  agentRun?: AgentRun;
+  agentRuns?: AgentRun[];
   project?: Project;
   projects?: Project[];
   job?: ExportJob;
