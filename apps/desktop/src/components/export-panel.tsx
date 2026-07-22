@@ -5,6 +5,7 @@ import type { CanvasSettings, Project } from "../types";
 import { Button, IconButton } from "./ui";
 
 type Props = {
+  embedded?: boolean;
   project: Project;
   busy: boolean;
   subtitleMode: "source" | "translated" | "bilingual";
@@ -37,8 +38,8 @@ type Props = {
 };
 
 const ExportPanel = forwardRef<HTMLElement, Props>(function ExportPanel(props, ref) {
-  const { project, busy, subtitleMode, translationLanguageOptions, translationLanguages, selectedSubtitleLanguage, selectedTranslationPending, exportFormat, structuredExport, includeSpeakerLabels, transcriptionExportErrorCount, transcriptionExportWarningCount, confirmTranscriptionWarnings, showSubtitleSafeArea, transcriptionExportBlocked, canExportVideo, activeExportRunning, mediaCapabilityTitle, onClose, onChangeCanvas, onSubtitleModeChange, onSubtitleLanguageChange, onExportFormatChange, onIncludeSpeakerLabelsChange, onConfirmWarningsChange, onSubtitleStyleChange, onShowSafeAreaChange, onExportTranscript, onExportVideo } = props;
-  return <aside ref={ref} className="export-panel" aria-label={tr("app.s0392")}>
+  const { embedded = false, project, busy, subtitleMode, translationLanguageOptions, translationLanguages, selectedSubtitleLanguage, selectedTranslationPending, exportFormat, structuredExport, includeSpeakerLabels, transcriptionExportErrorCount, transcriptionExportWarningCount, confirmTranscriptionWarnings, showSubtitleSafeArea, transcriptionExportBlocked, canExportVideo, activeExportRunning, mediaCapabilityTitle, onClose, onChangeCanvas, onSubtitleModeChange, onSubtitleLanguageChange, onExportFormatChange, onIncludeSpeakerLabelsChange, onConfirmWarningsChange, onSubtitleStyleChange, onShowSafeAreaChange, onExportTranscript, onExportVideo } = props;
+  return <aside ref={ref} className={`export-panel ${embedded ? "embedded" : ""}`} aria-label={tr("app.s0392")}>
     <header className="export-panel-header"><div><p className="eyebrow">{tr("app.s0393")}</p><h2>{tr("app.s0392")}</h2></div><IconButton label={tr("app.s0394")} onClick={onClose}><X size={17}/></IconButton></header>
     <div className="export-panel-body">
       <section className="export-group" aria-labelledby="export-canvas-heading">

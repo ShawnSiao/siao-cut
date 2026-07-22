@@ -297,7 +297,7 @@ export function SpeakerPackageManager({ packageStatus, job, disabled, onInstall,
     <p className="runtime-disclosure">{tr("app.s0633")}</p>
   </section>;
 }
-export function SegmentRow({ segment, speaker, speakerManual, selected, active, translation, onSelect, onSave }: {
+export function SegmentRow({ segment, speaker, speakerManual, selected, active, translation, onSelect, onSave, onSplitAt, onMergePrevious }: {
     segment: Segment;
     speaker?: SpeakerIdentity;
     speakerManual?: boolean;
@@ -306,9 +306,12 @@ export function SegmentRow({ segment, speaker, speakerManual, selected, active, 
     translation?: Project["translations"][string];
     onSelect: (mode: SegmentSelectionMode) => void;
     onSave: (text: string) => void;
+    onSplitAt: (text: string, offset: number) => void;
+    onMergePrevious: (text: string) => void;
 }) {
     const [draft, setDraft] = useState(segment.text);
     const rowRef = useRef<HTMLElement>(null);
+    const suppressBlurSaveRef = useRef(false);
     useEffect(() => setDraft(segment.text), [segment.text]);
     useEffect(() => {
         if (active && typeof rowRef.current?.scrollIntoView === "function")
@@ -318,11 +321,35 @@ export function SegmentRow({ segment, speaker, speakerManual, selected, active, 
     return <article ref={rowRef} className={`segment-row ${selected ? "selected" : ""} ${active ? "active" : ""}`} data-segment-id={segment.id} aria-label={tr("app.s0634", { "0": formatTime(segment.start), "1": formatTime(segment.end) })} onClick={(event) => onSelect(event.shiftKey ? "range" : event.ctrlKey || event.metaKey ? "toggle" : "replace")}>
     <input className="segment-select" type="checkbox" aria-label={tr("app.s0635", { "0": formatTime(segment.start), "1": formatTime(segment.end) })} checked={selected} onClick={(event) => { event.stopPropagation(); onSelect(event.shiftKey ? "range" : "toggle"); }} onChange={() => undefined}/>
     <button className="segment-time" aria-label={tr("app.s0636", { "0": formatTime(segment.start) })}>{formatTime(segment.start)}{speaker && <small><i className={`speaker-color speaker-${speaker.colorIndex % 6}`}/>{speaker.label}{speakerManual ? tr("app.s0637") : ""}</small>}</button>
-    <div><textarea rows={1} value={draft} onChange={(event) => setDraft(event.target.value)} onFocus={() => { if (!active)
-        onSelect("replace"); }} onBlur={() => onSave(draft)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
-        event.preventDefault();
+    <div><textarea rows={1} value={draft} data-dirty={draft.trim() !== segment.text} onChange={(event) => setDraft(event.target.value)} onFocus={() => { if (!active)
+        onSelect("replace"); }} onBlur={() => {
+        if (suppressBlurSaveRef.current) {
+            suppressBlurSaveRef.current = false;
+            return;
+        }
         onSave(draft);
-    } }} onClick={(event) => event.stopPropagation()} aria-label={tr("app.s0638", { "0": formatTime(segment.start) })} title={tr("app.s0639")}/><p className={translation?.status === "stale" ? "translation stale" : "translation"}>{translated ?? ""}</p></div>
+    }} onKeyDown={(event) => {
+        const textarea = event.currentTarget;
+        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
+            event.preventDefault();
+            onSave(draft);
+            return;
+        }
+        if (!event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && event.key === "Enter" && textarea.selectionStart === textarea.selectionEnd) {
+            const offset = Array.from(draft.slice(0, textarea.selectionStart)).length;
+            if (offset > 0 && offset < Array.from(draft).length) {
+                event.preventDefault();
+                suppressBlurSaveRef.current = true;
+                onSplitAt(draft, offset);
+            }
+            return;
+        }
+        if (!event.ctrlKey && !event.metaKey && !event.altKey && event.key === "Backspace" && textarea.selectionStart === 0 && textarea.selectionEnd === 0) {
+            event.preventDefault();
+            suppressBlurSaveRef.current = true;
+            onMergePrevious(draft);
+        }
+    }} onClick={(event) => event.stopPropagation()} aria-label={tr("app.s0638", { "0": formatTime(segment.start) })} title={tr("app.s0639")}/><p className={translation?.status === "stale" ? "translation stale" : "translation"}>{translated ?? ""}{translation?.status === "stale" && <small>{tr("app.s0373")}</small>}</p></div>
     <span className={segment.confidence != null && segment.confidence < 0.8 ? "confidence low" : "confidence"}>{segment.confidence == null ? "—" : `${Math.round(segment.confidence * 100)}%`}</span>
   </article>;
 }
