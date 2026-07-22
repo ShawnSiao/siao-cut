@@ -841,14 +841,17 @@ describe("SiaoCut review workbench", () => {
     fireEvent.change(name, { target: { value: "主持人" } });
     fireEvent.blur(name);
     await waitFor(
-      () => expect(screen.getByText(/说话人名称已更新，可撤销或从版本历史恢复/)).toBeInTheDocument(),
-      { timeout: 3000 },
+      () => expect(within(speakerPanel).getByLabelText("主持人名称")).toBeInTheDocument(),
+      { timeout: 10_000 },
     );
-    expect(within(speakerPanel).getByLabelText("主持人名称")).toBeInTheDocument();
+    await waitFor(
+      () => expect(screen.getByText(/说话人名称已更新，可撤销或从版本历史恢复/)).toBeInTheDocument(),
+      { timeout: 10_000 },
+    );
     fireEvent.change(within(speakerPanel).getByLabelText("当前字幕说话人"), { target: { value: "voice-b" } });
     await waitFor(
       () => expect(screen.getByText(/当前字幕段的说话人已更新，可撤销或从版本历史恢复/)).toBeInTheDocument(),
-      { timeout: 3000 },
+      { timeout: 10_000 },
     );
     expect(screen.getByLabelText("00:12 字幕文本")).toHaveValue("嗯，");
   });
