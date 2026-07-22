@@ -90,9 +90,24 @@ impl FixtureServer {
 fn serve_request(stream: &mut TcpStream, manifest: &[u8], artifact: &[u8]) -> Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(30)))?;
-    let mut request = [0_u8; 4096];
-    let read = stream.read(&mut request)?;
-    let first_line = String::from_utf8_lossy(&request[..read])
+    let mut request = Vec::with_capacity(1024);
+    let mut chunk = [0_u8; 1024];
+    loop {
+        let read = stream.read(&mut chunk)?;
+        ensure!(
+            read > 0,
+            "updater request ended before its headers completed"
+        );
+        request.extend_from_slice(&chunk[..read]);
+        ensure!(
+            request.len() <= 16 * 1024,
+            "updater request headers exceed 16 KiB"
+        );
+        if request.windows(4).any(|window| window == b"\r\n\r\n") {
+            break;
+        }
+    }
+    let first_line = String::from_utf8_lossy(&request)
         .lines()
         .next()
         .unwrap_or_default()
