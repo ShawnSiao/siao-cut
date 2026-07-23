@@ -441,6 +441,44 @@ fn karaoke_span(text: &str, start: f64, end: f64) -> String {
     )
 }
 
+fn caption_line_break_offsets(text: &str) -> Vec<usize> {
+    let mut visible = 0;
+    let mut offsets = Vec::new();
+    for character in text.chars() {
+        if character == '\n' {
+            if offsets.last().copied() != Some(visible) {
+                offsets.push(visible);
+            }
+        } else if !character.is_whitespace() {
+            visible += 1;
+        }
+    }
+    offsets
+}
+
+fn preserve_caption_line_breaks(
+    text: &str,
+    visible_cursor: &mut usize,
+    line_break_offsets: &[usize],
+) -> String {
+    let mut rendered = String::new();
+    for character in text.chars() {
+        let at_line_break = line_break_offsets.binary_search(visible_cursor).is_ok();
+        if character.is_whitespace() {
+            if !at_line_break {
+                rendered.push(character);
+            }
+            continue;
+        }
+        if at_line_break && !rendered.ends_with('\n') {
+            rendered.push('\n');
+        }
+        rendered.push(character);
+        *visible_cursor += 1;
+    }
+    rendered
+}
+
 fn source_karaoke_text(
     project: &Project,
     segment_id: &str,
@@ -472,6 +510,8 @@ fn source_karaoke_text(
     let mut rendered = String::new();
     let mut cursor = caption_start;
     let mut previous_last = None;
+    let line_break_offsets = caption_line_break_offsets(expected_text);
+    let mut visible_cursor = 0;
     for (index, (_, _, word)) in words.iter().enumerate() {
         let boundary = words
             .get(index + 1)
@@ -489,6 +529,7 @@ fn source_karaoke_text(
         } else {
             word.text.clone()
         };
+        let token = preserve_caption_line_breaks(&token, &mut visible_cursor, &line_break_offsets);
         rendered.push_str(&format!(
             "{{\\kf{}}}{}",
             karaoke_duration(cursor, boundary),
@@ -838,6 +879,112 @@ mod tests {
         assert_eq!(ass_timestamp(6.4), "0:00:06.40");
         assert_eq!(ass_timestamp(86.6), "0:01:26.60");
         assert_eq!(karaoke_span("同步", 0.07, 0.57), "{\\kf50}同步");
+    }
+
+    #[test]
+    fn ass_karaoke_preserves_wrapped_english_source_and_bilingual_lines() {
+        let text = "Today I want to explain why we are building a local-first editing workbench.";
+        let wrapped = wrap_subtitle_text(text, "en");
+        assert_eq!(wrapped.lines().count(), 2);
+        let second_line_first_word = wrapped
+            .lines()
+            .nth(1)
+            .and_then(|line| line.split_whitespace().next())
+            .unwrap()
+            .to_owned();
+        let words = text
+            .split_whitespace()
+            .enumerate()
+            .map(|(index, text)| Word {
+                id: format!("w{index}"),
+                segment_id: "a".into(),
+                start: index as f64 * 0.5,
+                end: index as f64 * 0.5 + 0.4,
+                text: text.into(),
+                confidence: None,
+            })
+            .collect::<Vec<_>>();
+        let duration = words.last().map(|word| word.end).unwrap_or(1.0);
+        let mut project = Project {
+            id: "p".into(),
+            title: "test".into(),
+            created_at: String::new(),
+            updated_at: String::new(),
+            canvas_settings: CanvasSettings::default(),
+            subtitle_style: Default::default(),
+            media: Media {
+                source_path: String::new(),
+                sha256: String::new(),
+                extension: ".wav".into(),
+                duration_seconds: Some(duration),
+            },
+            media_artifacts: None,
+            timeline: Default::default(),
+            transcript: Transcript {
+                source_language: "en".into(),
+                segments: vec![Segment {
+                    id: "a".into(),
+                    start: 0.0,
+                    end: duration,
+                    text: text.into(),
+                    confidence: None,
+                }],
+                words,
+            },
+            subtitle_quality: Default::default(),
+            speech_insights: Default::default(),
+            translations: BTreeMap::new(),
+            glossary: Default::default(),
+            edits: Vec::new(),
+            tasks: Vec::new(),
+            versions: Vec::new(),
+            history: Default::default(),
+            patch_sets: Vec::new(),
+            workflows: Vec::new(),
+        };
+
+        let source_ass = render(
+            &project,
+            &ExportOptions {
+                format: "ass",
+                language: None,
+                subtitle_mode: SubtitleMode::Source,
+                include_cuts: false,
+                allow_stale_translation: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(source_ass.matches("\\N").count(), 1);
+        assert!(source_ass.contains(&format!("\\N{second_line_first_word}")));
+
+        project.translations.insert(
+            "zh".into(),
+            Translation {
+                status: "current".into(),
+                updated_at: String::new(),
+                glossary_version: 0,
+                segments: vec![TranslationSegment {
+                    segment_id: "a".into(),
+                    text: "这是双语字幕。".into(),
+                    source_hash: crate::translation::source_hash(text),
+                    status: "current".into(),
+                    updated_at: String::new(),
+                }],
+            },
+        );
+        let bilingual_ass = render(
+            &project,
+            &ExportOptions {
+                format: "ass",
+                language: Some("zh"),
+                subtitle_mode: SubtitleMode::Bilingual,
+                include_cuts: false,
+                allow_stale_translation: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(bilingual_ass.matches("\\N").count(), 2);
+        assert!(bilingual_ass.contains("\\N{\\rSecondary}这是双语字幕。"));
     }
 
     #[test]

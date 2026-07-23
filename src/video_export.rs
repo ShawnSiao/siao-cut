@@ -611,7 +611,7 @@ mod tests {
     }
 
     #[test]
-    fn subtitle_style_real_media_burns_deterministic_ass() {
+    fn subtitle_style_real_media_burns_wrapped_karaoke_ass() {
         let evidence_path = std::env::var_os("SIAOCUT_PHASE8_MEDIA_EVIDENCE").map(PathBuf::from);
         if !crate::media::command_available("ffmpeg") || !crate::media::command_available("ffprobe")
         {
@@ -657,15 +657,34 @@ mod tests {
 
         let mut database = crate::db::open_at(&temp.path().join("styled-media.db")).unwrap();
         let created = project::create(&mut database, &source, None).unwrap();
-        project::add_segment(
-            &mut database,
-            &created.id,
-            0.1,
-            1.8,
-            "SiaoCut 字幕预览".into(),
-            None,
-        )
-        .unwrap();
+        let text = "Today I want to explain why we are building a local-first editing workbench.";
+        let segment =
+            project::add_segment(&mut database, &created.id, 0.1, 1.8, text.into(), None).unwrap();
+        database
+            .execute(
+                "UPDATE projects SET source_language='en' WHERE id=?1",
+                [&created.id],
+            )
+            .unwrap();
+        let words = text.split_whitespace().collect::<Vec<_>>();
+        let word_duration = 1.7 / words.len() as f64;
+        for (ordinal, word) in words.into_iter().enumerate() {
+            let start = 0.1 + ordinal as f64 * word_duration;
+            database
+                .execute(
+                    "INSERT INTO words(id,project_id,segment_id,start_seconds,end_seconds,text,ordinal) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                    params![
+                        format!("w{ordinal}"),
+                        &created.id,
+                        &segment.id,
+                        start,
+                        start + word_duration * 0.9,
+                        word,
+                        ordinal as i64
+                    ],
+                )
+                .unwrap();
+        }
         crate::subtitle_style::set(&mut database, &created.id, "emphasis", "bottom").unwrap();
         let styled = project::load(&database, &created.id).unwrap();
         let subtitle_path = temp.path().join("styled.ass");
@@ -682,6 +701,8 @@ mod tests {
         .unwrap();
         assert!(ass.contains("Style: Primary,Microsoft YaHei UI,60"));
         assert!(ass.contains(",4,2,2,80,80,108,1"));
+        assert_eq!(ass.matches("\\N").count(), 1);
+        assert!(ass.contains("{\\kf"));
         fs::write(&subtitle_path, &ass).unwrap();
 
         let output = temp.path().join("styled-output.mp4");
@@ -709,7 +730,7 @@ mod tests {
                 "status": "passed",
                 "fixture": {"durationSeconds": 2, "video": "640x360@30", "audio": "silent stereo@48000"},
                 "style": styled.subtitle_style,
-                "ass": {"playResolution": "1920x1080", "primaryStyle": "60px", "outline": "4px", "safeMargin": "10%"},
+                "ass": {"playResolution": "1920x1080", "primaryStyle": "60px", "outline": "4px", "safeMargin": "10%", "wrappedLines": 2, "karaoke": true},
                 "burnedVideo": {"generated": true, "bytes": fs::metadata(&output).unwrap().len()},
                 "sourceHashUnchanged": true
             });
