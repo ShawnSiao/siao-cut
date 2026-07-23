@@ -325,10 +325,16 @@ pub fn continue_workflow(db: &mut Connection, workflow_id: &str) -> Result<AutoW
     let mut workflow = load(db, workflow_id)?;
     match workflow.status.as_str() {
         "queued" | "running" => return Ok(workflow),
-        "completed" | "cancelled" => bail!(
+        "completed" => bail!(
             "auto_workflow_not_resumable: 自动工作流当前状态不能继续：{}",
             workflow.status
         ),
+        "cancelled" => {
+            if resume_cancelled_agent_task(db, &workflow)? {
+                return load(db, workflow_id);
+            }
+            resume_child_job(db, &workflow)?;
+        }
         "needs_agent" => {
             let task_id = workflow
                 .agent_task_id
@@ -381,7 +387,9 @@ pub fn continue_workflow(db: &mut Connection, workflow_id: &str) -> Result<AutoW
         )?;
         return load(db, workflow_id);
     }
-    if workflow.status == "needs_review" && review_pending(db, &workflow)? {
+    if matches!(workflow.current_stage.as_str(), "translate" | "review")
+        && review_pending(db, &workflow)?
+    {
         bail!("auto_workflow_review_pending: 仍有 Agent 修改或粗剪建议等待人工处理")
     }
     let next_stage = if matches!(workflow.current_stage.as_str(), "translate" | "review") {
@@ -408,6 +416,53 @@ pub fn continue_workflow(db: &mut Connection, workflow_id: &str) -> Result<AutoW
     load(db, workflow_id)
 }
 
+fn resume_cancelled_agent_task(db: &mut Connection, workflow: &AutoWorkflow) -> Result<bool> {
+    if !matches!(workflow.current_stage.as_str(), "translate" | "review") {
+        return Ok(false);
+    }
+    let Some(task_id) = workflow.agent_task_id.as_deref() else {
+        return Ok(false);
+    };
+    let (task_status, cancel_requested_at): (String, Option<String>) = db.query_row(
+        "SELECT status,cancel_requested_at FROM tasks WHERE id=?1",
+        [task_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    match task_status.as_str() {
+        "cancelled" => {
+            tasks::requeue_for_runner(db, task_id)?;
+        }
+        "failed" | "interrupted" => {
+            tasks::retry(db, task_id)?;
+        }
+        "queued" | "claimed" | "running" => {
+            if cancel_requested_at.is_some() {
+                bail!("auto_workflow_cancel_pending: Agent 任务仍在处理取消请求，请稍后再次继续")
+            }
+        }
+        "review" | "done" => return Ok(false),
+        _ => bail!("auto_workflow_state_invalid: Agent 任务状态无效：{task_status}"),
+    }
+    let timestamp = now();
+    db.execute(
+        "UPDATE auto_workflows
+         SET status='needs_agent',current_stage='translate',cancel_requested_at=NULL,
+             error_message=NULL,completed_at=NULL,worker_pid=NULL,
+             attempt_count=attempt_count+1,updated_at=?2
+         WHERE id=?1",
+        params![&workflow.id, &timestamp],
+    )?;
+    append_event(
+        db,
+        &workflow.id,
+        "translate",
+        "needs_agent",
+        workflow.progress,
+        "自动工作流已显式继续；等待 Agent 任务",
+    )?;
+    Ok(true)
+}
+
 fn resume_child_job(db: &Connection, workflow: &AutoWorkflow) -> Result<()> {
     if workflow.current_stage == "import"
         && let Some(job_id) = workflow.source_import_id.as_deref()
@@ -415,14 +470,22 @@ fn resume_child_job(db: &Connection, workflow: &AutoWorkflow) -> Result<()> {
         let job = source_import::load(db, job_id)?;
         if matches!(job.status.as_str(), "failed" | "interrupted" | "cancelled") {
             source_import::resume(db, job_id)?;
+        } else if matches!(job.status.as_str(), "queued" | "running")
+            && job.cancel_requested_at.is_some()
+        {
+            bail!("auto_workflow_cancel_pending: URL 导入任务仍在处理取消请求，请稍后再次继续")
         }
     }
     if workflow.current_stage == "export"
         && let Some(job_id) = workflow.export_job_id.as_deref()
     {
         let job = video_export::load(db, job_id)?;
-        if matches!(job.status.as_str(), "failed" | "interrupted") {
+        if matches!(job.status.as_str(), "failed" | "interrupted" | "cancelled") {
             video_export::retry(db, job_id)?;
+        } else if matches!(job.status.as_str(), "queued" | "running")
+            && job.cancel_requested_at.is_some()
+        {
+            bail!("auto_workflow_cancel_pending: 视频导出任务仍在处理取消请求，请稍后再次继续")
         }
     }
     Ok(())
@@ -1214,6 +1277,109 @@ mod tests {
                 .translations
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn cancelled_agent_stage_requeues_without_skipping_human_review() {
+        let (_temp, mut db, media, model, output) = fixture();
+        let workflow = insert_local(&mut db, &media, &model, &output, Some("zh"));
+        run_import(&mut db, &workflow).unwrap();
+        let imported = load(&db, &workflow.id).unwrap();
+        let project_id = imported.project_id.clone().unwrap();
+        let segment =
+            project::add_segment(&mut db, &project_id, 0.0, 1.0, "hello".into(), None).unwrap();
+        db.execute(
+            "INSERT INTO words(id,project_id,segment_id,start_seconds,end_seconds,text,ordinal)
+             VALUES('w-agent-cancel',?1,?2,0,0.8,'hello',0)",
+            params![&project_id, &segment.id],
+        )
+        .unwrap();
+        let version = project::snapshot(&db, &project_id, "whisper.cpp 本地转录").unwrap();
+        db.execute(
+            "UPDATE auto_workflows SET current_stage='suggestions',transcript_version_id=?2 WHERE id=?1",
+            params![&workflow.id, &version.id],
+        )
+        .unwrap();
+        let transcribed = load(&db, &workflow.id).unwrap();
+        assert!(run_suggestions(&mut db, &transcribed).unwrap());
+        let waiting = load(&db, &workflow.id).unwrap();
+        let task_id = waiting.agent_task_id.clone().unwrap();
+        assert_eq!(waiting.status, "needs_agent");
+
+        let cancelled = cancel(&mut db, &workflow.id).unwrap();
+        assert_eq!(cancelled.status, "cancelled");
+        assert_eq!(
+            db.query_row("SELECT status FROM tasks WHERE id=?1", [&task_id], |row| {
+                row.get::<_, String>(0)
+            },)
+                .unwrap(),
+            "cancelled"
+        );
+
+        assert!(resume_cancelled_agent_task(&mut db, &cancelled).unwrap());
+        let resumed = load(&db, &workflow.id).unwrap();
+        assert_eq!(resumed.status, "needs_agent");
+        assert_eq!(resumed.current_stage, "translate");
+        assert_eq!(resumed.attempt_count, 2);
+        assert!(resumed.cancel_requested_at.is_none());
+        assert_eq!(
+            db.query_row("SELECT status FROM tasks WHERE id=?1", [&task_id], |row| {
+                row.get::<_, String>(0)
+            },)
+                .unwrap(),
+            "queued"
+        );
+    }
+
+    #[test]
+    fn cancelled_review_cannot_continue_while_suggestions_are_pending() {
+        let (_temp, mut db, media, model, output) = fixture();
+        let workflow = insert_local(&mut db, &media, &model, &output, None);
+        run_import(&mut db, &workflow).unwrap();
+        let imported = load(&db, &workflow.id).unwrap();
+        let project_id = imported.project_id.clone().unwrap();
+        let segment =
+            project::add_segment(&mut db, &project_id, 0.0, 1.0, "um start".into(), None).unwrap();
+        for (ordinal, (id, text, start, end)) in [
+            ("w-review-1", "um", 0.0, 0.2),
+            ("w-review-2", "start", 0.3, 0.9),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            db.execute(
+                "INSERT INTO words(id,project_id,segment_id,start_seconds,end_seconds,text,ordinal)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                params![
+                    id,
+                    &project_id,
+                    &segment.id,
+                    start,
+                    end,
+                    text,
+                    ordinal as i64
+                ],
+            )
+            .unwrap();
+        }
+        let version = project::snapshot(&db, &project_id, "whisper.cpp 本地转录").unwrap();
+        db.execute(
+            "UPDATE auto_workflows SET current_stage='suggestions',transcript_version_id=?2 WHERE id=?1",
+            params![&workflow.id, &version.id],
+        )
+        .unwrap();
+        let transcribed = load(&db, &workflow.id).unwrap();
+        assert!(run_suggestions(&mut db, &transcribed).unwrap());
+        assert_eq!(load(&db, &workflow.id).unwrap().status, "needs_review");
+        assert_eq!(cancel(&mut db, &workflow.id).unwrap().status, "cancelled");
+
+        assert!(
+            continue_workflow(&mut db, &workflow.id)
+                .unwrap_err()
+                .to_string()
+                .contains("auto_workflow_review_pending")
+        );
+        assert_eq!(load(&db, &workflow.id).unwrap().status, "cancelled");
     }
 
     #[test]

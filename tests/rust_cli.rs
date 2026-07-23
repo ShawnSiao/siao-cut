@@ -486,7 +486,7 @@ fn audio_analysis_cli_is_local_cancellable_and_explicitly_resumable() {
 }
 
 #[test]
-fn auto_workflow_cli_starts_deduplicates_queries_and_cancels() {
+fn auto_workflow_cli_starts_deduplicates_queries_cancels_and_continues() {
     let temp = tempdir().unwrap();
     let media = temp.path().join("auto.wav");
     let model = temp.path().join("model.bin");
@@ -531,11 +531,21 @@ fn auto_workflow_cli_starts_deduplicates_queries_and_cancels() {
     let cancelled = run_direct(temp.path(), &["auto", "cancel", workflow_id]);
     assert_eq!(cancelled["workflow"]["status"], "cancelled");
     assert!(cancelled["workflow"]["cancelRequestedAt"].is_string());
+    let resumed = run_direct(temp.path(), &["auto", "continue", workflow_id]);
+    assert_ne!(resumed["workflow"]["status"], "cancelled");
+    assert_eq!(resumed["workflow"]["attemptCount"], 2);
+    assert!(resumed["workflow"]["cancelRequestedAt"].is_null());
     let events = run_direct(
         temp.path(),
         &["auto", "events", workflow_id, "--after", "0"],
     );
-    assert!(events["events"].as_array().unwrap().len() >= 2);
+    assert!(
+        events["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["message"] == "自动工作流显式继续")
+    );
 }
 
 #[test]
