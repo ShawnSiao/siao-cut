@@ -612,16 +612,18 @@ mod tests {
     #[test]
     fn allows_public_canvas_commands() {
         assert!(validate_core_args(&["canvas".into(), "show".into(), "p1".into()]).is_ok());
-        assert!(validate_core_args(&[
-            "canvas".into(),
-            "set".into(),
-            "p1".into(),
-            "--aspect-ratio".into(),
-            "9:16".into(),
-            "--framing".into(),
-            "contain-blur".into(),
-        ])
-        .is_ok());
+        assert!(
+            validate_core_args(&[
+                "canvas".into(),
+                "set".into(),
+                "p1".into(),
+                "--aspect-ratio".into(),
+                "9:16".into(),
+                "--framing".into(),
+                "contain-blur".into(),
+            ])
+            .is_ok()
+        );
     }
 
     #[test]
