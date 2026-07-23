@@ -281,6 +281,25 @@ describe("SiaoCut review workbench", () => {
     expect(language).toHaveValue("en");
   });
 
+  it("keeps translated subtitle modes selected when the project has no translation yet", async () => {
+    render(<App />);
+    await screen.findByRole("heading", { name: "发布口播 · 草稿" });
+    fireEvent.click(screen.getByRole("button", { name: /^第二个本地项目/ }));
+    await screen.findByRole("heading", { name: "第二个本地项目" });
+    await openDrawerTab("导出");
+
+    const panel = screen.getByLabelText("导出设置");
+    const subtitleMode = within(panel).getByLabelText("字幕模式");
+    fireEvent.change(subtitleMode, { target: { value: "translated" } });
+    await waitFor(() => expect(subtitleMode).toHaveValue("translated"));
+    expect(within(panel).getByRole("alert")).toHaveTextContent("项目中没有可用译文");
+    expect(within(panel).getByLabelText("译文语言")).toBeDisabled();
+    expect(within(panel).getByRole("button", { name: "导出字幕" })).toBeDisabled();
+
+    fireEvent.change(subtitleMode, { target: { value: "bilingual" } });
+    await waitFor(() => expect(subtitleMode).toHaveValue("bilingual"));
+  });
+
   it("marks translation stale after source text changes", async () => {
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: /^发布口播/ }));
@@ -626,6 +645,7 @@ describe("SiaoCut review workbench", () => {
     await openDrawerTab("导出");
     const canvas = await screen.findByLabelText("画布比例");
     fireEvent.change(canvas, { target: { value: "9:16" } });
+    expect(canvas).toHaveValue("9:16");
     await waitFor(() => expect(screen.getByText("画布已改为 9:16；请重新生成预览以查看最终构图。")).toBeInTheDocument());
     expect(screen.getByLabelText("竖屏构图")).toBeEnabled();
     const subtitleMode = screen.getByLabelText("字幕模式");
@@ -636,6 +656,8 @@ describe("SiaoCut review workbench", () => {
     fireEvent.change(subtitleMode, { target: { value: "bilingual" } });
     await waitFor(() => expect(subtitleMode).toHaveValue("bilingual"));
     expect(screen.getByText(/不会隐藏原片已烧录字幕/)).toBeInTheDocument();
+    expect(screen.getByText(/按词级时间戳随说话进度/)).toBeInTheDocument();
+    expect(screen.getByText("当前项目未应用任何剪辑；导出视频将与原片等长。")).toBeInTheDocument();
   });
 
   it("previews the saved subtitle style, safe area, and bilingual hierarchy without changing text", async () => {
@@ -920,7 +942,9 @@ describe("SiaoCut review workbench", () => {
     render(<App />);
     const dialog = await selectAdvancedTranscriptionMode("multispeaker");
     const provider = within(dialog).getByRole("region", { name: "MOSS 多人长音频服务" });
-    expect(within(provider).getByDisplayValue("http://127.0.0.1:8000")).toBeInTheDocument();
+    const endpoint = within(provider).getByDisplayValue("http://127.0.0.1:8000");
+    expect(endpoint).toBeInTheDocument();
+    expect(endpoint.closest("label")?.querySelector("span > small")).toHaveTextContent("仅支持 127.0.0.1、localhost 或 ::1，不保存 API 密钥");
     expect(within(provider).getByText("服务可用")).toBeInTheDocument();
     expect(within(provider).getByText(/不会连接远程地址，也不会静默回退到 Whisper/)).toBeInTheDocument();
   });

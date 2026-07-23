@@ -1,5 +1,5 @@
 use crate::{
-    media::hash_file,
+    media::{ffprobe_video_dimensions, hash_file},
     model::{Project, Segment, SubtitleMode},
     subtitle_quality, subtitle_style, timeline,
 };
@@ -385,6 +385,17 @@ fn timestamp(seconds: f64, separator: char) -> String {
     )
 }
 
+fn ass_timestamp(seconds: f64) -> String {
+    let centiseconds = (seconds * 100.0).round().max(0.0) as i64;
+    format!(
+        "{}:{:02}:{:02}.{:02}",
+        centiseconds / 360_000,
+        (centiseconds % 360_000) / 6_000,
+        (centiseconds % 6_000) / 100,
+        centiseconds % 100
+    )
+}
+
 fn join_words(words: &[&crate::model::Word]) -> String {
     let mut text = String::new();
     for word in words {
@@ -410,6 +421,124 @@ fn escape_ass_text(text: &str) -> String {
         .replace('{', "\\{")
         .replace('}', "\\}")
         .replace('\n', "\\N")
+}
+
+fn normalized_caption_text(text: &str) -> String {
+    text.chars()
+        .filter(|character| !character.is_whitespace())
+        .collect()
+}
+
+fn karaoke_duration(start: f64, end: f64) -> i64 {
+    ((end - start).max(0.01) * 100.0).round().max(1.0) as i64
+}
+
+fn karaoke_span(text: &str, start: f64, end: f64) -> String {
+    format!(
+        "{{\\kf{}}}{}",
+        karaoke_duration(start, end),
+        escape_ass_text(text)
+    )
+}
+
+fn caption_line_break_offsets(text: &str) -> Vec<usize> {
+    let mut visible = 0;
+    let mut offsets = Vec::new();
+    for character in text.chars() {
+        if character == '\n' {
+            if offsets.last().copied() != Some(visible) {
+                offsets.push(visible);
+            }
+        } else if !character.is_whitespace() {
+            visible += 1;
+        }
+    }
+    offsets
+}
+
+fn preserve_caption_line_breaks(
+    text: &str,
+    visible_cursor: &mut usize,
+    line_break_offsets: &[usize],
+) -> String {
+    let mut rendered = String::new();
+    for character in text.chars() {
+        let at_line_break = line_break_offsets.binary_search(visible_cursor).is_ok();
+        if character.is_whitespace() {
+            if !at_line_break {
+                rendered.push(character);
+            }
+            continue;
+        }
+        if at_line_break && !rendered.ends_with('\n') {
+            rendered.push('\n');
+        }
+        rendered.push(character);
+        *visible_cursor += 1;
+    }
+    rendered
+}
+
+fn source_karaoke_text(
+    project: &Project,
+    segment_id: &str,
+    map: &crate::model::TimelineMap,
+    caption_start: f64,
+    caption_end: f64,
+    expected_text: &str,
+) -> Option<String> {
+    let mut words = project
+        .transcript
+        .words
+        .iter()
+        .filter(|word| word.segment_id == segment_id)
+        .filter_map(|word| {
+            timeline::retime_interval(map, word.start, word.end)
+                .filter(|(start, end)| *end > caption_start && *start < caption_end)
+                .map(|(start, end)| (start.max(caption_start), end.min(caption_end), word))
+        })
+        .collect::<Vec<_>>();
+    words.sort_by(|left, right| left.0.total_cmp(&right.0));
+    if words.is_empty() {
+        return None;
+    }
+    let word_refs = words.iter().map(|(_, _, word)| *word).collect::<Vec<_>>();
+    if normalized_caption_text(&join_words(&word_refs)) != normalized_caption_text(expected_text) {
+        return None;
+    }
+
+    let mut rendered = String::new();
+    let mut cursor = caption_start;
+    let mut previous_last = None;
+    let line_break_offsets = caption_line_break_offsets(expected_text);
+    let mut visible_cursor = 0;
+    for (index, (_, _, word)) in words.iter().enumerate() {
+        let boundary = words
+            .get(index + 1)
+            .map(|(start, _, _)| *start)
+            .unwrap_or(caption_end)
+            .clamp(cursor + 0.01, caption_end.max(cursor + 0.01));
+        let leading_space = previous_last.is_some_and(|left: char| left.is_ascii_alphanumeric())
+            && word
+                .text
+                .chars()
+                .next()
+                .is_some_and(|right| right.is_ascii_alphanumeric());
+        let token = if leading_space {
+            format!(" {}", word.text)
+        } else {
+            word.text.clone()
+        };
+        let token = preserve_caption_line_breaks(&token, &mut visible_cursor, &line_break_offsets);
+        rendered.push_str(&format!(
+            "{{\\kf{}}}{}",
+            karaoke_duration(cursor, boundary),
+            escape_ass_text(&token)
+        ));
+        previous_last = word.text.chars().last();
+        cursor = boundary;
+    }
+    Some(rendered)
 }
 
 pub fn wrap_subtitle_text(text: &str, language: &str) -> String {
@@ -458,17 +587,31 @@ fn display_subtitle_text(text: &str) -> String {
     text.replace(BILINGUAL_SEPARATOR, "\n")
 }
 
-fn ass_dialogue_text(text: &str, subtitle_mode: SubtitleMode) -> String {
+fn ass_dialogue_text(
+    text: &str,
+    subtitle_mode: SubtitleMode,
+    start: f64,
+    end: f64,
+    source_karaoke: Option<&str>,
+) -> String {
     if subtitle_mode == SubtitleMode::Bilingual
         && let Some((primary, secondary)) = text.split_once(BILINGUAL_SEPARATOR)
     {
         return format!(
             "{}\\N{{\\rSecondary}}{}",
-            escape_ass_text(primary),
+            source_karaoke
+                .map(str::to_owned)
+                .unwrap_or_else(|| karaoke_span(primary, start, end)),
             escape_ass_text(secondary)
         );
     }
-    escape_ass_text(text)
+    if subtitle_mode == SubtitleMode::Source {
+        source_karaoke
+            .map(str::to_owned)
+            .unwrap_or_else(|| karaoke_span(text, start, end))
+    } else {
+        karaoke_span(text, start, end)
+    }
 }
 
 fn source_parts(project: &Project, segment_id: &str) -> Option<Vec<(f64, f64, String)>> {
@@ -575,11 +718,10 @@ pub fn render(project: &Project, options: &ExportOptions<'_>) -> Result<String> 
                 if let Some((start, end)) =
                     timeline::retime_interval(&timeline, source_start, source_end)
                 {
-                    segments.push((
-                        start,
-                        end,
-                        wrap_subtitle_text(&text, &project.transcript.source_language),
-                    ));
+                    let text = wrap_subtitle_text(&text, &project.transcript.source_language);
+                    let karaoke =
+                        source_karaoke_text(project, &segment.id, &timeline, start, end, &text);
+                    segments.push((start, end, text, karaoke));
                 }
             }
             continue;
@@ -614,7 +756,16 @@ pub fn render(project: &Project, options: &ExportOptions<'_>) -> Result<String> 
                 )
             }
         };
-        segments.push((start, end, text));
+        let karaoke = (options.subtitle_mode != SubtitleMode::Translated)
+            .then(|| {
+                let expected = text
+                    .split_once(BILINGUAL_SEPARATOR)
+                    .map(|(source, _)| source)
+                    .unwrap_or(text.as_str());
+                source_karaoke_text(project, &segment.id, &timeline, start, end, expected)
+            })
+            .flatten();
+        segments.push((start, end, text, karaoke));
     }
     Ok(match options.format {
         "markdown" => format!(
@@ -622,7 +773,7 @@ pub fn render(project: &Project, options: &ExportOptions<'_>) -> Result<String> 
             project.title,
             segments
                 .iter()
-                .map(|(start, _, text)| format!(
+                .map(|(start, _, text, _)| format!(
                     "- **{}** {}",
                     &timestamp(*start, '.')[..8],
                     display_subtitle_text(text)
@@ -634,7 +785,7 @@ pub fn render(project: &Project, options: &ExportOptions<'_>) -> Result<String> 
             "WEBVTT\n\n{}",
             segments
                 .iter()
-                .map(|(start, end, text)| format!(
+                .map(|(start, end, text, _)| format!(
                     "{} --> {}\n{}\n",
                     timestamp(*start, '.'),
                     timestamp(*end, '.'),
@@ -644,18 +795,27 @@ pub fn render(project: &Project, options: &ExportOptions<'_>) -> Result<String> 
                 .join("\n")
         ),
         "ass" => {
-            let header =
-                subtitle_style::ass_header(&project.subtitle_style, project.canvas_settings)?;
+            let header = subtitle_style::ass_header_for_media(
+                &project.subtitle_style,
+                project.canvas_settings,
+                ffprobe_video_dimensions(Path::new(&project.media.source_path)),
+            )?;
             format!(
                 "{}\n{}\n",
                 header,
                 segments
                     .iter()
-                    .map(|(start, end, text)| format!(
+                    .map(|(start, end, text, karaoke)| format!(
                         "Dialogue: 0,{},{},Primary,{}",
-                        timestamp(*start, '.')[1..].trim_end_matches(".000"),
-                        timestamp(*end, '.')[1..].trim_end_matches(".000"),
-                        ass_dialogue_text(text, options.subtitle_mode)
+                        ass_timestamp(*start),
+                        ass_timestamp(*end),
+                        ass_dialogue_text(
+                            text,
+                            options.subtitle_mode,
+                            *start,
+                            *end,
+                            karaoke.as_deref()
+                        )
                     ))
                     .collect::<Vec<_>>()
                     .join("\n")
@@ -664,7 +824,7 @@ pub fn render(project: &Project, options: &ExportOptions<'_>) -> Result<String> 
         _ => segments
             .iter()
             .enumerate()
-            .map(|(index, (start, end, text))| {
+            .map(|(index, (start, end, text, _))| {
                 format!(
                     "{}\n{} --> {}\n{}\n",
                     index + 1,
@@ -711,6 +871,120 @@ mod tests {
             wrap_subtitle_text("中文不会按英文空格断行", "zh"),
             "中文不会按英文空格断行"
         );
+    }
+
+    #[test]
+    fn ass_timestamps_use_centiseconds_and_karaoke_durations() {
+        assert_eq!(ass_timestamp(0.07), "0:00:00.07");
+        assert_eq!(ass_timestamp(6.4), "0:00:06.40");
+        assert_eq!(ass_timestamp(86.6), "0:01:26.60");
+        assert_eq!(karaoke_span("同步", 0.07, 0.57), "{\\kf50}同步");
+    }
+
+    #[test]
+    fn ass_karaoke_preserves_wrapped_english_source_and_bilingual_lines() {
+        let text = "Today I want to explain why we are building a local-first editing workbench.";
+        let wrapped = wrap_subtitle_text(text, "en");
+        assert_eq!(wrapped.lines().count(), 2);
+        let second_line_first_word = wrapped
+            .lines()
+            .nth(1)
+            .and_then(|line| line.split_whitespace().next())
+            .unwrap()
+            .to_owned();
+        let words = text
+            .split_whitespace()
+            .enumerate()
+            .map(|(index, text)| Word {
+                id: format!("w{index}"),
+                segment_id: "a".into(),
+                start: index as f64 * 0.5,
+                end: index as f64 * 0.5 + 0.4,
+                text: text.into(),
+                confidence: None,
+            })
+            .collect::<Vec<_>>();
+        let duration = words.last().map(|word| word.end).unwrap_or(1.0);
+        let mut project = Project {
+            id: "p".into(),
+            title: "test".into(),
+            created_at: String::new(),
+            updated_at: String::new(),
+            canvas_settings: CanvasSettings::default(),
+            subtitle_style: Default::default(),
+            media: Media {
+                source_path: String::new(),
+                sha256: String::new(),
+                extension: ".wav".into(),
+                duration_seconds: Some(duration),
+            },
+            media_artifacts: None,
+            timeline: Default::default(),
+            transcript: Transcript {
+                source_language: "en".into(),
+                segments: vec![Segment {
+                    id: "a".into(),
+                    start: 0.0,
+                    end: duration,
+                    text: text.into(),
+                    confidence: None,
+                }],
+                words,
+            },
+            subtitle_quality: Default::default(),
+            speech_insights: Default::default(),
+            translations: BTreeMap::new(),
+            glossary: Default::default(),
+            edits: Vec::new(),
+            tasks: Vec::new(),
+            versions: Vec::new(),
+            history: Default::default(),
+            patch_sets: Vec::new(),
+            workflows: Vec::new(),
+        };
+
+        let source_ass = render(
+            &project,
+            &ExportOptions {
+                format: "ass",
+                language: None,
+                subtitle_mode: SubtitleMode::Source,
+                include_cuts: false,
+                allow_stale_translation: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(source_ass.matches("\\N").count(), 1);
+        assert!(source_ass.contains(&format!("\\N{second_line_first_word}")));
+
+        project.translations.insert(
+            "zh".into(),
+            Translation {
+                status: "current".into(),
+                updated_at: String::new(),
+                glossary_version: 0,
+                segments: vec![TranslationSegment {
+                    segment_id: "a".into(),
+                    text: "这是双语字幕。".into(),
+                    source_hash: crate::translation::source_hash(text),
+                    status: "current".into(),
+                    updated_at: String::new(),
+                }],
+            },
+        );
+        let bilingual_ass = render(
+            &project,
+            &ExportOptions {
+                format: "ass",
+                language: Some("zh"),
+                subtitle_mode: SubtitleMode::Bilingual,
+                include_cuts: false,
+                allow_stale_translation: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(bilingual_ass.matches("\\N").count(), 2);
+        assert!(bilingual_ass.contains("\\N{\\rSecondary}这是双语字幕。"));
     }
 
     #[test]
@@ -951,10 +1225,9 @@ mod tests {
         assert!(bilingual_ass.contains("PlayResX: 1920\nPlayResY: 1080"));
         assert!(bilingual_ass.contains("Style: Primary,Microsoft YaHei UI,60"));
         assert!(bilingual_ass.contains("Style: Secondary,Microsoft YaHei UI,46"));
-        assert!(
-            bilingual_ass
-                .contains("Dialogue: 0,0:00:00,0:00:01,Primary,原文\\N{\\rSecondary}Translation")
-        );
+        assert!(bilingual_ass.contains(
+            "Dialogue: 0,0:00:00.00,0:00:01.00,Primary,{\\kf100}原文\\N{\\rSecondary}Translation"
+        ));
 
         project.translations.get_mut("en").unwrap().status = "stale".into();
         let error = render(
@@ -1095,6 +1368,21 @@ mod tests {
         assert!(srt.contains("world"));
         assert!(!srt.contains("brave"));
         assert!(srt.contains("00:00:01,100 --> 00:00:01,800"));
+
+        let ass = render(
+            &project,
+            &ExportOptions {
+                format: "ass",
+                language: None,
+                subtitle_mode: SubtitleMode::Source,
+                include_cuts: false,
+                allow_stale_translation: false,
+            },
+        )
+        .unwrap();
+        assert!(ass.contains("{\\kf50}hello"));
+        assert!(ass.contains("{\\kf70}world"));
+        assert!(!ass.contains("brave"));
     }
 
     #[test]

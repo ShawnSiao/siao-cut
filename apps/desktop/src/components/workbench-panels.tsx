@@ -133,7 +133,7 @@ export function TranscriptionProviderSettings({ config, health, busy, onSave, on
     return <section className="moss-provider-settings" aria-label={tr("app.moss.settings.title")}>
       <div className="model-heading"><span><strong>{tr("app.moss.settings.title")}</strong><small>{tr("app.moss.settings.subtitle")}</small></span><Users size={17}/></div>
       <div className="moss-provider-fields">
-        <label><span>{tr("app.moss.settings.endpoint")}</span><input value={endpoint} disabled={busy} spellCheck={false} onChange={(event) => setEndpoint(event.target.value)}/><small>{tr("app.moss.settings.loopback")}</small></label>
+        <label><span>{tr("app.moss.settings.endpoint")}<small>{tr("app.moss.settings.loopback")}</small></span><input value={endpoint} disabled={busy} spellCheck={false} onChange={(event) => setEndpoint(event.target.value)}/></label>
         <label><span>{tr("app.moss.settings.model")}</span><input value={modelId} disabled={busy} spellCheck={false} onChange={(event) => setModelId(event.target.value)}/></label>
       </div>
       <div className={`moss-health ${health?.state ?? "unknown"}`} role="status"><i/>

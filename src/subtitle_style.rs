@@ -119,15 +119,38 @@ fn ass_color(value: &str) -> Result<String> {
     Ok(format!("&H00{}{}{}", &hex[4..6], &hex[2..4], &hex[0..2]))
 }
 
-pub fn play_resolution(canvas: CanvasSettings) -> (u16, u16) {
-    match canvas.aspect_ratio {
-        CanvasAspectRatio::Source => (1920, 1080),
-        CanvasAspectRatio::Vertical => (1080, 1920),
+pub fn play_resolution_for_media(
+    canvas: CanvasSettings,
+    source_dimensions: Option<(u32, u32)>,
+) -> (u16, u16) {
+    if canvas.aspect_ratio == CanvasAspectRatio::Vertical {
+        return (1080, 1920);
     }
+    let Some((width, height)) =
+        source_dimensions.filter(|(width, height)| *width > 0 && *height > 0)
+    else {
+        return (1920, 1080);
+    };
+    let (normalized_width, normalized_height) = if width >= height {
+        (
+            (u64::from(width) * 1080 / u64::from(height)).clamp(1, u64::from(u16::MAX)),
+            1080,
+        )
+    } else {
+        (
+            1080,
+            (u64::from(height) * 1080 / u64::from(width)).clamp(1, u64::from(u16::MAX)),
+        )
+    };
+    (normalized_width as u16, normalized_height as u16)
 }
 
-pub fn ass_header(style: &SubtitleStyle, canvas: CanvasSettings) -> Result<String> {
-    let (play_res_x, play_res_y) = play_resolution(canvas);
+pub fn ass_header_for_media(
+    style: &SubtitleStyle,
+    canvas: CanvasSettings,
+    source_dimensions: Option<(u32, u32)>,
+) -> Result<String> {
+    let (play_res_x, play_res_y) = play_resolution_for_media(canvas, source_dimensions);
     let margin_v = if style.position == SubtitlePosition::Bottom {
         u32::from(play_res_y) * u32::from(style.safe_margin_percent) / 100
     } else {
@@ -148,7 +171,7 @@ pub fn ass_header(style: &SubtitleStyle, canvas: CanvasSettings) -> Result<Strin
         style.font_family,
         style.font_size,
         primary,
-        primary,
+        secondary,
         outline,
         style.outline_width,
         style.shadow_depth
@@ -164,7 +187,7 @@ pub fn ass_header(style: &SubtitleStyle, canvas: CanvasSettings) -> Result<Strin
         style.shadow_depth
     );
     Ok(format!(
-        "[Script Info]\nScriptType: v4.00+\nPlayResX: {play_res_x}\nPlayResY: {play_res_y}\nScaledBorderAndShadow: yes\nWrapStyle: 2\n\n[V4+ Styles]\n{format}\n{primary_style}\n{secondary_style}\n\n[Events]\nFormat: Layer,Start,End,Style,Text"
+        "[Script Info]\nScriptType: v4.00+\nPlayResX: {play_res_x}\nPlayResY: {play_res_y}\nScaledBorderAndShadow: yes\nWrapStyle: 0\n\n[V4+ Styles]\n{format}\n{primary_style}\n{secondary_style}\n\n[Events]\nFormat: Layer,Start,End,Style,Text"
     ))
 }
 
@@ -195,21 +218,26 @@ mod tests {
     #[test]
     fn subtitle_style_renders_deterministic_ass_tokens_for_each_canvas() {
         let style = resolve(SubtitleStylePreset::Emphasis, SubtitlePosition::Bottom);
-        let source = ass_header(&style, CanvasSettings::default()).unwrap();
+        let source = ass_header_for_media(&style, CanvasSettings::default(), None).unwrap();
         assert!(source.contains("PlayResX: 1920\nPlayResY: 1080"));
-        assert!(source.contains("Style: Primary,Microsoft YaHei UI,60,&H00F5F4F2"));
+        assert!(source.contains("Style: Primary,Microsoft YaHei UI,60,&H00F5F4F2,&H00C6BEB5"));
         assert!(source.contains("Style: Secondary,Microsoft YaHei UI,46,&H00C6BEB5"));
         assert!(source.contains(",4,2,2,80,80,108,1"));
-        let vertical = ass_header(
+        let vertical = ass_header_for_media(
             &style,
             CanvasSettings {
                 aspect_ratio: CanvasAspectRatio::Vertical,
                 ..Default::default()
             },
+            None,
         )
         .unwrap();
         assert!(vertical.contains("PlayResX: 1080\nPlayResY: 1920"));
         assert!(vertical.contains(",4,2,2,80,80,192,1"));
+        let portrait_source =
+            ass_header_for_media(&style, CanvasSettings::default(), Some((720, 1280))).unwrap();
+        assert!(portrait_source.contains("PlayResX: 1080\nPlayResY: 1920"));
+        assert!(portrait_source.contains("WrapStyle: 0"));
     }
 
     #[test]
