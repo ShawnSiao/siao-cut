@@ -208,7 +208,7 @@ pub fn cancel(db: &Connection, job_id: &str) -> Result<ExportJob> {
 
 pub fn retry(db: &Connection, job_id: &str) -> Result<ExportJob> {
     let job = load(db, job_id)?;
-    if !["failed", "interrupted"].contains(&job.status.as_str()) {
+    if !["failed", "interrupted", "cancelled"].contains(&job.status.as_str()) {
         bail!("视频导出任务当前状态不能重试：{}", job.status)
     }
     db.execute(

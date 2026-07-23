@@ -737,7 +737,7 @@ describe("SiaoCut review workbench", () => {
     expect(screen.getByText(/原 URL、站点媒体 ID、工具版本和文件哈希已保存/)).toBeInTheDocument();
   });
 
-  it("starts a one-click local workflow and removes its progress panel after cancellation", async () => {
+  it("keeps a cancelled one-click workflow available for explicit continuation", async () => {
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "一键成片" }));
     const dialog = screen.getByRole("dialog", { name: "一键工作流" });
@@ -751,11 +751,13 @@ describe("SiaoCut review workbench", () => {
     const status = await screen.findByRole("region", { name: "一键工作流状态" });
     expect(within(status).getByText(/正在处理 · 导入素材/)).toBeInTheDocument();
     fireEvent.click(within(status).getByRole("button", { name: "取消流程" }));
-    await waitFor(() => expect(screen.queryByRole("region", { name: "一键工作流状态" })).not.toBeInTheDocument());
+    await waitFor(() => expect(within(status).getByText(/已取消 · 导入素材/)).toBeInTheDocument());
     expect(screen.getByText("自动工作流已取消；已完成的本地项目和中间证据仍然保留。")).toBeInTheDocument();
+    fireEvent.click(within(status).getByRole("button", { name: "显式继续" }));
+    await waitFor(() => expect(screen.getByText("自动工作流已显式继续；这是第 2 次尝试。")).toBeInTheDocument());
   });
 
-  it("allows a workflow waiting for Agent translation to be cancelled", async () => {
+  it("keeps a cancelled Agent translation workflow available for recovery", async () => {
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "一键成片" }));
     const dialog = screen.getByRole("dialog", { name: "一键工作流" });
@@ -768,7 +770,9 @@ describe("SiaoCut review workbench", () => {
     await waitFor(() => expect(within(status).getByText(/需要 Agent 继续 · 等待 Agent 翻译/)).toBeInTheDocument(), { timeout: 5000 });
     fireEvent.click(within(status).getByRole("button", { name: "取消流程" }));
 
-    await waitFor(() => expect(screen.queryByRole("region", { name: "一键工作流状态" })).not.toBeInTheDocument());
+    await waitFor(() => expect(within(status).getByText(/已取消 · 等待 Agent 翻译/)).toBeInTheDocument());
+    expect(within(status).getByRole("button", { name: "显式继续" })).toBeInTheDocument();
+    expect(within(status).getByRole("button", { name: "打开待审项目" })).toBeInTheDocument();
   });
 
   it("requires audited URL metadata and rights confirmation in the one-click flow", async () => {

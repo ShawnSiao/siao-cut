@@ -1025,7 +1025,7 @@ function WorkbenchController() {
         const envelope = await backgroundTaskClient.cancelAutoWorkflow(autoWorkflow.id);
         if (!envelope.workflow)
             throw new Error(tr("app.s0107"));
-        setAutoWorkflow(null);
+        setAutoWorkflow({ ...envelope.workflow });
         setNotice(tr("app.s0108"));
     });
     const continueAutoWorkflow = () => autoWorkflow && withAutoBusy(tr("app.s0109"), async () => {
@@ -1992,10 +1992,10 @@ function WorkbenchController() {
           <progress value={autoWorkflow.progress} max={1} aria-label={tr("app.s0275")}/>
           <span className="auto-progress-percent">{Math.round(autoWorkflow.progress * 100)}%</span>
           <div className="auto-progress-actions">
-            {autoWorkflow.projectId && ["needs_agent", "needs_review"].includes(autoWorkflow.status) && <button onClick={() => void openAutoProject()}>{tr("app.s0276")}</button>}
+            {autoWorkflow.projectId && ["needs_agent", "needs_review", "cancelled"].includes(autoWorkflow.status) && <button onClick={() => void openAutoProject()}>{tr("app.s0276")}</button>}
             {["queued", "running", "needs_agent", "needs_review", "failed", "interrupted"].includes(autoWorkflow.status) && <button disabled={Boolean(autoBusy)} onClick={() => void cancelAutoWorkflow()}>{tr("app.s0277")}</button>}
             {autoWorkflow.status === "needs_review" && <button className="primary" disabled={Boolean(autoBusy)} onClick={() => void continueAutoWorkflow()}>{tr("app.s0278")}</button>}
-            {["failed", "interrupted"].includes(autoWorkflow.status) && <button className="primary" disabled={Boolean(autoBusy)} onClick={() => void continueAutoWorkflow()}>{tr("app.s0279")}</button>}
+            {["failed", "interrupted", "cancelled"].includes(autoWorkflow.status) && <button className="primary" disabled={Boolean(autoBusy)} onClick={() => void continueAutoWorkflow()}>{tr("app.s0279")}</button>}
             {["completed", "cancelled"].includes(autoWorkflow.status) && <button onClick={() => setShowAutoWorkflow(true)}>{tr("app.s0280")}</button>}
           </div>
           {autoError && <JobFailureDetails className="auto-progress-error" context="auto" status="failed" errorMessage={autoError}/>}
