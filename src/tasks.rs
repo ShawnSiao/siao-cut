@@ -560,25 +560,18 @@ pub fn cancel(db: &mut Connection, task_id: &str) -> Result<Task> {
         .optional()?
         .ok_or_else(|| anyhow!("任务不存在：{task_id}"))?;
     match status.as_str() {
-        "queued" | "failed" | "interrupted" => {
+        "queued" | "failed" | "interrupted" | "claimed" | "running" => {
             db.execute(
-                "UPDATE tasks SET status='cancelled',cancel_requested_at=?2 WHERE id=?1",
-                params![task_id, now()],
-            )?;
-            append_event(db, task_id, &project_id, "cancelled", None, "任务已取消")?;
-        }
-        "claimed" | "running" => {
-            db.execute(
-                "UPDATE tasks SET cancel_requested_at=?2 WHERE id=?1",
+                "UPDATE tasks SET status='cancelled',cancel_requested_at=?2,lease_worker=NULL,lease_id=NULL,lease_expires_at=NULL WHERE id=?1",
                 params![task_id, now()],
             )?;
             append_event(
                 db,
                 task_id,
                 &project_id,
-                "cancel_requested",
+                "cancelled",
                 None,
-                "已请求取消，等待 Agent 停止",
+                "任务已取消；后续 Agent 心跳和提交将被拒绝",
             )?;
         }
         _ => bail!("当前任务状态不能取消：{status}"),
@@ -640,11 +633,11 @@ pub fn submit(
     else {
         bail!("任务不存在：{task_id}")
     };
-    if !["claimed", "running"].contains(&status.as_str()) || owner.as_deref() != Some(worker) {
-        bail!("任务未由当前 Agent 领取")
-    }
     if cancel_requested_at.is_some() {
         bail!("task_cancel_requested: 任务已请求取消，不能提交结果")
+    }
+    if !["claimed", "running"].contains(&status.as_str()) || owner.as_deref() != Some(worker) {
+        bail!("任务未由当前 Agent 领取")
     }
     if expires_at
         .as_deref()
@@ -989,5 +982,67 @@ mod tests {
         assert_eq!(running.status, "running");
         let loaded = find_task(&project::load(&db, &project.id).unwrap(), &task.id).unwrap();
         assert_eq!(loaded.last_activity.unwrap().kind, "progress");
+    }
+
+    #[test]
+    fn cancelling_a_running_external_task_is_immediate_and_final() {
+        let (_temp, mut db, project, segment_id) = fixture();
+        let task = create(&mut db, &project.id, "summary", None).unwrap();
+        let (_, _, payload) = claim(&mut db, "external-agent", Some(&task.id))
+            .unwrap()
+            .unwrap();
+        heartbeat(
+            &mut db,
+            &task.id,
+            "external-agent",
+            0.05,
+            Some("开始处理任务"),
+        )
+        .unwrap();
+
+        let cancelled = cancel(&mut db, &task.id).unwrap();
+        assert_eq!(cancelled.status, "cancelled");
+        assert!(cancelled.cancel_requested_at.is_some());
+        let lease: (Option<String>, Option<String>, Option<String>) = db
+            .query_row(
+                "SELECT lease_worker,lease_id,lease_expires_at FROM tasks WHERE id=?1",
+                [&task.id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(lease, (None, None, None));
+
+        let heartbeat_error = heartbeat(
+            &mut db,
+            &task.id,
+            "external-agent",
+            0.5,
+            Some("不应再接受进度"),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(heartbeat_error.contains("任务未由当前 Agent 领取"));
+
+        let submit_error = submit(
+            &mut db,
+            &task.id,
+            "external-agent",
+            json!({
+                "baseVersionId": payload["baseVersionId"],
+                "patches": [{
+                    "segmentId": segment_id,
+                    "before": "你好",
+                    "after": "不应被提交",
+                    "reason": "任务已取消",
+                    "confidence": 1.0
+                }]
+            }),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(submit_error.contains("task_cancel_requested"));
+
+        let latest_event = events(&db, &task.id, 0).unwrap().pop().unwrap();
+        assert_eq!(latest_event.kind, "cancelled");
     }
 }

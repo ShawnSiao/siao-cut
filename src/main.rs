@@ -1249,7 +1249,7 @@ fn run(cli: Cli) -> Result<Value> {
                 let project_id = tasks::project_id(&database, &task_id)?;
                 let task = tasks::cancel(&mut database, &task_id)?;
                 Ok(envelope(
-                    json!({"projectId":project_id,"taskId":task.id,"task":task,"message":"取消请求已记录。"}),
+                    json!({"projectId":project_id,"taskId":task.id,"task":task,"message":"任务已取消。"}),
                 ))
             }
             TaskCommand::Events { task_id, after } => {

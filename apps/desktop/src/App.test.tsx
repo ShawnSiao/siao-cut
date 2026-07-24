@@ -102,6 +102,16 @@ describe("SiaoCut review workbench", () => {
     expect(screen.getByRole("combobox", { name: "素材语言 · 一键成片" })).toHaveValue("en");
   });
 
+  it("removes a manually handed-off task immediately after cancellation", async () => {
+    render(<App />);
+    const cancel = await screen.findByRole("button", { name: "取消任务" });
+
+    fireEvent.click(cancel);
+
+    await waitFor(() => expect(screen.getByText("任务已取消。")).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: "取消任务" })).not.toBeInTheDocument();
+  });
+
   it("derives media, transcript, model, preview, and Agent capabilities from project state", () => {
     const withoutMedia = getProjectCapabilities(sampleProject, { agentWorkflowKind: "polish" });
     expect(withoutMedia).toMatchObject({
