@@ -267,9 +267,42 @@ fn whisper_word_timeline_is_compressed(json_path: &Path) -> Result<bool> {
                 .and_then(|value| parse_whisper_timestamp(value).ok())
         })
         .fold(0.0_f64, f64::max);
+    let paired_gaps = entries
+        .iter()
+        .filter_map(|item| {
+            let segment_end = item
+                .pointer("/timestamps/to")
+                .and_then(Value::as_str)
+                .and_then(|value| parse_whisper_timestamp(value).ok())?;
+            let word_end = item
+                .get("tokens")
+                .and_then(Value::as_array)?
+                .iter()
+                .filter_map(|token| {
+                    let text = token.get("text").and_then(Value::as_str)?.trim();
+                    if text.is_empty() || text.starts_with("[_") || text.starts_with("<|") {
+                        return None;
+                    }
+                    token
+                        .pointer("/timestamps/to")
+                        .and_then(Value::as_str)
+                        .and_then(|value| parse_whisper_timestamp(value).ok())
+                })
+                .fold(0.0_f64, f64::max);
+            (word_end > 0.0).then_some(segment_end - word_end)
+        })
+        .collect::<Vec<_>>();
 
     let gap = segment_end - word_end;
-    Ok(segment_end > 0.0 && word_end > 0.0 && gap > 5.0 && word_end < segment_end * 0.9)
+    let growing_drift = paired_gaps
+        .first()
+        .zip(paired_gaps.last())
+        .is_some_and(|(first, last)| last - first > 5.0);
+    Ok(segment_end > 0.0
+        && word_end > 0.0
+        && gap > 5.0
+        && word_end < segment_end * 0.98
+        && growing_drift)
 }
 
 fn audio_has_retryable_signal(ffmpeg: &str, wav: &Path) -> Result<bool> {
@@ -559,6 +592,19 @@ mod tests {
 
         assert!(whisper_word_timeline_is_compressed(&compressed).unwrap());
         assert!(!whisper_word_timeline_is_compressed(&aligned).unwrap());
+    }
+
+    #[test]
+    fn detects_gradual_vad_drift_before_subtitles_end_early() {
+        let temp = tempdir().unwrap();
+        let gradual = temp.path().join("gradual.json");
+        fs::write(
+            &gradual,
+            r#"{"transcription":[{"timestamps":{"from":"00:00:00,240","to":"00:00:04,260"},"text":" first","tokens":[{"text":" first","timestamps":{"from":"00:00:00,060","to":"00:00:03,870"}}]},{"timestamps":{"from":"00:03:27,440","to":"00:03:30,820"},"text":" last","tokens":[{"text":" last","timestamps":{"from":"00:03:15,380","to":"00:03:16,400"}}]}]}"#,
+        )
+        .unwrap();
+
+        assert!(whisper_word_timeline_is_compressed(&gradual).unwrap());
     }
 
     #[test]
