@@ -1,5 +1,5 @@
 import { changeUiLocale, getUiLocale, tr, type UiLocale } from "../i18n";
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type SyntheticEvent } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type SyntheticEvent } from "react";
 import { Activity, Bot, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Clock3, Copy, Cpu, Database, Download, FileVideo2, FileText, Film, FolderOpen, FolderPlus, HardDrive, History, Link2, LoaderCircle, Play, RefreshCw, RotateCcw, Search, Scissors, Settings2, ShieldCheck, Sparkles, Trash2, Undo2, Redo2, Headphones, ListChecks, MoreHorizontal, MoveHorizontal, Users, X, } from "lucide-react";
 import { authorizeArtifact, authorizeMedia, openLogDirectory, pickMedia, pickModel, pickSubtitleFile, pickTranscriptPath, pickVideoPath, runtimeInfo, selectAsrBackend, updaterPolicy } from "../core";
 import type { AgentRun, AudioAnalysisJob, AudioRisk, AutoWorkflow, CanvasSettings, CodexHealth, CutPreview, ExportJob, ModelDownloadJob, ModelStatus, Project, ProjectDeletionPreflight, RuntimeInfo, Segment, SourceImportJob, SourcePreview, SpeakerIdentity, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SpeechEvidence, SpeechInsights, SpeechPause, SubtitleImportPreview, SubtitleQualityIssue, TranscriptionJob, TranscriptionLanguage, TranscriptionProviderConfig, TranscriptionProviderHealth, TranscriptionReviewItem } from "../types";
@@ -40,6 +40,53 @@ export async function resolveCanvasMedia(
         const sourceWarning = cause instanceof Error ? cause.message : String(cause);
         return { mediaUrl: null, warning: warning ? `${warning}; ${sourceWarning}` : sourceWarning };
     }
+}
+
+export async function resolveImportedProjectMedia(
+    projectId: string,
+    authorizeProjectArtifact: typeof authorizeArtifact = authorizeArtifact,
+    authorizeProjectSource: typeof authorizeMedia = authorizeMedia,
+) {
+    const [canvas, waveform] = await Promise.all([
+        resolveCanvasMedia(projectId, authorizeProjectArtifact, authorizeProjectSource),
+        authorizeProjectArtifact(projectId, "waveform")
+            .then((waveformUrl) => ({ waveformUrl, warning: null as string | null }))
+            .catch((cause) => ({
+                waveformUrl: null,
+                warning: cause instanceof Error ? cause.message : String(cause),
+            })),
+    ]);
+    return {
+        mediaUrl: canvas.mediaUrl,
+        waveformUrl: waveform.waveformUrl,
+        warning: [canvas.warning, waveform.warning].filter(Boolean).join("; ") || null,
+    };
+}
+
+export function resolveCaptionKaraokeStyle(
+    playing: boolean,
+    progress: number,
+    primaryColor: string,
+    secondaryColor: string,
+): CSSProperties | undefined {
+    if (!playing)
+        return undefined;
+    const clampedProgress = Math.max(0, Math.min(1, progress));
+    return {
+        color: secondaryColor,
+        "--caption-progress": `${clampedProgress * 100}%`,
+        "--caption-primary-color": primaryColor,
+    } as CSSProperties;
+}
+
+export function resolveCaptionSegment(
+    segments: Segment[],
+    selected: Segment | null | undefined,
+    currentTime: number,
+    playing: boolean,
+) {
+    const timedSegment = segments.find((segment) => currentTime >= segment.start && currentTime < segment.end) ?? null;
+    return timedSegment ?? (playing ? null : selected ?? null);
 }
 
 export function resolvePlaybackDuration(mediaDuration: number, fallbackDuration: number | null | undefined) {
@@ -488,15 +535,36 @@ function WorkbenchController() {
                 if (nextJob.status === "cancelled")
                     setNotice(tr("app.s0066"));
                 if (nextJob.status === "completed" && nextJob.projectId) {
-                    const imported = await projectSessionClient.loadProject(nextJob.projectId);
+                    setSourceError(null);
+                    let imported: Project;
+                    try {
+                        imported = await projectSessionClient.loadProject(nextJob.projectId);
+                    }
+                    catch (cause) {
+                        setSourceError(cause instanceof Error ? cause.message : String(cause));
+                        setNotice(tr("app.error.sourceImportOpenFailed"));
+                        return;
+                    }
+                    videoRef.current?.pause();
+                    setPlayback({ playing: false, currentTime: 0, duration: imported.media.durationSeconds ?? 0 });
                     setProjects((current) => [imported, ...current.filter((item) => item.id !== imported.id)]);
                     setProject(imported);
                     setSelectedId(imported.transcript.segments[0]?.id ?? null);
-                    setMediaUrl(await authorizeArtifact(imported.id, "preview") ?? await authorizeMedia(imported.id));
-                    setWaveformUrl(await authorizeArtifact(imported.id, "waveform"));
-                    await Promise.all([refreshLatestExport(imported.id), refreshLatestAudioAnalysis(imported.id)]);
+                    setSelectedSegmentIds(imported.transcript.segments[0]?.id ? [imported.transcript.segments[0].id] : []);
+                    setSelectionAnchorId(imported.transcript.segments[0]?.id ?? null);
+                    setActiveExport(null);
+                    setAudioAnalysisJob(null);
+                    setSpeakerTrack(null);
+                    setWordRange(null);
+                    setCutPreview(null);
                     setShowSourceImport(false);
                     setNotice(tr("app.s0067"));
+                    const media = await resolveImportedProjectMedia(imported.id);
+                    setMediaUrl(media.mediaUrl);
+                    setWaveformUrl(media.waveformUrl);
+                    await Promise.allSettled([refreshLatestExport(imported.id), refreshLatestAudioAnalysis(imported.id)]);
+                    if (media.warning)
+                        setError(tr("app.error.sourceImportPreviewUnavailable"));
                 }
             }).catch((cause) => {
                 const message = cause instanceof Error ? cause.message : String(cause);
@@ -612,10 +680,12 @@ function WorkbenchController() {
             ? tr("app.capability.transcriptRequired")
             : agentWorkflowKind === "translate" && !capabilities.hasTranslationTarget
                 ? tr("app.capability.translationTargetRequired") : undefined;
-    const playbackSegment = playback.playing
-        ? project?.transcript.segments.find((segment) => playback.currentTime >= segment.start && playback.currentTime < segment.end)
-        : null;
-    const captionSegment = playback.playing ? playbackSegment ?? null : selected;
+    const captionSegment = resolveCaptionSegment(
+        project?.transcript.segments ?? [],
+        selected,
+        playback.currentTime,
+        playback.playing,
+    );
     const captionWords = project?.transcript.words.filter((word) => word.segmentId === captionSegment?.id) ?? [];
     const selectedTranslationText = selectedTranslation?.segments.find((segment) => segment.segmentId === captionSegment?.id)?.text ?? "";
     const captionPrimaryText = subtitleMode === "translated" ? selectedTranslationText : captionSegment?.text ?? "";
@@ -636,12 +706,14 @@ function WorkbenchController() {
         }, 0);
         return Math.max(0, Math.min(1, completed / Math.max(1, total)));
     })();
-    const captionKaraokeStyle = playback.playing && project ? {
-        color: "transparent",
-        backgroundImage: `linear-gradient(90deg, ${project.subtitleStyle.primaryColor} 0%, ${project.subtitleStyle.primaryColor} ${captionProgress * 100}%, ${project.subtitleStyle.secondaryColor} ${captionProgress * 100}%, ${project.subtitleStyle.secondaryColor} 100%)`,
-        backgroundClip: "text",
-        WebkitBackgroundClip: "text",
-    } : undefined;
+    const captionKaraokeStyle = project
+        ? resolveCaptionKaraokeStyle(
+            playback.playing,
+            captionProgress,
+            project.subtitleStyle.primaryColor,
+            project.subtitleStyle.secondaryColor,
+        )
+        : undefined;
     const captionPreviewStyle = project ? {
         color: project.subtitleStyle.primaryColor,
         fontFamily: `"${project.subtitleStyle.fontFamily}", "Microsoft YaHei UI", sans-serif`,
@@ -2016,7 +2088,7 @@ function WorkbenchController() {
                   {mediaUrl ? <video key={project.id} ref={videoRef} src={mediaUrl} controls preload="metadata" onLoadedMetadata={handleVideoLoadedMetadata} onPlay={() => setPlayback((current) => ({ ...current, playing: true }))} onPause={() => setPlayback((current) => ({ ...current, playing: false }))} onTimeUpdate={handleVideoTimeUpdate}/> : <div className="video-placeholder"><Play size={30}/><span>{tr("app.s0286")}</span></div>}
                   {showSubtitleSafeArea && <div className="subtitle-safe-area" aria-label={tr("app.s0287")} style={{ inset: `${project.subtitleStyle.safeMarginPercent}% 6%` }}/>}
                   {captionSegment && captionPrimaryText && <div className={`caption-overlay ${project.subtitleStyle.position}`} data-preset={project.subtitleStyle.preset} data-position={project.subtitleStyle.position} data-outline-width={project.subtitleStyle.outlineWidth} style={captionPreviewStyle}>
-                    <span className="caption-primary" data-progress={captionProgress.toFixed(3)} style={captionKaraokeStyle}>{captionPrimaryText}</span>
+                    <span className={`caption-primary${playback.playing ? " playing" : ""}`} data-caption-text={playback.playing ? captionPrimaryText : undefined} data-progress={captionProgress.toFixed(3)} style={captionKaraokeStyle}>{captionPrimaryText}</span>
                     {captionSecondaryText && <span className="caption-secondary" style={{ color: project.subtitleStyle.secondaryColor, fontSize: `${Math.max(12, Math.round(project.subtitleStyle.secondaryFontSize * 0.36))}px` }}>{captionSecondaryText}</span>}
                   </div>}
                 </div>
@@ -2241,7 +2313,7 @@ function WorkbenchController() {
         {!sourceJob && <form className="source-form" onSubmit={(event) => { event.preventDefault(); void inspectSource(); }}><label><span>{tr("app.s0487")}</span><input autoComplete="url" aria-label={tr("app.s0487")} placeholder="https://…" value={sourceUrl} disabled={Boolean(sourceBusy)} onChange={(event) => { setSourceUrl(event.target.value); setSourcePreview(null); setSourceAuthorized(false); setSourceError(null); }}/></label><button className="button primary" type="submit" disabled={Boolean(sourceBusy) || !isHttpsSourceUrl(sourceUrl)}>{sourceBusy && !sourcePreview ? <LoaderCircle className="spin" size={14}/> : <Search size={14}/>}{tr("app.s0489")}</button></form>}
         {sourcePreview && !sourceJob && <section className="source-preview" aria-label={tr("app.s0519")}><header><span><small>{sourcePreview.extractor}</small><strong>{sourcePreview.title}</strong></span><ShieldCheck size={19}/></header><dl><div><dt>{tr("app.s0491")}</dt><dd>{formatTime(sourcePreview.durationSeconds)}</dd></div><div><dt>{sourcePreview.fileSizeKnown ? tr("app.s0520") : tr("app.s0521")}</dt><dd>{formatBytes(sourcePreview.fileSizeBytes)}</dd></div><div><dt>{tr("app.s0492")}</dt><dd>{sourcePreview.siteMediaId}</dd></div><div><dt>{tr("app.s0522")}</dt><dd>yt-dlp {sourcePreview.toolVersion}</dd></div></dl><p className="source-url" title={sourcePreview.webpageUrl}>{sourcePreview.webpageUrl}</p><label className="source-consent"><input type="checkbox" checked={sourceAuthorized} onChange={(event) => setSourceAuthorized(event.target.checked)}/><span>{tr("app.s0523")}</span></label><button className="button primary full" disabled={!sourceAuthorized || Boolean(sourceBusy)} onClick={() => void startSourceImport()}>{sourceBusy ? <LoaderCircle className="spin" size={14}/> : <Download size={14}/>}{tr("app.s0524")}</button></section>}
         {sourceJob && <section className="source-job" aria-label={tr("app.s0525")}><header><span className={`source-state ${sourceJob.status}`}><i />{sourceStatusLabel(sourceJob.status)}</span><strong>{sourceJob.title}</strong><small>{tr("app.composite.sourceAttempt", { attempt: sourceJob.attemptCount, mediaId: sourceJob.siteMediaId })}</small></header><div className="source-job-progress"><progress value={sourceJob.progress} max={1}/><span>{Math.round(sourceJob.progress * 100)}% · {formatBytes(sourceJob.bytesDownloaded)} / {formatBytes(sourceJob.totalBytes ?? sourceJob.fileSizeBytes)}</span></div><dl><div><dt>{tr("app.s0528")}</dt><dd>yt-dlp {sourceJob.toolVersion}</dd></div><div><dt>{tr("app.s0239")}</dt><dd>{sourceJob.projectId ?? tr("app.s0529")}</dd></div></dl>{["failed", "interrupted"].includes(sourceJob.status) && <JobFailureDetails className="source-job-error" context="source" status={sourceJob.status} errorCode={sourceJob.errorCode} errorMessage={sourceJob.errorMessage}/>}<div className="source-job-actions">{["queued", "running"].includes(sourceJob.status) && <button disabled={Boolean(sourceBusy) || Boolean(sourceJob.cancelRequestedAt)} onClick={() => void cancelSourceImport()}>{sourceJob.cancelRequestedAt ? tr("app.s0317") : tr("app.s0530")}</button>}{["cancelled", "failed", "interrupted"].includes(sourceJob.status) && <button className="primary" disabled={Boolean(sourceBusy)} onClick={() => void resumeSourceImport()}><RefreshCw size={13}/>{tr("app.s0279")}</button>}{!["queued", "running", "finalizing"].includes(sourceJob.status) && <button onClick={resetSourceImport}>{tr("app.s0531")}</button>}</div></section>}
-        {sourceError && <div className="source-error" role="alert"><CircleAlert size={15}/><JobFailureDetails context="source" status="failed" errorMessage={sourceError}/></div>}
+        {sourceError && <div className="source-error" role="alert"><CircleAlert size={15}/>{sourceJob?.status === "completed" ? <div className="job-failure-details"><span className="job-failure-summary">{tr("app.error.sourceImportOpenFailed")}</span><details className="job-failure-technical"><summary>{tr("app.error.technicalDetails")}</summary><code>{sourceError}</code></details></div> : <JobFailureDetails context="source" status="failed" errorMessage={sourceError}/>}</div>}
         <p className="runtime-disclosure">{tr("app.s0532")}</p>
       </Dialog>}
     </main>);

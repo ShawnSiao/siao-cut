@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import App, { PatchReviewCard, TRANSCRIPTION_LANGUAGE_STORAGE_KEY, clearTransientCoreError, getProjectCapabilities, isHttpsSourceUrl, parseExportPreferences, parseTranscriptionLanguage, resolveCanvasMedia, resolvePlaybackDuration, shouldCheckForUpdates, startSerialPolling, taskLabel } from "./App";
+import App, { PatchReviewCard, TRANSCRIPTION_LANGUAGE_STORAGE_KEY, clearTransientCoreError, getProjectCapabilities, isHttpsSourceUrl, parseExportPreferences, parseTranscriptionLanguage, resolveCanvasMedia, resolveCaptionKaraokeStyle, resolveCaptionSegment, resolveImportedProjectMedia, resolvePlaybackDuration, shouldCheckForUpdates, startSerialPolling, taskLabel } from "./App";
 import { sampleProject } from "./mock";
 
 afterEach(() => {
@@ -34,6 +34,44 @@ describe("SiaoCut review workbench", () => {
     );
 
     expect(result).toEqual({ mediaUrl: "asset://source.mp4", warning: "preview stale" });
+  });
+
+  it("keeps a completed URL import successful when optional preview assets are unavailable", async () => {
+    const result = await resolveImportedProjectMedia(
+      "p-test",
+      async (_projectId, kind) => {
+        throw new Error(`${kind} unavailable`);
+      },
+      async () => "asset://source.mp4",
+    );
+
+    expect(result).toEqual({
+      mediaUrl: "asset://source.mp4",
+      waveformUrl: null,
+      warning: "preview unavailable; waveform unavailable",
+    });
+  });
+
+  it("keeps playback captions visibly filled while applying karaoke progress", () => {
+    const style = resolveCaptionKaraokeStyle(true, 0.25, "#F2F4F5", "#B5BEC6") as Record<string, string>;
+
+    expect(style).toMatchObject({
+      color: "#B5BEC6",
+      "--caption-progress": "25%",
+      "--caption-primary-color": "#F2F4F5",
+    });
+    expect(style.color).not.toBe("transparent");
+    expect(style).not.toHaveProperty("backgroundImage");
+    expect(resolveCaptionKaraokeStyle(false, 0.25, "#F2F4F5", "#B5BEC6")).toBeUndefined();
+  });
+
+  it("keeps the subtitle at the paused playhead instead of reverting to the first selection", () => {
+    const first = { id: "first", start: 0, end: 2, text: "First", confidence: null };
+    const current = { id: "current", start: 4, end: 7, text: "Current", confidence: null };
+
+    expect(resolveCaptionSegment([first, current], first, 5, false)).toBe(current);
+    expect(resolveCaptionSegment([first, current], first, 3, false)).toBe(first);
+    expect(resolveCaptionSegment([first, current], first, 3, true)).toBeNull();
   });
 
   it("persists source language independently and creates the selected Agent workflow", async () => {
