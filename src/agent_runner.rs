@@ -5,7 +5,7 @@ use crate::{
     util::{KillOnCloseJob, hidden_command, new_id, now},
 };
 use anyhow::{Context, Result, anyhow, bail};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::{
@@ -57,6 +57,21 @@ struct EventSummary {
     saw_turn_completed: bool,
     saw_error: bool,
 }
+
+#[derive(Debug)]
+struct ClaimedRunFailure {
+    lease_id: String,
+    run_attempt_count: u32,
+    source: anyhow::Error,
+}
+
+impl std::fmt::Display for ClaimedRunFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.source.fmt(formatter)
+    }
+}
+
+impl std::error::Error for ClaimedRunFailure {}
 
 struct EphemeralDirectory(PathBuf);
 
@@ -125,8 +140,8 @@ pub fn start(
     )?;
     insert_batches(&tx, &run_id, &batches, &timestamp)?;
     tx.commit()?;
-    if let Err(error) = spawn_worker(&run_id, start_delay_ms) {
-        mark_start_failed(db, &run_id, &error)?;
+    if let Err(error) = spawn_worker(&run_id, 1, start_delay_ms) {
+        mark_start_failed(db, &run_id, 1, &error)?;
         return Err(error);
     }
     load(db, &run_id)
@@ -201,66 +216,95 @@ pub fn list(db: &Connection, project_id: Option<&str>) -> Result<Vec<AgentRun>> 
 }
 
 pub fn cancel(db: &mut Connection, run_id: &str) -> Result<AgentRun> {
-    let run = load(db, run_id)?;
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let run = load(&tx, run_id)?;
     if !["queued", "running", "submitting"].contains(&run.status.as_str()) {
         bail!("agent_run_not_cancellable: 当前 Agent 运行不能取消")
     }
     let timestamp = now();
-    db.execute(
-        "UPDATE agent_runs SET cancel_requested_at=?2,updated_at=?2 WHERE id=?1",
+    let changed = tx.execute(
+        "UPDATE agent_runs
+         SET cancel_requested_at=?2,status='cancelled',progress=MIN(progress,0.99),
+             worker_pid=NULL,error_code=NULL,error_message=NULL,completed_at=?2,updated_at=?2
+         WHERE id=?1 AND status=?3 AND attempt_count=?4",
+        params![run_id, &timestamp, &run.status, run.attempt_count],
+    )?;
+    if changed == 0 {
+        bail!("agent_run_not_cancellable: Agent 运行状态已变化")
+    }
+    tasks::cancel_in_transaction(&tx, &run.task_id)?;
+    tx.execute(
+        "UPDATE agent_run_batches
+         SET status='cancelled',completed_at=?2,updated_at=?2
+         WHERE run_id=?1 AND status IN ('queued','running')",
         params![run_id, &timestamp],
     )?;
-    let _ = tasks::cancel(db, &run.task_id);
+    tx.commit()?;
     if let Some(worker_pid) = run.worker_pid
         && worker_pid != std::process::id()
         && crate::util::process_is_active(worker_pid)
     {
         let _ = crate::util::terminate_process_tree_by_id(worker_pid);
     }
-    tasks::finish_runner_cancel(db, &run.task_id)?;
-    db.execute(
-        "UPDATE agent_runs SET status='cancelled',progress=MIN(progress,0.99),worker_pid=NULL,error_code=NULL,error_message=NULL,completed_at=?2,updated_at=?2 WHERE id=?1",
-        params![run_id, &timestamp],
-    )?;
-    db.execute(
-        "UPDATE agent_run_batches SET status='cancelled',completed_at=?2,updated_at=?2 WHERE run_id=?1 AND status IN ('queued','running')",
-        params![run_id, &timestamp],
-    )?;
     load(db, run_id)
 }
 
 pub fn resume(db: &mut Connection, run_id: &str, start_delay_ms: Option<u64>) -> Result<AgentRun> {
-    let run = load(db, run_id)?;
-    if !["cancelled", "failed", "interrupted"].contains(&run.status.as_str()) {
-        bail!("agent_run_not_resumable: 当前 Agent 运行不能继续")
-    }
     let executable = require_ready_codex()?;
     let cli_health = health_with(&executable);
-    let task = tasks::requeue_for_runner(db, &run.task_id)?;
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let (task_id, run_status, run_attempt_count): (String, String, i64) = tx
+        .query_row(
+            "SELECT task_id,status,attempt_count FROM agent_runs WHERE id=?1",
+            [run_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?
+        .ok_or_else(|| anyhow!("agent_run_not_found: Agent 运行记录不存在：{run_id}"))?;
+    if !["cancelled", "failed", "interrupted"].contains(&run_status.as_str()) {
+        bail!("agent_run_not_resumable: 当前 Agent 运行不能继续")
+    }
+    let task = tasks::requeue_for_runner_in_transaction(&tx, &task_id)?;
     let base_version_id = task
         .base_version_id
         .ok_or_else(|| anyhow!("agent_project_version_conflict: 任务缺少基线版本"))?;
-    let kind: String = db.query_row(
-        "SELECT kind FROM tasks WHERE id=?1",
-        [&run.task_id],
-        |row| row.get(0),
-    )?;
-    let segment_ids = crate::translation::task_segment_ids(db, &run.task_id)?;
+    let kind: String = tx.query_row("SELECT kind FROM tasks WHERE id=?1", [&task_id], |row| {
+        row.get(0)
+    })?;
+    let segment_ids = crate::translation::task_segment_ids(&tx, &task_id)?;
     if segment_ids.is_empty() {
         bail!("agent_batch_incomplete: 项目没有可处理的字幕段")
     }
     let batches = split_batches(&kind, &segment_ids);
+    let next_attempt_count = u32::try_from(run_attempt_count + 1)
+        .map_err(|_| anyhow!("agent_run_not_resumable: Agent 运行次数无效"))?;
     let timestamp = now();
-    let tx = db.transaction()?;
     tx.execute("DELETE FROM agent_run_batches WHERE run_id=?1", [run_id])?;
     insert_batches(&tx, run_id, &batches, &timestamp)?;
-    tx.execute(
-        "UPDATE agent_runs SET status='queued',base_version_id=?2,progress=0,current_batch=0,batch_count=?3,cli_version=?4,auth_mode=?5,codex_thread_id=NULL,cancel_requested_at=NULL,error_code=NULL,error_message=NULL,started_at=NULL,completed_at=NULL,worker_pid=NULL,attempt_count=attempt_count+1,updated_at=?6 WHERE id=?1",
-        params![run_id, &base_version_id, batches.len() as i64, &cli_health.version, &cli_health.auth_mode, &timestamp],
+    let changed = tx.execute(
+        "UPDATE agent_runs
+         SET status='queued',base_version_id=?2,progress=0,current_batch=0,batch_count=?3,
+             cli_version=?4,auth_mode=?5,codex_thread_id=NULL,cancel_requested_at=NULL,
+             error_code=NULL,error_message=NULL,started_at=NULL,completed_at=NULL,
+             worker_pid=NULL,attempt_count=attempt_count+1,updated_at=?6
+         WHERE id=?1 AND status=?7 AND attempt_count=?8",
+        params![
+            run_id,
+            &base_version_id,
+            batches.len() as i64,
+            &cli_health.version,
+            &cli_health.auth_mode,
+            &timestamp,
+            &run_status,
+            run_attempt_count
+        ],
     )?;
+    if changed == 0 {
+        bail!("agent_run_not_resumable: Agent 运行状态已变化")
+    }
     tx.commit()?;
-    if let Err(error) = spawn_worker(run_id, start_delay_ms) {
-        mark_start_failed(db, run_id, &error)?;
+    if let Err(error) = spawn_worker(run_id, next_attempt_count, start_delay_ms) {
+        mark_start_failed(db, run_id, next_attempt_count, &error)?;
         return Err(error);
     }
     load(db, run_id)
@@ -269,7 +313,10 @@ pub fn resume(db: &mut Connection, run_id: &str, start_delay_ms: Option<u64>) ->
 pub fn reconcile_interrupted(db: &mut Connection) -> Result<()> {
     let runs = db
         .prepare(
-            "SELECT id,task_id,status,worker_pid,updated_at FROM agent_runs WHERE status IN ('queued','running','submitting')",
+            "SELECT ar.id,ar.task_id,ar.status,ar.worker_pid,ar.updated_at,t.lease_id
+             FROM agent_runs ar
+             JOIN tasks t ON t.id=ar.task_id
+             WHERE ar.status IN ('queued','running','submitting')",
         )?
         .query_map([], |row| {
             Ok((
@@ -278,10 +325,11 @@ pub fn reconcile_interrupted(db: &mut Connection) -> Result<()> {
                 row.get::<_, String>(2)?,
                 row.get::<_, Option<u32>>(3)?,
                 row.get::<_, String>(4)?,
+                row.get::<_, Option<String>>(5)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    for (run_id, task_id, status, worker_pid, updated_at) in runs {
+    for (run_id, task_id, status, worker_pid, updated_at, task_lease_id) in runs {
         let stale = chrono::DateTime::parse_from_rfc3339(&updated_at)
             .map(|time| {
                 chrono::Utc::now()
@@ -305,17 +353,24 @@ pub fn reconcile_interrupted(db: &mut Connection) -> Result<()> {
                 "UPDATE agent_run_batches SET status='failed',error_code='agent_worker_interrupted',error_message='本机 Agent 进程意外中断。',updated_at=?2 WHERE run_id=?1 AND status='running'",
                 params![&run_id, &timestamp],
             )?;
-            tasks::interrupt_runner(db, &task_id)?;
+            tasks::interrupt_runner(db, &task_id, task_lease_id.as_deref())?;
         }
     }
     Ok(())
 }
 
-pub fn run_worker(run_id: &str, start_delay_ms: Option<u64>) -> Result<()> {
+pub fn run_worker(
+    run_id: &str,
+    expected_attempt_count: u32,
+    start_delay_ms: Option<u64>,
+) -> Result<()> {
     let mut db = db::open()?;
     let claimed = db.execute(
-        "UPDATE agent_runs SET status='running',progress=0.01,worker_pid=?2,started_at=COALESCE(started_at,?3),updated_at=?3 WHERE id=?1 AND status='queued'",
-        params![run_id, std::process::id(), now()],
+        "UPDATE agent_runs
+         SET status='running',progress=0.01,worker_pid=?2,
+             started_at=COALESCE(started_at,?3),updated_at=?3
+         WHERE id=?1 AND status='queued' AND attempt_count=?4",
+        params![run_id, std::process::id(), now(), expected_attempt_count],
     )?;
     if claimed == 0 {
         return Ok(());
@@ -326,7 +381,12 @@ pub fn run_worker(run_id: &str, start_delay_ms: Option<u64>) -> Result<()> {
     match execute_run(&mut db, run_id) {
         Ok(()) => Ok(()),
         Err(error) => {
-            finalize_worker_error(&mut db, run_id, &error)?;
+            let claimed_failure = error.downcast_ref::<ClaimedRunFailure>();
+            let lease_id = claimed_failure.map(|failure| failure.lease_id.as_str());
+            let attempt_count = claimed_failure
+                .map(|failure| failure.run_attempt_count)
+                .unwrap_or(expected_attempt_count);
+            finalize_worker_error(&mut db, run_id, attempt_count, lease_id, &error)?;
             Err(error)
         }
     }
@@ -345,88 +405,105 @@ fn execute_run_with_config(db: &mut Connection, run_id: &str, config: &RunnerCon
     let worker = format!("codex-{run_id}");
     let (_, task, payload) = tasks::claim(db, &worker, Some(&run.task_id))?
         .ok_or_else(|| anyhow!("agent_run_active: Agent 任务不再处于可领取状态"))?;
-    if task.base_version_id.as_deref() != Some(run.base_version_id.as_str()) {
-        bail!("agent_project_version_conflict: Agent 任务基线已变化")
-    }
-    tasks::heartbeat(
-        db,
-        &run.task_id,
-        &worker,
-        0.02,
-        Some("本机 Agent 已开始处理"),
-    )?;
-    let batch_rows = load_batch_rows(db, run_id)?;
-    let mut results = Vec::with_capacity(batch_rows.len());
-    for (index, batch) in batch_rows.iter().enumerate() {
-        if cancel_requested(db, run_id, &run.task_id)? {
-            bail!("agent_run_cancelled: 本机 Agent 任务已取消")
+    let lease_id = task
+        .lease
+        .as_ref()
+        .map(|lease| lease.id.clone())
+        .ok_or_else(|| anyhow!("agent_run_active: Agent 任务缺少有效租约"))?;
+    let attempt_result = (|| -> Result<()> {
+        if task.base_version_id.as_deref() != Some(run.base_version_id.as_str()) {
+            bail!("agent_project_version_conflict: Agent 任务基线已变化")
         }
-        let started_at = now();
-        db.execute(
-            "UPDATE agent_run_batches SET status='running',attempt_count=attempt_count+1,started_at=?2,completed_at=NULL,error_code=NULL,error_message=NULL,updated_at=?2 WHERE id=?1",
-            params![&batch.id, &started_at],
-        )?;
-        db.execute(
-            "UPDATE agent_runs SET current_batch=?2,updated_at=?3 WHERE id=?1",
-            params![run_id, index as i64, &started_at],
-        )?;
-        let batch_payload = payload_for_batch(&payload, &batch.segment_ids)?;
-        let schema = output_schema(
-            payload
-                .get("kind")
-                .and_then(Value::as_str)
-                .unwrap_or("polish"),
-            payload
-                .get("baseVersionId")
-                .and_then(Value::as_str)
-                .unwrap_or_default(),
-        );
-        let batch_result = invoke_codex(
-            db,
-            config,
-            run_id,
-            &run.task_id,
-            &batch.id,
-            &batch_payload,
-            &schema,
-            run.timeout_seconds,
-        )?;
-        validate_batch_result(&batch_payload, &batch.segment_ids, &batch_result.value)?;
-        let completed_at = now();
-        db.execute(
-            "UPDATE agent_run_batches SET status='completed',result_json=?2,codex_thread_id=?3,error_code=NULL,error_message=NULL,completed_at=?4,updated_at=?4 WHERE id=?1",
-            params![&batch.id, serde_json::to_string(&batch_result.value)?, &batch_result.thread_id, &completed_at],
-        )?;
-        let progress = 0.05 + 0.85 * ((index + 1) as f64 / batch_rows.len() as f64);
-        db.execute(
-            "UPDATE agent_runs SET progress=?2,current_batch=?3,codex_thread_id=COALESCE(?4,codex_thread_id),updated_at=?5 WHERE id=?1",
-            params![run_id, progress, (index + 1) as i64, &batch_result.thread_id, &completed_at],
-        )?;
         tasks::heartbeat(
             db,
             &run.task_id,
             &worker,
-            progress,
-            Some("本机 Agent 已完成一个文本批次"),
+            &lease_id,
+            0.02,
+            Some("本机 Agent 已开始处理"),
         )?;
-        results.push(batch_result.value);
-    }
-    ensure_project_version(db, &run.project_id, &run.base_version_id)?;
-    let response = aggregate_results(&payload, &results)?;
-    db.execute(
-        "UPDATE agent_runs SET status='submitting',progress=0.95,updated_at=?2 WHERE id=?1",
-        params![run_id, now()],
-    )?;
-    let (_, _, patch_set) = tasks::submit(db, &run.task_id, &worker, response)?;
-    if patch_set.status != "pending_review" {
-        bail!("agent_output_invalid: Agent 结果未进入人工审阅")
-    }
-    let completed_at = now();
-    db.execute(
+        let batch_rows = load_batch_rows(db, run_id)?;
+        let mut results = Vec::with_capacity(batch_rows.len());
+        for (index, batch) in batch_rows.iter().enumerate() {
+            if cancel_requested(db, run_id, &run.task_id)? {
+                bail!("agent_run_cancelled: 本机 Agent 任务已取消")
+            }
+            let started_at = now();
+            db.execute(
+            "UPDATE agent_run_batches SET status='running',attempt_count=attempt_count+1,started_at=?2,completed_at=NULL,error_code=NULL,error_message=NULL,updated_at=?2 WHERE id=?1",
+            params![&batch.id, &started_at],
+        )?;
+            db.execute(
+                "UPDATE agent_runs SET current_batch=?2,updated_at=?3 WHERE id=?1",
+                params![run_id, index as i64, &started_at],
+            )?;
+            let batch_payload = payload_for_batch(&payload, &batch.segment_ids)?;
+            let schema = output_schema(
+                payload
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .unwrap_or("polish"),
+                payload
+                    .get("baseVersionId")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+            );
+            let batch_result = invoke_codex(
+                db,
+                config,
+                run_id,
+                &run.task_id,
+                &lease_id,
+                &batch.id,
+                &batch_payload,
+                &schema,
+                run.timeout_seconds,
+            )?;
+            validate_batch_result(&batch_payload, &batch.segment_ids, &batch_result.value)?;
+            let completed_at = now();
+            db.execute(
+            "UPDATE agent_run_batches SET status='completed',result_json=?2,codex_thread_id=?3,error_code=NULL,error_message=NULL,completed_at=?4,updated_at=?4 WHERE id=?1",
+            params![&batch.id, serde_json::to_string(&batch_result.value)?, &batch_result.thread_id, &completed_at],
+        )?;
+            let progress = 0.05 + 0.85 * ((index + 1) as f64 / batch_rows.len() as f64);
+            db.execute(
+            "UPDATE agent_runs SET progress=?2,current_batch=?3,codex_thread_id=COALESCE(?4,codex_thread_id),updated_at=?5 WHERE id=?1",
+            params![run_id, progress, (index + 1) as i64, &batch_result.thread_id, &completed_at],
+        )?;
+            tasks::heartbeat(
+                db,
+                &run.task_id,
+                &worker,
+                &lease_id,
+                progress,
+                Some("本机 Agent 已完成一个文本批次"),
+            )?;
+            results.push(batch_result.value);
+        }
+        ensure_project_version(db, &run.project_id, &run.base_version_id)?;
+        let response = aggregate_results(&payload, &results)?;
+        db.execute(
+            "UPDATE agent_runs SET status='submitting',progress=0.95,updated_at=?2 WHERE id=?1",
+            params![run_id, now()],
+        )?;
+        let (_, _, patch_set) = tasks::submit(db, &run.task_id, &worker, &lease_id, response)?;
+        if patch_set.status != "pending_review" {
+            bail!("agent_output_invalid: Agent 结果未进入人工审阅")
+        }
+        let completed_at = now();
+        db.execute(
         "UPDATE agent_runs SET status='completed',progress=1,worker_pid=NULL,error_code=NULL,error_message=NULL,completed_at=?2,updated_at=?2 WHERE id=?1",
         params![run_id, &completed_at],
-    )?;
-    Ok(())
+        )?;
+        Ok(())
+    })();
+    attempt_result.map_err(|source| {
+        anyhow::Error::new(ClaimedRunFailure {
+            lease_id,
+            run_attempt_count: run.attempt_count,
+            source,
+        })
+    })
 }
 
 fn ensure_project_version(
@@ -452,6 +529,7 @@ fn invoke_codex(
     config: &RunnerConfig,
     run_id: &str,
     task_id: &str,
+    lease_id: &str,
     batch_id: &str,
     payload: &Value,
     schema: &Value,
@@ -534,6 +612,7 @@ fn invoke_codex(
                 db,
                 task_id,
                 &format!("codex-{run_id}"),
+                lease_id,
                 progress.max(0.03),
                 Some("本机 Agent 仍在处理文本批次"),
             )?;
@@ -1205,27 +1284,40 @@ fn load_batch_rows(db: &Connection, run_id: &str) -> Result<Vec<AgentRunBatch>> 
     Ok(load(db, run_id)?.batches)
 }
 
-fn spawn_worker(run_id: &str, start_delay_ms: Option<u64>) -> Result<()> {
+fn spawn_worker(
+    run_id: &str,
+    expected_attempt_count: u32,
+    start_delay_ms: Option<u64>,
+) -> Result<()> {
+    let attempt = expected_attempt_count.to_string();
     let delay = start_delay_ms.map(|value| value.to_string());
-    let mut arguments = vec!["__agent_worker", run_id];
+    let mut arguments = vec!["__agent_worker", run_id, attempt.as_str()];
     if let Some(delay) = delay.as_deref() {
         arguments.push(delay);
     }
     crate::util::spawn_detached_current(&arguments).context("无法启动本机 Agent Worker")
 }
 
-fn mark_start_failed(db: &mut Connection, run_id: &str, _error: &anyhow::Error) -> Result<()> {
+fn mark_start_failed(
+    db: &mut Connection,
+    run_id: &str,
+    expected_attempt_count: u32,
+    _error: &anyhow::Error,
+) -> Result<()> {
     let timestamp = now();
     let task_id: String = db.query_row(
         "SELECT task_id FROM agent_runs WHERE id=?1",
         [run_id],
         |row| row.get(0),
     )?;
+    tasks::fail_runner(db, &task_id, None, None, "无法启动本机 Agent Worker。")?;
     db.execute(
-        "UPDATE agent_runs SET status='failed',error_code='agent_worker_interrupted',error_message='无法启动本机 Agent Worker。',completed_at=?2,updated_at=?2 WHERE id=?1",
-        params![run_id, timestamp],
+        "UPDATE agent_runs
+         SET status='failed',error_code='agent_worker_interrupted',
+             error_message='无法启动本机 Agent Worker。',completed_at=?2,updated_at=?2
+         WHERE id=?1 AND status='queued' AND attempt_count=?3",
+        params![run_id, timestamp, expected_attempt_count],
     )?;
-    tasks::fail_runner(db, &task_id, None, "无法启动本机 Agent Worker。")?;
     Ok(())
 }
 
@@ -1238,33 +1330,72 @@ fn cancel_requested(db: &Connection, run_id: &str, task_id: &str) -> Result<bool
     .map_err(Into::into)
 }
 
-fn finalize_worker_error(db: &mut Connection, run_id: &str, error: &anyhow::Error) -> Result<()> {
+fn finalize_worker_error(
+    db: &mut Connection,
+    run_id: &str,
+    expected_attempt_count: u32,
+    expected_lease_id: Option<&str>,
+    error: &anyhow::Error,
+) -> Result<()> {
     let run = load(db, run_id)?;
+    if run.attempt_count != expected_attempt_count
+        || !["running", "submitting"].contains(&run.status.as_str())
+    {
+        return Ok(());
+    }
     let code = contracts::error_code(error);
     let timestamp = now();
     if code == "agent_run_cancelled" || run.cancel_requested_at.is_some() {
-        tasks::finish_runner_cancel(db, &run.task_id)?;
-        db.execute(
-            "UPDATE agent_runs SET status='cancelled',worker_pid=NULL,error_code=NULL,error_message=NULL,completed_at=?2,updated_at=?2 WHERE id=?1",
-            params![run_id, &timestamp],
+        if !tasks::finish_runner_cancel(db, &run.task_id, expected_lease_id)? {
+            return Ok(());
+        }
+        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let changed = tx.execute(
+            "UPDATE agent_runs
+             SET status='cancelled',worker_pid=NULL,error_code=NULL,error_message=NULL,
+                 completed_at=?2,updated_at=?2
+             WHERE id=?1 AND status IN ('running','submitting') AND attempt_count=?3",
+            params![run_id, &timestamp, expected_attempt_count],
         )?;
-        db.execute(
-            "UPDATE agent_run_batches SET status='cancelled',completed_at=?2,updated_at=?2 WHERE run_id=?1 AND status IN ('queued','running')",
-            params![run_id, &timestamp],
-        )?;
+        if changed > 0 {
+            tx.execute(
+                "UPDATE agent_run_batches
+                 SET status='cancelled',completed_at=?2,updated_at=?2
+                 WHERE run_id=?1 AND status IN ('queued','running')",
+                params![run_id, &timestamp],
+            )?;
+        }
+        tx.commit()?;
         return Ok(());
     }
     let message = public_error_message(code);
-    let worker = format!("codex-{run_id}");
-    tasks::fail_runner(db, &run.task_id, Some(&worker), message)?;
-    db.execute(
-        "UPDATE agent_runs SET status='failed',worker_pid=NULL,error_code=?2,error_message=?3,completed_at=?4,updated_at=?4 WHERE id=?1",
-        params![run_id, code, message, &timestamp],
+    let worker = expected_lease_id.map(|_| format!("codex-{run_id}"));
+    if !tasks::fail_runner(
+        db,
+        &run.task_id,
+        worker.as_deref(),
+        expected_lease_id,
+        message,
+    )? {
+        return Ok(());
+    }
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let changed = tx.execute(
+        "UPDATE agent_runs
+         SET status='failed',worker_pid=NULL,error_code=?2,error_message=?3,
+             completed_at=?4,updated_at=?4
+         WHERE id=?1 AND status IN ('running','submitting') AND attempt_count=?5",
+        params![run_id, code, message, &timestamp, expected_attempt_count],
     )?;
-    db.execute(
-        "UPDATE agent_run_batches SET status='failed',error_code=?2,error_message=?3,completed_at=?4,updated_at=?4 WHERE run_id=?1 AND status='running'",
-        params![run_id, code, message, &timestamp],
-    )?;
+    if changed > 0 {
+        tx.execute(
+            "UPDATE agent_run_batches
+             SET status='failed',error_code=?2,error_message=?3,completed_at=?4,updated_at=?4
+             WHERE run_id=?1 AND status='running'",
+            params![run_id, code, message, &timestamp],
+        )?;
+    }
+    tx.commit()?;
     Ok(())
 }
 
@@ -1564,6 +1695,58 @@ mod tests {
     }
 
     #[test]
+    fn cancel_rolls_back_the_run_when_the_task_cannot_be_cancelled() {
+        let (_temp, mut database, project, task, segment_id) = database_fixture();
+        let (_, claimed_task, payload) =
+            tasks::claim(&mut database, "codex-review", Some(&task.id))
+                .unwrap()
+                .unwrap();
+        let lease_id = claimed_task.lease.as_ref().unwrap().id.clone();
+        tasks::submit(
+            &mut database,
+            &task.id,
+            "codex-review",
+            &lease_id,
+            json!({
+                "baseVersionId": payload["baseVersionId"],
+                "patches": [{
+                    "segmentId": segment_id,
+                    "before": "hello",
+                    "after": "hello.",
+                    "reason": "review",
+                    "confidence": 0.9
+                }]
+            }),
+        )
+        .unwrap();
+        let run_id = insert_test_run(
+            &mut database,
+            &task,
+            &project.id,
+            &segment_id,
+            "submitting",
+            &now(),
+        );
+
+        let error = cancel(&mut database, &run_id).unwrap_err().to_string();
+
+        assert!(error.contains("当前任务状态不能取消：review"));
+        let run = load(&database, &run_id).unwrap();
+        assert_eq!(run.status, "submitting");
+        assert!(run.cancel_requested_at.is_none());
+        assert_eq!(run.batches[0].status, "queued");
+        let reloaded = project::load(&database, &project.id).unwrap();
+        assert_eq!(reloaded.tasks[0].status, "review");
+        assert_eq!(reloaded.patch_sets[0].status, "pending_review");
+        assert!(
+            tasks::events(&database, &task.id, 0)
+                .unwrap()
+                .iter()
+                .all(|event| event.kind != "cancelled")
+        );
+    }
+
+    #[test]
     fn stale_worker_is_interrupted_without_applying_content() {
         let (_temp, mut database, project, task, segment_id) = database_fixture();
         tasks::claim(&mut database, "codex-stale", Some(&task.id))
@@ -1636,6 +1819,7 @@ mod tests {
             &config,
             &run_id,
             &task.id,
+            "test-lease",
             &batch_id,
             &payload,
             &output_schema("polish", task.base_version_id.as_deref().unwrap()),
@@ -1676,6 +1860,7 @@ mod tests {
             &config,
             &run_id,
             &task.id,
+            "test-lease",
             &batch_id,
             &payload,
             &output_schema("polish", task.base_version_id.as_deref().unwrap()),

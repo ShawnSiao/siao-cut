@@ -33,8 +33,8 @@ struct ReviewItem {
     segment_id: Option<String>,
 }
 
-pub fn stage(
-    db: &mut Connection,
+pub(crate) fn stage_in_transaction(
+    tx: &Transaction<'_>,
     task_id: &str,
     project_id: &str,
     kind: &str,
@@ -42,7 +42,7 @@ pub fn stage(
     base_version_id: &str,
     response: &Value,
 ) -> Result<AgentPatchSet> {
-    let exists: bool = db.query_row(
+    let exists: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM agent_patch_sets WHERE task_id=?1)",
         [task_id],
         |row| row.get(0),
@@ -50,14 +50,13 @@ pub fn stage(
     if exists {
         bail!("task_patch_already_submitted: 任务已提交过补丁")
     }
-    let base_project = load_version_project(db, project_id, base_version_id)?;
-    let items = proposed_items(db, project_id, kind, language, &base_project, response)?;
+    let base_project = load_version_project(tx, project_id, base_version_id)?;
+    let items = proposed_items(tx, project_id, kind, language, &base_project, response)?;
     if items.is_empty() {
         bail!("Agent 响应没有可审阅的修改")
     }
     let patch_set_id = new_id("patch");
     let created_at = now();
-    let tx = db.transaction()?;
     tx.execute(
         "INSERT INTO agent_patch_sets(id,task_id,project_id,kind,language,status,base_version_id,created_at) VALUES(?1,?2,?3,?4,?5,'pending_review',?6,?7)",
         params![&patch_set_id, task_id, project_id, kind, language, base_version_id, &created_at],
@@ -68,16 +67,7 @@ pub fn stage(
             params![new_id("pi"), &patch_set_id, &item.segment_id, &item.target, &item.before_text, &item.after_text, &item.current_text, &item.reason, item.confidence, &item.status, ordinal as i64],
         )?;
     }
-    tx.execute(
-        "UPDATE tasks SET status='review',progress=1,lease_worker=NULL,lease_id=NULL,lease_expires_at=NULL WHERE id=?1",
-        [task_id],
-    )?;
-    tx.execute(
-        "UPDATE workflows SET status='needs_review',updated_at=?2 WHERE task_id=?1",
-        params![task_id, &created_at],
-    )?;
-    tx.commit()?;
-    load_by_task(db, task_id)
+    load_by_task(tx, task_id)
 }
 
 fn load_version_project(db: &Connection, project_id: &str, version_id: &str) -> Result<Project> {

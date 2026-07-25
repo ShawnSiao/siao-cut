@@ -472,11 +472,17 @@ enum TaskCommand {
         task_id: Option<String>,
         #[arg(long)]
         worker: String,
+        #[arg(long)]
+        lease_id: Option<String>,
+        #[arg(long)]
+        payload_output: Option<PathBuf>,
     },
     Submit {
         task_id: String,
         #[arg(long)]
         worker: String,
+        #[arg(long)]
+        lease_id: String,
         #[arg(long)]
         response: PathBuf,
     },
@@ -484,6 +490,8 @@ enum TaskCommand {
         task_id: String,
         #[arg(long)]
         worker: String,
+        #[arg(long)]
+        lease_id: String,
         #[arg(long)]
         progress: f64,
         #[arg(long)]
@@ -493,6 +501,8 @@ enum TaskCommand {
         task_id: String,
         #[arg(long)]
         worker: String,
+        #[arg(long)]
+        lease_id: String,
         #[arg(long)]
         message: String,
     },
@@ -1289,30 +1299,76 @@ fn run(cli: Cli) -> Result<Value> {
                     "message":"任务已创建，等待 Agent 领取。"
                 })))
             }
-            TaskCommand::Claim { task_id, worker } => {
-                match tasks::claim(&mut database, &worker, task_id.as_deref())? {
-                    Some((project, task, payload)) => Ok(envelope(json!({
-                        "projectId":project.id,
-                        "taskId":task.id,
-                        "language":task.language,
-                        "instructionLocale":task.instruction_locale,
-                        "contentLanguage":project.transcript.source_language,
-                        "task":task,
-                        "payload":payload
-                    }))),
-                    None => Ok(envelope(
-                        json!({"task":null,"message":"当前没有待领取任务。"}),
-                    )),
+            TaskCommand::Claim {
+                task_id,
+                worker,
+                lease_id,
+                payload_output,
+            } => {
+                if let Some(payload_output) = payload_output.as_deref() {
+                    match tasks::claim_to_file(
+                        &mut database,
+                        &worker,
+                        task_id.as_deref(),
+                        lease_id.as_deref(),
+                        payload_output,
+                    )? {
+                        Some((project, task, payload_file)) => Ok(envelope(json!({
+                            "projectId":project.id,
+                            "taskId":task.id,
+                            "language":task.language,
+                            "instructionLocale":task.instruction_locale,
+                            "contentLanguage":project.transcript.source_language,
+                            "task":task,
+                            "leaseId":task.lease.as_ref().map(|lease| lease.id.as_str()),
+                            "payloadFile":{
+                                "path":payload_file.path,
+                                "sha256":payload_file.sha256,
+                                "bytes":payload_file.bytes
+                            },
+                            "claimReused":!payload_file.newly_claimed,
+                            "message":if payload_file.newly_claimed {
+                                "任务已领取；完整文本负载已写入指定文件。"
+                            } else {
+                                "当前 Agent 的有效任务负载已重新写入指定文件；未创建新领取记录。"
+                            }
+                        }))),
+                        None => Ok(envelope(
+                            json!({"task":null,"message":"当前没有可由此 Agent 领取或重取的任务。"}),
+                        )),
+                    }
+                } else {
+                    match tasks::claim_with_lease(
+                        &mut database,
+                        &worker,
+                        task_id.as_deref(),
+                        lease_id.as_deref(),
+                    )? {
+                        Some((project, task, payload)) => Ok(envelope(json!({
+                            "projectId":project.id,
+                            "taskId":task.id,
+                            "language":task.language,
+                            "instructionLocale":task.instruction_locale,
+                            "contentLanguage":project.transcript.source_language,
+                            "task":task,
+                            "leaseId":task.lease.as_ref().map(|lease| lease.id.as_str()),
+                            "payload":payload
+                        }))),
+                        None => Ok(envelope(
+                            json!({"task":null,"message":"当前没有待领取任务。"}),
+                        )),
+                    }
                 }
             }
             TaskCommand::Submit {
                 task_id,
                 worker,
+                lease_id,
                 response,
             } => {
                 let response: Value = serde_json::from_str(&fs::read_to_string(response)?)?;
                 let (project_id, task, patch_set) =
-                    tasks::submit(&mut database, &task_id, &worker, response)?;
+                    tasks::submit(&mut database, &task_id, &worker, &lease_id, response)?;
                 Ok(envelope(json!({
                     "projectId":project_id,
                     "taskId":task.id,
@@ -1324,6 +1380,7 @@ fn run(cli: Cli) -> Result<Value> {
             TaskCommand::Heartbeat {
                 task_id,
                 worker,
+                lease_id,
                 progress,
                 message,
             } => {
@@ -1332,6 +1389,7 @@ fn run(cli: Cli) -> Result<Value> {
                     &mut database,
                     &task_id,
                     &worker,
+                    &lease_id,
                     progress,
                     message.as_deref(),
                 )?;
@@ -1342,10 +1400,11 @@ fn run(cli: Cli) -> Result<Value> {
             TaskCommand::Fail {
                 task_id,
                 worker,
+                lease_id,
                 message,
             } => {
                 let project_id = tasks::project_id(&database, &task_id)?;
-                let task = tasks::fail(&mut database, &task_id, &worker, &message)?;
+                let task = tasks::fail(&mut database, &task_id, &worker, &lease_id, &message)?;
                 Ok(envelope(
                     json!({"projectId":project_id,"taskId":task.id,"task":task,"message":"任务已记录为失败，可重新排队。"}),
                 ))
@@ -2072,12 +2131,16 @@ pub(crate) fn execute_args(arguments: Vec<String>) -> ipc::Response {
 async fn main() {
     let arguments = env::args().skip(1).collect::<Vec<_>>();
     if arguments.first().map(String::as_str) == Some("__agent_worker") {
-        let Some(run_id) = arguments.get(1) else {
-            eprintln!("SiaoCut agent worker: missing run id");
+        let (Some(run_id), Some(expected_attempt_count)) = (
+            arguments.get(1),
+            arguments.get(2).and_then(|value| value.parse::<u32>().ok()),
+        ) else {
+            eprintln!("SiaoCut agent worker: missing run id or attempt");
             std::process::exit(2)
         };
-        let start_delay_ms = arguments.get(2).and_then(|value| value.parse().ok());
-        if let Err(error) = agent_runner::run_worker(run_id, start_delay_ms) {
+        let start_delay_ms = arguments.get(3).and_then(|value| value.parse().ok());
+        if let Err(error) = agent_runner::run_worker(run_id, expected_attempt_count, start_delay_ms)
+        {
             eprintln!("SiaoCut agent worker: {error}");
             std::process::exit(1)
         }

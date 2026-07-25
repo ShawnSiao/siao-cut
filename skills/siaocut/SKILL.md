@@ -19,6 +19,8 @@ Use this Skill when the user asks to 转写、润色字幕、翻译字幕、剪�
 - Run `health` before transcription. If `health.engines.asr` or `health.engines.ffmpeg` is `not_configured`, explain the missing local dependency; do not invent a transcript.
 - Use `transcribe <projectId> --model <absolute local model path> [--language en|zh|auto]` only after the user has selected or installed a local model. This command sends neither media nor transcript to a network service.
 - Agent tasks receive text and timestamps, never the media path. Do not read media files to answer a task.
+- Claim an Agent task with `--payload-output <absolute path outside the repository>`. Read the complete task payload, including its unpredictable `leaseId` and `attemptCount`, from that file; the console response intentionally contains only compact metadata. Do not invent or reuse a lease ID from another attempt.
+- If the claim console response is lost or truncated, read `leaseId` from the successfully written payload file, then repeat the targeted claim with `--lease-id <that-lease-id>`. This reissues the same payload without creating a new attempt. Do not call `task fail` merely to recover the claim payload.
 - Agent results are proposals. `task submit` creates a pending patch set and never changes project text. Only `task review` or `task review-all` may apply a proposal after an explicit human choice.
 - Preserve `before` exactly as supplied in the claimed segment. This enables SiaoCut to show the task baseline, the Agent suggestion, and the current human text side by side.
 - If the project changes while an Agent is working, still submit the result. SiaoCut marks affected items as conflicts for review instead of overwriting human edits.
@@ -34,13 +36,16 @@ Use this Skill when the user asks to 转写、润色字幕、翻译字幕、剪�
 siaocut --json import "C:\Videos\talk.mp4" --title "产品发布口播"
 siaocut --json transcribe <projectId> --model "$env:LOCALAPPDATA\SiaoCut\models\ggml-tiny.en.bin" --language en
 siaocut --json workflow create <projectId> --kind translate --lang en
-siaocut --json task claim <taskId> --worker external-agent
+$claimPayload = Join-Path $env:TEMP "siaocut-<taskId>-claim.json"
+siaocut --json task claim <taskId> --worker external-agent --payload-output $claimPayload
+$claim = Get-Content -LiteralPath $claimPayload -Raw | ConvertFrom-Json
+$leaseId = $claim.leaseId
 ```
 
-When a task is claimed, produce a response JSON file outside the repository and submit it:
+After the claim succeeds, verify `payloadFile.sha256`, read the complete JSON object from `$claimPayload`, then produce a response JSON file outside the repository and submit it:
 
 ```powershell
-siaocut --json task submit <taskId> --worker external-agent --response "C:\Temp\siaocut-response.json"
+siaocut --json task submit <taskId> --worker external-agent --lease-id $leaseId --response "C:\Temp\siaocut-response.json"
 ```
 
 For `polish`, `translate`, `proofread`, `edit`, and `cut`, use this response shape:
@@ -62,13 +67,13 @@ For `polish`, `translate`, `proofread`, `edit`, and `cut`, use this response sha
 
 For `cut`, keep `before` exact and set `after` to an empty string. Explain why the complete segment can be removed. Do not propose a partial-word boundary.
 
-Copy `baseVersionId` exactly from the claim payload. While working, renew the lease and report coarse progress:
+Copy `baseVersionId` exactly from the payload file. While working, renew the lease and report coarse progress:
 
 ```powershell
-siaocut --json task heartbeat <taskId> --worker external-agent --progress 0.5 --message "正在校对译文"
+siaocut --json task heartbeat <taskId> --worker external-agent --lease-id $leaseId --progress 0.5 --message "正在校对译文"
 ```
 
-If processing cannot continue, use `task fail`; do not submit partial content as complete. Failed or interrupted tasks can be returned to the queue with `task retry`. Use `task events <taskId> --after <eventId>` to read progress visible to the App.
+If processing cannot continue, use `task fail <taskId> --worker <worker> --lease-id <leaseId> --message <reason>`; do not submit partial content as complete. Failed or interrupted tasks can be returned to the queue with `task retry`. Use `task events <taskId> --after <eventId>` to read progress visible to the App.
 
 After submission, inspect the pending result without changing the project:
 

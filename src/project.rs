@@ -1747,6 +1747,7 @@ mod tests {
             &mut db,
             &workflow.task_id,
             "history-agent",
+            &claim.1.lease.as_ref().unwrap().id,
             json!({
                 "baseVersionId": base,
                 "patches": [{
@@ -1880,6 +1881,7 @@ mod tests {
             &mut db,
             &workflow.task_id,
             "translation-history-agent",
+            &claim.1.lease.as_ref().unwrap().id,
             json!({
                 "baseVersionId": claim.2["baseVersionId"],
                 "patches": [{
@@ -1957,6 +1959,7 @@ mod tests {
             &mut db,
             &workflow.task_id,
             "summary-history-agent",
+            &claim.1.lease.as_ref().unwrap().id,
             json!({
                 "baseVersionId": base,
                 "summary": "可恢复的摘要"
@@ -2099,6 +2102,7 @@ mod tests {
             &mut db,
             &workflow.task_id,
             "baseline-agent",
+            &claim.1.lease.as_ref().unwrap().id,
             json!({
                 "baseVersionId": claim.2["baseVersionId"],
                 "patches": [{

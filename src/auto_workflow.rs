@@ -1264,10 +1264,12 @@ mod tests {
         assert!(project.edits.is_empty());
         let claim = tasks::claim(&mut db, "auto-agent", None).unwrap().unwrap();
         let base = claim.2["baseVersionId"].as_str().unwrap();
+        let lease_id = claim.1.lease.as_ref().unwrap().id.clone();
         tasks::submit(
             &mut db,
             waiting.agent_task_id.as_deref().unwrap(),
             "auto-agent",
+            &lease_id,
             serde_json::json!({
                 "baseVersionId": base,
                 "patches": [{

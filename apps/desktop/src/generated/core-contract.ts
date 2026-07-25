@@ -51,8 +51,10 @@ export type TaskStatus = typeof taskStatuses[number];
 
 export const workflowStatuses = [
   "waiting_agent",
-  "needs_agent",
+  "running",
   "needs_review",
+  "failed",
+  "interrupted",
   "completed",
   "cancelled"
 ] as const;
@@ -96,6 +98,10 @@ export const coreErrorCodes = [
   "instruction_locale_invalid",
   "task_cancel_requested",
   "task_patch_already_submitted",
+  "task_lease_mismatch",
+  "task_payload_output_invalid",
+  "task_payload_output_failed",
+  "task_payload_unavailable",
   "patch_before_mismatch",
   "patch_current_changed",
   "codex_cli_missing",

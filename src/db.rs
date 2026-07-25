@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 26;
+pub const CURRENT_SCHEMA_VERSION: i64 = 27;
 
 struct Migration {
     version: i64,
@@ -118,6 +118,10 @@ const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 26,
         apply: migration_26_normalized_background_targets,
+    },
+    Migration {
+        version: 27,
+        apply: migration_27_task_claim_payloads,
     },
 ];
 
@@ -1244,6 +1248,28 @@ fn migration_26_normalized_background_targets(tx: &Transaction<'_>) -> Result<()
          CREATE UNIQUE INDEX idx_source_imports_one_active_url
              ON source_imports(original_url)
              WHERE status IN ('queued','running','finalizing');",
+    )?;
+    Ok(())
+}
+
+fn migration_27_task_claim_payloads(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute_batch(
+        "ALTER TABLE tasks ADD COLUMN claim_payload_json TEXT;
+         UPDATE workflows
+            SET status=CASE (
+                SELECT status FROM tasks WHERE tasks.id=workflows.task_id
+            )
+                WHEN 'queued' THEN 'waiting_agent'
+                WHEN 'claimed' THEN 'running'
+                WHEN 'running' THEN 'running'
+                WHEN 'review' THEN 'needs_review'
+                WHEN 'failed' THEN 'failed'
+                WHEN 'interrupted' THEN 'interrupted'
+                WHEN 'cancelled' THEN 'cancelled'
+                WHEN 'done' THEN 'completed'
+                WHEN 'completed' THEN 'completed'
+                ELSE status
+            END;",
     )?;
     Ok(())
 }

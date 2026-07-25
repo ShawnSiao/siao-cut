@@ -70,13 +70,15 @@ An external Agent is separate from SiaoCut. It receives transcript text, timesta
 The app displays **Waiting for an external Agent to claim** until an Agent claims the task. Copy the full handoff instructions from the app into an Agent environment that can run SiaoCut commands on this computer. For a direct local invocation, use:
 
 ```powershell
-.\skills\siaocut\bin\siaocut.ps1 --json task claim <taskId> --worker external-agent
+$claimPayload = Join-Path $env:TEMP "siaocut-<taskId>-claim.json"
+.\skills\siaocut\bin\siaocut.ps1 --json task claim <taskId> --worker external-agent --payload-output $claimPayload
+$claim = Get-Content -LiteralPath $claimPayload -Raw | ConvertFrom-Json
 ```
 
-The claim response includes `instructionLocale`, `language`, and `contentLanguage`. Follow its `instructions` and `responseSchema`, write the response JSON outside the repository, then submit it:
+The payload file includes `instructionLocale`, `language`, `contentLanguage`, and an unpredictable `leaseId` for this exact attempt. Follow its `instructions` and `responseSchema`, write the response JSON outside the repository, then submit it with that lease ID:
 
 ```powershell
-.\skills\siaocut\bin\siaocut.ps1 --json task submit <taskId> --worker external-agent --response "C:\Temp\siaocut-response.json"
+.\skills\siaocut\bin\siaocut.ps1 --json task submit <taskId> --worker external-agent --lease-id $claim.leaseId --response "C:\Temp\siaocut-response.json"
 .\skills\siaocut\bin\siaocut.ps1 --json task diff <taskId>
 ```
 
