@@ -8,6 +8,7 @@ use crate::{
 };
 use anyhow::{Context, Result, anyhow, bail};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use serde_json::{Value, json};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -424,7 +425,7 @@ fn generate(
     if !has_video {
         command.arg("-shortest");
     }
-    command.args(video_encoder_args(&encoder));
+    command.args(proxy_video_encoder_args(&encoder));
     if has_audio {
         command.args(["-c:a", "aac", "-b:a", "128k"]);
     }
@@ -515,25 +516,110 @@ pub fn has_stream(source: &Path, selector: &str) -> Result<bool> {
     Ok(output.status.success() && !output.stdout.is_empty())
 }
 
-pub fn preferred_video_encoder(ffmpeg: &str) -> Result<String> {
+pub fn available_video_encoders(ffmpeg: &str) -> Result<Vec<String>> {
     let mut command = hidden_command(ffmpeg);
     let output = command
         .args(["-hide_banner", "-encoders"])
         .output()
         .with_context(|| format!("无法读取 FFmpeg 编码器：{ffmpeg}"))?;
-    let encoders = String::from_utf8_lossy(&output.stdout);
-    ["h264_mf", "libx264", "mpeg4"]
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "无法读取 FFmpeg 编码器：{}",
+            if stderr.trim().is_empty() {
+                output.status.to_string()
+            } else {
+                stderr.trim().to_owned()
+            }
+        )
+    }
+    let listed = String::from_utf8_lossy(&output.stdout);
+    let encoders = video_encoder_candidates(&listed);
+    if encoders.is_empty() {
+        bail!("FFmpeg 缺少可用的视频编码器")
+    }
+    Ok(encoders)
+}
+
+pub fn preferred_video_encoder(ffmpeg: &str) -> Result<String> {
+    available_video_encoders(ffmpeg)?
         .into_iter()
-        .find(|encoder| encoders.split_whitespace().any(|value| value == *encoder))
-        .map(str::to_owned)
+        .next()
         .ok_or_else(|| anyhow!("FFmpeg 缺少可用的视频编码器"))
 }
 
-pub fn video_encoder_args(encoder: &str) -> Vec<&str> {
+fn video_encoder_candidates(listed: &str) -> Vec<String> {
+    ["h264_mf", "libx264", "mpeg4"]
+        .into_iter()
+        .filter(|encoder| {
+            listed.lines().any(|line| {
+                let mut fields = line.split_whitespace();
+                let Some(flags) = fields.next() else {
+                    return false;
+                };
+                flags.starts_with('V')
+                    && flags.len() >= 6
+                    && fields.next().is_some_and(|name| name == *encoder)
+            })
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
+pub fn proxy_video_encoder_args(encoder: &str) -> Vec<&str> {
     match encoder {
         "libx264" => vec!["-c:v", "libx264", "-preset", "veryfast", "-crf", "23"],
         "h264_mf" => vec!["-c:v", "h264_mf", "-b:v", "3M"],
         _ => vec!["-c:v", "mpeg4", "-q:v", "5"],
+    }
+}
+
+pub fn export_video_encoder_args(encoder: &str) -> Vec<&str> {
+    match encoder {
+        "libx264" => vec![
+            "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p",
+        ],
+        "h264_mf" => vec![
+            "-c:v",
+            "h264_mf",
+            "-rate_control",
+            "quality",
+            "-quality",
+            "90",
+            "-scenario",
+            "archive",
+            "-pix_fmt",
+            "yuv420p",
+        ],
+        _ => vec!["-c:v", "mpeg4", "-q:v", "2", "-pix_fmt", "yuv420p"],
+    }
+}
+
+pub fn export_video_encoding_manifest(encoder: &str) -> Value {
+    match encoder {
+        "libx264" => json!({
+            "encoder": "libx264",
+            "purpose": "final",
+            "rateControl": "crf",
+            "crf": 18,
+            "preset": "medium",
+            "pixelFormat": "yuv420p"
+        }),
+        "h264_mf" => json!({
+            "encoder": "h264_mf",
+            "purpose": "final",
+            "rateControl": "quality",
+            "quality": 90,
+            "scenario": "archive",
+            "pixelFormat": "yuv420p"
+        }),
+        _ => json!({
+            "encoder": "mpeg4",
+            "purpose": "final",
+            "rateControl": "constant_quantizer",
+            "qscale": 2,
+            "pixelFormat": "yuv420p"
+        }),
     }
 }
 
@@ -555,6 +641,71 @@ fn run(command: &mut Command, label: &str) -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn final_encoder_candidates_keep_preference_order_and_exclude_unlisted_encoders() {
+        let listed = " V....D libx264 libx264 H.264\n V..... mpeg4 MPEG-4 part 2";
+
+        assert_eq!(
+            video_encoder_candidates(listed),
+            ["libx264".to_owned(), "mpeg4".to_owned()]
+        );
+        assert!(
+            video_encoder_candidates(
+                " V..... h264_nvenc NVIDIA encoder compatible with h264_mf\n A..... fake libx264"
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn final_export_quality_is_independent_from_proxy_bitrate() {
+        assert_eq!(
+            proxy_video_encoder_args("h264_mf"),
+            ["-c:v", "h264_mf", "-b:v", "3M"]
+        );
+        assert_eq!(
+            export_video_encoder_args("h264_mf"),
+            [
+                "-c:v",
+                "h264_mf",
+                "-rate_control",
+                "quality",
+                "-quality",
+                "90",
+                "-scenario",
+                "archive",
+                "-pix_fmt",
+                "yuv420p"
+            ]
+        );
+        assert_eq!(
+            export_video_encoding_manifest("h264_mf"),
+            json!({
+                "encoder": "h264_mf",
+                "purpose": "final",
+                "rateControl": "quality",
+                "quality": 90,
+                "scenario": "archive",
+                "pixelFormat": "yuv420p"
+            })
+        );
+    }
+
+    #[test]
+    fn software_final_export_uses_high_quality_crf() {
+        assert_eq!(
+            proxy_video_encoder_args("libx264"),
+            ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23"]
+        );
+        assert_eq!(
+            export_video_encoder_args("libx264"),
+            [
+                "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p"
+            ]
+        );
+        assert_eq!(export_video_encoding_manifest("libx264")["crf"], json!(18));
+    }
 
     #[test]
     fn preview_directory_publication_can_restore_the_previous_generation() {

@@ -44,6 +44,14 @@ struct CommandSpec<'a> {
     canvas_settings: crate::model::CanvasSettings,
 }
 
+#[cfg(test)]
+thread_local! {
+    static FAIL_FIRST_BACKUP_CLEANUPS: std::cell::RefCell<Vec<PathBuf>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    static BACKUP_CLEANUP_ATTEMPTS: std::cell::RefCell<Vec<PathBuf>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
 pub fn create(
     db: &mut Connection,
     project_id: &str,
@@ -386,7 +394,7 @@ fn run(db: &mut Connection, job_id: &str) -> Result<()> {
     let output = PathBuf::from(&job.output_path);
     let partial = partial_path(&output, job_id);
     let ffmpeg = tool_path("SIAOCUT_FFMPEG", "ffmpeg");
-    let encoder = artifacts::preferred_video_encoder(&ffmpeg)?;
+    let encoders = artifacts::available_video_encoders(&ffmpeg)?;
     let has_video = artifacts::has_stream(source, "v:0")?;
     let has_audio = artifacts::has_stream(source, "a:0")?;
     let subtitle_path = if job.burn_subtitles {
@@ -413,83 +421,24 @@ fn run(db: &mut Connection, job_id: &str) -> Result<()> {
         None
     };
 
-    let mut command = build_command(CommandSpec {
-        ffmpeg: &ffmpeg,
-        source,
-        output: &partial,
-        map: &map,
-        has_video,
-        has_audio,
-        subtitle_path: subtitle_path.as_deref(),
-        encoder: &encoder,
-        canvas_settings: job.canvas_settings,
+    let encoder = encode_with_fallback(&encoders, &partial, |encoder| {
+        let command = build_command(CommandSpec {
+            ffmpeg: &ffmpeg,
+            source,
+            output: &partial,
+            map: &map,
+            has_video,
+            has_audio,
+            subtitle_path: subtitle_path.as_deref(),
+            encoder,
+            canvas_settings: job.canvas_settings,
+        })?;
+        run_encode_attempt(db, job_id, &map, command)
     })?;
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = command.spawn().context("无法启动 FFmpeg 视频导出")?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| anyhow!("无法读取 FFmpeg 进度"))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| anyhow!("无法读取 FFmpeg 错误"))?;
-    let (progress_tx, progress_rx) = mpsc::channel();
-    let progress_reader = thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            let _ = progress_tx.send(line);
-        }
-    });
-    let error_reader = thread::spawn(move || {
-        let mut text = String::new();
-        let _ = BufReader::new(stderr).read_to_string(&mut text);
-        text
-    });
-
-    let mut last_progress = 0.01;
-    let status = loop {
-        while let Ok(line) = progress_rx.try_recv() {
-            if let Some(value) = line.strip_prefix("out_time_us=")
-                && let Ok(microseconds) = value.parse::<f64>()
-            {
-                let progress =
-                    (microseconds / 1_000_000.0 / map.output_duration).clamp(last_progress, 0.99);
-                if progress - last_progress >= 0.01 {
-                    last_progress = progress;
-                    db.execute(
-                        "UPDATE export_jobs SET progress=?2,updated_at=?3 WHERE id=?1",
-                        params![job_id, progress, now()],
-                    )?;
-                }
-            }
-        }
-        let cancel_requested: bool = db.query_row(
-            "SELECT cancel_requested_at IS NOT NULL FROM export_jobs WHERE id=?1",
-            [job_id],
-            |row| row.get(0),
-        )?;
-        if cancel_requested {
-            let _ = child.kill();
-            let _ = child.wait();
-            break None;
-        }
-        if let Some(status) = child.try_wait()? {
-            break Some(status);
-        }
-        thread::sleep(Duration::from_millis(200));
-    };
-    let _ = progress_reader.join();
-    let stderr = error_reader.join().unwrap_or_default();
-    if status.is_none() {
-        if partial.is_file() {
-            fs::remove_file(&partial)?;
-        }
+    let Some(encoder) = encoder else {
         finish_cancelled(db, job_id)?;
         return Ok(());
-    }
-    if !status.is_some_and(|status| status.success()) {
-        bail!("FFmpeg 视频导出失败：{}", stderr.trim())
-    }
+    };
     let manifest_path = output.with_extension("siaocut.json");
     let manifest_partial = staging_path(&manifest_path, job_id, "manifest");
     let manifest = json!({
@@ -500,6 +449,7 @@ fn run(db: &mut Connection, job_id: &str) -> Result<()> {
         "baseVersionId": base_version_id,
         "timeline": map,
         "encoder": encoder,
+        "videoEncoding": artifacts::export_video_encoding_manifest(&encoder),
         "burnSubtitles": job.burn_subtitles,
         "language": job.language,
         "bilingual": job.bilingual,
@@ -560,8 +510,7 @@ fn run(db: &mut Connection, job_id: &str) -> Result<()> {
             [published_manifest, published_video],
         ));
     }
-    published_manifest.finish()?;
-    published_video.finish()?;
+    finish_publications_after_commit([published_manifest, published_video]);
     Ok(())
 }
 
@@ -644,7 +593,7 @@ fn build_command(spec: CommandSpec<'_>) -> Result<Command> {
     command
         .args(["-filter_complex", &filters.join(";")])
         .args(["-map", video_label, "-map", "[acat]"])
-        .args(artifacts::video_encoder_args(encoder))
+        .args(artifacts::export_video_encoder_args(encoder))
         .args([
             "-c:a",
             "aac",
@@ -658,6 +607,186 @@ fn build_command(spec: CommandSpec<'_>) -> Result<Command> {
         ])
         .arg(output);
     Ok(command)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum EncodeAttemptOutcome {
+    Succeeded,
+    Failed(String),
+    Cancelled,
+}
+
+fn encode_with_fallback(
+    encoders: &[String],
+    partial: &Path,
+    mut attempt: impl FnMut(&str) -> Result<EncodeAttemptOutcome>,
+) -> Result<Option<String>> {
+    if encoders.is_empty() {
+        bail!("FFmpeg 缺少可用的视频编码器")
+    }
+    let mut failures = Vec::new();
+    for encoder in encoders {
+        remove_attempt_partial(partial).with_context(|| {
+            format!("无法清理 {encoder} 编码前的暂存文件 {}", partial.display())
+        })?;
+        let outcome = match attempt(encoder) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                if let Err(cleanup_error) = remove_attempt_partial(partial) {
+                    bail!(
+                        "{encoder} 编码异常：{error}；且无法清理暂存文件 {}：{cleanup_error}",
+                        partial.display()
+                    )
+                }
+                return Err(error.context(format!("{encoder} 编码异常")));
+            }
+        };
+        match outcome {
+            EncodeAttemptOutcome::Succeeded if partial.is_file() => {
+                return Ok(Some(encoder.clone()));
+            }
+            EncodeAttemptOutcome::Succeeded => {
+                failures.push(format!("{encoder}: FFmpeg 未生成视频暂存文件"));
+            }
+            EncodeAttemptOutcome::Failed(detail) => {
+                failures.push(format!("{encoder}: {detail}"));
+            }
+            EncodeAttemptOutcome::Cancelled => {
+                remove_attempt_partial(partial).with_context(|| {
+                    format!(
+                        "取消 {encoder} 编码后无法清理暂存文件 {}",
+                        partial.display()
+                    )
+                })?;
+                return Ok(None);
+            }
+        }
+        remove_attempt_partial(partial).with_context(|| {
+            format!("{encoder} 编码失败后无法清理暂存文件 {}", partial.display())
+        })?;
+    }
+    bail!(
+        "FFmpeg 视频导出失败（已按顺序尝试 {}）：{}",
+        encoders.join(" -> "),
+        failures.join("；")
+    )
+}
+
+fn remove_attempt_partial(partial: &Path) -> Result<()> {
+    match fs::remove_file(partial) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn run_encode_attempt(
+    db: &Connection,
+    job_id: &str,
+    map: &TimelineMap,
+    mut command: Command,
+) -> Result<EncodeAttemptOutcome> {
+    let cancel_requested: bool = db.query_row(
+        "SELECT cancel_requested_at IS NOT NULL FROM export_jobs WHERE id=?1",
+        [job_id],
+        |row| row.get(0),
+    )?;
+    if cancel_requested {
+        return Ok(EncodeAttemptOutcome::Cancelled);
+    }
+
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command.spawn().context("无法启动 FFmpeg 视频导出")?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("无法读取 FFmpeg 进度"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow!("无法读取 FFmpeg 错误"))?;
+    let (progress_tx, progress_rx) = mpsc::channel();
+    let progress_reader = thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            let _ = progress_tx.send(line);
+        }
+    });
+    let error_reader = thread::spawn(move || {
+        let mut text = String::new();
+        let _ = BufReader::new(stderr).read_to_string(&mut text);
+        text
+    });
+
+    let mut last_progress = db
+        .query_row(
+            "SELECT progress FROM export_jobs WHERE id=?1",
+            [job_id],
+            |row| row.get::<_, f64>(0),
+        )?
+        .clamp(0.01, 0.99);
+    let status: Result<Option<_>> = 'monitor: loop {
+        while let Ok(line) = progress_rx.try_recv() {
+            if let Some(value) = line.strip_prefix("out_time_us=")
+                && let Ok(microseconds) = value.parse::<f64>()
+            {
+                let progress =
+                    (microseconds / 1_000_000.0 / map.output_duration).clamp(last_progress, 0.99);
+                if progress - last_progress >= 0.01 {
+                    last_progress = progress;
+                    if let Err(error) = db.execute(
+                        "UPDATE export_jobs SET progress=?2,updated_at=?3 WHERE id=?1",
+                        params![job_id, progress, now()],
+                    ) {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        break 'monitor Err(error.into());
+                    }
+                }
+            }
+        }
+        let cancel_requested: bool = match db.query_row(
+            "SELECT cancel_requested_at IS NOT NULL FROM export_jobs WHERE id=?1",
+            [job_id],
+            |row| row.get(0),
+        ) {
+            Ok(value) => value,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break Err(error.into());
+            }
+        };
+        if cancel_requested {
+            let _ = child.kill();
+            let _ = child.wait();
+            break Ok(None);
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(Some(status)),
+            Ok(None) => {}
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break Err(error.into());
+            }
+        }
+        thread::sleep(Duration::from_millis(200));
+    };
+    let _ = progress_reader.join();
+    let stderr = error_reader.join().unwrap_or_default();
+    let Some(status) = status? else {
+        return Ok(EncodeAttemptOutcome::Cancelled);
+    };
+    if status.success() {
+        Ok(EncodeAttemptOutcome::Succeeded)
+    } else {
+        let detail = if stderr.trim().is_empty() {
+            format!("FFmpeg 退出状态 {status}")
+        } else {
+            stderr.trim().to_owned()
+        };
+        Ok(EncodeAttemptOutcome::Failed(detail))
+    }
 }
 
 fn escape_filter_path(path: &Path) -> String {
@@ -711,10 +840,11 @@ fn partial_path(output: &Path, job_id: &str) -> PathBuf {
 struct PublishedFile {
     target: PathBuf,
     backup: Option<PathBuf>,
+    committed: bool,
 }
 
 impl PublishedFile {
-    fn rollback(self) -> Result<()> {
+    fn rollback(mut self) -> Result<()> {
         if self.target.is_file() {
             fs::remove_file(&self.target).with_context(|| {
                 format!(
@@ -723,7 +853,7 @@ impl PublishedFile {
                 )
             })?;
         }
-        if let Some(backup) = self.backup
+        if let Some(backup) = self.backup.take()
             && backup.is_file()
         {
             fs::rename(&backup, &self.target).with_context(|| {
@@ -737,19 +867,69 @@ impl PublishedFile {
         Ok(())
     }
 
-    fn finish(self) -> Result<()> {
-        if let Some(backup) = self.backup
-            && backup.is_file()
-        {
-            fs::remove_file(&backup).with_context(|| {
-                format!(
-                    "export_cleanup_failed: 导出已提交，但无法清理旧输出备份 {}",
-                    backup.display()
-                )
-            })?;
-        }
-        Ok(())
+    fn finish_after_commit(&mut self) {
+        self.committed = true;
+        let _ = self.cleanup_committed_backup();
     }
+
+    fn cleanup_committed_backup(&mut self) -> Result<()> {
+        let Some(backup) = self.backup.clone() else {
+            return Ok(());
+        };
+        match remove_committed_backup(&backup) {
+            Ok(()) => {
+                self.backup = None;
+                Ok(())
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                self.backup = None;
+                Ok(())
+            }
+            Err(error) => Err(anyhow::Error::new(error).context(format!(
+                "export_cleanup_failed: 导出已提交，但无法清理旧输出备份 {}",
+                backup.display()
+            ))),
+        }
+    }
+}
+
+impl Drop for PublishedFile {
+    fn drop(&mut self) {
+        if self.committed {
+            let _ = self.cleanup_committed_backup();
+        }
+    }
+}
+
+fn finish_publications_after_commit(publications: impl IntoIterator<Item = PublishedFile>) {
+    let mut publications = publications.into_iter().collect::<Vec<_>>();
+    for publication in &mut publications {
+        publication.finish_after_commit();
+    }
+}
+
+fn remove_committed_backup(backup: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    {
+        BACKUP_CLEANUP_ATTEMPTS.with(|attempts| {
+            attempts.borrow_mut().push(backup.to_path_buf());
+        });
+        let should_fail = FAIL_FIRST_BACKUP_CLEANUPS.with(|paths| {
+            let mut paths = paths.borrow_mut();
+            paths
+                .iter()
+                .position(|path| path == backup)
+                .map(|index| paths.swap_remove(index))
+                .is_some()
+        });
+        if should_fail {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "injected export backup cleanup failure",
+            ));
+        }
+    }
+    fs::remove_file(backup)
 }
 
 fn publish_staged(staged: &Path, target: &Path, job_id: &str) -> Result<PublishedFile> {
@@ -779,6 +959,7 @@ fn publish_staged(staged: &Path, target: &Path, job_id: &str) -> Result<Publishe
     Ok(PublishedFile {
         target: target.to_path_buf(),
         backup,
+        committed: false,
     })
 }
 
@@ -857,6 +1038,71 @@ mod tests {
     }
 
     #[test]
+    fn final_export_falls_back_after_encoder_failure_and_records_the_successful_encoder() {
+        let temp = tempdir().unwrap();
+        let partial = temp.path().join("render.video.part.mp4");
+        fs::write(&partial, b"stale-before-first-attempt").unwrap();
+        let encoders = vec![
+            "h264_mf".to_owned(),
+            "libx264".to_owned(),
+            "mpeg4".to_owned(),
+        ];
+        let mut attempted = Vec::new();
+
+        let selected = encode_with_fallback(&encoders, &partial, |encoder| {
+            attempted.push(encoder.to_owned());
+            assert!(
+                !partial.exists(),
+                "each encoder must start without the previous attempt's partial"
+            );
+            match encoder {
+                "h264_mf" => {
+                    fs::write(&partial, b"failed-hardware-output").unwrap();
+                    Ok(EncodeAttemptOutcome::Failed(
+                        "hardware encoder initialization failed".into(),
+                    ))
+                }
+                "libx264" => {
+                    fs::write(&partial, b"software-success").unwrap();
+                    Ok(EncodeAttemptOutcome::Succeeded)
+                }
+                _ => panic!("fallback continued after the first successful encoder"),
+            }
+        })
+        .unwrap()
+        .unwrap();
+
+        let manifest = json!({
+            "encoder": selected.clone(),
+            "videoEncoding": artifacts::export_video_encoding_manifest(&selected)
+        });
+        assert_eq!(attempted, vec!["h264_mf".to_owned(), "libx264".to_owned()]);
+        assert_eq!(fs::read(&partial).unwrap(), b"software-success");
+        assert_eq!(manifest["encoder"], "libx264");
+        assert_eq!(manifest["videoEncoding"]["encoder"], "libx264");
+        assert_eq!(manifest["videoEncoding"]["rateControl"], "crf");
+    }
+
+    #[test]
+    fn cancelling_an_encoder_attempt_stops_fallback_and_removes_partial_output() {
+        let temp = tempdir().unwrap();
+        let partial = temp.path().join("render.video.part.mp4");
+        let encoders = vec!["h264_mf".to_owned(), "libx264".to_owned()];
+        let mut attempted = Vec::new();
+
+        let selected = encode_with_fallback(&encoders, &partial, |encoder| {
+            attempted.push(encoder.to_owned());
+            fs::write(&partial, b"cancelled-output").unwrap();
+            Ok(EncodeAttemptOutcome::Cancelled)
+        })
+        .unwrap();
+
+        assert!(selected.is_none());
+        assert_eq!(attempted, vec!["h264_mf".to_owned()]);
+        assert!(!partial.exists());
+    }
+
+    #[test]
     fn rejects_export_job_ids_that_could_escape_the_cache_directory() {
         for job_id in [
             r"..\..\victim",
@@ -886,6 +1132,88 @@ mod tests {
         published.rollback().unwrap();
 
         assert_eq!(fs::read(&target).unwrap(), b"previous");
+    }
+
+    #[test]
+    fn committed_export_cleanup_failures_do_not_fail_the_worker_and_retry_both_backups() {
+        let temp = tempdir().unwrap();
+        let video_target = temp.path().join("output.mp4");
+        let video_staged = temp.path().join("new-output.mp4");
+        let manifest_target = temp.path().join("output.siaocut.json");
+        let manifest_staged = temp.path().join("new-output.siaocut.json");
+        fs::write(&video_target, b"previous video").unwrap();
+        fs::write(&video_staged, b"committed video").unwrap();
+        fs::write(&manifest_target, b"previous manifest").unwrap();
+        fs::write(&manifest_staged, b"committed manifest").unwrap();
+
+        let published_video = publish_staged(&video_staged, &video_target, "cleanup-job").unwrap();
+        let published_manifest =
+            publish_staged(&manifest_staged, &manifest_target, "cleanup-job").unwrap();
+        let video_backup = staging_path(&video_target, "cleanup-job", "backup");
+        let manifest_backup = staging_path(&manifest_target, "cleanup-job", "backup");
+        assert!(video_backup.is_file());
+        assert!(manifest_backup.is_file());
+
+        FAIL_FIRST_BACKUP_CLEANUPS.with(|paths| {
+            *paths.borrow_mut() = vec![video_backup.clone(), manifest_backup.clone()];
+        });
+        BACKUP_CLEANUP_ATTEMPTS.with(|attempts| attempts.borrow_mut().clear());
+
+        let mut database = Connection::open_in_memory().unwrap();
+        database
+            .execute_batch(
+                "CREATE TABLE export_jobs(id TEXT PRIMARY KEY, status TEXT NOT NULL);
+                 INSERT INTO export_jobs(id,status) VALUES('cleanup-job','running');",
+            )
+            .unwrap();
+        let worker_result: Result<()> = (|| {
+            let tx = database.transaction()?;
+            tx.execute(
+                "UPDATE export_jobs SET status='completed' WHERE id='cleanup-job'",
+                [],
+            )?;
+            tx.commit()?;
+            finish_publications_after_commit([published_manifest, published_video]);
+            Ok(())
+        })();
+
+        assert!(
+            worker_result.is_ok(),
+            "post-commit backup cleanup must not fail the worker: {worker_result:?}"
+        );
+        assert_eq!(
+            database
+                .query_row(
+                    "SELECT status FROM export_jobs WHERE id='cleanup-job'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "completed"
+        );
+        assert_eq!(fs::read(&video_target).unwrap(), b"committed video");
+        assert_eq!(fs::read(&manifest_target).unwrap(), b"committed manifest");
+
+        let attempts = BACKUP_CLEANUP_ATTEMPTS.with(|attempts| attempts.borrow().clone());
+        assert_eq!(attempts.len(), 4);
+        assert!(attempts[..2].contains(&video_backup));
+        assert!(attempts[..2].contains(&manifest_backup));
+        assert_eq!(
+            attempts
+                .iter()
+                .filter(|attempt| *attempt == &video_backup)
+                .count(),
+            2
+        );
+        assert_eq!(
+            attempts
+                .iter()
+                .filter(|attempt| *attempt == &manifest_backup)
+                .count(),
+            2
+        );
+        assert!(!video_backup.exists());
+        assert!(!manifest_backup.exists());
     }
 
     #[test]
@@ -1167,7 +1495,45 @@ mod tests {
         assert!(arguments.contains("[vcat]null[vcanvas]"));
         assert!(arguments.contains("afade=t=in:st=0:d=0.03"));
         assert!(arguments.contains("afade=t=out:st=1.970000:d=0.03"));
+        assert!(arguments.contains("-c:v mpeg4 -q:v 2 -pix_fmt yuv420p"));
         assert!(arguments.contains("-progress pipe:1"));
+    }
+
+    #[test]
+    fn final_export_command_does_not_reuse_the_proxy_bitrate_cap() {
+        let map = TimelineMap {
+            source_duration: 2.0,
+            output_duration: 2.0,
+            kept_ranges: vec![TimelineRange {
+                source_start: 0.0,
+                source_end: 2.0,
+                output_start: 0.0,
+                output_end: 2.0,
+            }],
+            cuts: Vec::new(),
+        };
+        let command = build_command(CommandSpec {
+            ffmpeg: "ffmpeg",
+            source: Path::new("source.mp4"),
+            output: Path::new("output.part.mp4"),
+            map: &map,
+            has_video: true,
+            has_audio: true,
+            subtitle_path: None,
+            encoder: "h264_mf",
+            canvas_settings: Default::default(),
+        })
+        .unwrap();
+        let arguments = command
+            .get_args()
+            .map(|value| value.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        assert!(arguments.contains(
+            "-c:v h264_mf -rate_control quality -quality 90 -scenario archive -pix_fmt yuv420p"
+        ));
+        assert!(!arguments.contains("-b:v 3M"));
     }
 
     #[test]
