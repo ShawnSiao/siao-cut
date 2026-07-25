@@ -13,11 +13,11 @@ if (-not $repositoryRoot) {
 }
 
 $deletedFiles = @(
-    git -C $repositoryRoot ls-files --deleted |
+    git -C $repositoryRoot -c core.quotepath=false ls-files --deleted |
         ForEach-Object { $_.Replace('\', '/') }
 )
 $trackedFiles = @(
-    git -C $repositoryRoot ls-files --cached --others --exclude-standard |
+    git -C $repositoryRoot -c core.quotepath=false ls-files --cached --others --exclude-standard |
         Where-Object { $deletedFiles -notcontains $_.Replace('\', '/') } |
         Sort-Object -Unique
 )
