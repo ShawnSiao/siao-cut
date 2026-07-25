@@ -582,21 +582,7 @@ mod tests {
             let observed_ranges = Arc::clone(&range_starts);
             let thread = thread::spawn(move || {
                 for plan in plans {
-                    let deadline = Instant::now() + Duration::from_secs(10);
-                    let mut stream = loop {
-                        match listener.accept() {
-                            Ok((stream, _)) => break stream,
-                            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                                assert!(
-                                    Instant::now() < deadline,
-                                    "timed out waiting for model download request"
-                                );
-                                thread::sleep(Duration::from_millis(10));
-                            }
-                            Err(error) => panic!("mock model server accept failed: {error}"),
-                        }
-                    };
-                    stream.set_nonblocking(false).unwrap();
+                    let mut stream = accept_blocking_model_connection(&listener);
                     let range_start = read_range_start(&mut stream);
                     observed_ranges.lock().unwrap().push(range_start);
                     write_model_response(&mut stream, &payload, range_start, plan);
@@ -613,6 +599,25 @@ mod tests {
             self.thread.join().unwrap();
             self.range_starts.lock().unwrap().clone()
         }
+    }
+
+    fn accept_blocking_model_connection(listener: &TcpListener) -> TcpStream {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "timed out waiting for model download request"
+                    );
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("mock model server accept failed: {error}"),
+            }
+        };
+        stream.set_nonblocking(false).unwrap();
+        stream
     }
 
     fn read_range_start(stream: &mut TcpStream) -> u64 {
@@ -721,6 +726,26 @@ mod tests {
         assert_eq!(catalog[1].spec.id, "base");
         assert!(catalog[1].spec.recommended);
         assert_eq!(catalog[1].spec.sha256.len(), 64);
+    }
+
+    #[test]
+    fn accepted_mock_connection_waits_for_delayed_range_headers() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let client = thread::spawn(move || {
+            let mut stream = TcpStream::connect(address).unwrap();
+            thread::sleep(Duration::from_millis(100));
+            stream
+                .write_all(
+                    b"GET /model.bin HTTP/1.1\r\nHost: localhost\r\nRange: bytes=123-\r\n\r\n",
+                )
+                .unwrap();
+        });
+
+        let mut stream = accept_blocking_model_connection(&listener);
+        assert_eq!(read_range_start(&mut stream), 123);
+        client.join().unwrap();
     }
 
     #[test]
