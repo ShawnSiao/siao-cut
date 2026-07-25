@@ -400,6 +400,8 @@ test("separates runtime status cards from the transcription model control", asyn
   await page.getByRole("button", { name: "删除项目 第二个本地项目" }).click();
   await page.getByRole("dialog", { name: "删除项目" }).getByRole("button", { name: "确认删除" }).click();
   await page.getByRole("button", { name: "取消任务" }).click();
+  await expect(page.getByText("任务已取消。")).toBeVisible();
+  await expect(page.getByRole("button", { name: "取消任务" })).toHaveCount(0);
   await page.getByRole("button", { name: "删除项目 发布口播 · 草稿" }).click();
   await page.getByRole("dialog", { name: "删除项目" }).getByRole("button", { name: "确认删除" }).click();
 

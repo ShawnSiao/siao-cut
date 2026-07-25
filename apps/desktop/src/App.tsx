@@ -5,7 +5,10 @@ export {
   SpeakerPackageManager,
   SpeakerTrackPanel,
   SpeechInsightsPanel,
+  resolveCaptionKaraokeStyle,
+  resolveCaptionSegment,
   resolveCanvasMedia,
+  resolveImportedProjectMedia,
   resolvePlaybackDuration,
 } from "./workbench/workbench-controller";
 
