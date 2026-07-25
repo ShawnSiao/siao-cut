@@ -2,7 +2,7 @@ use crate::{
     db::{self, home_dir},
     media::{ffprobe_duration, hash_file, tool_path},
     project,
-    util::{hidden_command, new_id, now},
+    util::{KillOnCloseJob, hidden_command, new_id, now},
 };
 use anyhow::{Context, Result, anyhow, bail};
 use reqwest::{StatusCode, Url, header};
@@ -16,7 +16,7 @@ use std::{
         IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs,
     },
     path::{Path, PathBuf},
-    process::{Command, ExitStatus, Stdio},
+    process::{Child, Command, ExitStatus, Stdio},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -36,6 +36,7 @@ const INSPECTION_TIMEOUT: Duration = Duration::from_secs(45);
 const TOOL_VERSION_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_SUBPROCESS_STDOUT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_SUBPROCESS_STDERR_BYTES: usize = 1024 * 1024;
+const DOWNLOAD_CONTROL_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -574,6 +575,10 @@ fn run_download_command_with_proxy(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = command.spawn().context("无法启动 yt-dlp 下载进程")?;
+    let mut process_job = Some(assign_source_process_job(
+        &mut child,
+        "source_process_isolation_failed: 无法隔离 yt-dlp 下载进程",
+    )?);
     let stdout = child
         .stdout
         .take()
@@ -610,14 +615,15 @@ fn run_download_command_with_proxy(
             |row| row.get(0),
         )?;
         if cancel_requested {
-            crate::util::terminate_process_tree(&mut child);
+            terminate_source_process(&mut child, &mut process_job);
             break None;
         }
         if let Some(status) = child.try_wait()? {
             break Some(status);
         }
-        thread::sleep(Duration::from_millis(200));
+        thread::sleep(DOWNLOAD_CONTROL_POLL_INTERVAL);
     };
+    release_source_process_job(&mut process_job);
     let _ = stdout_reader.join();
     let _ = stderr_reader.join();
     drain_worker_lines(db, job_id, &line_rx, &mut output_path, &mut error_lines)?;
@@ -973,12 +979,29 @@ struct BoundedOutput {
 }
 
 fn output_with_timeout(
-    mut command: Command,
+    command: Command,
     timeout: Duration,
     timeout_message: &str,
 ) -> Result<BoundedOutput> {
+    output_with_timeout_after_isolation(command, timeout, timeout_message, || Ok(()))
+}
+
+fn output_with_timeout_after_isolation(
+    mut command: Command,
+    timeout: Duration,
+    timeout_message: &str,
+    after_isolation: impl FnOnce() -> Result<()>,
+) -> Result<BoundedOutput> {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = command.spawn()?;
+    let mut process_job = Some(assign_source_process_job(
+        &mut child,
+        "source_process_isolation_failed: 无法隔离工具子进程",
+    )?);
+    if let Err(error) = after_isolation() {
+        terminate_source_process(&mut child, &mut process_job);
+        return Err(error);
+    }
     let mut stdout = child
         .stdout
         .take()
@@ -997,14 +1020,14 @@ fn output_with_timeout(
             break status;
         }
         if Instant::now() >= deadline {
-            crate::util::terminate_process_tree(&mut child);
-            let _ = child.wait();
+            terminate_source_process(&mut child, &mut process_job);
             let _ = stdout_reader.join();
             let _ = stderr_reader.join();
             bail!("{timeout_message}")
         }
         thread::sleep(Duration::from_millis(50));
     };
+    release_source_process_job(&mut process_job);
     Ok(BoundedOutput {
         status,
         stdout: stdout_reader
@@ -1014,6 +1037,32 @@ fn output_with_timeout(
             .join()
             .map_err(|_| anyhow!("无法汇总子进程错误输出"))?,
     })
+}
+
+fn assign_source_process_job(child: &mut Child, error_message: &str) -> Result<KillOnCloseJob> {
+    // Supported Windows versions allow nested jobs. If a restrictive host policy
+    // rejects assignment, continuing would make timeouts and cancellation
+    // unenforceable for descendants, so return a diagnosable error instead.
+    match KillOnCloseJob::assign(child) {
+        Ok(job) => Ok(job),
+        Err(error) => {
+            crate::util::terminate_process_tree(child);
+            Err(error).with_context(|| error_message.to_owned())
+        }
+    }
+}
+
+fn release_source_process_job(process_job: &mut Option<KillOnCloseJob>) {
+    drop(process_job.take());
+}
+
+fn terminate_source_process(child: &mut Child, process_job: &mut Option<KillOnCloseJob>) {
+    if process_job.is_some() {
+        release_source_process_job(process_job);
+        let _ = child.wait();
+    } else {
+        crate::util::terminate_process_tree(child);
+    }
 }
 
 fn read_bounded(reader: &mut impl Read, limit: usize) -> Vec<u8> {
@@ -1535,23 +1584,54 @@ mod tests {
         io::{Read, Write},
         net::{TcpListener, TcpStream},
         sync::{
-            Arc, Mutex,
+            Arc, Condvar, Mutex,
             atomic::{AtomicBool, AtomicU64, Ordering},
         },
         time::Instant,
     };
     use tempfile::tempdir;
 
+    const HELD_PIPE_FIXTURE_ENV: &str = "SIAOCUT_TEST_HELD_PIPE_ISOLATION_SIGNAL";
+    const HELD_PIPE_FIXTURE_TEST: &str =
+        "source_import::tests::subprocess_parent_exits_but_descendant_holds_output_fixture";
+    const MAX_MOCK_REQUEST_HEADER_BYTES: usize = 16 * 1024;
+
     struct MockHttpServer {
         address: std::net::SocketAddr,
         range_starts: Arc<Mutex<Vec<u64>>>,
-        bytes_served: Arc<AtomicU64>,
+        transfer_pause: Arc<(Mutex<TransferPause>, Condvar)>,
         stop: Arc<AtomicBool>,
         worker: Option<thread::JoinHandle<()>>,
     }
 
+    #[derive(Default)]
+    struct TransferPause {
+        reached: bool,
+        released: bool,
+    }
+
+    struct FragmentedReader<R> {
+        inner: R,
+        max_chunk: usize,
+    }
+
+    impl<R: Read> Read for FragmentedReader<R> {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            let length = buffer.len().min(self.max_chunk);
+            self.inner.read(&mut buffer[..length])
+        }
+    }
+
     impl MockHttpServer {
         fn start(body: Vec<u8>) -> Self {
+            Self::start_with_pause(body, None)
+        }
+
+        fn start_paused_after(body: Vec<u8>, bytes: u64) -> Self {
+            Self::start_with_pause(body, Some(bytes))
+        }
+
+        fn start_with_pause(body: Vec<u8>, pause_after_bytes: Option<u64>) -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             listener.set_nonblocking(true).unwrap();
             let address = listener.local_addr().unwrap();
@@ -1560,17 +1640,28 @@ mod tests {
             let recorded_ranges = Arc::clone(&range_starts);
             let bytes_served = Arc::new(AtomicU64::new(0));
             let served_counter = Arc::clone(&bytes_served);
+            let transfer_pause = Arc::new((Mutex::new(TransferPause::default()), Condvar::new()));
+            let worker_transfer_pause = Arc::clone(&transfer_pause);
             let stop = Arc::new(AtomicBool::new(false));
             let stop_signal = Arc::clone(&stop);
+            let worker_stop_signal = Arc::clone(&stop);
             let worker = thread::spawn(move || {
                 while !stop_signal.load(Ordering::Relaxed) {
                     match listener.accept() {
-                        Ok((mut stream, _)) => serve_mock_request(
-                            &mut stream,
-                            &body,
-                            &recorded_ranges,
-                            &served_counter,
-                        ),
+                        Ok((mut stream, _)) => {
+                            if stream.set_nonblocking(false).is_err() {
+                                continue;
+                            }
+                            serve_mock_request(
+                                &mut stream,
+                                &body,
+                                &recorded_ranges,
+                                &served_counter,
+                                pause_after_bytes,
+                                &worker_transfer_pause,
+                                &worker_stop_signal,
+                            )
+                        }
                         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                             thread::sleep(Duration::from_millis(10));
                         }
@@ -1581,7 +1672,7 @@ mod tests {
             Self {
                 address,
                 range_starts,
-                bytes_served,
+                transfer_pause,
                 stop,
                 worker: Some(worker),
             }
@@ -1590,11 +1681,36 @@ mod tests {
         fn url(&self, path: &str) -> Url {
             Url::parse(&format!("http://{}{}", self.address, path)).unwrap()
         }
+
+        fn wait_until_transfer_paused(&self, timeout: Duration) -> bool {
+            let deadline = Instant::now() + timeout;
+            let (state, changed) = &*self.transfer_pause;
+            let mut state = state.lock().unwrap();
+            while !state.reached {
+                let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                    return false;
+                };
+                let (next, result) = changed.wait_timeout(state, remaining).unwrap();
+                state = next;
+                if result.timed_out() && !state.reached {
+                    return false;
+                }
+            }
+            true
+        }
+
+        fn release_transfer(&self) {
+            let (state, changed) = &*self.transfer_pause;
+            let mut state = state.lock().unwrap();
+            state.released = true;
+            changed.notify_all();
+        }
     }
 
     impl Drop for MockHttpServer {
         fn drop(&mut self) {
             self.stop.store(true, Ordering::Relaxed);
+            self.release_transfer();
             let _ = TcpStream::connect(self.address);
             if let Some(worker) = self.worker.take() {
                 let _ = worker.join();
@@ -1607,20 +1723,22 @@ mod tests {
         body: &[u8],
         range_starts: &Arc<Mutex<Vec<u64>>>,
         bytes_served: &Arc<AtomicU64>,
+        pause_after_bytes: Option<u64>,
+        transfer_pause: &Arc<(Mutex<TransferPause>, Condvar)>,
+        stop: &Arc<AtomicBool>,
     ) {
         let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-        let mut request = vec![0_u8; 16 * 1024];
-        let Ok(length) = stream.read(&mut request) else {
+        let Ok(request) = read_mock_request_headers(stream) else {
             return;
         };
-        let request = String::from_utf8_lossy(&request[..length]);
+        let request = String::from_utf8_lossy(&request);
         let first = request.lines().next().unwrap_or_default();
         let mut first = first.split_whitespace();
         let method = first.next().unwrap_or_default();
         let path = first.next().unwrap_or_default();
         if path == "/private-redirect" {
             let response = "HTTP/1.1 302 Found\r\nLocation: https://127.0.0.1/private\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-            let _ = stream.write_all(response.as_bytes());
+            write_mock_response(stream, response.as_bytes());
             return;
         }
         if path == "/oversize" {
@@ -1628,11 +1746,12 @@ mod tests {
                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 MAX_FILE_SIZE_BYTES + 1
             );
-            let _ = stream.write_all(response.as_bytes());
+            write_mock_response(stream, response.as_bytes());
             return;
         }
         if path != "/video.mp4" {
-            let _ = stream.write_all(
+            write_mock_response(
+                stream,
                 b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
             );
             return;
@@ -1673,15 +1792,66 @@ mod tests {
             "{status}\r\nContent-Type: video/mp4\r\nAccept-Ranges: bytes\r\nContent-Length: {remaining}\r\n{content_range}Connection: close\r\n\r\n"
         );
         if stream.write_all(response.as_bytes()).is_err() || method == "HEAD" {
+            let _ = stream.flush();
+            let _ = stream.shutdown(Shutdown::Write);
             return;
         }
         for chunk in body[start..].chunks(32 * 1024) {
             if stream.write_all(chunk).is_err() {
                 break;
             }
-            bytes_served.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+            let served =
+                bytes_served.fetch_add(chunk.len() as u64, Ordering::Relaxed) + chunk.len() as u64;
             let _ = stream.flush();
+            if pause_after_bytes.is_some_and(|limit| start == 0 && served >= limit) {
+                let (state, changed) = &**transfer_pause;
+                let mut state = state.lock().unwrap();
+                if !state.reached {
+                    state.reached = true;
+                    changed.notify_all();
+                    while !state.released && !stop.load(Ordering::Relaxed) {
+                        let (next, _) = changed
+                            .wait_timeout(state, Duration::from_millis(100))
+                            .unwrap();
+                        state = next;
+                    }
+                }
+            }
             thread::sleep(Duration::from_millis(30));
+        }
+        let _ = stream.shutdown(Shutdown::Write);
+    }
+
+    fn read_mock_request_headers(reader: &mut impl Read) -> std::io::Result<Vec<u8>> {
+        let mut request = Vec::with_capacity(1024);
+        let mut chunk = [0_u8; 1024];
+        loop {
+            if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                return Ok(request);
+            }
+            let remaining = MAX_MOCK_REQUEST_HEADER_BYTES.saturating_sub(request.len());
+            if remaining == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "mock request headers exceeded the configured limit",
+                ));
+            }
+            let read_length = remaining.min(chunk.len());
+            let length = reader.read(&mut chunk[..read_length])?;
+            if length == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "mock request ended before the header terminator",
+                ));
+            }
+            request.extend_from_slice(&chunk[..length]);
+        }
+    }
+
+    fn write_mock_response(stream: &mut TcpStream, response: &[u8]) {
+        if stream.write_all(response).is_ok() {
+            let _ = stream.flush();
+            let _ = stream.shutdown(Shutdown::Write);
         }
     }
 
@@ -1756,6 +1926,20 @@ mod tests {
     }
 
     #[test]
+    fn mock_server_reads_fragmented_headers_until_the_protocol_boundary() {
+        let expected =
+            b"HEAD /private-redirect HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+        let mut reader = FragmentedReader {
+            inner: std::io::Cursor::new(expected),
+            max_chunk: 1,
+        };
+
+        let request = read_mock_request_headers(&mut reader).unwrap();
+
+        assert_eq!(request, expected);
+    }
+
+    #[test]
     fn source_import_mock_server_rejects_private_redirect_and_oversize_headers() {
         let server = MockHttpServer::start(vec![0_u8; 1024]);
         let client = reqwest::blocking::Client::builder()
@@ -1769,11 +1953,17 @@ mod tests {
             validate_public_https_url,
         )
         .unwrap_err();
-        assert!(redirect.to_string().contains("source_private_network"));
+        assert!(
+            redirect.to_string().contains("source_private_network"),
+            "unexpected redirect preflight error: {redirect:#}"
+        );
         let oversize =
             preflight_url_with(&client, &server.url("/oversize"), validate_public_https_url)
                 .unwrap_err();
-        assert!(oversize.to_string().contains("source_size_limit"));
+        assert!(
+            oversize.to_string().contains("source_size_limit"),
+            "unexpected oversize preflight error: {oversize:#}"
+        );
     }
 
     #[test]
@@ -1975,6 +2165,64 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(3));
     }
 
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "spawned by subprocess_output_closes_job_before_joining_readers"]
+    fn subprocess_parent_exits_but_descendant_holds_output_fixture() {
+        let Some(signal) = env::var_os(HELD_PIPE_FIXTURE_ENV).map(PathBuf::from) else {
+            return;
+        };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !signal.is_file() {
+            assert!(
+                Instant::now() < deadline,
+                "parent never confirmed subprocess isolation"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        let descendant = hidden_command("ping.exe")
+            .args(["-n", "11", "127.0.0.1"])
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap();
+        drop(descendant);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn subprocess_output_closes_job_before_joining_readers() {
+        let temp = tempdir().unwrap();
+        let signal = temp.path().join("isolated");
+        let mut command = Command::new(env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                HELD_PIPE_FIXTURE_TEST,
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(HELD_PIPE_FIXTURE_ENV, &signal);
+
+        let started = Instant::now();
+        let output = output_with_timeout_after_isolation(
+            command,
+            Duration::from_secs(5),
+            "source_inspection_timeout: held-pipe fixture",
+            || {
+                fs::write(&signal, b"isolated")?;
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert!(output.status.success());
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "reader join waited for the descendant pipe holder"
+        );
+    }
+
     #[test]
     fn source_import_job_resumes_partial_and_creates_project_only_after_validation() {
         let ffmpeg = tool_path("SIAOCUT_FFMPEG", "ffmpeg");
@@ -2093,7 +2341,7 @@ mod tests {
         file.set_len(8 * 1024 * 1024).unwrap();
         drop(file);
         let body = fs::read(&fixture).unwrap();
-        let server = MockHttpServer::start(body.clone());
+        let server = MockHttpServer::start_paused_after(body.clone(), 512 * 1024);
         let url = server.url("/video.mp4");
         let database_path = temp.path().join("mock-source.db");
         let db = db::open_at(&database_path).unwrap();
@@ -2127,23 +2375,28 @@ mod tests {
             )
         });
         let output_directory = PathBuf::from(&job.output_directory);
-        let deadline = Instant::now() + Duration::from_secs(15);
+        assert!(
+            server.wait_until_transfer_paused(Duration::from_secs(15)),
+            "timed out waiting for the controlled partial transfer"
+        );
+        let partial_deadline = Instant::now() + Duration::from_secs(10);
         loop {
-            if server.bytes_served.load(Ordering::Relaxed) > 128 * 1024 {
-                cancel(&db, &job.id).unwrap();
+            if partial_bytes(&output_directory).unwrap() > 0 {
                 break;
             }
             assert!(
                 !worker.is_finished(),
-                "local download finished before cancellation"
+                "local download finished before producing a resumable partial"
             );
             assert!(
-                Instant::now() < deadline,
-                "timed out waiting for partial download"
+                Instant::now() < partial_deadline,
+                "timed out waiting for yt-dlp to persist the partial download"
             );
-            thread::sleep(Duration::from_millis(30));
+            thread::sleep(Duration::from_millis(20));
         }
+        cancel(&db, &job.id).unwrap();
         worker.join().unwrap().unwrap();
+        server.release_transfer();
         let cancelled = load(&db, &job.id).unwrap();
         let preserved_bytes = partial_bytes(&output_directory).unwrap();
         assert_eq!(cancelled.status, "cancelled");
