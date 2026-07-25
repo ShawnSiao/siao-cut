@@ -151,6 +151,7 @@ const mockSubtitlePreview: SubtitleImportPreview = {
   format: "srt",
   sourcePath: "demo.srt",
   sha256: "a".repeat(64),
+  expectedVersionId: "v1",
   segmentCount: 2,
   segments: [
     { id: "preview-1", start: 0, end: 2, text: "导入后的第一条字幕", confidence: null },
@@ -329,9 +330,12 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
       if (job.projectId === args[2] && ["queued", "running", "finalizing", "awaiting_apply"].includes(job.status))
         blockers.push({ kind: "transcription", id: job.id, status: job.status });
     }
-    return { apiVersion: "0.1", status: "ok", deletionPreflight: { projectId: args[2], deletable: blockers.length === 0, blockers } };
+    return { apiVersion: "0.1", status: "ok", deletionPreflight: { projectId: args[2], expectedVersionId: candidate?.history.currentVersionId ?? "", deletable: blockers.length === 0, blockers } };
   }
   if (command === "project" && subcommand === "delete") {
+    const candidate = mockProjects.find((project) => project.id === args[2]);
+    if (valueAfter("--expected-version") !== (candidate?.history.currentVersionId ?? ""))
+      throw new Error("project_delete_version_mismatch: 项目在删除确认后发生变化，请重新确认");
     mockProjects = mockProjects.filter((project) => project.id !== args[2]);
     mockProject = mockProjects[0] ?? structuredClone(sampleProject);
     return { apiVersion: "0.1", status: "ok", projectId: args[2], message: "项目已删除；原始媒体文件未被修改。" };
@@ -524,10 +528,12 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
     return finishMockStructureEdit("offset", segmentIds, null, [], impact);
   }
   if (command === "transcript" && subcommand === "inspect-file") {
-    return { apiVersion: "0.1", status: "ok", subtitleImportPreview: structuredClone(mockSubtitlePreview), message: "字幕文件已预检；尚未写入项目。" };
+    return { apiVersion: "0.1", status: "ok", subtitleImportPreview: { ...structuredClone(mockSubtitlePreview), expectedVersionId: mockProject.history.currentVersionId ?? "" }, message: "字幕文件已预检；尚未写入项目。" };
   }
   if (command === "transcript" && subcommand === "import-file") {
     if (!args.includes("--confirm-replace")) throw new Error("替换项目字幕需要显式确认");
+    if (valueAfter("--expected-version") !== mockProject.history.currentVersionId)
+      throw new Error("subtitle_import_version_mismatch: 项目在字幕导入确认后发生变化，请重新预检");
     const nextProject = structuredClone(mockProject);
     nextProject.transcript = {
       sourceLanguage: nextProject.transcript.sourceLanguage,
@@ -1005,7 +1011,7 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
     return { apiVersion: "0.1", status: "ok", project: mockProject, workflowId, taskId, message: "工作流已创建，需要 Agent 继续。" };
   }
   if (command === "agent" && subcommand === "health") {
-    return { apiVersion: "0.1", status: "ok", codex: { available: true, authenticated: true, version: "codex-cli 0.144.5", authMode: "chatgpt" }, message: "Codex CLI 已就绪。" };
+    return { apiVersion: "0.1", status: "ok", codex: { available: true, authenticated: true, version: "codex-cli 0.145.0", authMode: "chatgpt" }, message: "Codex CLI 已就绪。" };
   }
   if (command === "agent" && subcommand === "start") {
     const task = mockProject.tasks.find((candidate) => candidate.id === args[2]);
@@ -1022,7 +1028,7 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
       currentBatch: 1,
       batchCount: 1,
       timeoutSeconds: Number(valueAfter("--timeout-seconds") ?? 900),
-      cliVersion: "codex-cli 0.144.5",
+      cliVersion: "codex-cli 0.145.0",
       authMode: "chatgpt",
       codexThreadId: null,
       cancelRequestedAt: null,

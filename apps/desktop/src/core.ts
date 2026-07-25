@@ -1,13 +1,14 @@
 import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { mockRun } from "./core.mock";
+import { tr } from "./i18n";
 import type { CoreEnvelope, Project, RuntimeInfo, UpdateDownloadEvent, UpdateMetadata, UpdatePolicy } from "./types";
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
 
 function ensureOk(envelope: CoreEnvelope): CoreEnvelope {
   if (envelope.status === "error") {
-    throw new Error(envelope.error?.message ?? envelope.message ?? "Core 请求失败");
+    throw new Error(envelope.error?.message ?? envelope.message ?? tr("app.core.requestFailed"));
   }
   return envelope;
 }
@@ -15,9 +16,53 @@ export async function runCore(args: string[]): Promise<CoreEnvelope> {
   return ensureOk(isTauri() ? await invoke<CoreEnvelope>("run_core", { args }) : await mockRun(args));
 }
 
+export type StructuredCoreRequest =
+  | { kind: "transcript_offset"; projectId: string; segmentIds: string[]; delta: number }
+  | { kind: "transcription_start"; projectId: string; language: "auto" | "en" | "zh"; prompt?: string; hotwords: string[] };
+
+function expandStructuredCoreRequest(request: StructuredCoreRequest): string[] {
+  if (request.kind === "transcript_offset") {
+    return ["transcript", "offset", request.projectId, ...request.segmentIds.flatMap((segmentId) => ["--segment", segmentId]), "--delta", String(request.delta)];
+  }
+  return [
+    "transcription", "start", request.projectId,
+    "--language", request.language,
+    ...(request.prompt ? ["--prompt", request.prompt] : []),
+    ...request.hotwords.flatMap((hotword) => ["--hotword", hotword]),
+  ];
+}
+
+export function structuredCoreErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const code = message.split(":", 1)[0];
+  return ({
+    structured_core_payload_too_large: tr("app.core.structuredTooLarge"),
+    structured_core_payload_invalid: tr("app.core.structuredInvalidJson"),
+    structured_core_request_invalid: tr("app.core.structuredInvalid"),
+    structured_core_request_file_failed: tr("app.core.structuredFileFailed"),
+  } as Record<string, string>)[code] ?? message;
+}
+
+export async function runCoreStructured(request: StructuredCoreRequest): Promise<CoreEnvelope> {
+  try {
+    const envelope = isTauri()
+      ? await invoke<CoreEnvelope>("run_core_structured", { payload: JSON.stringify(request) })
+      : await mockRun(expandStructuredCoreRequest(request));
+    return ensureOk(envelope);
+  } catch (error) {
+    throw new Error(structuredCoreErrorMessage(error));
+  }
+}
+
+export async function localFileAvailable(path: string): Promise<boolean> {
+  if (!path.trim()) return false;
+  if (!isTauri()) return true;
+  return invoke<boolean>("local_file_available", { path });
+}
+
 export async function runtimeInfo(): Promise<RuntimeInfo> {
   if (!isTauri()) return {
-    corePath: "浏览器预览模式",
+    corePath: tr("app.preview.mode"),
     coreApiVersion: "0.1",
     ffmpegConfigured: true,
     asrConfigured: true,
@@ -26,13 +71,13 @@ export async function runtimeInfo(): Promise<RuntimeInfo> {
     asrBackend: "cpu",
     asrDevice: null,
     availableAsrBackends: ["cpu", "vulkan"],
-    ffmpegPath: "内置运行时\\ffmpeg.exe",
-    whisperPath: "内置运行时\\whisper-cli.exe",
-    ytDlpPath: "内置运行时\\yt-dlp.exe",
-    runtimeManifestPath: "内置运行时\\runtime-manifest.json",
-    defaultModelPath: "本地模型目录",
+    ffmpegPath: `${tr("app.runtime.bundled")}\\ffmpeg.exe`,
+    whisperPath: `${tr("app.runtime.bundled")}\\whisper-cli.exe`,
+    ytDlpPath: `${tr("app.runtime.bundled")}\\yt-dlp.exe`,
+    runtimeManifestPath: `${tr("app.runtime.bundled")}\\runtime-manifest.json`,
+    defaultModelPath: tr("app.runtime.localModelDirectory"),
     defaultModelAvailable: true,
-    logDirectory: "本机诊断日志目录",
+    logDirectory: tr("app.runtime.localDiagnosticsDirectory"),
     diagnosticsAvailable: true,
   };
   return invoke<RuntimeInfo>("runtime_info");
@@ -53,7 +98,7 @@ export async function updaterPolicy(): Promise<UpdatePolicy> {
     currentVersion: "0.2.0-preview",
     enabled: false,
     automaticCheckIntervalHours: 24,
-    disabledReason: "浏览器预览不连接更新源。",
+    disabledReason: tr("app.update.previewDisabled"),
   };
   return invoke<UpdatePolicy>("update_policy");
 }
@@ -64,7 +109,7 @@ export async function checkForUpdate(): Promise<UpdateMetadata | null> {
 }
 
 export async function installUpdate(onEvent: (event: UpdateDownloadEvent) => void): Promise<void> {
-  if (!isTauri()) throw new Error("浏览器预览不能安装更新。");
+  if (!isTauri()) throw new Error(tr("app.preview.installUpdateUnavailable"));
   const channel = new Channel<UpdateDownloadEvent>();
   channel.onmessage = onEvent;
   return invoke<void>("install_update", { onEvent: channel });
@@ -76,7 +121,7 @@ export async function listProjects(): Promise<Project[]> {
 
 export async function loadProject(projectId: string): Promise<Project> {
   const project = (await runCore(["project", "show", projectId])).project;
-  if (!project) throw new Error("Core 未返回项目数据");
+  if (!project) throw new Error(tr("app.core.projectMissing"));
   return project;
 }
 
@@ -85,7 +130,7 @@ export async function pickMedia(): Promise<string | null> {
   return open({
     multiple: false,
     directory: false,
-    filters: [{ name: "音视频", extensions: ["mp4", "mov", "mkv", "mp3", "m4a", "wav"] }],
+    filters: [{ name: tr("app.dialog.mediaFiles"), extensions: ["mp4", "mov", "mkv", "mp3", "m4a", "wav"] }],
   });
 }
 
@@ -94,25 +139,39 @@ export async function pickSubtitleFile(): Promise<string | null> {
   return open({
     multiple: false,
     directory: false,
-    filters: [{ name: "字幕文件", extensions: ["srt", "vtt", "ass", "ssa"] }],
+    filters: [{ name: tr("app.dialog.subtitleFiles"), extensions: ["srt", "vtt", "ass", "ssa"] }],
   });
+}
+
+export function sanitizeWindowsFileName(value: string): string {
+  const withoutInvalidCharacters = value
+    .normalize("NFKC")
+    .replace(/[<>:"/\\|?*\u0000-\u001F]/gu, "_")
+    .replace(/\s+/gu, " ")
+    .replace(/[ .]+$/gu, "")
+    .trim();
+  const truncated = Array.from(withoutInvalidCharacters).slice(0, 120).join("");
+  if (!truncated || /^\.+$/u.test(truncated)) return tr("app.file.untitled");
+  return /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu.test(truncated) ? `_${truncated}` : truncated;
 }
 
 export async function pickTranscriptPath(title: string, format: "srt" | "vtt" | "ass" | "markdown" | "json"): Promise<string | null> {
   const options = {
-    srt: { extension: "srt", name: "SubRip 字幕" },
-    vtt: { extension: "vtt", name: "WebVTT 字幕" },
-    ass: { extension: "ass", name: "ASS 字幕" },
-    markdown: { extension: "md", name: "Markdown 文稿" },
-    json: { extension: "json", name: "结构化转写 JSON" },
+    srt: { extension: "srt", name: tr("app.dialog.subripSubtitle") },
+    vtt: { extension: "vtt", name: tr("app.dialog.webvttSubtitle") },
+    ass: { extension: "ass", name: tr("app.dialog.assSubtitle") },
+    markdown: { extension: "md", name: tr("app.dialog.markdownTranscript") },
+    json: { extension: "json", name: tr("app.dialog.structuredTranscript") },
   }[format];
-  if (!isTauri()) return `${title}.${options.extension}`;
-  return save({ defaultPath: `${title}.${options.extension}`, filters: [{ name: options.name, extensions: [options.extension] }] });
+  const safeTitle = sanitizeWindowsFileName(title);
+  if (!isTauri()) return `${safeTitle}.${options.extension}`;
+  return save({ defaultPath: `${safeTitle}.${options.extension}`, filters: [{ name: options.name, extensions: [options.extension] }] });
 }
 
 export async function pickVideoPath(title: string): Promise<string | null> {
-  if (!isTauri()) return `${title}.mp4`;
-  return save({ defaultPath: `${title}.mp4`, filters: [{ name: "MP4 视频", extensions: ["mp4"] }] });
+  const safeTitle = sanitizeWindowsFileName(title);
+  if (!isTauri()) return `${safeTitle}.mp4`;
+  return save({ defaultPath: `${safeTitle}.mp4`, filters: [{ name: tr("app.dialog.mp4Video"), extensions: ["mp4"] }] });
 }
 
 export async function pickModel(): Promise<string | null> {
@@ -120,7 +179,7 @@ export async function pickModel(): Promise<string | null> {
   return open({
     multiple: false,
     directory: false,
-    filters: [{ name: "whisper.cpp 模型", extensions: ["bin", "gguf"] }],
+    filters: [{ name: tr("app.dialog.whisperModel"), extensions: ["bin", "gguf"] }],
   });
 }
 

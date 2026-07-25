@@ -582,6 +582,7 @@ export type TranscriptionCandidateSummary = {
 
 export type ProjectDeletionPreflight = {
   projectId: string;
+  expectedVersionId: string;
   deletable: boolean;
   blockers: Array<{ kind: string; id: string; status: string }>;
 };
@@ -671,6 +672,7 @@ export type SubtitleImportPreview = {
   format: "srt" | "vtt" | "ass";
   sourcePath: string;
   sha256: string;
+  expectedVersionId: string;
   segmentCount: number;
   segments: Segment[];
   quality: SubtitleQualityReport;

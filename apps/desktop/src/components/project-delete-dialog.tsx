@@ -18,7 +18,7 @@ export default function ProjectDeleteDialog({ project, checking, deleting, delet
   return <Dialog label={tr("app.s0243")} className="confirm-dialog" onClose={onClose}>
     <div className="confirm-icon"><Trash2 size={20}/></div>
     <p className="eyebrow">{tr("app.s0508")}</p>
-    <h2>{tr("app.s0509")}{project.title}」？</h2>
+    <h2>{tr("app.projectDelete.title", { title: project.title })}</h2>
     <p className="dialog-copy">{tr("app.s0510")}</p>
     {checking && <div className="confirm-checking" role="status"><LoaderCircle className="spin" size={15}/>{tr("app.delete.checking")}</div>}
     {(blockerMessage || error) && <div className="confirm-error" role="alert"><CircleAlert size={16}/><span>{blockerMessage ?? error}</span></div>}

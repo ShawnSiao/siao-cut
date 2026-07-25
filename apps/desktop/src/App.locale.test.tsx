@@ -2,7 +2,10 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import App from "./App";
+import { speakerStageLabel, versionReasonLabel } from "./app-view-model";
+import { SpeakerPackageManager } from "./components/workbench-panels";
 import { changeUiLocale } from "./i18n";
+import type { SpeakerJob } from "./types";
 
 afterEach(() => {
   cleanup();
@@ -31,5 +34,32 @@ describe("App locale switching", () => {
     expect(screen.getByText("ZH · 4 segments · 5 words")).toBeInTheDocument();
     expect(projectHeading).toHaveTextContent("发布口播 · 草稿");
     expect(document.documentElement.lang).toBe("en-US");
+
+    fireEvent.click(screen.getByRole("button", { name: "Runtime" }));
+    expect(screen.getByRole("dialog", { name: "Runtime" })).toHaveTextContent("Browser preview is not connected to an update source.");
+  });
+
+  it("localizes Core-authored version reasons and speaker stages in English chrome", () => {
+    changeUiLocale("en-US");
+
+    expect(versionReasonLabel("生成说话人轨")).toBe("Generated speaker track");
+    expect(versionReasonLabel("批量偏移字幕 +0.125 秒")).toBe("Offset subtitles by +0.125 seconds");
+    expect(speakerStageLabel("本地识别说话人")).toBe("Identifying speakers locally");
+  });
+
+  it("localizes the speaker package install stage instead of rendering Core Chinese", () => {
+    changeUiLocale("en-US");
+    const job = {
+      status: "running",
+      stage: "下载组件 1/3",
+      progress: 0.25,
+      bytesDownloaded: 25,
+      totalBytes: 100,
+    } as SpeakerJob;
+
+    render(<SpeakerPackageManager packageStatus={null} job={job} disabled={false} onInstall={() => undefined} onCancel={() => undefined} onResume={() => undefined}/>);
+
+    expect(screen.getByText(/Downloading component 1\/3/)).toBeInTheDocument();
+    expect(screen.queryByText(/下载组件/)).not.toBeInTheDocument();
   });
 });

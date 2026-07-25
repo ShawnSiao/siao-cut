@@ -5,7 +5,7 @@ export const projectSessionClient = {
   loadProject,
   importMedia: (path: string) => runCore(["import", path]),
   deletePreflight: (projectId: string) => runCore(["project", "delete-preflight", projectId]),
-  deleteProject: (projectId: string) => runCore(["project", "delete", projectId]),
+  deleteProject: (projectId: string, expectedVersionId: string) => runCore(["project", "delete", projectId, "--expected-version", expectedVersionId]),
   relinkMedia: (projectId: string, path: string) => runCore(["project", "relink", projectId, path]),
   restoreVersion: (projectId: string, versionId: string) => runCore(["project", "restore", projectId, versionId]),
   navigateHistory: (projectId: string, action: "undo" | "redo") => runCore(["project", action, projectId]),

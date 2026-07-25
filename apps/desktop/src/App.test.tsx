@@ -1,7 +1,8 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import App, { PatchReviewCard, TRANSCRIPTION_LANGUAGE_STORAGE_KEY, clearTransientCoreError, getProjectCapabilities, isHttpsSourceUrl, parseExportPreferences, parseTranscriptionLanguage, resolveCanvasMedia, resolveCaptionKaraokeStyle, resolveCaptionSegment, resolveImportedProjectMedia, resolvePlaybackDuration, shouldCheckForUpdates, startSerialPolling, taskLabel } from "./App";
+import App, { PatchReviewCard, TRANSCRIPTION_LANGUAGE_STORAGE_KEY, agentTaskStatusLabel, clearTransientCoreError, getProjectCapabilities, isHttpsSourceUrl, parseExportPreferences, parseTranscriptionLanguage, resolveCanvasMedia, resolveCaptionKaraokeStyle, resolveCaptionSegment, resolveImportedProjectMedia, resolvePlaybackDuration, shouldCheckForUpdates, startSerialPolling, taskLabel } from "./App";
+import { mockRun } from "./core.mock";
 import { sampleProject } from "./mock";
 
 afterEach(() => {
@@ -143,6 +144,13 @@ describe("SiaoCut review workbench", () => {
       canPreparePreview: true,
       canExportVideo: true,
       canCreateAgentTask: true,
+    });
+    expect(getProjectCapabilities(withMedia, {
+      modelPath: "D:\\models\\missing.bin",
+      modelAvailable: false,
+    })).toMatchObject({
+      hasModel: false,
+      canTranscribe: false,
     });
   });
 
@@ -305,6 +313,24 @@ describe("SiaoCut review workbench", () => {
 
     await waitFor(() => expect(screen.queryByRole("button", { name: /第二个本地项目/ })).not.toBeInTheDocument());
     expect(screen.getByText("项目「第二个本地项目」已删除；原始媒体文件未被修改。")).toBeInTheDocument();
+  });
+
+  it("does not silently re-authorize deletion after the displayed project version changes", async () => {
+    render(<App />);
+    await screen.findByRole("heading", { name: "发布口播 · 草稿" });
+
+    fireEvent.click(screen.getByRole("button", { name: "删除项目 第二个本地项目" }));
+    const dialog = await screen.findByRole("dialog", { name: "删除项目" });
+    const confirm = within(dialog).getByRole("button", { name: "确认删除" });
+    await waitFor(() => expect(confirm).toBeEnabled());
+
+    await mockRun(["project", "show", "p_secondary"]);
+    await mockRun(["transcript", "offset", "p_secondary", "--segment", "s-secondary", "--delta", "0.1"]);
+    fireEvent.click(confirm);
+
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("项目在删除确认后发生了变化");
+    expect(screen.getByRole("button", { name: /^第二个本地项目/ })).toBeInTheDocument();
+    expect(confirm).toBeDisabled();
   });
 
   it("keeps an active-task deletion warning inside the confirmation dialog", async () => {
@@ -688,6 +714,22 @@ describe("SiaoCut review workbench", () => {
     expect(within(transcript).getByDisplayValue("导入后的第二条字幕").closest("article")).toHaveClass("selected");
   });
 
+  it("invalidates subtitle replacement approval when the project changes after preflight", async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "导入字幕" }));
+    const dialog = screen.getByRole("dialog", { name: "导入字幕" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "选择文件" }));
+    const preview = await within(dialog).findByRole("region", { name: "字幕导入预检" });
+    fireEvent.click(within(preview).getByRole("checkbox", { name: /确认用这份文件替换当前字幕/ }));
+
+    await mockRun(["transcript", "offset", "p_demo", "--segment", "s1", "--delta", "0.100"]);
+    fireEvent.click(within(preview).getByRole("button", { name: "确认替换字幕" }));
+
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("旧确认已失效，请重新选择文件并预检");
+    expect(within(dialog).queryByRole("region", { name: "字幕导入预检" })).not.toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "导入字幕" })).toBeInTheDocument();
+  });
+
   it("updates the vertical canvas and exposes explicit subtitle modes", async () => {
     render(<App />);
     await openDrawerTab("导出");
@@ -785,6 +827,56 @@ describe("SiaoCut review workbench", () => {
     expect(screen.getByText(/原 URL、站点媒体 ID、工具版本和文件哈希已保存/)).toBeInTheDocument();
   });
 
+  it("does not let a completed URL import steal a project selected after the job started", async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "从 URL 导入" }));
+    fireEvent.change(screen.getByLabelText("公开视频 URL"), { target: { value: "https://www.youtube.com/watch?v=HOfdboHvshg" } });
+    fireEvent.click(screen.getByRole("button", { name: "读取视频信息" }));
+    const preview = await screen.findByRole("region", { name: "待确认视频信息" });
+    fireEvent.click(within(preview).getByRole("checkbox"));
+    fireEvent.click(within(preview).getByRole("button", { name: "确认信息并开始下载" }));
+
+    const secondProject = screen.getByRole("button", { name: /^第二个本地项目/ });
+    await waitFor(() => expect(secondProject).toBeEnabled());
+    fireEvent.click(secondProject);
+    await screen.findByRole("heading", { name: "第二个本地项目" });
+
+    await waitFor(() => expect(screen.getByText(/原 URL、站点媒体 ID、工具版本和文件哈希已保存/)).toBeInTheDocument(), { timeout: 4000 });
+    expect(screen.getByRole("heading", { name: "第二个本地项目" })).toBeInTheDocument();
+  });
+
+  it("keeps concurrent one-click workflows visible and does not steal a later project selection", async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "一键成片" }));
+    let dialog = screen.getByRole("dialog", { name: "一键工作流" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "选择文件" }));
+    await waitFor(() => expect(within(dialog).getByText("demo.mp4")).toBeInTheDocument());
+    fireEvent.click(within(dialog).getByRole("button", { name: "启动一键工作流" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "一键工作流" })).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "一键成片" }));
+    dialog = screen.getByRole("dialog", { name: "一键工作流" });
+    const secondStart = within(dialog).getByRole("button", { name: "启动一键工作流" });
+    await waitFor(() => expect(secondStart).toBeEnabled());
+    fireEvent.click(secondStart);
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "一键工作流" })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByRole("region", { name: "一键工作流状态" })).toHaveLength(2));
+
+    const secondProject = screen.getByRole("button", { name: /^第二个本地项目/ });
+    await waitFor(() => expect(secondProject).toBeEnabled());
+    fireEvent.click(secondProject);
+    await screen.findByRole("heading", { name: "第二个本地项目" });
+    await waitFor(() => {
+      const workflows = screen.getAllByRole("region", { name: "一键工作流状态" });
+      expect(workflows).toHaveLength(2);
+      expect(workflows.some((workflow) => {
+        const progress = within(workflow).getByRole("progressbar") as HTMLProgressElement;
+        return progress.value > 0.02;
+      })).toBe(true);
+    }, { timeout: 4000 });
+    expect(screen.getByRole("heading", { name: "第二个本地项目" })).toBeInTheDocument();
+  }, 10_000);
+
   it("keeps a cancelled one-click workflow available for explicit continuation", async () => {
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "一键成片" }));
@@ -880,7 +972,7 @@ describe("SiaoCut review workbench", () => {
     expect(settings).toHaveFocus();
   });
 
-  it("requires an explicit model download and selects it after verification", async () => {
+  it("requires explicit download verification and confirmation before removing a model", async () => {
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "运行环境" }));
     const option = screen.getByText("平衡 · 推荐").closest("article");
@@ -888,6 +980,17 @@ describe("SiaoCut review workbench", () => {
     fireEvent.click(within(option!).getByRole("button", { name: "下载" }));
     await waitFor(() => expect(screen.getByText("模型已下载并通过 SHA-256 校验，可以开始本地转录。")).toBeInTheDocument());
     expect(within(option!).getByText("使用中")).toBeInTheDocument();
+
+    fireEvent.click(within(option!).getByRole("button", { name: "移除" }));
+    const confirmation = screen.getByRole("alertdialog", { name: "确认移除" });
+    expect(within(confirmation).getByText(/文件删除后需要重新下载/)).toBeInTheDocument();
+    fireEvent.click(within(confirmation).getByRole("button", { name: "取消" }));
+    expect(screen.queryByRole("alertdialog", { name: "确认移除" })).not.toBeInTheDocument();
+    expect(within(option!).getByText("使用中")).toBeInTheDocument();
+
+    fireEvent.click(within(option!).getByRole("button", { name: "移除" }));
+    fireEvent.click(within(screen.getByRole("alertdialog", { name: "确认移除" })).getByRole("button", { name: "确认移除" }));
+    await waitFor(() => expect(within(option!).getByRole("button", { name: "下载" })).toBeInTheDocument());
   });
 
   it("installs the optional speaker package explicitly and keeps speaker edits reviewable", async () => {
@@ -1009,19 +1112,43 @@ describe("SiaoCut review workbench", () => {
     expect(taskLabel(project)).toBe("需要 Agent 继续");
   });
 
-  it("shows a three-way conflict and requires an explicit review action", () => {
-    const apply = vi.fn();
+  it("distinguishes claimed and stale Agent tasks from active processing", () => {
+    const now = Date.parse("2026-07-25T12:00:00.000Z");
+    const task = structuredClone(sampleProject.tasks[0]);
+    task.status = "claimed";
+    task.lastActivity = {
+      kind: "claimed",
+      progress: null,
+      message: "Agent 已领取任务",
+      createdAt: "2026-07-25T11:59:00.000Z",
+    };
+    expect(agentTaskStatusLabel(task, now)).toBe("Agent 已领取，尚未报告处理活动");
+
+    task.status = "running";
+    task.lastActivity = {
+      kind: "heartbeat",
+      progress: 25,
+      message: "处理中",
+      createdAt: "2026-07-25T11:00:00.000Z",
+    };
+    expect(agentTaskStatusLabel(task, now)).toBe("暂未收到新的进度");
+  });
+
+  it("shows a three-way conflict and prevents applying a stale suggestion", () => {
+    const review = vi.fn();
     render(<PatchReviewCard item={{
       id: "pi1", segmentId: "s1", target: "transcript", beforeText: "旧的项目名称",
       afterText: "建议的新名称", currentText: "人工修改", reason: "修正产品名",
       confidence: 0.88, status: "conflict",
-    }} onReview={apply} onSelect={() => undefined} />);
+    }} onReview={review} onSelect={() => undefined} />);
     expect(screen.getByText("状态冲突 · 当前文本已变化")).toBeInTheDocument();
     expect(screen.getByText("旧的项目名称")).toBeInTheDocument();
     expect(screen.getByText("人工修改")).toBeInTheDocument();
     expect(screen.getByText("建议的新名称")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "应用建议" }));
-    expect(apply).toHaveBeenCalledWith("apply");
+    expect(screen.getByText(/不能应用这条旧建议/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "应用建议" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "保留原文" }));
+    expect(review).toHaveBeenCalledWith("keep");
   });
 
   it("prioritizes pending Agent patches as a confirmation state", () => {
