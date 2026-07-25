@@ -596,6 +596,7 @@ mod tests {
                             Err(error) => panic!("mock model server accept failed: {error}"),
                         }
                     };
+                    stream.set_nonblocking(false).unwrap();
                     let range_start = read_range_start(&mut stream);
                     observed_ranges.lock().unwrap().push(range_start);
                     write_model_response(&mut stream, &payload, range_start, plan);
