@@ -6,18 +6,24 @@ use crate::{
 };
 use anyhow::{Context, Result, anyhow, bail};
 use reqwest::{StatusCode, Url, header};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, ErrorCode, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     env, fs,
-    io::{BufRead, BufReader},
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs},
+    io::{BufRead, BufReader, Read},
+    net::{
+        IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs,
+    },
     path::{Path, PathBuf},
-    process::Stdio,
-    sync::mpsc,
+    process::{Command, ExitStatus, Stdio},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 pub const MAX_DURATION_SECONDS: f64 = 2.0 * 60.0 * 60.0;
@@ -26,6 +32,10 @@ pub const PINNED_YTDLP_VERSION: &str = "2026.06.09";
 pub const PINNED_YTDLP_SHA256: &str =
     "3a48cb955d55c8821b60ccbdbbc6f61bc958f2f3d3b7ad5eaf3d83a543293a27";
 const MAX_REDIRECTS: usize = 8;
+const INSPECTION_TIMEOUT: Duration = Duration::from_secs(45);
+const TOOL_VERSION_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_SUBPROCESS_STDOUT_BYTES: usize = 16 * 1024 * 1024;
+const MAX_SUBPROCESS_STDERR_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -101,12 +111,23 @@ pub fn configured() -> bool {
 
 pub fn inspect(input: &str) -> Result<SourcePreview> {
     let original = validate_public_https_url(input)?;
-    preflight_public_url(&original)?;
     let tool = verify_tool(&yt_dlp_path())?;
-    let output = hidden_command(&tool.path)
-        .args(inspection_arguments(&original))
-        .output()
-        .context("无法启动固定版本的 yt-dlp")?;
+    inspect_with_tool(original, &tool)
+}
+
+fn inspect_with_tool(original: Url, tool: &ToolIdentity) -> Result<SourcePreview> {
+    preflight_public_url(&original)?;
+    let proxy = SafeConnectProxy::start()?;
+    let mut arguments = inspection_arguments(&original);
+    add_proxy_argument(&mut arguments, &proxy.url());
+    let mut command = hidden_command(&tool.path);
+    command.args(arguments);
+    let output = output_with_timeout(
+        command,
+        INSPECTION_TIMEOUT,
+        "source_inspection_timeout: yt-dlp 检查公开 URL 超时",
+    )
+    .context("无法启动固定版本的 yt-dlp")?;
     if !output.status.success() {
         let detail = String::from_utf8_lossy(&output.stderr);
         bail!(
@@ -116,7 +137,7 @@ pub fn inspect(input: &str) -> Result<SourcePreview> {
     }
     let metadata: Value = serde_json::from_slice(&output.stdout)
         .context("source_metadata_invalid: yt-dlp 返回了无效 JSON")?;
-    parse_metadata(original, &metadata, &tool)
+    parse_metadata(original, &metadata, tool)
 }
 
 pub fn start(
@@ -164,7 +185,9 @@ fn start_internal(
     if let Err(error) = spawn_worker(&job.id, start_delay_ms) {
         let timestamp = now();
         let _ = db.execute(
-            "UPDATE source_imports SET status='failed',error_message=?2,updated_at=?3,completed_at=?3 WHERE id=?1",
+            "UPDATE source_imports
+             SET status='failed',error_message=?2,updated_at=?3,completed_at=?3
+             WHERE id=?1 AND status='queued' AND worker_pid IS NULL",
             params![&job.id, error.to_string(), timestamp],
         );
         return Err(error);
@@ -242,7 +265,7 @@ fn insert_job_with_id_at(
         worker_pid: None,
         attempt_count: 1,
     };
-    db.execute(
+    let inserted = db.execute(
         "INSERT INTO source_imports(
              id,original_url,webpage_url,site_media_id,extractor,title,duration_seconds,
              file_size_bytes,status,progress,bytes_downloaded,total_bytes,output_directory,
@@ -262,8 +285,19 @@ fn insert_job_with_id_at(
             &job.tool_sha256,
             &job.created_at,
         ],
-    )?;
-    Ok(job)
+    );
+    match inserted {
+        Ok(_) => Ok(job),
+        Err(error)
+            if error.sqlite_error_code() == Some(ErrorCode::ConstraintViolation)
+                && active_job(db, &job.original_url)?.is_some() =>
+        {
+            let _ = fs::remove_dir(&output_directory);
+            active_job(db, &job.original_url)?
+                .ok_or_else(|| anyhow!("source_job_duplicate: 活动 URL 导入任务已发生变化"))
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn active_job(db: &Connection, original_url: &str) -> Result<Option<SourceImportJob>> {
@@ -354,7 +388,9 @@ pub fn resume(db: &Connection, job_id: &str) -> Result<SourceImportJob> {
     if let Err(error) = spawn_worker(job_id, None) {
         let timestamp = now();
         let _ = db.execute(
-            "UPDATE source_imports SET status='failed',error_message=?2,updated_at=?3,completed_at=?3 WHERE id=?1",
+            "UPDATE source_imports
+             SET status='failed',error_message=?2,updated_at=?3,completed_at=?3
+             WHERE id=?1 AND status='queued' AND worker_pid IS NULL",
             params![job_id, error.to_string(), timestamp],
         );
         return Err(error);
@@ -377,24 +413,36 @@ fn prepare_resume(db: &Connection, job_id: &str) -> Result<SourceImportJob> {
         .map(|total| partial_bytes as f64 / total as f64)
         .unwrap_or(0.0)
         .clamp(0.0, 0.99);
-    db.execute(
+    let changed = db.execute(
         "UPDATE source_imports
          SET status='queued',progress=?2,bytes_downloaded=?3,cancel_requested_at=NULL,
              error_message=NULL,completed_at=NULL,worker_pid=NULL,attempt_count=attempt_count+1,updated_at=?4
-         WHERE id=?1",
+         WHERE id=?1 AND status IN ('cancelled','failed','interrupted')",
         params![job_id, progress, partial_bytes, now()],
     )?;
+    if changed != 1 {
+        bail!("source_job_not_resumable: URL 导入任务已被其他工作进程继续")
+    }
     load(db, job_id)
 }
 
 pub fn reconcile_interrupted(db: &Connection) -> Result<()> {
     let jobs = db
-        .prepare("SELECT id FROM source_imports WHERE status IN ('queued','running','finalizing')")?
-        .query_map([], |row| row.get::<_, String>(0))?
+        .prepare(
+            "SELECT id,status,worker_pid,updated_at
+             FROM source_imports WHERE status IN ('queued','running','finalizing')",
+        )?
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<u32>>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    for id in jobs {
-        let job = load(db, &id)?;
-        let stale = chrono::DateTime::parse_from_rfc3339(&job.updated_at)
+    for (id, status, worker_pid, updated_at) in jobs {
+        let stale = chrono::DateTime::parse_from_rfc3339(&updated_at)
             .map(|time| {
                 chrono::Utc::now()
                     .signed_duration_since(time.with_timezone(&chrono::Utc))
@@ -402,13 +450,13 @@ pub fn reconcile_interrupted(db: &Connection) -> Result<()> {
                     >= 5
             })
             .unwrap_or(true);
-        let worker_alive = job.worker_pid.is_some_and(crate::util::process_is_active);
+        let worker_alive = worker_pid.is_some_and(crate::util::process_is_active);
         if stale && !worker_alive {
             db.execute(
                 "UPDATE source_imports
                  SET status='interrupted',error_message='上次 URL 下载进程已中断；需要显式继续。',worker_pid=NULL,updated_at=?2
-                 WHERE id=?1",
-                params![id, now()],
+                 WHERE id=?1 AND status=?3 AND updated_at=?4 AND worker_pid IS ?5",
+                params![id, now(), status, updated_at, worker_pid],
             )?;
         }
     }
@@ -427,10 +475,15 @@ fn spawn_worker(job_id: &str, start_delay_ms: Option<u64>) -> Result<()> {
 
 pub fn run_worker(job_id: &str, start_delay_ms: Option<u64>) -> Result<()> {
     let mut db = db::open()?;
-    db.execute(
-        "UPDATE source_imports SET status='running',worker_pid=?2,updated_at=?3 WHERE id=?1",
+    let claimed = db.execute(
+        "UPDATE source_imports
+         SET status='running',worker_pid=?2,updated_at=?3
+         WHERE id=?1 AND status='queued' AND worker_pid IS NULL",
         params![job_id, std::process::id(), now()],
     )?;
+    if claimed != 1 {
+        bail!("source_job_already_running: URL 导入任务已被其他工作进程领取")
+    }
     if let Some(delay) = start_delay_ms {
         thread::sleep(Duration::from_millis(delay));
     }
@@ -460,13 +513,33 @@ fn run_download(db: &mut Connection, job_id: &str) -> Result<()> {
         return Ok(());
     }
     let original_url = validate_public_https_url(&job.original_url)?;
-    preflight_public_url(&original_url)?;
     let tool = verify_tool(&yt_dlp_path())?;
+    if tool.version != job.tool_version || tool.sha256 != job.tool_sha256 {
+        bail!("source_tool_changed: URL 导入任务绑定的 yt-dlp 版本或哈希已变化")
+    }
+    let refreshed = inspect_with_tool(original_url.clone(), &tool)?;
+    assert_source_identity(&job.site_media_id, &job.extractor, &refreshed)?;
+    let tool = verify_tool(&tool.path)?;
     if tool.version != job.tool_version || tool.sha256 != job.tool_sha256 {
         bail!("source_tool_changed: URL 导入任务绑定的 yt-dlp 版本或哈希已变化")
     }
     let ffmpeg = tool_path("SIAOCUT_FFMPEG", "ffmpeg");
     run_download_command(db, job_id, &original_url, &tool, &ffmpeg)
+}
+
+fn assert_source_identity(
+    expected_media_id: &str,
+    expected_extractor: &str,
+    refreshed: &SourcePreview,
+) -> Result<()> {
+    if refreshed.site_media_id != expected_media_id || refreshed.extractor != expected_extractor {
+        bail!(
+            "source_confirmation_mismatch: 下载前媒体身份已变化；确认的是 {expected_extractor}:{expected_media_id}，当前是 {}:{}",
+            refreshed.extractor,
+            refreshed.site_media_id
+        )
+    }
+    Ok(())
 }
 
 fn run_download_command(
@@ -476,12 +549,28 @@ fn run_download_command(
     tool: &ToolIdentity,
     ffmpeg: &str,
 ) -> Result<()> {
+    let proxy = SafeConnectProxy::start()?;
+    run_download_command_with_proxy(db, job_id, original_url, tool, ffmpeg, Some(proxy.url()))
+}
+
+fn run_download_command_with_proxy(
+    db: &mut Connection,
+    job_id: &str,
+    original_url: &Url,
+    tool: &ToolIdentity,
+    ffmpeg: &str,
+    proxy_url: Option<String>,
+) -> Result<()> {
     let job = load(db, job_id)?;
     let output_directory = PathBuf::from(&job.output_directory);
     fs::create_dir_all(&output_directory)?;
+    let mut arguments = download_arguments(original_url, &output_directory, ffmpeg);
+    if let Some(proxy_url) = proxy_url {
+        add_proxy_argument(&mut arguments, &proxy_url);
+    }
     let mut command = hidden_command(&tool.path);
     command
-        .args(download_arguments(original_url, &output_directory, ffmpeg))
+        .args(arguments)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = command.spawn().context("无法启动 yt-dlp 下载进程")?;
@@ -655,6 +744,9 @@ fn find_completed_output(directory: &Path) -> Result<PathBuf> {
 
 fn finalize_download(db: &mut Connection, job_id: &str, output: &Path) -> Result<()> {
     let job = load(db, job_id)?;
+    if job.status == "completed" && job.project_id.is_some() {
+        return Ok(());
+    }
     let output = output
         .canonicalize()
         .context("source_output_invalid: 无法读取下载结果")?;
@@ -675,11 +767,27 @@ fn finalize_download(db: &mut Connection, job_id: &str, output: &Path) -> Result
         bail!("source_duration_limit: 下载结果超过 2 小时")
     }
     let output_sha256 = hash_file(&output)?;
-    db.execute(
+    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let (status, existing_project_id): (String, Option<String>) = tx.query_row(
+        "SELECT status,project_id FROM source_imports WHERE id=?1",
+        [job_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if status == "completed" && existing_project_id.is_some() {
+        tx.commit()?;
+        return Ok(());
+    }
+    if !["queued", "running", "finalizing"].contains(&status.as_str()) {
+        bail!("source_job_state_invalid: URL 导入任务当前状态不能完成")
+    }
+    if hash_file(&output)? != output_sha256 {
+        bail!("source_output_changed: 下载结果在校验期间发生变化")
+    }
+    let transitioned = tx.execute(
         "UPDATE source_imports
          SET status='finalizing',progress=0.99,bytes_downloaded=?2,total_bytes=?2,
-             output_path=?3,output_sha256=?4,updated_at=?5
-         WHERE id=?1",
+              output_path=?3,output_sha256=?4,updated_at=?5
+         WHERE id=?1 AND status IN ('queued','running','finalizing') AND project_id IS NULL",
         params![
             job_id,
             bytes,
@@ -688,15 +796,234 @@ fn finalize_download(db: &mut Connection, job_id: &str, output: &Path) -> Result
             now()
         ],
     )?;
-    let project = project::create(db, &output, Some(job.title))?;
+    if transitioned != 1 {
+        bail!("source_finalize_conflict: URL 导入任务已被其他工作进程完成")
+    }
+    let project_id = new_id("p");
+    project::insert_with_id_in_transaction(&tx, &output, Some(job.title), &project_id)?;
+    let inserted_media: (String, String, Option<i64>) = tx.query_row(
+        "SELECT source_path,sha256,CAST(duration_seconds * 1000 AS INTEGER)
+         FROM media WHERE project_id=?1",
+        [&project_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    let final_bytes = fs::metadata(&output)?.len();
+    let final_hash = hash_file(&output)?;
+    if inserted_media.0 != output.to_string_lossy()
+        || inserted_media.1 != output_sha256
+        || final_hash != output_sha256
+        || final_bytes != bytes
+        || inserted_media.2.unwrap_or_default() <= 0
+    {
+        bail!("source_output_changed: 下载结果在项目发布期间发生变化")
+    }
     let completed_at = now();
-    db.execute(
+    let completed = tx.execute(
         "UPDATE source_imports
          SET project_id=?2,status='completed',progress=1,worker_pid=NULL,updated_at=?3,completed_at=?3,error_message=NULL
-         WHERE id=?1",
-        params![job_id, &project.id, completed_at],
+         WHERE id=?1 AND status='finalizing' AND project_id IS NULL",
+        params![job_id, &project_id, completed_at],
     )?;
+    if completed != 1 {
+        bail!("source_finalize_conflict: URL 导入任务发布项目时发生竞争")
+    }
+    tx.commit()?;
     Ok(())
+}
+
+fn add_proxy_argument(arguments: &mut Vec<String>, proxy_url: &str) {
+    let index = arguments
+        .iter()
+        .position(|argument| argument == "--")
+        .unwrap_or(arguments.len());
+    arguments.splice(index..index, ["--proxy".to_owned(), proxy_url.to_owned()]);
+}
+
+struct SafeConnectProxy {
+    address: SocketAddr,
+    stop: Arc<AtomicBool>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+
+impl SafeConnectProxy {
+    fn start() -> Result<Self> {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .context("source_proxy_failed: 无法启动 URL 安全代理")?;
+        listener.set_nonblocking(true)?;
+        let address = listener.local_addr()?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stop);
+        let worker = thread::spawn(move || {
+            while !worker_stop.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        thread::spawn(move || {
+                            let _ = handle_proxy_connection(stream);
+                        });
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        Ok(Self {
+            address,
+            stop,
+            worker: Some(worker),
+        })
+    }
+
+    fn url(&self) -> String {
+        format!("http://{}", self.address)
+    }
+}
+
+impl Drop for SafeConnectProxy {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        let _ = TcpStream::connect(self.address);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+fn handle_proxy_connection(mut client: TcpStream) -> Result<()> {
+    client.set_read_timeout(Some(Duration::from_secs(5)))?;
+    client.set_write_timeout(Some(Duration::from_secs(5)))?;
+    let mut request = Vec::with_capacity(1024);
+    let mut byte = [0_u8; 1];
+    while request.len() < 16 * 1024 && !request.ends_with(b"\r\n\r\n") {
+        if client.read(&mut byte)? == 0 {
+            return Ok(());
+        }
+        request.push(byte[0]);
+    }
+    let first_line = String::from_utf8_lossy(&request)
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .to_owned();
+    let mut parts = first_line.split_whitespace();
+    if parts.next() != Some("CONNECT") {
+        let _ = std::io::Write::write_all(
+            &mut client,
+            b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        );
+        return Ok(());
+    }
+    let authority = parts
+        .next()
+        .ok_or_else(|| anyhow!("source_proxy_target_invalid: CONNECT 缺少目标"))?;
+    let target = Url::parse(&format!("https://{authority}/"))
+        .context("source_proxy_target_invalid: CONNECT 目标无效")?;
+    let host = target
+        .host_str()
+        .ok_or_else(|| anyhow!("source_proxy_target_invalid: CONNECT 缺少主机"))?;
+    let port = target.port_or_known_default().unwrap_or(443);
+    let addresses = public_socket_addresses(host, port);
+    let Ok(addresses) = addresses else {
+        let _ = std::io::Write::write_all(
+            &mut client,
+            b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        );
+        return Ok(());
+    };
+    let mut upstream = None;
+    for address in addresses {
+        if let Ok(stream) = TcpStream::connect_timeout(&address, Duration::from_secs(8)) {
+            upstream = Some(stream);
+            break;
+        }
+    }
+    let Some(mut upstream) = upstream else {
+        let _ = std::io::Write::write_all(
+            &mut client,
+            b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        );
+        return Ok(());
+    };
+    client.set_read_timeout(Some(Duration::from_secs(45)))?;
+    client.set_write_timeout(Some(Duration::from_secs(45)))?;
+    upstream.set_read_timeout(Some(Duration::from_secs(45)))?;
+    upstream.set_write_timeout(Some(Duration::from_secs(45)))?;
+    std::io::Write::write_all(&mut client, b"HTTP/1.1 200 Connection Established\r\n\r\n")?;
+    let mut client_reader = client.try_clone()?;
+    let mut upstream_writer = upstream.try_clone()?;
+    let upload = thread::spawn(move || {
+        let _ = std::io::copy(&mut client_reader, &mut upstream_writer);
+        let _ = upstream_writer.shutdown(Shutdown::Write);
+    });
+    let _ = std::io::copy(&mut upstream, &mut client);
+    let _ = client.shutdown(Shutdown::Write);
+    let _ = upload.join();
+    Ok(())
+}
+
+#[derive(Debug)]
+struct BoundedOutput {
+    status: ExitStatus,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
+fn output_with_timeout(
+    mut command: Command,
+    timeout: Duration,
+    timeout_message: &str,
+) -> Result<BoundedOutput> {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command.spawn()?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("无法读取子进程标准输出"))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow!("无法读取子进程错误输出"))?;
+    let stdout_reader =
+        thread::spawn(move || read_bounded(&mut stdout, MAX_SUBPROCESS_STDOUT_BYTES));
+    let stderr_reader =
+        thread::spawn(move || read_bounded(&mut stderr, MAX_SUBPROCESS_STDERR_BYTES));
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            crate::util::terminate_process_tree(&mut child);
+            let _ = child.wait();
+            let _ = stdout_reader.join();
+            let _ = stderr_reader.join();
+            bail!("{timeout_message}")
+        }
+        thread::sleep(Duration::from_millis(50));
+    };
+    Ok(BoundedOutput {
+        status,
+        stdout: stdout_reader
+            .join()
+            .map_err(|_| anyhow!("无法汇总子进程标准输出"))?,
+        stderr: stderr_reader
+            .join()
+            .map_err(|_| anyhow!("无法汇总子进程错误输出"))?,
+    })
+}
+
+fn read_bounded(reader: &mut impl Read, limit: usize) -> Vec<u8> {
+    let mut stored = Vec::with_capacity(limit.min(64 * 1024));
+    let mut chunk = [0_u8; 64 * 1024];
+    while let Ok(length) = reader.read(&mut chunk) {
+        if length == 0 {
+            break;
+        }
+        let remaining = limit.saturating_sub(stored.len());
+        stored.extend_from_slice(&chunk[..length.min(remaining)]);
+    }
+    stored
 }
 
 fn finish_cancelled(db: &Connection, job_id: &str) -> Result<()> {
@@ -757,10 +1084,14 @@ fn verify_tool(path: &Path) -> Result<ToolIdentity> {
             actual_sha256
         )
     }
-    let output = hidden_command(path)
-        .arg("--version")
-        .output()
-        .context("无法读取 yt-dlp 版本")?;
+    let mut version_command = hidden_command(path);
+    version_command.arg("--version");
+    let output = output_with_timeout(
+        version_command,
+        TOOL_VERSION_TIMEOUT,
+        "source_tool_timeout: yt-dlp 版本检查超时",
+    )
+    .context("无法读取 yt-dlp 版本")?;
     let version = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     if !output.status.success() || version != expected_version {
         bail!(
@@ -788,8 +1119,10 @@ fn preflight_public_url(url: &Url) -> Result<Url> {
 }
 
 fn preflight_public_url_blocking(url: &Url) -> Result<Url> {
+    let proxy = SafeConnectProxy::start()?;
     let client = reqwest::blocking::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
+        .proxy(reqwest::Proxy::all(proxy.url())?)
         .timeout(Duration::from_secs(12))
         .build()
         .context("source_preflight_failed: 无法初始化 URL 安全预检")?;
@@ -924,12 +1257,11 @@ fn parse_metadata(
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| anyhow!("source_metadata_invalid: 缺少站点提取器"))?
         .to_owned();
-    let title = required_text(metadata, "title", "视频标题")?;
-    let thumbnail_url = metadata
-        .get("thumbnail")
-        .and_then(Value::as_str)
-        .filter(|value| value.starts_with("https://"))
-        .map(str::to_owned);
+    let title = sanitize_windows_filename_component(&required_text(metadata, "title", "视频标题")?);
+    // Remote thumbnail URLs are intentionally not exposed to the desktop. Rendering one
+    // outside the pinned CONNECT proxy would reopen the private-network and DNS-rebinding
+    // boundary that protects the inspected media URL.
+    let thumbnail_url = None;
     Ok(SourcePreview {
         original_url: original_url.to_string(),
         webpage_url: webpage_url.to_string(),
@@ -954,6 +1286,49 @@ fn required_text(metadata: &Value, key: &str, label: &str) -> Result<String> {
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
         .ok_or_else(|| anyhow!("source_metadata_invalid: 缺少{label}"))
+}
+
+fn sanitize_windows_filename_component(value: &str) -> String {
+    let mut cleaned = value
+        .chars()
+        .map(|character| {
+            if character.is_control()
+                || matches!(
+                    character,
+                    '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'
+                )
+            {
+                '_'
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+    cleaned = cleaned.trim().trim_end_matches([' ', '.']).to_owned();
+    if cleaned.chars().count() > 120 {
+        cleaned = cleaned.chars().take(120).collect();
+        cleaned = cleaned.trim_end_matches([' ', '.']).to_owned();
+    }
+    let basename = cleaned
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    let reserved = matches!(basename.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (basename.len() == 4
+            && (basename.starts_with("COM") || basename.starts_with("LPT"))
+            && basename
+                .as_bytes()
+                .last()
+                .is_some_and(|digit| (b'1'..=b'9').contains(digit)));
+    if reserved {
+        cleaned.insert(0, '_');
+    }
+    if cleaned.is_empty() {
+        "Imported video".to_owned()
+    } else {
+        cleaned
+    }
 }
 
 fn selected_file_size(metadata: &Value) -> Option<u64> {
@@ -990,6 +1365,12 @@ fn validate_public_https_url(input: &str) -> Result<Url> {
         .ok_or_else(|| anyhow!("source_url_invalid: URL 缺少主机名"))?
         .trim_end_matches('.')
         .to_ascii_lowercase();
+    public_socket_addresses(&host, url.port_or_known_default().unwrap_or(443))?;
+    Ok(url)
+}
+
+fn public_socket_addresses(host: &str, port: u16) -> Result<Vec<SocketAddr>> {
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
     if host == "localhost"
         || host.ends_with(".localhost")
         || host.ends_with(".local")
@@ -998,9 +1379,9 @@ fn validate_public_https_url(input: &str) -> Result<Url> {
     {
         bail!("source_private_network: 已拒绝本机或私网地址")
     }
-    let port = url.port_or_known_default().unwrap_or(443);
-    if let Ok(ip) = host.parse::<IpAddr>() {
+    let addresses = if let Ok(ip) = host.parse::<IpAddr>() {
         ensure_public_ip(ip)?;
+        vec![ip]
     } else {
         let addresses = (host.as_str(), port)
             .to_socket_addrs()
@@ -1015,11 +1396,15 @@ fn validate_public_https_url(input: &str) -> Result<Url> {
         } else {
             addresses
         };
-        for address in addresses {
-            ensure_public_ip(address)?;
+        for address in &addresses {
+            ensure_public_ip(*address)?;
         }
-    }
-    Ok(url)
+        addresses
+    };
+    Ok(addresses
+        .into_iter()
+        .map(|address| SocketAddr::new(address, port))
+        .collect())
 }
 
 fn fake_tunnel_ip(ip: IpAddr) -> bool {
@@ -1102,16 +1487,41 @@ fn public_ipv4(ip: Ipv4Addr) -> bool {
 }
 
 fn public_ipv6(ip: Ipv6Addr) -> bool {
-    if let Some(ipv4) = ip.to_ipv4_mapped() {
+    if let Some(ipv4) = ip.to_ipv4() {
         return public_ipv4(ipv4);
     }
     let segments = ip.segments();
+    if segments[..6] == [0x0064, 0xff9b, 0, 0, 0, 0] {
+        let embedded = Ipv4Addr::new(
+            (segments[6] >> 8) as u8,
+            segments[6] as u8,
+            (segments[7] >> 8) as u8,
+            segments[7] as u8,
+        );
+        return public_ipv4(embedded);
+    }
+    if segments[0] == 0x2002 {
+        let embedded = Ipv4Addr::new(
+            (segments[1] >> 8) as u8,
+            segments[1] as u8,
+            (segments[2] >> 8) as u8,
+            segments[2] as u8,
+        );
+        return public_ipv4(embedded);
+    }
     !ip.is_unspecified()
         && !ip.is_loopback()
         && !ip.is_multicast()
+        && !(segments[0] == 0x0064 && segments[1] == 0xff9b && segments[2] == 1)
+        && !(segments[0] == 0x0100 && segments[1] == 0 && segments[2] == 0 && segments[3] == 0)
+        && !(segments[0] == 0x2001 && segments[1] == 0x0002)
+        && !(segments[0] == 0x2001 && (segments[1] & 0xfff0) == 0x0010)
+        && !(segments[0] == 0x2001 && (segments[1] & 0xfff0) == 0x0020)
         && (segments[0] & 0xfe00) != 0xfc00
         && (segments[0] & 0xffc0) != 0xfe80
+        && (segments[0] & 0xffc0) != 0xfec0
         && !(segments[0] == 0x2001 && segments[1] == 0x0db8)
+        && (segments[0] & 0xfff0) != 0x3ff0
 }
 
 #[cfg(test)]
@@ -1306,7 +1716,7 @@ mod tests {
             params![job_id, std::process::id(), now()],
         )?;
         let tool = verify_tool(yt_dlp)?;
-        run_download_command(&mut database, job_id, url, &tool, ffmpeg)
+        run_download_command_with_proxy(&mut database, job_id, url, &tool, ffmpeg, None)
     }
 
     #[test]
@@ -1327,6 +1737,19 @@ mod tests {
         assert!(validate_public_https_url("https://93.184.216.34/video").is_ok());
         assert!(validate_public_https_url("https://[2606:4700:4700::1111]/video").is_ok());
         assert!(fake_tunnel_ip("198.18.0.4".parse().unwrap()));
+        for value in [
+            "::ffff:127.0.0.1",
+            "::127.0.0.1",
+            "64:ff9b::7f00:1",
+            "64:ff9b:1::1",
+            "2002:7f00:1::",
+            "fec0::1",
+        ] {
+            assert!(
+                !public_ipv6(value.parse().unwrap()),
+                "accepted special IPv6 address {value}"
+            );
+        }
     }
 
     #[test]
@@ -1378,6 +1801,31 @@ mod tests {
         assert_eq!(preview.file_size_bytes, Some(12_345_678));
         assert!(preview.requires_confirmation);
         assert_eq!(preview.tool_version, PINNED_YTDLP_VERSION);
+        assert!(preview.thumbnail_url.is_none());
+    }
+
+    #[test]
+    fn source_import_refuses_a_media_identity_changed_after_confirmation() {
+        let preview = SourcePreview {
+            original_url: "https://93.184.216.34/watch/123".to_owned(),
+            webpage_url: "https://93.184.216.34/watch/123".to_owned(),
+            site_media_id: "media-456".to_owned(),
+            extractor: "Example".to_owned(),
+            title: "Changed source".to_owned(),
+            duration_seconds: 10.0,
+            file_size_bytes: Some(100),
+            file_size_known: true,
+            thumbnail_url: None,
+            tool_version: PINNED_YTDLP_VERSION.to_owned(),
+            tool_sha256: PINNED_YTDLP_SHA256.to_owned(),
+            requires_confirmation: true,
+        };
+
+        let error = assert_source_identity("media-123", "Example", &preview)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("source_confirmation_mismatch"));
     }
 
     #[test]
@@ -1445,6 +1893,82 @@ mod tests {
         assert!(!arguments.iter().any(|argument| {
             argument == "-U" || argument == "--update" || argument == "--update-to"
         }));
+        let mut proxied = arguments;
+        add_proxy_argument(&mut proxied, "http://127.0.0.1:43123");
+        let proxy_index = proxied
+            .iter()
+            .position(|argument| argument == "--proxy")
+            .unwrap();
+        let separator_index = proxied
+            .iter()
+            .position(|argument| argument == "--")
+            .unwrap();
+        assert!(proxy_index < separator_index);
+        assert_eq!(proxied[proxy_index + 1], "http://127.0.0.1:43123");
+    }
+
+    #[test]
+    fn source_import_sanitizes_windows_reserved_and_invalid_titles() {
+        assert_eq!(
+            sanitize_windows_filename_component(r#"bad<name>:with?chars*."#),
+            "bad_name__with_chars_"
+        );
+        assert_eq!(sanitize_windows_filename_component("CON"), "_CON");
+        assert_eq!(sanitize_windows_filename_component("lpt9.txt"), "_lpt9.txt");
+        assert_eq!(
+            sanitize_windows_filename_component("  ...  "),
+            "Imported video"
+        );
+        assert_eq!(
+            sanitize_windows_filename_component(&"a".repeat(140))
+                .chars()
+                .count(),
+            120
+        );
+    }
+
+    #[test]
+    fn subprocess_output_capture_is_bounded_while_still_draining_input() {
+        let mut input = std::io::Cursor::new(vec![7_u8; 4096]);
+        let captured = read_bounded(&mut input, 128);
+
+        assert_eq!(captured.len(), 128);
+        assert_eq!(input.position(), 4096);
+    }
+
+    #[test]
+    fn safe_connect_proxy_rejects_private_targets_before_connecting() {
+        let proxy = SafeConnectProxy::start().unwrap();
+        let mut stream = TcpStream::connect(proxy.address).unwrap();
+        stream
+            .write_all(b"CONNECT 127.0.0.1:443 HTTP/1.1\r\nHost: 127.0.0.1:443\r\n\r\n")
+            .unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+
+        assert!(response.starts_with("HTTP/1.1 403 Forbidden"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn inspection_subprocess_timeout_terminates_the_child() {
+        let mut command = Command::new("cmd");
+        command.args(["/D", "/S", "/C", "ping -n 6 127.0.0.1 >NUL"]);
+
+        let started = Instant::now();
+        let error = output_with_timeout(
+            command,
+            Duration::from_millis(100),
+            "source_inspection_timeout: fixture",
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("source_inspection_timeout"));
+        assert!(started.elapsed() < Duration::from_secs(3));
     }
 
     #[test]
@@ -1524,6 +2048,10 @@ mod tests {
             project.media.source_path,
             output.canonicalize().unwrap().to_string_lossy()
         );
+        finalize_download(&mut db, &job.id, &output).unwrap();
+        let finalized_again = load(&db, &job.id).unwrap();
+        assert_eq!(finalized_again.project_id, completed.project_id);
+        assert_eq!(project_count(&db), 1);
     }
 
     #[test]

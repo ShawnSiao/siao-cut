@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 24;
+pub const CURRENT_SCHEMA_VERSION: i64 = 26;
 
 struct Migration {
     version: i64,
@@ -111,6 +111,14 @@ const MIGRATIONS: &[Migration] = &[
         version: 24,
         apply: migration_24_translation_readiness,
     },
+    Migration {
+        version: 25,
+        apply: migration_25_background_integrity,
+    },
+    Migration {
+        version: 26,
+        apply: migration_26_normalized_background_targets,
+    },
 ];
 
 pub fn home_dir() -> PathBuf {
@@ -138,6 +146,7 @@ pub(crate) fn open_at(path: &Path) -> Result<Connection> {
     backup_before_upgrade(path)?;
     let mut db = Connection::open(path).context("无法打开 SiaoCut SQLite 数据库")?;
     db.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")?;
+    db.busy_timeout(Duration::from_secs(120))?;
     migrate(&mut db)?;
     Ok(db)
 }
@@ -1065,6 +1074,180 @@ fn migration_24_translation_readiness(tx: &Transaction<'_>) -> Result<()> {
     Ok(())
 }
 
+fn migration_25_background_integrity(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute_batch(
+        "ALTER TABLE media_artifacts ADD COLUMN base_version_id TEXT;
+         ALTER TABLE media_artifacts ADD COLUMN generation_id TEXT;
+         UPDATE media_artifacts
+            SET base_version_id=(
+                SELECT v.id
+                FROM project_history h
+                JOIN versions v
+                  ON v.project_id=h.project_id AND v.history_index=h.cursor_index
+                WHERE h.project_id=media_artifacts.project_id
+            );
+
+         ALTER TABLE export_jobs ADD COLUMN base_version_id TEXT;
+         ALTER TABLE export_jobs ADD COLUMN source_sha256 TEXT;
+         UPDATE export_jobs
+            SET base_version_id=(
+                    SELECT v.id
+                    FROM project_history h
+                    JOIN versions v
+                      ON v.project_id=h.project_id AND v.history_index=h.cursor_index
+                    WHERE h.project_id=export_jobs.project_id
+                ),
+                source_sha256=(SELECT sha256 FROM media WHERE project_id=export_jobs.project_id);
+         UPDATE export_jobs
+            SET status='interrupted',
+                error_message='export_target_conflict: 数据库升级时发现同一输出目标存在多个活动导出任务。',
+                worker_pid=NULL,
+                updated_at='migration-25'
+            WHERE status IN ('queued','running')
+              AND id NOT IN (
+                  SELECT id FROM (
+                      SELECT id,ROW_NUMBER() OVER (
+                          PARTITION BY lower(replace(output_path,'/','\\'))
+                          ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END,
+                                   updated_at DESC,id DESC
+                      ) AS position
+                      FROM export_jobs
+                      WHERE status IN ('queued','running')
+                  ) WHERE position=1
+              );
+         CREATE UNIQUE INDEX idx_export_jobs_one_active_target
+             ON export_jobs(output_path COLLATE NOCASE)
+             WHERE status IN ('queued','running');
+
+         ALTER TABLE speaker_jobs ADD COLUMN base_version_id TEXT;
+         ALTER TABLE speaker_jobs ADD COLUMN source_sha256 TEXT;
+         UPDATE speaker_jobs
+            SET base_version_id=(
+                    SELECT v.id
+                    FROM project_history h
+                    JOIN versions v
+                      ON v.project_id=h.project_id AND v.history_index=h.cursor_index
+                    WHERE h.project_id=speaker_jobs.project_id
+                ),
+                source_sha256=(SELECT sha256 FROM media WHERE project_id=speaker_jobs.project_id)
+            WHERE kind='analyze';
+         UPDATE speaker_jobs
+            SET status='interrupted',
+                error_message='speaker_job_duplicate: 数据库升级时发现同一项目存在多个活动说话人任务。',
+                worker_pid=NULL,
+                updated_at='migration-25'
+            WHERE status IN ('queued','running')
+              AND kind='analyze'
+              AND id NOT IN (
+                  SELECT id FROM (
+                      SELECT id,ROW_NUMBER() OVER (
+                          PARTITION BY project_id
+                          ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END,
+                                   updated_at DESC,id DESC
+                      ) AS position
+                      FROM speaker_jobs
+                      WHERE kind='analyze' AND status IN ('queued','running')
+                  ) WHERE position=1
+              );
+         UPDATE speaker_jobs
+            SET status='interrupted',
+                error_message='speaker_job_duplicate: 数据库升级时发现多个活动安装任务。',
+                worker_pid=NULL,
+                updated_at='migration-25'
+            WHERE status IN ('queued','running')
+              AND kind='install'
+              AND id NOT IN (
+                  SELECT id FROM speaker_jobs
+                  WHERE kind='install' AND status IN ('queued','running')
+                  ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END,
+                           updated_at DESC,id DESC
+                  LIMIT 1
+              );
+         CREATE UNIQUE INDEX idx_speaker_jobs_one_active_analysis
+             ON speaker_jobs(project_id)
+             WHERE kind='analyze' AND status IN ('queued','running');
+         CREATE UNIQUE INDEX idx_speaker_jobs_one_active_install
+             ON speaker_jobs(kind)
+             WHERE kind='install' AND status IN ('queued','running');
+
+         UPDATE audio_analysis_jobs
+            SET status='interrupted',
+                error_message='audio_job_duplicate: 数据库升级时发现同一项目存在多个活动音频分析任务。',
+                worker_pid=NULL,
+                updated_at='migration-25'
+            WHERE status IN ('queued','running')
+              AND id NOT IN (
+                  SELECT id FROM (
+                      SELECT id,ROW_NUMBER() OVER (
+                          PARTITION BY project_id
+                          ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END,
+                                   updated_at DESC,id DESC
+                      ) AS position
+                      FROM audio_analysis_jobs
+                      WHERE status IN ('queued','running')
+                  ) WHERE position=1
+              );
+         CREATE UNIQUE INDEX idx_audio_analysis_one_active
+             ON audio_analysis_jobs(project_id)
+             WHERE status IN ('queued','running');",
+    )?;
+    Ok(())
+}
+
+fn migration_26_normalized_background_targets(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute_batch(
+        "ALTER TABLE media_artifacts ADD COLUMN owner_pid INTEGER;
+
+         DROP INDEX IF EXISTS idx_export_jobs_one_active_target;
+         UPDATE export_jobs
+            SET status='interrupted',
+                error_message='export_target_conflict: 数据库升级时发现同一规范化输出目标存在多个活动导出任务。',
+                worker_pid=NULL,
+                updated_at='migration-26'
+            WHERE status IN ('queued','running')
+              AND id NOT IN (
+                  SELECT id FROM (
+                      SELECT id,ROW_NUMBER() OVER (
+                          PARTITION BY lower(replace(output_path,'/','\\'))
+                          ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END,
+                                   updated_at DESC,id DESC
+                      ) AS position
+                      FROM export_jobs
+                      WHERE status IN ('queued','running')
+                  ) WHERE position=1
+              );
+         CREATE UNIQUE INDEX idx_export_jobs_one_active_target
+             ON export_jobs(lower(replace(output_path,'/','\\')) COLLATE NOCASE)
+             WHERE status IN ('queued','running');
+
+         UPDATE source_imports
+            SET status='interrupted',
+                error_message='source_job_duplicate: 数据库升级时发现同一 URL 存在多个活动导入任务。',
+                worker_pid=NULL,
+                updated_at='migration-26'
+            WHERE status IN ('queued','running','finalizing')
+              AND id NOT IN (
+                  SELECT id FROM (
+                      SELECT id,ROW_NUMBER() OVER (
+                          PARTITION BY original_url
+                          ORDER BY CASE status
+                                     WHEN 'finalizing' THEN 0
+                                     WHEN 'running' THEN 1
+                                     ELSE 2
+                                   END,
+                                   updated_at DESC,id DESC
+                      ) AS position
+                      FROM source_imports
+                      WHERE status IN ('queued','running','finalizing')
+                  ) WHERE position=1
+              );
+         CREATE UNIQUE INDEX idx_source_imports_one_active_url
+             ON source_imports(original_url)
+             WHERE status IN ('queued','running','finalizing');",
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1505,6 +1688,94 @@ mod tests {
             )
             .unwrap();
         assert!(exists);
+    }
+
+    #[test]
+    fn background_integrity_indexes_reject_duplicate_active_work() {
+        let temp = tempdir().unwrap();
+        let db = open_at(&temp.path().join("background-integrity.db")).unwrap();
+        db.execute(
+            "INSERT INTO projects(id,title,created_at,updated_at)
+             VALUES('p-integrity','Integrity','now','now')",
+            [],
+        )
+        .unwrap();
+
+        db.execute(
+            "INSERT INTO export_jobs(
+                 id,project_id,output_path,status,created_at,updated_at
+             ) VALUES('export-one','p-integrity','C:\\output\\same.mp4','queued','now','now')",
+            [],
+        )
+        .unwrap();
+        assert!(
+            db.execute(
+                "INSERT INTO export_jobs(
+                 id,project_id,output_path,status,created_at,updated_at
+                 ) VALUES('export-two','p-integrity','c:/OUTPUT/SAME.mp4','running','now','now')",
+                [],
+            )
+            .is_err()
+        );
+
+        db.execute(
+            "INSERT INTO speaker_jobs(
+                 id,kind,project_id,status,stage,created_at,updated_at
+             ) VALUES('speaker-one','analyze','p-integrity','queued','queued','now','now')",
+            [],
+        )
+        .unwrap();
+        assert!(
+            db.execute(
+                "INSERT INTO speaker_jobs(
+                     id,kind,project_id,status,stage,created_at,updated_at
+                 ) VALUES('speaker-two','analyze','p-integrity','running','analyzing','now','now')",
+                [],
+            )
+            .is_err()
+        );
+
+        db.execute(
+            "INSERT INTO audio_analysis_jobs(
+                 id,project_id,status,created_at,updated_at
+             ) VALUES('audio-one','p-integrity','queued','now','now')",
+            [],
+        )
+        .unwrap();
+        assert!(
+            db.execute(
+                "INSERT INTO audio_analysis_jobs(
+                     id,project_id,status,created_at,updated_at
+                 ) VALUES('audio-two','p-integrity','running','now','now')",
+                [],
+            )
+            .is_err()
+        );
+
+        db.execute(
+            "INSERT INTO source_imports(
+                 id,original_url,webpage_url,site_media_id,extractor,title,duration_seconds,
+                 status,output_directory,tool_version,tool_sha256,created_at,updated_at
+             ) VALUES(
+                 'source-one','https://example.com/watch/1','https://example.com/watch/1',
+                 'one','test','one',1,'queued','C:\\imports\\one','test','hash','now','now'
+             )",
+            [],
+        )
+        .unwrap();
+        assert!(
+            db.execute(
+                "INSERT INTO source_imports(
+                     id,original_url,webpage_url,site_media_id,extractor,title,duration_seconds,
+                     status,output_directory,tool_version,tool_sha256,created_at,updated_at
+                 ) VALUES(
+                     'source-two','https://example.com/watch/1','https://example.com/watch/1',
+                     'one','test','two',1,'running','C:\\imports\\two','test','hash','now','now'
+                 )",
+                [],
+            )
+            .is_err()
+        );
     }
 
     #[test]

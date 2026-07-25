@@ -353,6 +353,9 @@ fn subtitle_file_cli_previews_confirms_checks_and_recovers() {
         true
     );
     let hash = preview["subtitleImportPreview"]["sha256"].as_str().unwrap();
+    let expected_version = preview["subtitleImportPreview"]["expectedVersionId"]
+        .as_str()
+        .unwrap();
 
     let confirmation = run_direct_error(
         temp.path(),
@@ -363,6 +366,8 @@ fn subtitle_file_cli_previews_confirms_checks_and_recovers() {
             captions.to_str().unwrap(),
             "--expected-sha256",
             hash,
+            "--expected-version",
+            expected_version,
         ],
     );
     assert_eq!(
@@ -385,6 +390,8 @@ fn subtitle_file_cli_previews_confirms_checks_and_recovers() {
             "--confirm-replace",
             "--expected-sha256",
             hash,
+            "--expected-version",
+            expected_version,
         ],
     );
     assert_eq!(applied["subtitleImport"]["insertedSegments"], 2);
@@ -609,6 +616,25 @@ fn project_agent_and_export_contract_remain_compatible() {
         ],
     );
     let segment_id = added["segment"]["id"].as_str().unwrap();
+    let missing_translation_output = temp.path().join("missing-translation.srt");
+    let missing_translation = run_error(
+        temp.path(),
+        &[
+            "transcript",
+            "export",
+            project_id,
+            "--format",
+            "srt",
+            "--lang",
+            "en",
+            "--subtitle-mode",
+            "translated",
+            "-o",
+            missing_translation_output.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(missing_translation["code"], "translation_missing");
+    assert!(!missing_translation_output.exists());
     let glossary = run(
         temp.path(),
         &[
@@ -834,7 +860,7 @@ fn recoverable_agent_cli_uses_fake_codex_and_stops_at_review() {
     fs::write(
         &fake_codex,
         format!(
-            "@echo off\r\nif \"%~1\"==\"--version\" (\r\n  echo codex-cli 0.fake\r\n  exit /b 0\r\n)\r\nif \"%~1\"==\"login\" (\r\n  echo Logged in using ChatGPT\r\n  exit /b 0\r\n)\r\n> result.json echo {{\"baseVersionId\":\"{base_version_id}\",\"processedSegmentIds\":[\"{segment_id}\"],\"patches\":[{{\"segmentId\":\"{segment_id}\",\"before\":\"hello\",\"after\":\"hello.\",\"reason\":\"fake CLI integration\",\"confidence\":0.9}}]}}\r\necho {{\"type\":\"thread.started\",\"thread_id\":\"fake-cli-thread\"}}\r\necho {{\"type\":\"turn.completed\"}}\r\nexit /b 0\r\n"
+            "@echo off\r\nif \"%~1\"==\"--version\" (\r\n  echo codex-cli 0.145.0\r\n  exit /b 0\r\n)\r\nif \"%~1\"==\"login\" (\r\n  echo Logged in using ChatGPT\r\n  exit /b 0\r\n)\r\n> result.json echo {{\"baseVersionId\":\"{base_version_id}\",\"processedSegmentIds\":[\"{segment_id}\"],\"patches\":[{{\"segmentId\":\"{segment_id}\",\"before\":\"hello\",\"after\":\"hello.\",\"reason\":\"fake CLI integration\",\"confidence\":0.9}}]}}\r\necho {{\"type\":\"thread.started\",\"thread_id\":\"fake-cli-thread\"}}\r\necho {{\"type\":\"turn.completed\"}}\r\nexit /b 0\r\n"
         ),
     )
     .unwrap();

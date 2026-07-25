@@ -5,7 +5,7 @@ use crate::{
     util::{hidden_command, new_id, now},
 };
 use anyhow::{Context, Result, anyhow, bail};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, ErrorCode, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::{io::Read, path::Path, process::Stdio, thread, time::Duration};
 
@@ -108,14 +108,23 @@ pub fn start(
     }
     let timestamp = now();
     let id = new_id("audio");
-    db.execute(
+    let inserted = db.execute(
         "INSERT INTO audio_analysis_jobs(id,project_id,status,progress,created_at,updated_at,attempt_count) VALUES(?1,?2,'queued',0,?3,?3,1)",
         params![id, project_id, timestamp],
-    )?;
+    );
+    match inserted {
+        Ok(_) => {}
+        Err(error) if error.sqlite_error_code() == Some(ErrorCode::ConstraintViolation) => {
+            return latest_active(db, project_id)?.ok_or_else(|| error.into());
+        }
+        Err(error) => return Err(error.into()),
+    }
     if let Err(error) = spawn_worker(&id, start_delay_ms) {
         let failed_at = now();
         db.execute(
-            "UPDATE audio_analysis_jobs SET status='failed',error_message=?2,completed_at=?3,updated_at=?3 WHERE id=?1",
+            "UPDATE audio_analysis_jobs
+             SET status='failed',error_message=?2,completed_at=?3,updated_at=?3
+             WHERE id=?1 AND status='queued' AND worker_pid IS NULL",
             params![id, error.to_string(), failed_at],
         )?;
         return Err(error);
@@ -183,17 +192,23 @@ pub fn cancel(db: &Connection, job_id: &str) -> Result<AudioAnalysisJob> {
     if !["queued", "running"].contains(&job.status.as_str()) {
         bail!("audio_job_not_cancellable: 当前音频分析任务不能取消")
     }
+    let cancelled_at = now();
+    let changed = db.execute(
+        "UPDATE audio_analysis_jobs
+         SET status='cancelled',cancel_requested_at=?2,worker_pid=NULL,
+             completed_at=?2,updated_at=?2
+         WHERE id=?1 AND status IN ('queued','running')",
+        params![job_id, cancelled_at],
+    )?;
+    if changed != 1 {
+        bail!("audio_job_not_cancellable: 当前音频分析任务已完成或被其他操作处理")
+    }
     if let Some(worker_pid) = job.worker_pid
         && worker_pid != std::process::id()
         && crate::util::process_is_active(worker_pid)
     {
         let _ = crate::util::terminate_process_tree_by_id(worker_pid);
     }
-    let cancelled_at = now();
-    db.execute(
-        "UPDATE audio_analysis_jobs SET status='cancelled',cancel_requested_at=?2,worker_pid=NULL,completed_at=?2,updated_at=?2 WHERE id=?1",
-        params![job_id, cancelled_at],
-    )?;
     load(db, job_id)
 }
 
@@ -206,15 +221,29 @@ pub fn resume(
     if !["cancelled", "failed", "interrupted"].contains(&job.status.as_str()) {
         bail!("audio_job_not_resumable: 当前音频分析任务不能继续")
     }
-    db.execute(
-        "UPDATE audio_analysis_jobs SET status='queued',progress=0,report_json=NULL,cancel_requested_at=NULL,error_message=NULL,completed_at=NULL,worker_pid=NULL,attempt_count=attempt_count+1,updated_at=?2 WHERE id=?1",
+    let changed = db.execute(
+        "UPDATE audio_analysis_jobs
+         SET status='queued',progress=0,report_json=NULL,cancel_requested_at=NULL,
+             error_message=NULL,completed_at=NULL,worker_pid=NULL,
+             attempt_count=attempt_count+1,updated_at=?2
+         WHERE id=?1 AND status IN ('cancelled','failed','interrupted')",
         params![job_id, now()],
-    )?;
+    );
+    match changed {
+        Ok(1) => {}
+        Ok(_) => bail!("audio_job_not_resumable: 当前音频分析任务不能继续"),
+        Err(error) if error.sqlite_error_code() == Some(ErrorCode::ConstraintViolation) => {
+            bail!("audio_job_duplicate: 当前项目已有活动音频分析任务")
+        }
+        Err(error) => return Err(error.into()),
+    }
     if let Err(error) = spawn_worker(job_id, start_delay_ms).context("无法继续本地音频分析")
     {
         let failed_at = now();
         db.execute(
-            "UPDATE audio_analysis_jobs SET status='failed',error_message=?2,completed_at=?3,updated_at=?3 WHERE id=?1",
+            "UPDATE audio_analysis_jobs
+             SET status='failed',error_message=?2,completed_at=?3,updated_at=?3
+             WHERE id=?1 AND status='queued' AND worker_pid IS NULL",
             params![job_id, error.to_string(), failed_at],
         )?;
         return Err(error);
@@ -224,10 +253,10 @@ pub fn resume(
 
 pub fn reconcile_interrupted(db: &Connection) -> Result<()> {
     let jobs = db
-        .prepare("SELECT id,worker_pid,updated_at FROM audio_analysis_jobs WHERE status IN ('queued','running')")?
-        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<u32>>(1)?, row.get::<_, String>(2)?)))?
+        .prepare("SELECT id,status,worker_pid,updated_at FROM audio_analysis_jobs WHERE status IN ('queued','running')")?
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<u32>>(2)?, row.get::<_, String>(3)?)))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    for (id, worker_pid, updated_at) in jobs {
+    for (id, status, worker_pid, updated_at) in jobs {
         let stale = chrono::DateTime::parse_from_rfc3339(&updated_at)
             .map(|time| {
                 chrono::Utc::now()
@@ -238,8 +267,11 @@ pub fn reconcile_interrupted(db: &Connection) -> Result<()> {
             .unwrap_or(true);
         if stale && !worker_pid.is_some_and(crate::util::process_is_active) {
             db.execute(
-                "UPDATE audio_analysis_jobs SET status='interrupted',error_message='上次音频分析进程已中断，可以显式继续。',worker_pid=NULL,updated_at=?2 WHERE id=?1",
-                params![id, now()],
+                "UPDATE audio_analysis_jobs
+                 SET status='interrupted',error_message='上次音频分析进程已中断，可以显式继续。',
+                     worker_pid=NULL,updated_at=?2
+                 WHERE id=?1 AND status=?3 AND updated_at=?4 AND worker_pid IS ?5",
+                params![id, now(), status, updated_at, worker_pid],
             )?;
         }
     }
@@ -271,27 +303,44 @@ pub fn run_worker(job_id: &str, start_delay_ms: Option<u64>) -> Result<()> {
     match analyze_job(&db, job_id) {
         Ok(report) => {
             let completed_at = now();
-            db.execute(
-                "UPDATE audio_analysis_jobs SET status='completed',progress=1,report_json=?2,error_message=NULL,worker_pid=NULL,completed_at=?3,updated_at=?3 WHERE id=?1",
+            let changed = db.execute(
+                "UPDATE audio_analysis_jobs
+                 SET status='completed',progress=1,report_json=?2,error_message=NULL,
+                     worker_pid=NULL,completed_at=?3,updated_at=?3
+                 WHERE id=?1 AND status='running' AND cancel_requested_at IS NULL",
                 params![job_id, serde_json::to_string(&report)?, completed_at],
             )?;
-            Ok(())
+            if changed == 1 || load(&db, job_id)?.status == "cancelled" {
+                Ok(())
+            } else {
+                bail!("audio_job_state_changed: 音频分析任务在发布结果前状态已变化")
+            }
         }
         Err(error) if error.to_string() == "audio_analysis_cancelled" => {
             let completed_at = now();
             db.execute(
-                "UPDATE audio_analysis_jobs SET status='cancelled',worker_pid=NULL,error_message=NULL,completed_at=?2,updated_at=?2 WHERE id=?1",
+                "UPDATE audio_analysis_jobs
+                 SET status='cancelled',worker_pid=NULL,error_message=NULL,
+                     completed_at=?2,updated_at=?2
+                 WHERE id=?1 AND status='running'",
                 params![job_id, completed_at],
             )?;
             Ok(())
         }
         Err(error) => {
             let completed_at = now();
-            db.execute(
-                "UPDATE audio_analysis_jobs SET status='failed',worker_pid=NULL,error_message=?2,completed_at=?3,updated_at=?3 WHERE id=?1",
+            let changed = db.execute(
+                "UPDATE audio_analysis_jobs
+                 SET status='failed',worker_pid=NULL,error_message=?2,
+                     completed_at=?3,updated_at=?3
+                 WHERE id=?1 AND status='running' AND cancel_requested_at IS NULL",
                 params![job_id, error.to_string(), completed_at],
             )?;
-            Err(error)
+            if changed == 0 && load(&db, job_id)?.status == "cancelled" {
+                Ok(())
+            } else {
+                Err(error)
+            }
         }
     }
 }

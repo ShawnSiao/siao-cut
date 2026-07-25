@@ -5,7 +5,7 @@ use crate::{
 };
 use anyhow::{Result, anyhow, bail};
 use chrono::{Duration, Utc};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
@@ -153,7 +153,8 @@ pub fn claim(
     requested_task_id: Option<&str>,
 ) -> Result<Option<(Project, Task, Value)>> {
     reconcile_expired(db)?;
-    let candidate: Option<(String, String)> = db
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let candidate: Option<(String, String)> = tx
         .query_row(
             "SELECT project_id,id FROM tasks WHERE status='queued' AND (?1 IS NULL OR id=?1) ORDER BY created_at LIMIT 1",
             [requested_task_id],
@@ -163,35 +164,14 @@ pub fn claim(
     let Some((project_id, task_id)) = candidate else {
         return Ok(None);
     };
-    let lease = Lease {
-        worker: worker.to_owned(),
-        id: new_id("lease"),
-        expires_at: (Utc::now() + Duration::minutes(LEASE_MINUTES)).to_rfc3339(),
-    };
-    let changed = db.execute(
-        "UPDATE tasks SET status='claimed',lease_worker=?3,lease_id=?4,lease_expires_at=?5,attempt_count=attempt_count+1,error_message=NULL WHERE id=?1 AND project_id=?2 AND status='queued'",
-        params![&task_id, &project_id, &lease.worker, &lease.id, &lease.expires_at],
-    )?;
-    if changed == 0 {
-        return Ok(None);
-    }
-    append_event(
-        db,
-        &task_id,
-        &project_id,
-        "claimed",
-        None,
-        "Agent 已领取任务",
-    )?;
-    db.execute(
-        "UPDATE workflows SET status='running',updated_at=?2 WHERE task_id=?1",
-        params![&task_id, now()],
-    )?;
-    let project = project::load(db, &project_id)?;
+    let project = project::load(&tx, &project_id)?;
     let task = find_task(&project, &task_id)?;
-    let task_segment_ids = translation::task_segment_ids(db, &task.id)?;
+    if project.history.current_version_id != task.base_version_id {
+        bail!("task_base_version_conflict: 项目版本已变化，请重新创建或重试任务")
+    }
+    let task_segment_ids = translation::task_segment_ids(&tx, &task.id)?;
     let task_segment_set = task_segment_ids.iter().collect::<BTreeSet<_>>();
-    let task_glossary_version: Option<i64> = db.query_row(
+    let task_glossary_version: Option<i64> = tx.query_row(
         "SELECT glossary_version FROM tasks WHERE id=?1",
         [&task.id],
         |row| row.get(0),
@@ -228,6 +208,9 @@ pub fn claim(
             }
         })
         .collect::<Vec<_>>();
+    if segments.len() != task_segment_set.len() {
+        bail!("agent_batch_incomplete: 任务基线中的字幕段已变化，请重新创建任务")
+    }
     let response_schema = if task.kind == "speaker_names" {
         json!({
             "baseVersionId": "Original version ID returned with the task",
@@ -263,7 +246,7 @@ pub fn claim(
         })
     };
     let speaker_evidence = if task.kind == "speaker_names" {
-        let track = crate::speaker::load_track(db, &project_id)?;
+        let track = crate::speaker::load_track(&tx, &project_id)?;
         Some(json!({
             "speakers": track.speakers.iter().map(|speaker| json!({
                 "id": speaker.id,
@@ -312,7 +295,34 @@ pub fn claim(
         "speakerEvidence": speaker_evidence,
         "responseSchema": response_schema
     });
-    Ok(Some((project, task, payload)))
+    let lease = Lease {
+        worker: worker.to_owned(),
+        id: new_id("lease"),
+        expires_at: (Utc::now() + Duration::minutes(LEASE_MINUTES)).to_rfc3339(),
+    };
+    let changed = tx.execute(
+        "UPDATE tasks SET status='claimed',lease_worker=?3,lease_id=?4,lease_expires_at=?5,attempt_count=attempt_count+1,error_message=NULL WHERE id=?1 AND project_id=?2 AND status='queued'",
+        params![&task_id, &project_id, &lease.worker, &lease.id, &lease.expires_at],
+    )?;
+    if changed == 0 {
+        return Ok(None);
+    }
+    append_event(
+        &tx,
+        &task_id,
+        &project_id,
+        "claimed",
+        None,
+        "Agent 已领取任务",
+    )?;
+    tx.execute(
+        "UPDATE workflows SET status='running',updated_at=?2 WHERE task_id=?1",
+        params![&task_id, now()],
+    )?;
+    tx.commit()?;
+    let claimed_project = project::load(db, &project_id)?;
+    let claimed_task = find_task(&claimed_project, &task_id)?;
+    Ok(Some((claimed_project, claimed_task, payload)))
 }
 
 fn task_instructions(kind: &str, instruction_locale: &str) -> &'static str {
@@ -664,14 +674,15 @@ pub fn submit(
             bail!("glossary_version_conflict: 术语表版本已变化，Agent 结果未提交")
         }
     }
-    if let Some(patches) = response
+    let submitted_patches = response
         .get("patches")
         .or_else(|| response.get("segments"))
-        .and_then(Value::as_array)
-    {
+        .and_then(Value::as_array);
+    if let Some(patches) = submitted_patches {
         let allowed = translation::task_segment_ids(db, task_id)?
             .into_iter()
             .collect::<BTreeSet<_>>();
+        let mut submitted = BTreeSet::new();
         for patch in patches {
             let segment_id = patch
                 .get("segmentId")
@@ -680,7 +691,15 @@ pub fn submit(
             if !allowed.contains(segment_id) {
                 bail!("agent_segment_unauthorized: Agent 建议包含任务范围外字幕段")
             }
+            if !submitted.insert(segment_id.to_owned()) {
+                bail!("agent_segment_duplicate: Agent 结果重复声明字幕段")
+            }
         }
+        if kind == "translate" && submitted != allowed {
+            bail!("agent_batch_incomplete: 翻译任务必须逐段返回全部目标字幕")
+        }
+    } else if kind == "translate" {
+        bail!("agent_batch_incomplete: 翻译任务缺少目标字幕结果")
     }
     let patch_set = patches::stage(
         db,
@@ -912,11 +931,193 @@ mod tests {
             project::load(&db, &project.id).unwrap().transcript.segments[0].text,
             "人工修改"
         );
+        let apply_error = patches::review_all(&mut db, &task.id, "apply")
+            .unwrap_err()
+            .to_string();
+        assert!(apply_error.contains("patch_current_changed"));
+        assert_eq!(
+            project::load(&db, &project.id).unwrap().transcript.segments[0].text,
+            "人工修改"
+        );
         patches::review_all(&mut db, &task.id, "keep").unwrap();
         assert_eq!(
             project::load(&db, &project.id).unwrap().transcript.segments[0].text,
             "人工修改"
         );
+    }
+
+    #[test]
+    fn staged_patch_cannot_overwrite_a_later_segment_split() {
+        let (_temp, mut db, project, segment_id) = fixture();
+        let task = create(&mut db, &project.id, "polish", None).unwrap();
+        let (_, _, payload) = claim(&mut db, "external-agent", Some(&task.id))
+            .unwrap()
+            .unwrap();
+        submit(
+            &mut db,
+            &task.id,
+            "external-agent",
+            json!({
+                "baseVersionId": payload["baseVersionId"],
+                "patches": [{
+                    "segmentId": segment_id,
+                    "before": "你好",
+                    "after": "Agent 修改",
+                    "reason": "润色",
+                    "confidence": 0.9
+                }]
+            }),
+        )
+        .unwrap();
+        crate::subtitle_workbench::split(&mut db, &project.id, &segment_id, 1, 0.5).unwrap();
+
+        let error = patches::review_all(&mut db, &task.id, "apply")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("patch_current_changed"));
+        let updated = project::load(&db, &project.id).unwrap();
+        assert_eq!(
+            updated
+                .transcript
+                .segments
+                .iter()
+                .map(|segment| segment.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["你", "好"]
+        );
+        assert_eq!(
+            patches::load_by_task(&db, &task.id).unwrap().items[0].status,
+            "conflict"
+        );
+    }
+
+    #[test]
+    fn concurrent_translation_patch_sets_cannot_overwrite_the_first_review() {
+        let (_temp, mut db, project, segment_id) = fixture();
+        let first = create(&mut db, &project.id, "translate", Some("en".into())).unwrap();
+        let second = create(&mut db, &project.id, "translate", Some("en".into())).unwrap();
+
+        for (task, worker, translation) in [
+            (&first, "first-agent", "Hello"),
+            (&second, "second-agent", "Hi"),
+        ] {
+            let (_, _, payload) = claim(&mut db, worker, Some(&task.id)).unwrap().unwrap();
+            submit(
+                &mut db,
+                &task.id,
+                worker,
+                json!({
+                    "baseVersionId": payload["baseVersionId"],
+                    "patches": [{
+                        "segmentId": segment_id,
+                        "before": "你好",
+                        "after": translation,
+                        "reason": "翻译为英语",
+                        "confidence": 0.95
+                    }]
+                }),
+            )
+            .unwrap();
+        }
+
+        patches::review_all(&mut db, &first.id, "apply").unwrap();
+        let error = patches::review_all(&mut db, &second.id, "apply")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("patch_current_changed"));
+        assert_eq!(
+            project::load(&db, &project.id).unwrap().translations["en"].segments[0].text,
+            "Hello"
+        );
+        assert_eq!(
+            patches::load_by_task(&db, &second.id).unwrap().items[0].status,
+            "conflict"
+        );
+    }
+
+    #[test]
+    fn staged_translation_cannot_apply_after_the_glossary_changes() {
+        let (_temp, mut db, project, segment_id) = fixture();
+        let task = create(&mut db, &project.id, "translate", Some("en".into())).unwrap();
+        let (_, _, payload) = claim(&mut db, "translation-agent", Some(&task.id))
+            .unwrap()
+            .unwrap();
+        submit(
+            &mut db,
+            &task.id,
+            "translation-agent",
+            json!({
+                "baseVersionId": payload["baseVersionId"],
+                "patches": [{
+                    "segmentId": segment_id,
+                    "before": "你好",
+                    "after": "Hello",
+                    "reason": "翻译为英语",
+                    "confidence": 0.95
+                }]
+            }),
+        )
+        .unwrap();
+        db.execute(
+            "UPDATE project_glossaries SET current_version=current_version+1 WHERE project_id=?1",
+            [&project.id],
+        )
+        .unwrap();
+
+        let error = patches::review_all(&mut db, &task.id, "apply")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("patch_current_changed"));
+        assert!(
+            !project::load(&db, &project.id)
+                .unwrap()
+                .translations
+                .contains_key("en")
+        );
+        assert_eq!(
+            patches::load_by_task(&db, &task.id).unwrap().items[0].status,
+            "conflict"
+        );
+    }
+
+    #[test]
+    fn concurrent_summary_patch_sets_cannot_overwrite_the_first_review() {
+        let (_temp, mut db, project, _segment_id) = fixture();
+        let first = create(&mut db, &project.id, "summary", None).unwrap();
+        let second = create(&mut db, &project.id, "summary", None).unwrap();
+
+        for (task, worker, summary) in [
+            (&first, "first-agent", "第一份摘要"),
+            (&second, "second-agent", "第二份摘要"),
+        ] {
+            let (_, _, payload) = claim(&mut db, worker, Some(&task.id)).unwrap().unwrap();
+            submit(
+                &mut db,
+                &task.id,
+                worker,
+                json!({
+                    "baseVersionId": payload["baseVersionId"],
+                    "summary": summary,
+                    "reason": "概括主要内容",
+                    "confidence": 0.9
+                }),
+            )
+            .unwrap();
+        }
+
+        patches::review_all(&mut db, &first.id, "apply").unwrap();
+        let error = patches::review_all(&mut db, &second.id, "apply")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("patch_current_changed"));
+        let summary: String = db
+            .query_row(
+                "SELECT text FROM summaries WHERE project_id=?1",
+                [&project.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(summary, "第一份摘要");
     }
 
     #[test]
@@ -962,6 +1163,128 @@ mod tests {
                 .unwrap()
                 .status,
             "queued"
+        );
+    }
+
+    #[test]
+    fn failed_claim_validation_leaves_task_and_workflow_untouched() {
+        let (_temp, mut db, project, _segment_id) = fixture();
+        let workflow =
+            crate::workflows::create(&mut db, &project.id, "translate", Some("en".into())).unwrap();
+        db.execute(
+            "UPDATE project_glossaries SET current_version=current_version+1 WHERE project_id=?1",
+            [&project.id],
+        )
+        .unwrap();
+
+        let error = claim(&mut db, "external-agent", Some(&workflow.task_id))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("glossary_version_conflict"));
+
+        let task_state: (
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            i64,
+        ) = db
+            .query_row(
+                "SELECT status,lease_worker,lease_id,lease_expires_at,attempt_count FROM tasks WHERE id=?1",
+                [&workflow.task_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(task_state, ("queued".into(), None, None, None, 0));
+        assert_eq!(
+            crate::workflows::load(&db, &workflow.id).unwrap().status,
+            "waiting_agent"
+        );
+        let claimed_events: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM task_events WHERE task_id=?1 AND kind='claimed'",
+                [&workflow.task_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(claimed_events, 0);
+    }
+
+    #[test]
+    fn stale_task_base_version_is_rejected_before_lease_creation() {
+        let (_temp, mut db, project, segment_id) = fixture();
+        let task = create(&mut db, &project.id, "summary", None).unwrap();
+        project::edit_segment(
+            &mut db,
+            &project.id,
+            &segment_id,
+            "任务创建后的人工修改".into(),
+        )
+        .unwrap();
+
+        let error = claim(&mut db, "external-agent", Some(&task.id))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("task_base_version_conflict"));
+        let state: (String, Option<String>, i64) = db
+            .query_row(
+                "SELECT status,lease_id,attempt_count FROM tasks WHERE id=?1",
+                [&task.id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(state, ("queued".into(), None, 0));
+    }
+
+    #[test]
+    fn partial_translation_submission_is_rejected_without_staging_a_patch_set() {
+        let (_temp, mut db, project, first_segment_id) = fixture();
+        project::add_segment(&mut db, &project.id, 1.0, 2.0, "第二句".into(), None).unwrap();
+        let task = create(&mut db, &project.id, "translate", Some("en".into())).unwrap();
+        let (_, _, payload) = claim(&mut db, "external-agent", Some(&task.id))
+            .unwrap()
+            .unwrap();
+
+        let error = submit(
+            &mut db,
+            &task.id,
+            "external-agent",
+            json!({
+                "baseVersionId": payload["baseVersionId"],
+                "patches": [{
+                    "segmentId": first_segment_id,
+                    "before": "你好",
+                    "after": "Hello",
+                    "reason": "翻译为英语",
+                    "confidence": 0.99
+                }]
+            }),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("agent_batch_incomplete"));
+
+        let patch_sets: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM agent_patch_sets WHERE task_id=?1",
+                [&task.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(patch_sets, 0);
+        assert_eq!(
+            find_task(&project::load(&db, &project.id).unwrap(), &task.id)
+                .unwrap()
+                .status,
+            "claimed"
         );
     }
 

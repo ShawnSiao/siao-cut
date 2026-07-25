@@ -4,7 +4,7 @@ use crate::{
     util::{new_id, now},
 };
 use anyhow::{Result, anyhow, bail};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::Value;
 use std::collections::BTreeSet;
 
@@ -19,16 +19,19 @@ struct ProposedItem {
     status: String,
 }
 
-type ReviewItemRow = (
-    String,
-    String,
-    Option<String>,
-    String,
-    String,
-    String,
-    String,
-    Option<String>,
-);
+struct ReviewItem {
+    id: String,
+    set_id: String,
+    project_id: String,
+    language: Option<String>,
+    target: String,
+    before_text: String,
+    after_text: String,
+    current_text_at_submit: String,
+    reason: String,
+    status: String,
+    segment_id: Option<String>,
+}
 
 pub fn stage(
     db: &mut Connection,
@@ -390,103 +393,39 @@ pub fn review_item(
     patch_item_id: &str,
     action: &str,
 ) -> Result<(String, AgentPatchSet)> {
-    if !["apply", "keep"].contains(&action) {
-        bail!("审阅动作必须为 apply 或 keep")
+    validate_review_action(action)?;
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let item = load_review_item(&tx, patch_item_id)?
+        .ok_or_else(|| anyhow!("补丁不存在：{patch_item_id}"))?;
+    assert_reviewable(&item)?;
+    if action == "apply" && !apply_precondition_matches(&tx, &item)? {
+        tx.execute(
+            "UPDATE agent_patch_items SET status='conflict' WHERE id=?1",
+            [&item.id],
+        )?;
+        tx.commit()?;
+        bail!("patch_current_changed: 当前项目内容已变化，旧补丁不能应用")
     }
-    let row: Option<ReviewItemRow> = db
-        .query_row(
-            "SELECT ps.id,ps.project_id,ps.language,pi.target,pi.after_text,pi.reason,pi.status,pi.segment_id FROM agent_patch_items pi JOIN agent_patch_sets ps ON ps.id=pi.patch_set_id WHERE pi.id=?1",
-            [patch_item_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?)),
-        )
-        .optional()?;
-    let Some((set_id, project_id, language, target, after, reason, status, segment_id)) = row
-    else {
-        bail!("补丁不存在：{patch_item_id}")
+    let changed_project = if action == "apply" {
+        apply_review_item(&tx, &item)?;
+        true
+    } else {
+        false
     };
-    if !["pending", "conflict"].contains(&status.as_str()) {
-        bail!("补丁已经审阅：{patch_item_id}")
-    }
-    let tx = db.transaction()?;
-    let mut changed_project = false;
-    if action == "apply" {
-        match target.as_str() {
-            "transcript" => {
-                let segment_id = segment_id
-                    .as_deref()
-                    .ok_or_else(|| anyhow!("补丁缺少字幕段"))?;
-                tx.execute(
-                    "UPDATE segments SET text=?2 WHERE id=?1 AND project_id=?3",
-                    params![segment_id, &after, &project_id],
-                )?;
-                translation::invalidate_segments(&tx, &project_id, &[segment_id])?;
-            }
-            "translation" => {
-                let segment_id = segment_id
-                    .as_deref()
-                    .ok_or_else(|| anyhow!("补丁缺少字幕段"))?;
-                let language = language
-                    .as_deref()
-                    .ok_or_else(|| anyhow!("补丁缺少目标语言"))?;
-                let source_text: String = tx.query_row(
-                    "SELECT text FROM segments WHERE id=?1 AND project_id=?2",
-                    params![segment_id, &project_id],
-                    |row| row.get(0),
-                )?;
-                let glossary_version: i64 = tx.query_row(
-                    "SELECT current_version FROM project_glossaries WHERE project_id=?1",
-                    [&project_id],
-                    |row| row.get(0),
-                )?;
-                let timestamp = now();
-                tx.execute("INSERT INTO translations(project_id,language,status,updated_at,glossary_version) VALUES(?1,?2,'stale',?3,?4) ON CONFLICT(project_id,language) DO UPDATE SET updated_at=excluded.updated_at,glossary_version=excluded.glossary_version",params![&project_id,language,&timestamp,glossary_version])?;
-                tx.execute("INSERT INTO translation_segments(project_id,language,segment_id,text,source_hash,status,updated_at) VALUES(?1,?2,?3,?4,?5,'current',?6) ON CONFLICT(project_id,language,segment_id) DO UPDATE SET text=excluded.text,source_hash=excluded.source_hash,status='current',updated_at=excluded.updated_at",params![&project_id,language,segment_id,&after,translation::source_hash(&source_text),&timestamp])?;
-                translation::refresh_language_status(
-                    &tx,
-                    &project_id,
-                    language,
-                    glossary_version.max(0) as u32,
-                )?;
-            }
-            "summary" => {
-                tx.execute("INSERT INTO summaries(project_id,text,updated_at) VALUES(?1,?2,?3) ON CONFLICT(project_id) DO UPDATE SET text=excluded.text,updated_at=excluded.updated_at",params![&project_id,&after,now()])?;
-            }
-            "cut" => {
-                let segment_id = segment_id
-                    .as_deref()
-                    .ok_or_else(|| anyhow!("补丁缺少字幕段"))?;
-                let (start, end): (f64, f64) = tx.query_row(
-                    "SELECT start_seconds,end_seconds FROM segments WHERE id=?1 AND project_id=?2",
-                    params![segment_id, &project_id],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )?;
-                tx.execute("INSERT INTO edits(id,project_id,kind,status,segment_id,start_seconds,end_seconds,reason,created_at) VALUES(?1,?2,'semantic_cut','applied',?3,?4,?5,?6,?7)",params![new_id("e"),&project_id,segment_id,start,end,&reason,now()])?;
-            }
-            target if target.starts_with("speaker_name:") => {
-                let speaker_id = target.trim_start_matches("speaker_name:");
-                let changed = tx.execute(
-                    "UPDATE speakers SET label=?3 WHERE id=?1 AND project_id=?2",
-                    params![speaker_id, &project_id, &after],
-                )?;
-                if changed == 0 {
-                    bail!("项目中不存在人物：{speaker_id}")
-                }
-            }
-            _ => bail!("未知补丁目标：{target}"),
-        }
-        changed_project = true;
-    }
     tx.execute(
         "UPDATE agent_patch_items SET status=?2 WHERE id=?1",
-        params![
-            patch_item_id,
-            if action == "apply" { "applied" } else { "kept" }
-        ],
+        params![&item.id, if action == "apply" { "applied" } else { "kept" }],
     )?;
+    finalize_if_resolved(&tx, &item.set_id)?;
     if changed_project {
-        project::snapshot_in_transaction(&tx, &project_id, &format!("应用 Agent 建议：{reason}"))?;
+        project::snapshot_in_transaction(
+            &tx,
+            &item.project_id,
+            &format!("应用 Agent 建议：{}", item.reason),
+        )?;
     }
-    finalize_if_resolved(&tx, &set_id)?;
+    let project_id = item.project_id.clone();
+    let set_id = item.set_id.clone();
     tx.commit()?;
     Ok((project_id, load_set(db, &set_id)?))
 }
@@ -496,21 +435,304 @@ pub fn review_all(
     task_id: &str,
     action: &str,
 ) -> Result<(String, AgentPatchSet)> {
-    let set = load_by_task(db, task_id)?;
-    let ids = set
-        .items
-        .iter()
-        .filter(|item| ["pending", "conflict"].contains(&item.status.as_str()))
-        .map(|item| item.id.clone())
-        .collect::<Vec<_>>();
-    if ids.is_empty() {
+    validate_review_action(action)?;
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let set_id: String = tx
+        .query_row(
+            "SELECT id FROM agent_patch_sets WHERE task_id=?1",
+            [task_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| anyhow!("任务尚无待审补丁：{task_id}"))?;
+    let item_ids = tx
+        .prepare(
+            "SELECT id FROM agent_patch_items WHERE patch_set_id=?1 AND status IN ('pending','conflict') ORDER BY ordinal",
+        )?
+        .query_map([&set_id], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if item_ids.is_empty() {
         bail!("任务没有待审补丁")
     }
-    let mut project_id = String::new();
-    for id in ids {
-        project_id = review_item(db, &id, action)?.0;
+    let items = item_ids
+        .iter()
+        .map(|item_id| {
+            load_review_item(&tx, item_id)?.ok_or_else(|| anyhow!("补丁不存在：{item_id}"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let project_id = items[0].project_id.clone();
+
+    if action == "apply" {
+        let mut conflicts = Vec::new();
+        for item in &items {
+            assert_reviewable(item)?;
+            if !apply_precondition_matches(&tx, item)? {
+                conflicts.push(item.id.clone());
+            }
+        }
+        if !conflicts.is_empty() {
+            for item_id in conflicts {
+                tx.execute(
+                    "UPDATE agent_patch_items SET status='conflict' WHERE id=?1",
+                    [item_id],
+                )?;
+            }
+            tx.commit()?;
+            bail!("patch_current_changed: 当前项目内容已变化，整批旧补丁均未应用")
+        }
+        for item in &items {
+            apply_review_item(&tx, item)?;
+            tx.execute(
+                "UPDATE agent_patch_items SET status='applied' WHERE id=?1",
+                [&item.id],
+            )?;
+        }
+        finalize_if_resolved(&tx, &set_id)?;
+        project::snapshot_in_transaction(
+            &tx,
+            &project_id,
+            &format!("批量应用 Agent 建议（{} 项）", items.len()),
+        )?;
+    } else {
+        for item in &items {
+            assert_reviewable(item)?;
+            tx.execute(
+                "UPDATE agent_patch_items SET status='kept' WHERE id=?1",
+                [&item.id],
+            )?;
+        }
+        finalize_if_resolved(&tx, &set_id)?;
     }
-    Ok((project_id, load_by_task(db, task_id)?))
+    tx.commit()?;
+    Ok((project_id, load_set(db, &set_id)?))
+}
+
+fn validate_review_action(action: &str) -> Result<()> {
+    if !["apply", "keep"].contains(&action) {
+        bail!("审阅动作必须为 apply 或 keep")
+    }
+    Ok(())
+}
+
+fn load_review_item(db: &Connection, patch_item_id: &str) -> Result<Option<ReviewItem>> {
+    db.query_row(
+        "SELECT pi.id,ps.id,ps.project_id,ps.language,pi.target,pi.before_text,pi.after_text,pi.current_text_at_submit,pi.reason,pi.status,pi.segment_id FROM agent_patch_items pi JOIN agent_patch_sets ps ON ps.id=pi.patch_set_id WHERE pi.id=?1",
+        [patch_item_id],
+        |row| {
+            Ok(ReviewItem {
+                id: row.get(0)?,
+                set_id: row.get(1)?,
+                project_id: row.get(2)?,
+                language: row.get(3)?,
+                target: row.get(4)?,
+                before_text: row.get(5)?,
+                after_text: row.get(6)?,
+                current_text_at_submit: row.get(7)?,
+                reason: row.get(8)?,
+                status: row.get(9)?,
+                segment_id: row.get(10)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+fn assert_reviewable(item: &ReviewItem) -> Result<()> {
+    if !["pending", "conflict"].contains(&item.status.as_str()) {
+        bail!("补丁已经审阅：{}", item.id)
+    }
+    Ok(())
+}
+
+fn apply_precondition_matches(db: &Connection, item: &ReviewItem) -> Result<bool> {
+    if item.status == "conflict" {
+        return Ok(false);
+    }
+    let matches = match item.target.as_str() {
+        "transcript" | "cut" => {
+            let Some(segment_id) = item.segment_id.as_deref() else {
+                return Ok(false);
+            };
+            db.query_row(
+                "SELECT text FROM segments WHERE id=?1 AND project_id=?2",
+                params![segment_id, &item.project_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .is_some_and(|current| current == item.current_text_at_submit)
+        }
+        "translation" => {
+            let Some(segment_id) = item.segment_id.as_deref() else {
+                return Ok(false);
+            };
+            let Some(language) = item.language.as_deref() else {
+                return Ok(false);
+            };
+            let source_matches = db
+                .query_row(
+                    "SELECT text FROM segments WHERE id=?1 AND project_id=?2",
+                    params![segment_id, &item.project_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .is_some_and(|current| current == item.before_text);
+            let current_translation = db
+                .query_row(
+                    "SELECT text FROM translation_segments WHERE project_id=?1 AND language=?2 AND segment_id=?3",
+                    params![&item.project_id, language, segment_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .unwrap_or_default();
+            let glossary_versions: (Option<i64>, i64) = db.query_row(
+                "SELECT t.glossary_version,pg.current_version
+                 FROM agent_patch_sets ps
+                 JOIN tasks t ON t.id=ps.task_id
+                 JOIN project_glossaries pg ON pg.project_id=ps.project_id
+                 WHERE ps.id=?1",
+                [&item.set_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            source_matches
+                && glossary_versions.0 == Some(glossary_versions.1)
+                && current_translation == item.current_text_at_submit
+        }
+        "summary" => {
+            let current = db
+                .query_row(
+                    "SELECT text FROM summaries WHERE project_id=?1",
+                    [&item.project_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .unwrap_or_default();
+            current == item.current_text_at_submit
+        }
+        target if target.starts_with("speaker_name:") => db
+            .query_row(
+                "SELECT label FROM speakers WHERE id=?1 AND project_id=?2",
+                params![target.trim_start_matches("speaker_name:"), &item.project_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .is_some_and(|current| current == item.current_text_at_submit),
+        _ => bail!("未知补丁目标：{}", item.target),
+    };
+    Ok(matches)
+}
+
+fn apply_review_item(tx: &Transaction<'_>, item: &ReviewItem) -> Result<()> {
+    match item.target.as_str() {
+        "transcript" => {
+            let segment_id = item
+                .segment_id
+                .as_deref()
+                .ok_or_else(|| anyhow!("补丁缺少字幕段"))?;
+            let changed = tx.execute(
+                "UPDATE segments SET text=?2 WHERE id=?1 AND project_id=?3 AND text=?4",
+                params![
+                    segment_id,
+                    &item.after_text,
+                    &item.project_id,
+                    &item.current_text_at_submit
+                ],
+            )?;
+            if changed != 1 {
+                bail!("patch_current_changed: 当前字幕已变化，旧补丁不能应用")
+            }
+            translation::invalidate_segments(tx, &item.project_id, &[segment_id])?;
+        }
+        "translation" => {
+            let segment_id = item
+                .segment_id
+                .as_deref()
+                .ok_or_else(|| anyhow!("补丁缺少字幕段"))?;
+            let language = item
+                .language
+                .as_deref()
+                .ok_or_else(|| anyhow!("补丁缺少目标语言"))?;
+            let source_text: String = tx.query_row(
+                "SELECT text FROM segments WHERE id=?1 AND project_id=?2",
+                params![segment_id, &item.project_id],
+                |row| row.get(0),
+            )?;
+            if source_text != item.before_text {
+                bail!("patch_current_changed: 原字幕已变化，旧译文补丁不能应用")
+            }
+            let glossary_version: i64 = tx.query_row(
+                "SELECT current_version FROM project_glossaries WHERE project_id=?1",
+                [&item.project_id],
+                |row| row.get(0),
+            )?;
+            let timestamp = now();
+            tx.execute("INSERT INTO translations(project_id,language,status,updated_at,glossary_version) VALUES(?1,?2,'stale',?3,?4) ON CONFLICT(project_id,language) DO UPDATE SET updated_at=excluded.updated_at,glossary_version=excluded.glossary_version",params![&item.project_id,language,&timestamp,glossary_version])?;
+            let changed = tx.execute(
+                "INSERT INTO translation_segments(project_id,language,segment_id,text,source_hash,status,updated_at) VALUES(?1,?2,?3,?4,?5,'current',?6) ON CONFLICT(project_id,language,segment_id) DO UPDATE SET text=excluded.text,source_hash=excluded.source_hash,status='current',updated_at=excluded.updated_at WHERE translation_segments.text=?7",
+                params![
+                    &item.project_id,
+                    language,
+                    segment_id,
+                    &item.after_text,
+                    translation::source_hash(&source_text),
+                    &timestamp,
+                    &item.current_text_at_submit
+                ],
+            )?;
+            if changed != 1 {
+                bail!("patch_current_changed: 当前译文已变化，旧补丁不能应用")
+            }
+            translation::refresh_language_status(
+                tx,
+                &item.project_id,
+                language,
+                glossary_version.max(0) as u32,
+            )?;
+        }
+        "summary" => {
+            let changed = tx.execute(
+                "INSERT INTO summaries(project_id,text,updated_at) VALUES(?1,?2,?3) ON CONFLICT(project_id) DO UPDATE SET text=excluded.text,updated_at=excluded.updated_at WHERE summaries.text=?4",
+                params![
+                    &item.project_id,
+                    &item.after_text,
+                    now(),
+                    &item.current_text_at_submit
+                ],
+            )?;
+            if changed != 1 {
+                bail!("patch_current_changed: 当前摘要已变化，旧补丁不能应用")
+            }
+        }
+        "cut" => {
+            let segment_id = item
+                .segment_id
+                .as_deref()
+                .ok_or_else(|| anyhow!("补丁缺少字幕段"))?;
+            let (start, end): (f64, f64) = tx.query_row(
+                "SELECT start_seconds,end_seconds FROM segments WHERE id=?1 AND project_id=?2 AND text=?3",
+                params![segment_id, &item.project_id, &item.current_text_at_submit],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            tx.execute("INSERT INTO edits(id,project_id,kind,status,segment_id,start_seconds,end_seconds,reason,created_at) VALUES(?1,?2,'semantic_cut','applied',?3,?4,?5,?6,?7)",params![new_id("e"),&item.project_id,segment_id,start,end,&item.reason,now()])?;
+        }
+        target if target.starts_with("speaker_name:") => {
+            let speaker_id = target.trim_start_matches("speaker_name:");
+            let changed = tx.execute(
+                "UPDATE speakers SET label=?3 WHERE id=?1 AND project_id=?2 AND label=?4",
+                params![
+                    speaker_id,
+                    &item.project_id,
+                    &item.after_text,
+                    &item.current_text_at_submit
+                ],
+            )?;
+            if changed != 1 {
+                bail!("patch_current_changed: 当前人物名称已变化，旧补丁不能应用")
+            }
+        }
+        _ => bail!("未知补丁目标：{}", item.target),
+    }
+    Ok(())
 }
 
 fn finalize_if_resolved(db: &Connection, set_id: &str) -> Result<()> {

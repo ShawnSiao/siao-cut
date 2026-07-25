@@ -227,6 +227,7 @@ pub struct ProjectDeletionBlocker {
 #[serde(rename_all = "camelCase")]
 pub struct ProjectDeletionPreflight {
     pub project_id: String,
+    pub expected_version_id: String,
     pub deletable: bool,
     pub blockers: Vec<ProjectDeletionBlocker>,
 }
@@ -271,14 +272,30 @@ pub fn deletion_preflight(db: &Connection, project_id: &str) -> Result<ProjectDe
 
     Ok(ProjectDeletionPreflight {
         project_id: project_id.to_owned(),
+        expected_version_id: current_version_id(db, project_id)?
+            .ok_or_else(|| anyhow!("project_version_missing: 项目没有可确认的当前版本"))?,
         deletable: blockers.is_empty(),
         blockers,
     })
 }
 
+#[cfg(test)]
 pub fn delete(db: &mut Connection, project_id: &str) -> Result<()> {
+    let expected_version_id = current_version_id(db, project_id)?
+        .ok_or_else(|| anyhow!("project_version_missing: 项目没有可确认的当前版本"))?;
+    delete_at_version(db, project_id, &expected_version_id)
+}
+
+pub fn delete_at_version(
+    db: &mut Connection,
+    project_id: &str,
+    expected_version_id: &str,
+) -> Result<()> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let preflight = deletion_preflight(&tx, project_id)?;
+    if preflight.expected_version_id != expected_version_id {
+        bail!("project_delete_version_mismatch: 项目在删除确认后发生变化，请重新确认")
+    }
     if !preflight.deletable {
         bail!("project_busy: 项目仍有正在运行或等待处理的任务，请先取消后再删除")
     }
@@ -354,6 +371,32 @@ pub(crate) fn snapshot_in_transaction(
             "speakerTrack".into(),
             serde_json::to_value(speaker::load_track(tx, project_id)?)?,
         );
+        let summary = tx
+            .query_row(
+                "SELECT text FROM summaries WHERE project_id=?1",
+                [project_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        object.insert("summary".into(), serde_json::to_value(summary)?);
+        let task_segments = tx
+            .prepare(
+                "SELECT ts.task_id,ts.segment_id,ts.source_hash,ts.ordinal
+                 FROM task_segments ts
+                 JOIN tasks t ON t.id=ts.task_id
+                 WHERE t.project_id=?1
+                 ORDER BY ts.task_id,ts.ordinal",
+            )?
+            .query_map([project_id], |row| {
+                Ok(json!({
+                    "taskId": row.get::<_, String>(0)?,
+                    "segmentId": row.get::<_, String>(1)?,
+                    "sourceHash": row.get::<_, String>(2)?,
+                    "ordinal": row.get::<_, i64>(3)?
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        object.insert("taskSegments".into(), Value::Array(task_segments));
     }
     let raw = serde_json::to_string(&snapshot)?;
     let cursor = tx
@@ -390,6 +433,46 @@ pub(crate) fn snapshot_in_transaction(
         ],
     )?;
     Ok(version)
+}
+
+pub(crate) fn assert_transcript_replacement_safe(db: &Connection, project_id: &str) -> Result<()> {
+    let (edits, patch_items, task_segments): (i64, i64, i64) = db.query_row(
+        "SELECT
+             (SELECT COUNT(*) FROM edits WHERE project_id=?1),
+             (SELECT COUNT(*) FROM agent_patch_items pi
+                JOIN agent_patch_sets ps ON ps.id=pi.patch_set_id
+                WHERE ps.project_id=?1
+                  AND pi.segment_id IS NOT NULL
+                  AND pi.target IN ('transcript','translation','cut')),
+             (SELECT COUNT(*) FROM task_segments
+                WHERE segment_id IN (SELECT id FROM segments WHERE project_id=?1))",
+        [project_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    if edits > 0 || patch_items > 0 || task_segments > 0 {
+        bail!(
+            "transcription_replacement_conflict: 当前字幕仍被剪辑、Agent 建议或任务基线引用；请先处理这些依赖后再重新转录"
+        )
+    }
+    Ok(())
+}
+
+pub(crate) fn mutate_with_snapshot_at_version<T>(
+    db: &mut Connection,
+    project_id: &str,
+    expected_version_id: Option<&str>,
+    mismatch_message: &str,
+    reason: &str,
+    mutate: impl FnOnce(&Transaction<'_>) -> Result<T>,
+) -> Result<T> {
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    if current_version_id(&tx, project_id)?.as_deref() != expected_version_id {
+        bail!("{mismatch_message}")
+    }
+    let result = mutate(&tx)?;
+    snapshot_in_transaction(&tx, project_id, reason)?;
+    tx.commit()?;
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -436,6 +519,21 @@ pub(crate) fn create_with_id(
     if let Ok(project) = load(db, id) {
         return Ok(project);
     }
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    insert_with_id_in_transaction(&tx, media_path, title, id)?;
+    tx.commit()?;
+    load(db, id)
+}
+
+pub(crate) fn insert_with_id_in_transaction(
+    tx: &Transaction<'_>,
+    media_path: &Path,
+    title: Option<String>,
+    id: &str,
+) -> Result<()> {
+    if load(tx, id).is_ok() {
+        return Ok(());
+    }
     if !media_path.is_file() {
         bail!("媒体文件不存在：{}", media_path.display())
     }
@@ -458,26 +556,24 @@ pub(crate) fn create_with_id(
     let source_path = media_path.canonicalize()?.to_string_lossy().to_string();
     let sha256 = hash_file(media_path)?;
     let duration = ffprobe_duration(media_path);
-    mutate_with_snapshot(db, id, "项目创建", |tx| {
-        tx.execute(
-            "INSERT INTO projects(id,title,created_at,updated_at) VALUES(?1,?2,?3,?3)",
-            params![id, title, created_at],
-        )?;
-        tx.execute(
-            "INSERT INTO media(project_id,source_path,sha256,extension,duration_seconds) VALUES(?1,?2,?3,?4,?5)",
-            params![id, source_path, sha256, extension, duration],
-        )?;
-        tx.execute(
-            "INSERT INTO project_glossaries(project_id,current_version,updated_at) VALUES(?1,0,?2)",
-            params![id, &created_at],
-        )?;
-        tx.execute(
-            "INSERT INTO glossary_versions(project_id,version,created_at) VALUES(?1,0,?2)",
-            params![id, &created_at],
-        )?;
-        Ok(())
-    })?;
-    load(db, id)
+    tx.execute(
+        "INSERT INTO projects(id,title,created_at,updated_at) VALUES(?1,?2,?3,?3)",
+        params![id, title, created_at],
+    )?;
+    tx.execute(
+        "INSERT INTO media(project_id,source_path,sha256,extension,duration_seconds) VALUES(?1,?2,?3,?4,?5)",
+        params![id, source_path, sha256, extension, duration],
+    )?;
+    tx.execute(
+        "INSERT INTO project_glossaries(project_id,current_version,updated_at) VALUES(?1,0,?2)",
+        params![id, &created_at],
+    )?;
+    tx.execute(
+        "INSERT INTO glossary_versions(project_id,version,created_at) VALUES(?1,0,?2)",
+        params![id, &created_at],
+    )?;
+    snapshot_in_transaction(tx, id, "项目创建")?;
+    Ok(())
 }
 
 pub fn relink_media(db: &mut Connection, project_id: &str, media_path: &Path) -> Result<Project> {
@@ -634,7 +730,9 @@ pub fn replace_all(
 }
 
 pub fn restore_version(db: &mut Connection, project_id: &str, version_id: &str) -> Result<Version> {
-    let snapshot_json: String = db
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    assert_history_idle(&tx, project_id)?;
+    let snapshot_json: String = tx
         .query_row(
             "SELECT snapshot_json FROM versions WHERE id=?1 AND project_id=?2",
             params![version_id, project_id],
@@ -643,11 +741,262 @@ pub fn restore_version(db: &mut Connection, project_id: &str, version_id: &str) 
         .optional()?
         .ok_or_else(|| anyhow!("版本不存在：{version_id}"))?;
     let reason = format!("恢复 {version_id}");
-    let tx = db.transaction()?;
     apply_snapshot_in_transaction(&tx, project_id, &snapshot_json, None)?;
     let version = snapshot_in_transaction(&tx, project_id, &reason)?;
     tx.commit()?;
     Ok(version)
+}
+
+type HistoricalPatchItem = (
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    String,
+    String,
+    String,
+    String,
+    String,
+    i64,
+);
+
+fn assert_history_idle(db: &Connection, project_id: &str) -> Result<()> {
+    let active: bool = db.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM tasks
+                WHERE project_id=?1 AND status IN ('queued','claimed','running')
+             UNION ALL SELECT 1 FROM export_jobs
+                WHERE project_id=?1 AND status IN ('queued','running')
+             UNION ALL SELECT 1 FROM audio_analysis_jobs
+                WHERE project_id=?1 AND status IN ('queued','running')
+             UNION ALL SELECT 1 FROM speaker_jobs
+                WHERE project_id=?1 AND status IN ('queued','running')
+             UNION ALL SELECT 1 FROM auto_workflows
+                WHERE project_id=?1 AND status IN ('queued','running')
+             UNION ALL SELECT 1 FROM transcription_jobs
+                WHERE project_id=?1 AND status IN ('queued','running','finalizing')
+          )",
+        [project_id],
+        |row| row.get(0),
+    )?;
+    if active {
+        bail!("history_project_busy: 项目仍有后台任务在运行，不能撤销、重做或恢复历史")
+    }
+    Ok(())
+}
+
+fn snapshot_value_for_patch(
+    project: &Project,
+    speaker_track: Option<&speaker::SpeakerTrack>,
+    summary: Option<&str>,
+    target: &str,
+    language: Option<&str>,
+    segment_id: Option<&str>,
+) -> Option<String> {
+    match target {
+        "transcript" => project
+            .transcript
+            .segments
+            .iter()
+            .find(|segment| Some(segment.id.as_str()) == segment_id)
+            .map(|segment| segment.text.clone()),
+        "translation" => language.and_then(|language| {
+            project.translations.get(language).and_then(|translation| {
+                translation
+                    .segments
+                    .iter()
+                    .find(|segment| Some(segment.segment_id.as_str()) == segment_id)
+                    .map(|segment| segment.text.clone())
+            })
+        }),
+        target if target.starts_with("speaker_name:") => speaker_track.and_then(|track| {
+            track
+                .speakers
+                .iter()
+                .find(|speaker| speaker.id == target.trim_start_matches("speaker_name:"))
+                .map(|speaker| speaker.label.clone())
+        }),
+        "summary" => Some(summary.unwrap_or_default().to_owned()),
+        _ => None,
+    }
+}
+
+fn restore_agent_review_state(
+    tx: &Transaction<'_>,
+    project_id: &str,
+    project: &Project,
+    speaker_track: Option<&speaker::SpeakerTrack>,
+    summary: Option<&str>,
+    existing_items: &[HistoricalPatchItem],
+) -> Result<()> {
+    for (
+        item_id,
+        set_id,
+        _task_id,
+        original_segment_id,
+        language,
+        target,
+        _before_text,
+        _after_text,
+        current_text_at_submit,
+        current_status,
+        _ordinal,
+    ) in existing_items
+    {
+        let snapshot_item = project
+            .patch_sets
+            .iter()
+            .find(|set| set.id == *set_id)
+            .and_then(|set| set.items.iter().find(|item| item.id == *item_id));
+        let segment_id = snapshot_item
+            .and_then(|item| item.segment_id.clone())
+            .or_else(|| {
+                original_segment_id.clone().filter(|segment_id| {
+                    project
+                        .transcript
+                        .segments
+                        .iter()
+                        .any(|segment| segment.id == *segment_id)
+                })
+            });
+        let status = snapshot_item
+            .map(|item| item.status.clone())
+            .unwrap_or_else(|| {
+                let restored_before = snapshot_value_for_patch(
+                    project,
+                    speaker_track,
+                    summary,
+                    target,
+                    language.as_deref(),
+                    original_segment_id.as_deref(),
+                )
+                .as_deref()
+                    == Some(current_text_at_submit.as_str());
+                if current_status == "applied" && (restored_before || target == "cut") {
+                    "pending".to_owned()
+                } else {
+                    current_status.clone()
+                }
+            });
+        tx.execute(
+            "UPDATE agent_patch_items SET segment_id=?2,status=?3 WHERE id=?1 AND patch_set_id=?4",
+            params![item_id, segment_id, status, set_id],
+        )?;
+    }
+
+    let set_ids = existing_items
+        .iter()
+        .map(|item| item.1.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    for set_id in set_ids {
+        let (task_id, project_for_set): (String, String) = tx.query_row(
+            "SELECT task_id,project_id FROM agent_patch_sets WHERE id=?1",
+            [set_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        if project_for_set != project_id {
+            continue;
+        }
+        let (unresolved, applied): (i64, i64) = tx.query_row(
+            "SELECT
+                 SUM(CASE WHEN status IN ('pending','conflict') THEN 1 ELSE 0 END),
+                 SUM(CASE WHEN status='applied' THEN 1 ELSE 0 END)
+             FROM agent_patch_items WHERE patch_set_id=?1",
+            [set_id],
+            |row| {
+                Ok((
+                    row.get::<_, Option<i64>>(0)?.unwrap_or(0),
+                    row.get::<_, Option<i64>>(1)?.unwrap_or(0),
+                ))
+            },
+        )?;
+        let set_status = if unresolved > 0 {
+            if applied > 0 {
+                "partially_applied"
+            } else {
+                "pending_review"
+            }
+        } else if applied > 0 {
+            "applied"
+        } else {
+            "kept"
+        };
+        let completed = unresolved == 0;
+        let timestamp = now();
+        tx.execute(
+            "UPDATE agent_patch_sets SET status=?2 WHERE id=?1",
+            params![set_id, set_status],
+        )?;
+        tx.execute(
+            "UPDATE tasks
+             SET status=?2,progress=1,completed_at=?3,
+                 lease_worker=NULL,lease_id=NULL,lease_expires_at=NULL,
+                 cancel_requested_at=NULL,error_message=NULL
+             WHERE id=?1",
+            params![
+                &task_id,
+                if completed { "done" } else { "review" },
+                completed.then_some(timestamp.as_str())
+            ],
+        )?;
+        tx.execute(
+            "UPDATE workflows SET status=?2,updated_at=?3 WHERE task_id=?1",
+            params![
+                &task_id,
+                if completed {
+                    "completed"
+                } else {
+                    "needs_review"
+                },
+                &timestamp
+            ],
+        )?;
+        tx.execute(
+            "INSERT INTO task_events(task_id,project_id,kind,progress,message,created_at)
+             VALUES(?1,?2,'history_restored',1,?3,?4)",
+            params![
+                &task_id,
+                project_id,
+                if completed {
+                    "历史恢复：建议审阅状态为已完成"
+                } else {
+                    "历史恢复：建议已重新进入待审阅"
+                },
+                &timestamp
+            ],
+        )?;
+    }
+
+    let patch_task_ids = existing_items
+        .iter()
+        .map(|item| item.2.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    for task in &project.tasks {
+        if patch_task_ids.contains(task.id.as_str()) {
+            continue;
+        }
+        if !["review", "done", "cancelled", "failed", "interrupted"].contains(&task.status.as_str())
+        {
+            continue;
+        }
+        tx.execute(
+            "UPDATE tasks
+             SET status=?2,progress=?3,completed_at=?4,
+                 lease_worker=NULL,lease_id=NULL,lease_expires_at=NULL,
+                 cancel_requested_at=NULL,error_message=?5
+             WHERE id=?1 AND project_id=?6",
+            params![
+                &task.id,
+                &task.status,
+                task.progress,
+                &task.completed_at,
+                &task.error_message,
+                project_id
+            ],
+        )?;
+    }
+    Ok(())
 }
 
 fn apply_snapshot_in_transaction(
@@ -662,11 +1011,85 @@ fn apply_snapshot_in_transaction(
         .get("speakerTrack")
         .map(|value| serde_json::from_value::<speaker::SpeakerTrack>(value.clone()))
         .transpose()?;
+    let summary = snapshot
+        .get("summary")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let existing_items: Vec<HistoricalPatchItem> = tx
+        .prepare(
+            "SELECT pi.id,ps.id,ps.task_id,pi.segment_id,ps.language,pi.target,pi.before_text,
+                    pi.after_text,pi.current_text_at_submit,pi.status,pi.ordinal
+             FROM agent_patch_items pi
+             JOIN agent_patch_sets ps ON ps.id=pi.patch_set_id
+             WHERE ps.project_id=?1
+             ORDER BY ps.id,pi.ordinal",
+        )?
+        .query_map([project_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, String>(7)?,
+                row.get::<_, String>(8)?,
+                row.get::<_, String>(9)?,
+                row.get::<_, i64>(10)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let snapshot_task_segments = snapshot
+        .get("taskSegments")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|item| {
+            Ok((
+                item.get("taskId")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| anyhow!("历史任务基线缺少 taskId"))?
+                    .to_owned(),
+                item.get("segmentId")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| anyhow!("历史任务基线缺少 segmentId"))?
+                    .to_owned(),
+                item.get("sourceHash")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| anyhow!("历史任务基线缺少 sourceHash"))?
+                    .to_owned(),
+                item.get("ordinal")
+                    .and_then(Value::as_i64)
+                    .ok_or_else(|| anyhow!("历史任务基线缺少 ordinal"))?,
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let existing_task_segments = tx
+        .prepare(
+            "SELECT ts.task_id,ts.segment_id,ts.source_hash,ts.ordinal
+             FROM task_segments ts
+             JOIN tasks t ON t.id=ts.task_id
+             WHERE t.project_id=?1
+             ORDER BY ts.task_id,ts.ordinal",
+        )?
+        .query_map([project_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     speaker::clear_track_tx(tx, project_id)?;
     tx.execute(
-        "UPDATE projects SET canvas_aspect_ratio=?2,canvas_framing=?3,subtitle_style_json=?4 WHERE id=?1",
+        "UPDATE projects
+         SET source_language=?2,canvas_aspect_ratio=?3,canvas_framing=?4,subtitle_style_json=?5
+         WHERE id=?1",
         params![
             project_id,
+            &project.transcript.source_language,
             project.canvas_settings.aspect_ratio.as_str(),
             project.canvas_settings.framing.as_str(),
             subtitle_style::storage_json(&project.subtitle_style)?
@@ -705,6 +1128,52 @@ fn apply_snapshot_in_transaction(
     for (ordinal, word) in project.transcript.words.iter().enumerate() {
         tx.execute("INSERT INTO words(id,project_id,segment_id,start_seconds,end_seconds,text,confidence,ordinal) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",params![&word.id,project_id,&word.segment_id,word.start,word.end,&word.text,word.confidence,ordinal as i64])?;
     }
+    let restored_segment_ids = project
+        .transcript
+        .segments
+        .iter()
+        .map(|segment| segment.id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut task_segments_to_restore = snapshot_task_segments;
+    task_segments_to_restore.extend(existing_task_segments);
+    for (
+        _item_id,
+        _set_id,
+        task_id,
+        segment_id,
+        _language,
+        target,
+        before_text,
+        _after_text,
+        _current_text_at_submit,
+        _status,
+        ordinal,
+    ) in &existing_items
+    {
+        if matches!(target.as_str(), "transcript" | "translation" | "cut")
+            && let Some(segment_id) = segment_id
+        {
+            task_segments_to_restore.push((
+                task_id.clone(),
+                segment_id.clone(),
+                translation::source_hash(before_text),
+                *ordinal,
+            ));
+        }
+    }
+    let mut restored_task_segments = std::collections::BTreeSet::new();
+    for (task_id, segment_id, source_hash, ordinal) in task_segments_to_restore {
+        if restored_segment_ids.contains(segment_id.as_str()) {
+            if !restored_task_segments.insert((task_id.clone(), segment_id.clone())) {
+                continue;
+            }
+            tx.execute(
+                "INSERT OR REPLACE INTO task_segments(task_id,segment_id,source_hash,ordinal)
+                 VALUES(?1,?2,?3,?4)",
+                params![task_id, segment_id, source_hash, ordinal],
+            )?;
+        }
+    }
     for (language, translation) in &project.translations {
         tx.execute(
             "INSERT INTO translations(project_id,language,status,updated_at,glossary_version) VALUES(?1,?2,?3,?4,?5)",
@@ -735,15 +1204,25 @@ fn apply_snapshot_in_transaction(
             )?;
         }
     }
-    for patch_set in &project.patch_sets {
-        for item in &patch_set.items {
-            tx.execute(
-                "UPDATE agent_patch_items SET segment_id=?2 WHERE id=?1 AND patch_set_id=?3",
-                params![&item.id, &item.segment_id, &patch_set.id],
-            )?;
-        }
+    if let Some(summary) = summary.as_deref() {
+        tx.execute(
+            "INSERT INTO summaries(project_id,text,updated_at) VALUES(?1,?2,?3)
+             ON CONFLICT(project_id) DO UPDATE
+             SET text=excluded.text,updated_at=excluded.updated_at",
+            params![project_id, summary, now()],
+        )?;
+    } else {
+        tx.execute("DELETE FROM summaries WHERE project_id=?1", [project_id])?;
     }
     speaker::replace_track_tx(tx, project_id, speaker_track.as_ref())?;
+    restore_agent_review_state(
+        tx,
+        project_id,
+        &project,
+        speaker_track.as_ref(),
+        summary.as_deref(),
+        &existing_items,
+    )?;
     if let Some((cursor, action)) = history_move {
         let changed_at = now();
         tx.execute(
@@ -768,7 +1247,8 @@ fn apply_snapshot_in_transaction(
 }
 
 fn move_history(db: &mut Connection, project_id: &str, undo: bool) -> Result<Project> {
-    let tx = db.transaction()?;
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    assert_history_idle(&tx, project_id)?;
     let cursor = tx
         .query_row(
             "SELECT cursor_index FROM project_history WHERE project_id=?1",
@@ -817,6 +1297,8 @@ pub fn redo(db: &mut Connection, project_id: &str) -> Result<Project> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{patches, tasks, workflows};
+    use serde_json::json;
     use tempfile::tempdir;
 
     #[test]
@@ -1183,5 +1665,520 @@ mod tests {
         assert!(error.contains("project_busy"));
         assert!(load(&db, &project.id).is_ok());
         assert!(media.exists());
+    }
+
+    #[test]
+    fn version_bound_delete_rejects_a_stale_confirmation() {
+        let temp = tempdir().unwrap();
+        let database = temp.path().join("version-bound-delete.db");
+        let media = temp.path().join("keep-me.mp4");
+        std::fs::write(&media, b"original media bytes").unwrap();
+        let mut db = crate::db::open_at(&database).unwrap();
+        let project = create(&mut db, &media, Some("Keep stale".into())).unwrap();
+        let confirmed_version = deletion_preflight(&db, &project.id)
+            .unwrap()
+            .expected_version_id;
+        add_segment(
+            &mut db,
+            &project.id,
+            0.0,
+            1.0,
+            "changed after confirmation".into(),
+            None,
+        )
+        .unwrap();
+
+        let error = delete_at_version(&mut db, &project.id, &confirmed_version)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("project_delete_version_mismatch"));
+        assert!(load(&db, &project.id).is_ok());
+        assert!(media.exists());
+    }
+
+    #[test]
+    fn project_history_refuses_to_race_active_background_work() {
+        let temp = tempdir().unwrap();
+        let media = temp.path().join("history-busy.wav");
+        std::fs::write(&media, b"audio").unwrap();
+        let mut db = crate::db::open_at(&temp.path().join("history-busy.db")).unwrap();
+        let project = create(&mut db, &media, None).unwrap();
+        add_segment(
+            &mut db,
+            &project.id,
+            0.0,
+            1.0,
+            "history exists".into(),
+            None,
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO audio_analysis_jobs(
+                 id,project_id,status,progress,created_at,updated_at
+             ) VALUES('analysis-history-busy',?1,'running',0.5,'now','now')",
+            [&project.id],
+        )
+        .unwrap();
+
+        let error = undo(&mut db, &project.id).unwrap_err().to_string();
+
+        assert!(error.contains("history_project_busy"));
+        assert_eq!(
+            load(&db, &project.id).unwrap().transcript.segments[0].text,
+            "history exists"
+        );
+    }
+
+    #[test]
+    fn agent_review_state_round_trips_with_project_history_without_reviving_a_lease() {
+        let temp = tempdir().unwrap();
+        let media = temp.path().join("history-agent.wav");
+        std::fs::write(&media, b"audio").unwrap();
+        let mut db = crate::db::open_at(&temp.path().join("history-agent.db")).unwrap();
+        let project = create(&mut db, &media, None).unwrap();
+        let segment = add_segment(&mut db, &project.id, 0.0, 1.0, "你好".into(), None).unwrap();
+        let workflow = workflows::create(&mut db, &project.id, "polish", None).unwrap();
+        let claim = tasks::claim(&mut db, "history-agent", None)
+            .unwrap()
+            .unwrap();
+        let base = claim.2["baseVersionId"].as_str().unwrap();
+        tasks::submit(
+            &mut db,
+            &workflow.task_id,
+            "history-agent",
+            json!({
+                "baseVersionId": base,
+                "patches": [{
+                    "segmentId": segment.id,
+                    "before": "你好",
+                    "after": "你好。",
+                    "reason": "补充句号",
+                    "confidence": 0.99
+                }]
+            }),
+        )
+        .unwrap();
+        patches::review_all(&mut db, &workflow.task_id, "apply").unwrap();
+        assert_eq!(
+            load(&db, &project.id).unwrap().transcript.segments[0].text,
+            "你好。"
+        );
+
+        let undone = undo(&mut db, &project.id).unwrap();
+        assert_eq!(undone.transcript.segments[0].text, "你好");
+        let (item_status, set_status, task_status, workflow_status, lease): (
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+        ) = db
+            .query_row(
+                "SELECT pi.status,ps.status,t.status,w.status,t.lease_id
+                 FROM agent_patch_items pi
+                 JOIN agent_patch_sets ps ON ps.id=pi.patch_set_id
+                 JOIN tasks t ON t.id=ps.task_id
+                 JOIN workflows w ON w.task_id=t.id
+                 WHERE t.id=?1",
+                [&workflow.task_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            (item_status, set_status, task_status, workflow_status),
+            (
+                "pending".to_owned(),
+                "pending_review".to_owned(),
+                "review".to_owned(),
+                "needs_review".to_owned()
+            )
+        );
+        assert!(lease.is_none());
+        let task_segment_count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM task_segments WHERE task_id=?1",
+                [&workflow.task_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(task_segment_count, 1);
+
+        let redone = redo(&mut db, &project.id).unwrap();
+        assert_eq!(redone.transcript.segments[0].text, "你好。");
+        let statuses: (String, String, String, String) = db
+            .query_row(
+                "SELECT pi.status,ps.status,t.status,w.status
+                 FROM agent_patch_items pi
+                 JOIN agent_patch_sets ps ON ps.id=pi.patch_set_id
+                 JOIN tasks t ON t.id=ps.task_id
+                 JOIN workflows w ON w.task_id=t.id
+                 WHERE t.id=?1",
+                [&workflow.task_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            statuses,
+            (
+                "applied".to_owned(),
+                "applied".to_owned(),
+                "done".to_owned(),
+                "completed".to_owned()
+            )
+        );
+        let redone_task_segment_count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM task_segments WHERE task_id=?1",
+                [&workflow.task_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(redone_task_segment_count, 1);
+    }
+
+    #[test]
+    fn translation_review_history_uses_the_patch_set_language() {
+        let temp = tempdir().unwrap();
+        let media = temp.path().join("history-translation.wav");
+        std::fs::write(&media, b"audio").unwrap();
+        let mut db = crate::db::open_at(&temp.path().join("history-translation.db")).unwrap();
+        let project = create(&mut db, &media, None).unwrap();
+        let segment = add_segment(&mut db, &project.id, 0.0, 1.0, "原字幕".into(), None).unwrap();
+        let source_hash = translation::source_hash("原字幕");
+        for (language, text) in [("de", "Alter deutscher Text"), ("en", "Old English text")] {
+            db.execute(
+                "INSERT INTO translations(project_id,language,status,updated_at)
+                 VALUES(?1,?2,'stale','now')",
+                params![&project.id, language],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO translation_segments(
+                     project_id,language,segment_id,text,source_hash,status,updated_at
+                 ) VALUES(?1,?2,?3,?4,?5,'stale','now')",
+                params![&project.id, language, &segment.id, text, &source_hash],
+            )
+            .unwrap();
+        }
+        mutate_with_snapshot(&mut db, &project.id, "记录双语译文基线", |_| Ok(())).unwrap();
+
+        let workflow =
+            workflows::create(&mut db, &project.id, "translate", Some("en".into())).unwrap();
+        let claim = tasks::claim(&mut db, "translation-history-agent", None)
+            .unwrap()
+            .unwrap();
+        tasks::submit(
+            &mut db,
+            &workflow.task_id,
+            "translation-history-agent",
+            json!({
+                "baseVersionId": claim.2["baseVersionId"],
+                "patches": [{
+                    "segmentId": segment.id,
+                    "before": "原字幕",
+                    "after": "New English text",
+                    "reason": "更新英文译文",
+                    "confidence": 0.99
+                }]
+            }),
+        )
+        .unwrap();
+        patches::review_all(&mut db, &workflow.task_id, "apply").unwrap();
+        assert_eq!(
+            load(&db, &project.id).unwrap().translations["en"].segments[0].text,
+            "New English text"
+        );
+
+        let undone = undo(&mut db, &project.id).unwrap();
+        assert_eq!(
+            undone.translations["en"].segments[0].text,
+            "Old English text"
+        );
+        assert_eq!(
+            undone.translations["de"].segments[0].text,
+            "Alter deutscher Text"
+        );
+        let undone_status: String = db
+            .query_row(
+                "SELECT pi.status
+                 FROM agent_patch_items pi
+                 JOIN agent_patch_sets ps ON ps.id=pi.patch_set_id
+                 WHERE ps.task_id=?1",
+                [&workflow.task_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(undone_status, "pending");
+
+        let redone = redo(&mut db, &project.id).unwrap();
+        assert_eq!(
+            redone.translations["en"].segments[0].text,
+            "New English text"
+        );
+        assert_eq!(
+            redone.translations["de"].segments[0].text,
+            "Alter deutscher Text"
+        );
+        let redone_status: String = db
+            .query_row(
+                "SELECT pi.status
+                 FROM agent_patch_items pi
+                 JOIN agent_patch_sets ps ON ps.id=pi.patch_set_id
+                 WHERE ps.task_id=?1",
+                [&workflow.task_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(redone_status, "applied");
+    }
+
+    #[test]
+    fn agent_summary_content_and_review_state_round_trip_with_history() {
+        let temp = tempdir().unwrap();
+        let media = temp.path().join("history-summary.wav");
+        std::fs::write(&media, b"audio").unwrap();
+        let mut db = crate::db::open_at(&temp.path().join("history-summary.db")).unwrap();
+        let project = create(&mut db, &media, None).unwrap();
+        let workflow = workflows::create(&mut db, &project.id, "summary", None).unwrap();
+        let claim = tasks::claim(&mut db, "summary-history-agent", None)
+            .unwrap()
+            .unwrap();
+        let base = claim.2["baseVersionId"].as_str().unwrap();
+        tasks::submit(
+            &mut db,
+            &workflow.task_id,
+            "summary-history-agent",
+            json!({
+                "baseVersionId": base,
+                "summary": "可恢复的摘要"
+            }),
+        )
+        .unwrap();
+        patches::review_all(&mut db, &workflow.task_id, "apply").unwrap();
+        let applied: String = db
+            .query_row(
+                "SELECT text FROM summaries WHERE project_id=?1",
+                [&project.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(applied, "可恢复的摘要");
+
+        undo(&mut db, &project.id).unwrap();
+        let undone = db
+            .query_row(
+                "SELECT text FROM summaries WHERE project_id=?1",
+                [&project.id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .unwrap();
+        assert!(undone.is_none());
+        let undone_statuses: (String, String, String, String) = db
+            .query_row(
+                "SELECT pi.status,ps.status,t.status,w.status
+                 FROM agent_patch_items pi
+                 JOIN agent_patch_sets ps ON ps.id=pi.patch_set_id
+                 JOIN tasks t ON t.id=ps.task_id
+                 JOIN workflows w ON w.task_id=t.id
+                 WHERE t.id=?1",
+                [&workflow.task_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            undone_statuses,
+            (
+                "pending".to_owned(),
+                "pending_review".to_owned(),
+                "review".to_owned(),
+                "needs_review".to_owned()
+            )
+        );
+
+        redo(&mut db, &project.id).unwrap();
+        let redone: String = db
+            .query_row(
+                "SELECT text FROM summaries WHERE project_id=?1",
+                [&project.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(redone, "可恢复的摘要");
+        let redone_statuses: (String, String, String, String) = db
+            .query_row(
+                "SELECT pi.status,ps.status,t.status,w.status
+                 FROM agent_patch_items pi
+                 JOIN agent_patch_sets ps ON ps.id=pi.patch_set_id
+                 JOIN tasks t ON t.id=ps.task_id
+                 JOIN workflows w ON w.task_id=t.id
+                 WHERE t.id=?1",
+                [&workflow.task_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            redone_statuses,
+            (
+                "applied".to_owned(),
+                "applied".to_owned(),
+                "done".to_owned(),
+                "completed".to_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn transcript_language_round_trips_with_project_history() {
+        let temp = tempdir().unwrap();
+        let media = temp.path().join("history-language.wav");
+        std::fs::write(&media, b"audio").unwrap();
+        let mut db = crate::db::open_at(&temp.path().join("history-language.db")).unwrap();
+        let project = create(&mut db, &media, None).unwrap();
+        let segment =
+            add_segment(&mut db, &project.id, 0.0, 1.0, "这是中文。".into(), None).unwrap();
+        db.execute(
+            "UPDATE projects SET source_language='zh' WHERE id=?1",
+            [&project.id],
+        )
+        .unwrap();
+        mutate_with_snapshot(&mut db, &project.id, "记录中文语言基线", |_| Ok(())).unwrap();
+        assert_eq!(
+            load(&db, &project.id).unwrap().transcript.source_language,
+            "zh"
+        );
+        db.execute(
+            "UPDATE projects SET source_language='en' WHERE id=?1",
+            [&project.id],
+        )
+        .unwrap();
+        edit_segment(
+            &mut db,
+            &project.id,
+            &segment.id,
+            "This is a sufficiently clear English transcript sentence for language detection."
+                .into(),
+        )
+        .unwrap();
+        assert_eq!(
+            load(&db, &project.id).unwrap().transcript.source_language,
+            "en"
+        );
+
+        let undone = undo(&mut db, &project.id).unwrap();
+        assert_eq!(undone.transcript.source_language, "zh");
+        assert_eq!(undone.transcript.segments[0].text, "这是中文。");
+
+        let redone = redo(&mut db, &project.id).unwrap();
+        assert_eq!(redone.transcript.source_language, "en");
+        assert!(redone.transcript.segments[0].text.starts_with("This is"));
+    }
+
+    #[test]
+    fn task_segment_baselines_survive_history_across_full_transcript_replacement() {
+        let temp = tempdir().unwrap();
+        let media = temp.path().join("history-task-segments.wav");
+        std::fs::write(&media, b"audio").unwrap();
+        let mut db = crate::db::open_at(&temp.path().join("history-task-segments.db")).unwrap();
+        let project = create(&mut db, &media, None).unwrap();
+        let segment = add_segment(&mut db, &project.id, 0.0, 1.0, "原字幕".into(), None).unwrap();
+        let workflow = workflows::create(&mut db, &project.id, "polish", None).unwrap();
+        let claim = tasks::claim(&mut db, "baseline-agent", None)
+            .unwrap()
+            .unwrap();
+        tasks::submit(
+            &mut db,
+            &workflow.task_id,
+            "baseline-agent",
+            json!({
+                "baseVersionId": claim.2["baseVersionId"],
+                "patches": [{
+                    "segmentId": segment.id,
+                    "before": "原字幕",
+                    "after": "原字幕。",
+                    "reason": "标点",
+                    "confidence": 0.99
+                }]
+            }),
+        )
+        .unwrap();
+        patches::review_all(&mut db, &workflow.task_id, "apply").unwrap();
+        mutate_with_snapshot(&mut db, &project.id, "全量替换字幕", |tx| {
+            tx.execute(
+                "DELETE FROM task_segments WHERE task_id=?1",
+                [&workflow.task_id],
+            )?;
+            tx.execute(
+                "UPDATE agent_patch_items
+                 SET segment_id=NULL
+                 WHERE patch_set_id IN (
+                     SELECT id FROM agent_patch_sets WHERE task_id=?1
+                 )",
+                [&workflow.task_id],
+            )?;
+            tx.execute("DELETE FROM segments WHERE project_id=?1", [&project.id])?;
+            tx.execute(
+                "INSERT INTO segments(
+                     id,project_id,start_seconds,end_seconds,text,confidence
+                 ) VALUES('replacement-segment',?1,0,1,'替换字幕',NULL)",
+                [&project.id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM task_segments WHERE task_id=?1",
+                [&workflow.task_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            0
+        );
+
+        let restored_apply = undo(&mut db, &project.id).unwrap();
+        assert_eq!(restored_apply.transcript.segments[0].text, "原字幕。");
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM task_segments WHERE task_id=?1",
+                [&workflow.task_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1
+        );
+        let restored_review = undo(&mut db, &project.id).unwrap();
+        assert_eq!(restored_review.transcript.segments[0].text, "原字幕");
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM task_segments WHERE task_id=?1",
+                [&workflow.task_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1
+        );
+
+        redo(&mut db, &project.id).unwrap();
+        let replacement = redo(&mut db, &project.id).unwrap();
+        assert_eq!(replacement.transcript.segments[0].text, "替换字幕");
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM task_segments WHERE task_id=?1",
+                [&workflow.task_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            0
+        );
     }
 }

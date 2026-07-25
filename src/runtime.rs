@@ -43,31 +43,70 @@ pub fn load() -> Result<Option<RuntimeSelection>> {
 }
 
 pub fn selected_whisper_path() -> Option<PathBuf> {
-    load()
-        .ok()
-        .flatten()
-        .map(|selection| PathBuf::from(selection.whisper_path))
-        .filter(|path| path.is_file())
+    verified_selected_whisper_path().ok().flatten()
+}
+
+fn verify_selection(selection: &RuntimeSelection) -> Result<PathBuf> {
+    let path = PathBuf::from(&selection.whisper_path);
+    if !path.is_file() {
+        bail!(
+            "runtime_executable_missing: 已选择的 whisper.cpp 运行时不存在：{}",
+            path.display()
+        )
+    }
+    let actual = hash_file(&path)?;
+    if !actual.eq_ignore_ascii_case(&selection.executable_sha256) {
+        bail!(
+            "runtime_hash_mismatch: whisper.cpp 运行时在选择后发生变化；需要 {}，实际为 {}",
+            selection.executable_sha256,
+            actual
+        )
+    }
+    Ok(path)
+}
+
+pub fn verified_selected_whisper_path() -> Result<Option<PathBuf>> {
+    load()?.as_ref().map(verify_selection).transpose()
 }
 
 pub fn status() -> Result<serde_json::Value> {
     let selection = load()?;
     Ok(match selection {
-        Some(selection) => {
-            let path = PathBuf::from(&selection.whisper_path);
-            serde_json::json!({
-                "backend": selection.backend,
-                "selected": true,
-                "available": path.is_file(),
-                "selection": selection
-            })
-        }
+        Some(selection) => status_for_selection(selection),
         None => serde_json::json!({
             "backend": "cpu",
             "selected": false,
             "available": true
         }),
     })
+}
+
+fn status_for_selection(selection: RuntimeSelection) -> serde_json::Value {
+    match verify_selection(&selection) {
+        Ok(_) => serde_json::json!({
+            "backend": selection.backend,
+            "selected": true,
+            "available": true,
+            "verificationStatus": "verified",
+            "selection": selection
+        }),
+        Err(error) => {
+            let message = error.to_string();
+            let code = message
+                .split_once(':')
+                .map(|(code, _)| code)
+                .unwrap_or("runtime_verification_failed");
+            serde_json::json!({
+                "backend": selection.backend,
+                "selected": true,
+                "available": false,
+                "verificationStatus": "failed",
+                "errorCode": code,
+                "errorMessage": message,
+                "selection": selection
+            })
+        }
+    }
 }
 
 pub fn select(
@@ -151,5 +190,32 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("cpu、cuda 或 vulkan"));
+    }
+
+    #[test]
+    fn rejects_a_selected_runtime_that_changed_after_selection() {
+        let temp = tempfile::tempdir().unwrap();
+        let executable = temp.path().join("whisper-cli.exe");
+        fs::write(&executable, b"selected runtime").unwrap();
+        let selected_hash = hash_file(&executable).unwrap();
+        fs::write(&executable, b"tampered runtime").unwrap();
+        let selection = RuntimeSelection {
+            backend: "cpu".into(),
+            whisper_path: executable.to_string_lossy().into_owned(),
+            executable_sha256: selected_hash,
+            source: "test".into(),
+            version: "test".into(),
+            archive_sha256: None,
+            device: None,
+            selected_at: "test".into(),
+        };
+
+        let error = verify_selection(&selection).unwrap_err().to_string();
+
+        assert!(error.contains("runtime_hash_mismatch"));
+        let status = status_for_selection(selection);
+        assert_eq!(status["available"], false);
+        assert_eq!(status["verificationStatus"], "failed");
+        assert_eq!(status["errorCode"], "runtime_hash_mismatch");
     }
 }

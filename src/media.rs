@@ -8,7 +8,10 @@ use anyhow::{Context, Result, anyhow, bail};
 use rusqlite::{Connection, params};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::{env, fs, path::Path};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+};
 
 const VAD_RETRY_MIN_MEAN_VOLUME_DBFS: f64 = -55.0;
 
@@ -28,6 +31,21 @@ pub fn whisper_cli_path() -> String {
         bundled.to_string_lossy().to_string()
     } else {
         "whisper-cli".to_owned()
+    }
+}
+
+struct TemporaryRunDirectory(PathBuf);
+
+impl TemporaryRunDirectory {
+    fn create(path: PathBuf) -> Result<Self> {
+        fs::create_dir_all(&path)?;
+        Ok(Self(path))
+    }
+}
+
+impl Drop for TemporaryRunDirectory {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
     }
 }
 
@@ -128,9 +146,16 @@ pub fn transcribe(
         bail!("模型不存在：{}", model.display())
     }
     let project = project::load(db, project_id)?;
+    let base_version_id = project.history.current_version_id.clone();
+    let source_sha256 = hash_file(Path::new(&project.media.source_path))?;
+    if source_sha256 != project.media.sha256 {
+        bail!("media_hash_changed: 原片校验值已变化，不能开始本地转录")
+    }
     let audio_dir = home_dir().join("cache").join("asr");
     fs::create_dir_all(&audio_dir)?;
-    let wav = audio_dir.join(format!("{}.wav", project.id));
+    let run_directory = audio_dir.join(format!("{}-{}", project.id, new_id("quick")));
+    let _run_guard = TemporaryRunDirectory::create(run_directory.clone())?;
+    let wav = run_directory.join("audio.wav");
     let ffmpeg = tool_path("SIAOCUT_FFMPEG", "ffmpeg");
     let result = hidden_command(&ffmpeg)
         .args([
@@ -154,8 +179,10 @@ pub fn transcribe(
         )
     }
 
-    let whisper = whisper_cli_path();
-    let output_base = audio_dir.join(&project.id);
+    let whisper = crate::runtime::verified_selected_whisper_path()?
+        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_else(whisper_cli_path);
+    let output_base = run_directory.join("transcript");
     let vad_model = whisper_vad_model_path();
     run_whisper(
         &whisper,
@@ -174,7 +201,14 @@ pub fn transcribe(
             run_whisper(&whisper, model, &wav, &output_base, language, None)?;
         }
     }
-    import_whisper_json(db, &project.id, &output_base.with_extension("json"))
+    import_whisper_json_at_baseline(
+        db,
+        &project.id,
+        &output_base.with_extension("json"),
+        base_version_id.as_deref(),
+        &project.media.source_path,
+        &source_sha256,
+    )
 }
 
 fn run_whisper(
@@ -483,10 +517,30 @@ fn whisper_item_segments(item: &Value) -> Result<Vec<ImportedSegment>> {
         .collect())
 }
 
+#[cfg(test)]
 fn import_whisper_json(
     db: &mut Connection,
     project_id: &str,
     json_path: &Path,
+) -> Result<(Project, usize)> {
+    let project = project::load(db, project_id)?;
+    import_whisper_json_at_baseline(
+        db,
+        project_id,
+        json_path,
+        project.history.current_version_id.as_deref(),
+        &project.media.source_path,
+        &project.media.sha256,
+    )
+}
+
+fn import_whisper_json_at_baseline(
+    db: &mut Connection,
+    project_id: &str,
+    json_path: &Path,
+    expected_version_id: Option<&str>,
+    expected_source_path: &str,
+    expected_source_sha256: &str,
 ) -> Result<(Project, usize)> {
     let raw: Value = serde_json::from_str(
         &fs::read_to_string(json_path).context("whisper.cpp 未生成 JSON 输出")?,
@@ -507,47 +561,70 @@ fn import_whisper_json(
             )
         });
     let mut count = 0;
-    project::mutate_with_snapshot(db, project_id, "whisper.cpp 本地转录", |tx| {
-        tx.execute("DELETE FROM segments WHERE project_id=?1", [project_id])?;
-        for item in entries {
-            for imported in whisper_item_segments(item)? {
-                let confidence = if imported.words.is_empty() {
-                    None
-                } else {
-                    let values = imported
-                        .words
-                        .iter()
-                        .filter_map(|word| word.confidence)
-                        .collect::<Vec<_>>();
-                    (!values.is_empty()).then(|| values.iter().sum::<f64>() / values.len() as f64)
-                };
-                let segment = Segment {
-                    id: new_id("s"),
-                    start: imported.start,
-                    end: imported.end,
-                    text: imported.text,
-                    confidence,
-                };
-                tx.execute("INSERT INTO segments(id,project_id,start_seconds,end_seconds,text,confidence) VALUES(?1,?2,?3,?4,?5,?6)",params![&segment.id,project_id,segment.start,segment.end,&segment.text,segment.confidence])?;
-                for (ordinal, mut word) in imported.words.into_iter().enumerate() {
-                    word.segment_id.clone_from(&segment.id);
-                    tx.execute("INSERT INTO words(id,project_id,segment_id,start_seconds,end_seconds,text,confidence,ordinal) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",params![&word.id,project_id,&word.segment_id,word.start,word.end,&word.text,word.confidence,ordinal as i64])?;
-                }
-                count += 1;
-            }
-        }
-        if let Some(language) = language {
-            tx.execute(
-                "UPDATE projects SET source_language=?2 WHERE id=?1",
-                params![project_id, language],
+    if hash_file(Path::new(expected_source_path))? != expected_source_sha256 {
+        bail!("transcription_source_changed: 本地转录期间原始媒体内容发生变化，结果未应用")
+    }
+    project::mutate_with_snapshot_at_version(
+        db,
+        project_id,
+        expected_version_id,
+        "transcription_project_changed: 本地转录期间项目已被修改，结果未应用",
+        "whisper.cpp 本地转录",
+        |tx| {
+            let recorded: (String, String) = tx.query_row(
+                "SELECT source_path,sha256 FROM media WHERE project_id=?1",
+                [project_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )?;
-        }
-        tx.execute(
-            "UPDATE translations SET status='stale' WHERE project_id=?1",
-            [project_id],
-        )?;
-        Ok(())
-    })?;
+            if recorded.0 != expected_source_path || recorded.1 != expected_source_sha256 {
+                bail!("transcription_source_changed: 本地转录期间项目媒体绑定发生变化，结果未应用")
+            }
+            if hash_file(Path::new(expected_source_path))? != expected_source_sha256 {
+                bail!("transcription_source_changed: 本地转录期间原始媒体内容发生变化，结果未应用")
+            }
+            project::assert_transcript_replacement_safe(tx, project_id)?;
+            tx.execute("DELETE FROM segments WHERE project_id=?1", [project_id])?;
+            for item in entries {
+                for imported in whisper_item_segments(item)? {
+                    let confidence = if imported.words.is_empty() {
+                        None
+                    } else {
+                        let values = imported
+                            .words
+                            .iter()
+                            .filter_map(|word| word.confidence)
+                            .collect::<Vec<_>>();
+                        (!values.is_empty())
+                            .then(|| values.iter().sum::<f64>() / values.len() as f64)
+                    };
+                    let segment = Segment {
+                        id: new_id("s"),
+                        start: imported.start,
+                        end: imported.end,
+                        text: imported.text,
+                        confidence,
+                    };
+                    tx.execute("INSERT INTO segments(id,project_id,start_seconds,end_seconds,text,confidence) VALUES(?1,?2,?3,?4,?5,?6)",params![&segment.id,project_id,segment.start,segment.end,&segment.text,segment.confidence])?;
+                    for (ordinal, mut word) in imported.words.into_iter().enumerate() {
+                        word.segment_id.clone_from(&segment.id);
+                        tx.execute("INSERT INTO words(id,project_id,segment_id,start_seconds,end_seconds,text,confidence,ordinal) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",params![&word.id,project_id,&word.segment_id,word.start,word.end,&word.text,word.confidence,ordinal as i64])?;
+                    }
+                    count += 1;
+                }
+            }
+            if let Some(language) = language {
+                tx.execute(
+                    "UPDATE projects SET source_language=?2 WHERE id=?1",
+                    params![project_id, language],
+                )?;
+            }
+            tx.execute(
+                "UPDATE translations SET status='stale' WHERE project_id=?1",
+                [project_id],
+            )?;
+            Ok(())
+        },
+    )?;
     Ok((project::load(db, project_id)?, count))
 }
 
@@ -640,6 +717,82 @@ mod tests {
         assert_eq!(updated.transcript.segments[0].text, "hello");
         assert_eq!(updated.transcript.segments[0].end, 1.5);
         assert!(updated.transcript.words.is_empty());
+    }
+
+    #[test]
+    fn local_transcription_never_overwrites_a_newer_project_version() {
+        let temp = tempdir().unwrap();
+        let mut db = db::open_at(&temp.path().join("stale-local-transcription.db")).unwrap();
+        let media = temp.path().join("talk.wav");
+        fs::write(&media, b"audio").unwrap();
+        let created = project::create(&mut db, &media, None).unwrap();
+        let baseline_version = created.history.current_version_id.clone();
+        project::add_segment(&mut db, &created.id, 0.0, 1.0, "human change".into(), None).unwrap();
+        let result = temp.path().join("stale-result.json");
+        fs::write(
+            &result,
+            r#"{"transcription":[{"timestamps":{"from":"00:00:00,000","to":"00:00:01,000"},"text":" stale result"}]}"#,
+        )
+        .unwrap();
+
+        let error = import_whisper_json_at_baseline(
+            &mut db,
+            &created.id,
+            &result,
+            baseline_version.as_deref(),
+            &created.media.source_path,
+            &created.media.sha256,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("transcription_project_changed"));
+        assert_eq!(
+            project::load(&db, &created.id).unwrap().transcript.segments[0].text,
+            "human change"
+        );
+    }
+
+    #[test]
+    fn local_retranscription_preserves_segments_with_edit_dependencies() {
+        let temp = tempdir().unwrap();
+        let mut db = db::open_at(&temp.path().join("dependent-local-transcription.db")).unwrap();
+        let media = temp.path().join("talk.wav");
+        fs::write(&media, b"audio").unwrap();
+        let created = project::create(&mut db, &media, None).unwrap();
+        let segment =
+            project::add_segment(&mut db, &created.id, 0.0, 1.0, "keep me".into(), None).unwrap();
+        db.execute(
+            "INSERT INTO edits(
+                 id,project_id,kind,status,segment_id,start_seconds,end_seconds,reason,created_at
+             ) VALUES('dependent-edit',?1,'semantic_cut','applied',?2,0,1,'keep','now')",
+            params![&created.id, &segment.id],
+        )
+        .unwrap();
+        let baseline = project::load(&db, &created.id).unwrap();
+        let result = temp.path().join("replacement.json");
+        fs::write(
+            &result,
+            r#"{"transcription":[{"timestamps":{"from":"00:00:00,000","to":"00:00:01,000"},"text":" replacement"}]}"#,
+        )
+        .unwrap();
+
+        let error = import_whisper_json_at_baseline(
+            &mut db,
+            &created.id,
+            &result,
+            baseline.history.current_version_id.as_deref(),
+            &created.media.source_path,
+            &created.media.sha256,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("transcription_replacement_conflict"));
+        assert_eq!(
+            project::load(&db, &created.id).unwrap().transcript.segments[0].text,
+            "keep me"
+        );
     }
 
     #[test]

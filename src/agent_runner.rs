@@ -24,6 +24,10 @@ const MIN_TIMEOUT_SECONDS: u64 = 30;
 const MAX_TIMEOUT_SECONDS: u64 = 3600;
 const RECONCILE_GRACE_SECONDS: i64 = 5;
 const HEARTBEAT_SECONDS: u64 = 240;
+// Permission profiles existed earlier, but this is the first CLI version
+// validated here with the complete no-shell/no-app hardened runner profile.
+const MIN_PERMISSION_PROFILE_VERSION: (u64, u64, u64) = (0, 145, 0);
+const AGENT_PERMISSION_PROFILE: &str = "siaocut_text_only";
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -265,18 +269,19 @@ pub fn resume(db: &mut Connection, run_id: &str, start_delay_ms: Option<u64>) ->
 pub fn reconcile_interrupted(db: &mut Connection) -> Result<()> {
     let runs = db
         .prepare(
-            "SELECT id,task_id,worker_pid,updated_at FROM agent_runs WHERE status IN ('queued','running','submitting')",
+            "SELECT id,task_id,status,worker_pid,updated_at FROM agent_runs WHERE status IN ('queued','running','submitting')",
         )?
         .query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
-                row.get::<_, Option<u32>>(2)?,
-                row.get::<_, String>(3)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<u32>>(3)?,
+                row.get::<_, String>(4)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    for (run_id, task_id, worker_pid, updated_at) in runs {
+    for (run_id, task_id, status, worker_pid, updated_at) in runs {
         let stale = chrono::DateTime::parse_from_rfc3339(&updated_at)
             .map(|time| {
                 chrono::Utc::now()
@@ -287,10 +292,15 @@ pub fn reconcile_interrupted(db: &mut Connection) -> Result<()> {
             .unwrap_or(true);
         if stale && !worker_pid.is_some_and(crate::util::process_is_active) {
             let timestamp = now();
-            db.execute(
-                "UPDATE agent_runs SET status='interrupted',worker_pid=NULL,error_code='agent_worker_interrupted',error_message='上次本机 Agent 进程意外中断；需要显式继续。',updated_at=?2 WHERE id=?1",
-                params![&run_id, &timestamp],
+            let changed = db.execute(
+                "UPDATE agent_runs
+                 SET status='interrupted',worker_pid=NULL,error_code='agent_worker_interrupted',error_message='上次本机 Agent 进程意外中断；需要显式继续。',updated_at=?2
+                 WHERE id=?1 AND status=?3 AND updated_at=?4 AND worker_pid IS ?5",
+                params![&run_id, &timestamp, &status, &updated_at, worker_pid],
             )?;
+            if changed == 0 {
+                continue;
+            }
             db.execute(
                 "UPDATE agent_run_batches SET status='failed',error_code='agent_worker_interrupted',error_message='本机 Agent 进程意外中断。',updated_at=?2 WHERE run_id=?1 AND status='running'",
                 params![&run_id, &timestamp],
@@ -468,7 +478,7 @@ fn invoke_codex(
         "task": payload,
         "completionRule": "processedSegmentIds must contain every supplied segment ID exactly once. patches may only reference supplied segment IDs. Results are suggestions for human review and must not be applied directly."
     }))?;
-    let spec = invocation_spec(&config.executable, prompt);
+    let spec = invocation_spec(&config.executable, &directory, prompt)?;
     let mut command = codex_command(&config.executable);
     command
         .args(&spec.arguments)
@@ -561,26 +571,85 @@ fn invoke_codex(
     })
 }
 
-fn invocation_spec(executable: &Path, stdin: String) -> InvocationSpec {
+fn invocation_spec(
+    executable: &Path,
+    isolated_directory: &Path,
+    stdin: String,
+) -> Result<InvocationSpec> {
+    let isolated_directory = isolated_directory
+        .canonicalize()
+        .context("无法解析 Agent 临时目录")?;
+    let environment = isolated_environment(executable, &isolated_directory)?;
+    let filesystem = format!(
+        "{{\":root\"=\"deny\",\":minimal\"=\"read\",{}=\"write\"}}",
+        toml_string(&isolated_directory.to_string_lossy())
+    );
+    let command_environment = environment
+        .iter()
+        .filter(|(key, _)| key.as_str() != "CODEX_HOME")
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect::<BTreeMap<_, _>>();
     let arguments = vec![
+        "-c".to_owned(),
+        format!(
+            "default_permissions={}",
+            toml_string(AGENT_PERMISSION_PROFILE)
+        ),
+        "-c".to_owned(),
+        format!("permissions.{AGENT_PERMISSION_PROFILE}.filesystem={filesystem}"),
+        "-c".to_owned(),
+        format!("permissions.{AGENT_PERMISSION_PROFILE}.network.enabled=false"),
+        "-c".to_owned(),
+        "approval_policy=\"never\"".to_owned(),
+        "-c".to_owned(),
+        "web_search=\"disabled\"".to_owned(),
+        "-c".to_owned(),
+        "features.shell_tool=false".to_owned(),
+        "-c".to_owned(),
+        "features.unified_exec=false".to_owned(),
+        "-c".to_owned(),
+        "features.shell_snapshot=false".to_owned(),
+        "-c".to_owned(),
+        "features.apps=false".to_owned(),
+        "-c".to_owned(),
+        "features.goals=false".to_owned(),
+        "-c".to_owned(),
+        "features.hooks=false".to_owned(),
+        "-c".to_owned(),
+        "features.memories=false".to_owned(),
+        "-c".to_owned(),
+        "features.multi_agent=false".to_owned(),
+        "-c".to_owned(),
+        "features.remote_plugin=false".to_owned(),
+        "-c".to_owned(),
+        "shell_environment_policy.inherit=\"none\"".to_owned(),
+        "-c".to_owned(),
+        "shell_environment_policy.ignore_default_excludes=false".to_owned(),
+        "-c".to_owned(),
+        format!(
+            "shell_environment_policy.set={}",
+            toml_inline_table(&command_environment)
+        ),
         "exec".to_owned(),
         "--json".to_owned(),
         "--output-schema".to_owned(),
         "schema.json".to_owned(),
         "--output-last-message".to_owned(),
         "result.json".to_owned(),
-        "--sandbox".to_owned(),
-        "read-only".to_owned(),
         "--skip-git-repo-check".to_owned(),
+        "--ephemeral".to_owned(),
         "--ignore-user-config".to_owned(),
+        "--strict-config".to_owned(),
         "--ignore-rules".to_owned(),
+        "--color".to_owned(),
+        "never".to_owned(),
         "-".to_owned(),
     ];
-    InvocationSpec {
+    Ok(InvocationSpec {
         arguments,
         stdin,
-        environment: safe_environment(executable),
-    }
+        environment,
+    })
 }
 
 fn safe_environment(executable: &Path) -> BTreeMap<String, String> {
@@ -622,6 +691,58 @@ fn safe_environment(executable: &Path) -> BTreeMap<String, String> {
     values.insert("PATHEXT".to_owned(), ".COM;.EXE;.BAT;.CMD".to_owned());
     values.insert("NO_COLOR".to_owned(), "1".to_owned());
     values
+}
+
+fn isolated_environment(
+    executable: &Path,
+    isolated_directory: &Path,
+) -> Result<BTreeMap<String, String>> {
+    let mut values = safe_environment(executable);
+    let profile = isolated_directory.join("profile");
+    let roaming = profile.join("AppData").join("Roaming");
+    let local = profile.join("AppData").join("Local");
+    let temporary = isolated_directory.join("tmp");
+    for directory in [&profile, &roaming, &local, &temporary] {
+        fs::create_dir_all(directory).context("无法创建 Agent 隔离环境")?;
+    }
+    for (key, value) in [
+        ("USERPROFILE", &profile),
+        ("HOME", &profile),
+        ("APPDATA", &roaming),
+        ("LOCALAPPDATA", &local),
+        ("TEMP", &temporary),
+        ("TMP", &temporary),
+    ] {
+        values.insert(key.to_owned(), value.to_string_lossy().into_owned());
+    }
+    values.remove("HOMEDRIVE");
+    values.remove("HOMEPATH");
+    if let Some(codex_home) = codex_home() {
+        values.insert(
+            "CODEX_HOME".to_owned(),
+            codex_home.to_string_lossy().into_owned(),
+        );
+    }
+    Ok(values)
+}
+
+fn codex_home() -> Option<PathBuf> {
+    env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("USERPROFILE").map(|home| PathBuf::from(home).join(".codex")))
+}
+
+fn toml_string(value: &str) -> String {
+    serde_json::to_string(value).expect("serializing a string cannot fail")
+}
+
+fn toml_inline_table(values: &BTreeMap<String, String>) -> String {
+    let fields = values
+        .iter()
+        .map(|(key, value)| format!("{}={}", toml_string(key), toml_string(value)))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("{{{fields}}}")
 }
 
 fn parse_events(reader: impl BufRead) -> EventSummary {
@@ -688,8 +809,7 @@ fn output_schema(kind: &str, base_version_id: &str) -> Value {
     let processed = json!({
         "type": "array",
         "items": {"type": "string"},
-        "minItems": 1,
-        "uniqueItems": true
+        "minItems": 1
     });
     let mut properties = Map::new();
     properties.insert(
@@ -930,6 +1050,20 @@ fn find_all_on_path(name: &str) -> Vec<PathBuf> {
 fn require_ready_codex() -> Result<PathBuf> {
     let executable = resolve_codex_cli()?;
     let health = health_with(&executable);
+    let version = health
+        .version
+        .as_deref()
+        .ok_or_else(|| anyhow!("codex_cli_missing: Codex CLI 无法运行"))?;
+    let version = parse_codex_version(version)
+        .ok_or_else(|| anyhow!("codex_cli_unsupported: 无法确认 Codex CLI 安全隔离能力"))?;
+    if version < MIN_PERMISSION_PROFILE_VERSION {
+        bail!(
+            "codex_cli_unsupported: 本机 Agent 至少需要 Codex CLI {}.{}.{}",
+            MIN_PERMISSION_PROFILE_VERSION.0,
+            MIN_PERMISSION_PROFILE_VERSION.1,
+            MIN_PERMISSION_PROFILE_VERSION.2
+        )
+    }
     if !health.available {
         bail!("codex_cli_missing: Codex CLI 无法运行")
     }
@@ -939,14 +1073,33 @@ fn require_ready_codex() -> Result<PathBuf> {
     Ok(executable)
 }
 
+fn parse_codex_version(value: &str) -> Option<(u64, u64, u64)> {
+    value.split_whitespace().find_map(|token| {
+        let numeric = token
+            .trim_start_matches('v')
+            .chars()
+            .take_while(|character| character.is_ascii_digit() || *character == '.')
+            .collect::<String>();
+        let mut parts = numeric.split('.');
+        let major = parts.next()?.parse().ok()?;
+        let minor = parts.next()?.parse().ok()?;
+        let patch = parts.next()?.parse().ok()?;
+        Some((major, minor, patch))
+    })
+}
+
 fn health_with(executable: &Path) -> CodexHealth {
     let version = run_health_command(executable, &["--version"])
         .ok()
         .and_then(|output| sanitize_line(&output));
     let login = run_health_command(executable, &["login", "status"]).ok();
     let auth_mode = login.as_deref().and_then(auth_mode);
+    let available = version
+        .as_deref()
+        .and_then(parse_codex_version)
+        .is_some_and(|version| version >= MIN_PERMISSION_PROFILE_VERSION);
     CodexHealth {
-        available: version.is_some(),
+        available,
         authenticated: auth_mode.is_some(),
         version,
         auth_mode,
@@ -1119,6 +1272,7 @@ fn public_error_message(code: &str) -> &'static str {
     match code {
         "codex_cli_missing" => "Codex CLI 不可用。",
         "codex_not_logged_in" => "Codex CLI 尚未登录。",
+        "codex_cli_unsupported" => "Codex CLI 版本不支持本机 Agent 所需的权限隔离。",
         "agent_run_timeout" => "本机 Agent 处理超时；可以显式继续。",
         "agent_batch_incomplete" => "Agent 没有确认处理全部字幕段。",
         "agent_segment_duplicate" => "Agent 结果包含重复字幕段。",
@@ -1182,7 +1336,7 @@ mod tests {
         fs::write(
             &path,
             format!(
-                "@echo off\r\nif \"%~1\"==\"--version\" (\r\n  echo codex-cli 0.fake\r\n  exit /b 0\r\n)\r\nif \"%~1\"==\"login\" (\r\n  echo Logged in using ChatGPT\r\n  exit /b 0\r\n)\r\n> result.json echo {{\"baseVersionId\":\"{base_version_id}\",\"processedSegmentIds\":[\"{segment_id}\"],\"patches\":[{{\"segmentId\":\"{segment_id}\",\"before\":\"hello\",\"after\":\"hello.\",\"reason\":\"fake codex integration\",\"confidence\":0.9}}]}}\r\necho {{\"type\":\"thread.started\",\"thread_id\":\"fake-thread\"}}\r\necho {{\"type\":\"turn.completed\"}}\r\nexit /b 0\r\n"
+                "@echo off\r\nif \"%~1\"==\"--version\" (\r\n  echo codex-cli 0.145.0\r\n  exit /b 0\r\n)\r\nif \"%~1\"==\"login\" (\r\n  echo Logged in using ChatGPT\r\n  exit /b 0\r\n)\r\n> result.json echo {{\"baseVersionId\":\"{base_version_id}\",\"processedSegmentIds\":[\"{segment_id}\"],\"patches\":[{{\"segmentId\":\"{segment_id}\",\"before\":\"hello\",\"after\":\"hello.\",\"reason\":\"fake codex integration\",\"confidence\":0.9}}]}}\r\necho {{\"type\":\"thread.started\",\"thread_id\":\"fake-thread\"}}\r\necho {{\"type\":\"turn.completed\"}}\r\nexit /b 0\r\n"
             ),
         )
         .unwrap();
@@ -1216,28 +1370,82 @@ mod tests {
 
     #[test]
     fn invocation_excludes_user_config_credentials_and_machine_targets() {
+        let temp = tempdir().unwrap();
+        let isolated = temp.path().join("batch");
+        fs::create_dir_all(&isolated).unwrap();
         let payload = json!({
             "task": {"segments":[{"id":"s-1","text":"safe text"}]},
             "completionRule":"review only"
         });
         let executable = Path::new(r"C:\Program Files\Codex\codex.exe");
-        let spec = invocation_spec(executable, serde_json::to_string(&payload).unwrap());
+        let spec = invocation_spec(
+            executable,
+            &isolated,
+            serde_json::to_string(&payload).unwrap(),
+        )
+        .unwrap();
         let arguments = spec.arguments.join(" ").to_ascii_lowercase();
-        assert!(arguments.contains("--sandbox read-only"));
+        assert!(arguments.contains("default_permissions=\"siaocut_text_only\""));
+        assert!(arguments.contains("permissions.siaocut_text_only.filesystem="));
+        assert!(arguments.contains("\":root\"=\"deny\""));
+        assert!(arguments.contains("\":minimal\"=\"read\""));
+        assert!(arguments.contains("=\"write\""));
+        assert!(arguments.contains("permissions.siaocut_text_only.network.enabled=false"));
+        assert!(arguments.contains("approval_policy=\"never\""));
+        assert!(arguments.contains("web_search=\"disabled\""));
+        assert!(arguments.contains("features.shell_tool=false"));
+        assert!(arguments.contains("features.unified_exec=false"));
+        assert!(arguments.contains("features.apps=false"));
+        assert!(arguments.contains("features.goals=false"));
+        assert!(arguments.contains("features.hooks=false"));
+        assert!(arguments.contains("features.memories=false"));
+        assert!(arguments.contains("features.multi_agent=false"));
+        assert!(arguments.contains("features.remote_plugin=false"));
+        assert!(arguments.contains("shell_environment_policy.inherit=\"none\""));
+        assert!(!arguments.contains("--sandbox"));
         assert!(arguments.contains("--ignore-user-config"));
+        assert!(arguments.contains("--strict-config"));
         assert!(arguments.contains("--ignore-rules"));
+        assert!(arguments.contains("--ephemeral"));
         assert!(!arguments.contains("siaocut.db"));
         assert!(!arguments.contains("githubprojects"));
         assert!(!spec.stdin.to_ascii_lowercase().contains("media path"));
-        for forbidden in [
-            "CODEX_HOME",
-            "CODEX_API_KEY",
-            "OPENAI_API_KEY",
-            "SIAOCUT_HOME",
-            "PWD",
-        ] {
+        for forbidden in ["CODEX_API_KEY", "OPENAI_API_KEY", "SIAOCUT_HOME", "PWD"] {
             assert!(!spec.environment.contains_key(forbidden));
         }
+        assert_ne!(
+            spec.environment.get("USERPROFILE"),
+            env::var("USERPROFILE").ok().as_ref()
+        );
+        assert!(!arguments.contains("codex_home"));
+    }
+
+    #[test]
+    fn codex_permission_profiles_require_a_supported_cli_version() {
+        assert_eq!(parse_codex_version("codex-cli 0.145.0"), Some((0, 145, 0)));
+        assert_eq!(
+            parse_codex_version("codex-cli 0.138.0-beta.1"),
+            Some((0, 138, 0))
+        );
+        assert_eq!(parse_codex_version("codex-cli unknown"), None);
+        assert!((0, 144, 9) < MIN_PERMISSION_PROFILE_VERSION);
+        assert!((0, 145, 0) >= MIN_PERMISSION_PROFILE_VERSION);
+    }
+
+    #[test]
+    fn old_codex_cli_is_not_reported_as_available() {
+        let temp = tempdir().unwrap();
+        let script = temp.path().join("old-codex.cmd");
+        fs::write(
+            &script,
+            "@echo off\r\nif \"%~1\"==\"--version\" (\r\n  echo codex-cli 0.144.9\r\n  exit /b 0\r\n)\r\nif \"%~1\"==\"login\" (\r\n  echo Logged in using ChatGPT\r\n  exit /b 0\r\n)\r\nexit /b 1\r\n",
+        )
+        .unwrap();
+
+        let health = health_with(&script);
+        assert!(!health.available);
+        assert!(health.authenticated);
+        assert_eq!(health.version.as_deref(), Some("codex-cli 0.144.9"));
     }
 
     #[test]
@@ -1291,6 +1499,12 @@ mod tests {
         assert_eq!(contracts::error_code(&error), "agent_output_invalid");
         let schema = output_schema("polish", "v-1");
         assert_eq!(schema["additionalProperties"], false);
+        assert!(
+            schema["properties"]["processedSegmentIds"]
+                .get("uniqueItems")
+                .is_none(),
+            "OpenAI structured outputs rejects the uniqueItems keyword; uniqueness is enforced after the response"
+        );
         assert_eq!(
             schema["properties"]["patches"]["items"]["additionalProperties"],
             false
