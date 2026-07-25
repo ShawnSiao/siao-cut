@@ -45,6 +45,15 @@ struct RuntimePaths {
     whisper_vulkan: Option<PathBuf>,
     yt_dlp: Option<PathBuf>,
     manifest: Option<PathBuf>,
+    managed_whisper_vulkan: Option<ManagedWhisperRuntime>,
+}
+
+#[derive(Clone, Debug)]
+struct ManagedWhisperRuntime {
+    path: PathBuf,
+    executable_sha256: String,
+    source: String,
+    version: String,
 }
 
 fn repository_root() -> PathBuf {
@@ -94,6 +103,36 @@ fn core_path() -> Result<PathBuf, String> {
 
 fn first_file(candidates: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf> {
     candidates.into_iter().find(|path| path.is_file())
+}
+
+fn managed_whisper_vulkan(
+    manifest: Option<&Path>,
+    whisper_vulkan: Option<&Path>,
+) -> Option<ManagedWhisperRuntime> {
+    let path = whisper_vulkan?.to_path_buf();
+    let manifest: Value = serde_json::from_slice(&fs::read(manifest?).ok()?).ok()?;
+    let component = manifest
+        .get("components")?
+        .as_array()?
+        .iter()
+        .find(|component| component.get("id").and_then(Value::as_str) == Some("whisper-vulkan"))?;
+    let executable_sha256 = component
+        .get("executableSha256")?
+        .as_str()?
+        .to_ascii_lowercase();
+    if executable_sha256.len() != 64
+        || !executable_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    Some(ManagedWhisperRuntime {
+        path,
+        executable_sha256,
+        source: component.get("source")?.as_str()?.to_owned(),
+        version: format!("{}-vulkan", component.get("version")?.as_str()?),
+    })
 }
 
 fn discover_runtime(resource_dir: Option<&Path>) -> Result<RuntimePaths, String> {
@@ -156,6 +195,8 @@ fn discover_runtime(resource_dir: Option<&Path>) -> Result<RuntimePaths, String>
                     .map(|root| root.join("notices/runtime-manifest.json")),
             ),
     );
+    let managed_whisper_vulkan =
+        managed_whisper_vulkan(manifest.as_deref(), whisper_vulkan.as_deref());
     Ok(RuntimePaths {
         core: core_path()?,
         ffmpeg,
@@ -165,6 +206,7 @@ fn discover_runtime(resource_dir: Option<&Path>) -> Result<RuntimePaths, String>
         whisper_vulkan,
         yt_dlp,
         manifest,
+        managed_whisper_vulkan,
     })
 }
 
@@ -184,6 +226,16 @@ fn configure_command(command: &mut tokio::process::Command, runtime: &RuntimePat
     }
     if let Some(path) = &runtime.yt_dlp {
         command.env("SIAOCUT_YTDLP", path);
+    }
+    if let Some(managed) = &runtime.managed_whisper_vulkan {
+        command
+            .env("SIAOCUT_MANAGED_WHISPER_VULKAN_CLI", &managed.path)
+            .env(
+                "SIAOCUT_MANAGED_WHISPER_VULKAN_SHA256",
+                &managed.executable_sha256,
+            )
+            .env("SIAOCUT_MANAGED_WHISPER_VULKAN_SOURCE", &managed.source)
+            .env("SIAOCUT_MANAGED_WHISPER_VULKAN_VERSION", &managed.version);
     }
 }
 
@@ -206,6 +258,16 @@ fn configure_sync_command(command: &mut Command, runtime: &RuntimePaths) {
     }
     if let Some(path) = &runtime.yt_dlp {
         command.env("SIAOCUT_YTDLP", path);
+    }
+    if let Some(managed) = &runtime.managed_whisper_vulkan {
+        command
+            .env("SIAOCUT_MANAGED_WHISPER_VULKAN_CLI", &managed.path)
+            .env(
+                "SIAOCUT_MANAGED_WHISPER_VULKAN_SHA256",
+                &managed.executable_sha256,
+            )
+            .env("SIAOCUT_MANAGED_WHISPER_VULKAN_SOURCE", &managed.source)
+            .env("SIAOCUT_MANAGED_WHISPER_VULKAN_VERSION", &managed.version);
     }
 }
 
@@ -858,6 +920,56 @@ mod tests {
             "private subtitle text".to_owned(),
         ];
         assert_eq!(diagnostic_command_name(&args), "transcript");
+    }
+
+    #[test]
+    fn reads_bundled_vulkan_integrity_from_the_generated_manifest() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest = temp.path().join("runtime-manifest.json");
+        let executable = temp.path().join("whisper-cli.exe");
+        fs::write(&executable, b"runtime").unwrap();
+        fs::write(
+            &manifest,
+            serde_json::json!({
+                "components": [{
+                    "id": "whisper-vulkan",
+                    "version": "1.9.1",
+                    "source": "https://github.com/ggml-org/whisper.cpp",
+                    "executableSha256": "a".repeat(64)
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let managed = managed_whisper_vulkan(Some(&manifest), Some(&executable)).unwrap();
+
+        assert_eq!(managed.path, executable);
+        assert_eq!(managed.executable_sha256, "a".repeat(64));
+        assert_eq!(managed.version, "1.9.1-vulkan");
+    }
+
+    #[test]
+    fn refuses_to_manage_vulkan_without_a_valid_manifest_hash() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest = temp.path().join("runtime-manifest.json");
+        let executable = temp.path().join("whisper-cli.exe");
+        fs::write(&executable, b"runtime").unwrap();
+        fs::write(
+            &manifest,
+            serde_json::json!({
+                "components": [{
+                    "id": "whisper-vulkan",
+                    "version": "1.9.1",
+                    "source": "https://github.com/ggml-org/whisper.cpp",
+                    "executableSha256": "not-a-sha256"
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert!(managed_whisper_vulkan(Some(&manifest), Some(&executable)).is_none());
     }
 
     #[test]

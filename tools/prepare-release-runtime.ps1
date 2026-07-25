@@ -105,9 +105,18 @@ Copy-Item -LiteralPath $vadFile -Destination (Join-Path $whisperTarget 'ggml-sil
 $vulkanTarget = Join-Path $target 'whisper-vulkan'
 if ($IncludeVulkan) {
     & (Join-Path $PSScriptRoot 'build-optional-vulkan-runtime.ps1') -Destination $vulkanTarget
+    $vulkanExecutable = Join-Path $vulkanTarget 'whisper-cli.exe'
+    if (-not (Test-Path -LiteralPath $vulkanExecutable)) {
+        throw 'The bundled Vulkan runtime did not produce whisper-cli.exe.'
+    }
+    $vulkanComponent = $manifest.components | Where-Object id -eq 'whisper-vulkan'
+    $vulkanExecutableSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $vulkanExecutable).Hash.ToLowerInvariant()
+    $vulkanComponent | Add-Member -NotePropertyName executableSha256 -NotePropertyValue $vulkanExecutableSha256 -Force
 } elseif (Test-Path -LiteralPath $vulkanTarget) {
     Remove-Item -LiteralPath $vulkanTarget -Recurse -Force
 }
 
-Copy-Item -LiteralPath $manifestPath -Destination (Join-Path $target 'runtime-manifest.json') -Force
+$generatedManifest = $manifest | ConvertTo-Json -Depth 12
+$utf8WithoutBom = [Text.UTF8Encoding]::new($false)
+[IO.File]::WriteAllText((Join-Path $target 'runtime-manifest.json'), $generatedManifest, $utf8WithoutBom)
 Write-Host "Prepared verified release runtime in $target"
