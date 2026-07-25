@@ -857,6 +857,9 @@ impl SafeConnectProxy {
             while !worker_stop.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((stream, _)) => {
+                        if stream.set_nonblocking(false).is_err() {
+                            continue;
+                        }
                         thread::spawn(move || {
                             let _ = handle_proxy_connection(stream);
                         });
@@ -1940,6 +1943,7 @@ mod tests {
     fn safe_connect_proxy_rejects_private_targets_before_connecting() {
         let proxy = SafeConnectProxy::start().unwrap();
         let mut stream = TcpStream::connect(proxy.address).unwrap();
+        thread::sleep(Duration::from_millis(100));
         stream
             .write_all(b"CONNECT 127.0.0.1:443 HTTP/1.1\r\nHost: 127.0.0.1:443\r\n\r\n")
             .unwrap();
