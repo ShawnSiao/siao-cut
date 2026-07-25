@@ -15,6 +15,21 @@ if (-not $CacheDirectory) {
 
 New-Item -ItemType Directory -Force -Path $CacheDirectory, $target | Out-Null
 
+function Get-FileSha256 {
+    param([string]$Path)
+    $stream = [IO.File]::OpenRead($Path)
+    try {
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try {
+            return ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+        } finally {
+            $sha.Dispose()
+        }
+    } finally {
+        $stream.Dispose()
+    }
+}
+
 function Get-VerifiedArchive {
     param([object]$Component)
     $archive = Join-Path $CacheDirectory ([IO.Path]::GetFileName([uri]$Component.url))
@@ -25,17 +40,7 @@ function Get-VerifiedArchive {
         Write-Host "Downloading $($Component.name) ($([math]::Round($Component.size / 1MB, 1)) MB)..."
         Invoke-WebRequest -UseBasicParsing -Uri $Component.url -OutFile $archive
     }
-    $stream = [IO.File]::OpenRead($archive)
-    try {
-        $sha = [Security.Cryptography.SHA256]::Create()
-        try {
-            $actual = ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
-        } finally {
-            $sha.Dispose()
-        }
-    } finally {
-        $stream.Dispose()
-    }
+    $actual = Get-FileSha256 $archive
     if ($actual -ne $Component.sha256) {
         throw "Hash mismatch for $($Component.id). Expected $($Component.sha256), got $actual. The pinned release manifest must be reviewed before updating."
     }
@@ -110,7 +115,7 @@ if ($IncludeVulkan) {
         throw 'The bundled Vulkan runtime did not produce whisper-cli.exe.'
     }
     $vulkanComponent = $manifest.components | Where-Object id -eq 'whisper-vulkan'
-    $vulkanExecutableSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $vulkanExecutable).Hash.ToLowerInvariant()
+    $vulkanExecutableSha256 = Get-FileSha256 $vulkanExecutable
     $vulkanComponent | Add-Member -NotePropertyName executableSha256 -NotePropertyValue $vulkanExecutableSha256 -Force
 } elseif (Test-Path -LiteralPath $vulkanTarget) {
     Remove-Item -LiteralPath $vulkanTarget -Recurse -Force
