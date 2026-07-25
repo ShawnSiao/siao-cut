@@ -1152,10 +1152,62 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
     if (set) set.status = status;
     return { apiVersion: "0.1", status: "ok", project: mockProject };
   }
+  if (command === "task" && subcommand === "claim") {
+    const task = mockProject.tasks.find((item) => item.id === args[2]);
+    const worker = valueAfter("--worker");
+    const requestedLeaseId = valueAfter("--lease-id");
+    if (!task || !worker) return { apiVersion: "0.1", status: "error", error: { code: "invalid_request", message: "Agent 任务或 worker 不存在。" } };
+    const reusing = ["claimed", "running"].includes(task.status);
+    if (reusing && (task.lease?.worker !== worker || task.lease?.id !== requestedLeaseId)) {
+      return { apiVersion: "0.1", status: "error", error: { code: "task_lease_mismatch", message: "当前任务租约已失效。" } };
+    }
+    if (!reusing) {
+      const attemptCount = (task.attemptCount ?? 0) + 1;
+      const createdAt = new Date().toISOString();
+      task.status = "claimed";
+      task.attemptCount = attemptCount;
+      task.lease = {
+        worker,
+        id: `mock-lease-${task.id}-${attemptCount}`,
+        expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
+      };
+      task.lastActivity = { kind: "claimed", progress: null, message: "Agent 已领取任务", createdAt };
+    }
+    syncMockProject(mockProject);
+    return { apiVersion: "0.1", status: "ok", task: structuredClone(task), leaseId: task.lease?.id, claimReused: reusing };
+  }
+  if (command === "task" && subcommand === "fail") {
+    const task = mockProject.tasks.find((item) => item.id === args[2]);
+    const worker = valueAfter("--worker");
+    const leaseId = valueAfter("--lease-id");
+    if (!task || !["claimed", "running"].includes(task.status) || task.lease?.worker !== worker || task.lease?.id !== leaseId) {
+      return { apiVersion: "0.1", status: "error", error: { code: "task_lease_mismatch", message: "当前任务租约已失效。" } };
+    }
+    const message = valueAfter("--message") ?? "Agent 处理失败";
+    const createdAt = new Date().toISOString();
+    task.status = "failed";
+    task.errorMessage = message;
+    task.lease = null;
+    task.lastActivity = { kind: "failed", progress: null, message, createdAt };
+    syncMockProject(mockProject);
+    return { apiVersion: "0.1", status: "ok", task: structuredClone(task) };
+  }
   if (command === "task" && ["retry", "cancel"].includes(subcommand)) {
     const task = mockProject.tasks.find((item) => item.id === args[2]);
-    if (task) task.status = subcommand === "retry" ? "queued" : "cancelled";
-    return { apiVersion: "0.1", status: "ok", project: mockProject };
+    if (!task) return { apiVersion: "0.1", status: "error", error: { code: "invalid_request", message: "Agent 任务不存在。" } };
+    const createdAt = new Date().toISOString();
+    task.status = subcommand === "retry" ? "queued" : "cancelled";
+    task.progress = 0;
+    task.errorMessage = null;
+    task.lease = null;
+    task.lastActivity = {
+      kind: subcommand === "retry" ? "queued" : "cancelled",
+      progress: subcommand === "retry" ? 0 : null,
+      message: subcommand === "retry" ? "任务已重新排队" : "任务已取消",
+      createdAt,
+    };
+    syncMockProject(mockProject);
+    return { apiVersion: "0.1", status: "ok", task: structuredClone(task), project: structuredClone(mockProject) };
   }
   return {
     apiVersion: "0.1",

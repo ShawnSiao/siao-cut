@@ -1,6 +1,5 @@
 import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { mockRun } from "./core.mock";
 import { tr } from "./i18n";
 import type { CoreEnvelope, Project, RuntimeInfo, UpdateDownloadEvent, UpdateMetadata, UpdatePolicy } from "./types";
 
@@ -12,8 +11,14 @@ function ensureOk(envelope: CoreEnvelope): CoreEnvelope {
   }
   return envelope;
 }
+
+async function runMockCore(args: string[]): Promise<CoreEnvelope> {
+  const { mockRun } = await import("./core.mock");
+  return mockRun(args);
+}
+
 export async function runCore(args: string[]): Promise<CoreEnvelope> {
-  return ensureOk(isTauri() ? await invoke<CoreEnvelope>("run_core", { args }) : await mockRun(args));
+  return ensureOk(isTauri() ? await invoke<CoreEnvelope>("run_core", { args }) : await runMockCore(args));
 }
 
 export type StructuredCoreRequest =
@@ -47,7 +52,7 @@ export async function runCoreStructured(request: StructuredCoreRequest): Promise
   try {
     const envelope = isTauri()
       ? await invoke<CoreEnvelope>("run_core_structured", { payload: JSON.stringify(request) })
-      : await mockRun(expandStructuredCoreRequest(request));
+      : await runMockCore(expandStructuredCoreRequest(request));
     return ensureOk(envelope);
   } catch (error) {
     throw new Error(structuredCoreErrorMessage(error));

@@ -23,7 +23,7 @@ describe("background job error localization", () => {
     changeUiLocale("en-US");
     render(<JobFailureDetails context="export" status="failed" errorCode="job_failed" errorMessage="视频导出失败：无法启动进程"/>);
 
-    expect(screen.getByText("The background job did not complete. You can retry it.")).toBeVisible();
+    expect(screen.getByText("The video export did not complete. You can retry it.")).toBeVisible();
     const rawDetails = screen.getByText("视频导出失败：无法启动进程");
     expect(rawDetails.closest("details")).not.toHaveAttribute("open");
     expect(rawDetails).not.toBeVisible();

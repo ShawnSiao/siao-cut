@@ -138,6 +138,10 @@ export type Task = {
   progress: number;
   errorMessage: string | null;
   errorCode?: CoreErrorCode | null;
+  attemptCount?: number;
+  completedAt?: string | null;
+  cancelRequestedAt?: string | null;
+  baseVersionId?: string | null;
   workflowId?: string | null;
   instructionLocale: UiLocale;
 };
@@ -707,6 +711,7 @@ export type CoreEnvelope = {
   code?: CoreErrorCode;
   message?: string;
   taskId?: string;
+  task?: Task | null;
   agentRunId?: string;
   codex?: CodexHealth;
   agentRun?: AgentRun;

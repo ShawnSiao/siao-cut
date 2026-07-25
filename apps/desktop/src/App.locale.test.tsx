@@ -18,7 +18,7 @@ describe("App locale switching", () => {
     render(<App />);
 
     expect(await screen.findByRole("button", { name: "新建项目" })).toBeInTheDocument();
-    const projectHeading = screen.getByRole("heading", { name: "发布口播 · 草稿" });
+    const projectHeading = await screen.findByRole("heading", { name: "发布口播 · 草稿" });
 
     fireEvent.change(screen.getByRole("combobox", { name: "界面语言" }), {
       target: { value: "en-US" },
@@ -36,7 +36,7 @@ describe("App locale switching", () => {
     expect(document.documentElement.lang).toBe("en-US");
 
     fireEvent.click(screen.getByRole("button", { name: "Runtime" }));
-    expect(screen.getByRole("dialog", { name: "Runtime" })).toHaveTextContent("Browser preview is not connected to an update source.");
+    expect(await screen.findByRole("dialog", { name: "Runtime" })).toHaveTextContent("Browser preview is not connected to an update source.");
   });
 
   it("localizes Core-authored version reasons and speaker stages in English chrome", () => {
