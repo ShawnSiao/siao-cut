@@ -45,6 +45,15 @@ struct RunnerConfig {
 }
 
 #[derive(Debug)]
+struct StoredBatch {
+    id: String,
+    ordinal: u32,
+    status: String,
+    segment_ids: Vec<String>,
+    result: Option<Value>,
+}
+
+#[derive(Debug)]
 struct InvocationSpec {
     arguments: Vec<String>,
     stdin: String,
@@ -253,11 +262,16 @@ pub fn resume(db: &mut Connection, run_id: &str, start_delay_ms: Option<u64>) ->
     let executable = require_ready_codex()?;
     let cli_health = health_with(&executable);
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let (task_id, run_status, run_attempt_count): (String, String, i64) = tx
+    let (task_id, run_status, run_attempt_count, previous_base_version_id): (
+        String,
+        String,
+        i64,
+        String,
+    ) = tx
         .query_row(
-            "SELECT task_id,status,attempt_count FROM agent_runs WHERE id=?1",
+            "SELECT task_id,status,attempt_count,base_version_id FROM agent_runs WHERE id=?1",
             [run_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .optional()?
         .ok_or_else(|| anyhow!("agent_run_not_found: Agent 运行记录不存在：{run_id}"))?;
@@ -279,18 +293,31 @@ pub fn resume(db: &mut Connection, run_id: &str, start_delay_ms: Option<u64>) ->
     let next_attempt_count = u32::try_from(run_attempt_count + 1)
         .map_err(|_| anyhow!("agent_run_not_resumable: Agent 运行次数无效"))?;
     let timestamp = now();
-    tx.execute("DELETE FROM agent_run_batches WHERE run_id=?1", [run_id])?;
-    insert_batches(&tx, run_id, &batches, &timestamp)?;
+    let reused_batch_count = prepare_batches_for_resume(
+        &tx,
+        run_id,
+        &previous_base_version_id,
+        &base_version_id,
+        &batches,
+        &timestamp,
+    )?;
+    let progress = if batches.is_empty() {
+        0.0
+    } else {
+        0.05 + 0.85 * (reused_batch_count as f64 / batches.len() as f64)
+    };
     let changed = tx.execute(
         "UPDATE agent_runs
-         SET status='queued',base_version_id=?2,progress=0,current_batch=0,batch_count=?3,
-             cli_version=?4,auth_mode=?5,codex_thread_id=NULL,cancel_requested_at=NULL,
+         SET status='queued',base_version_id=?2,progress=?3,current_batch=?4,batch_count=?5,
+             cli_version=?6,auth_mode=?7,codex_thread_id=NULL,cancel_requested_at=NULL,
              error_code=NULL,error_message=NULL,started_at=NULL,completed_at=NULL,
-             worker_pid=NULL,attempt_count=attempt_count+1,updated_at=?6
-         WHERE id=?1 AND status=?7 AND attempt_count=?8",
+             worker_pid=NULL,attempt_count=attempt_count+1,updated_at=?8
+         WHERE id=?1 AND status=?9 AND attempt_count=?10",
         params![
             run_id,
             &base_version_id,
+            progress,
+            reused_batch_count as i64,
             batches.len() as i64,
             &cli_health.version,
             &cli_health.auth_mode,
@@ -422,11 +449,28 @@ fn execute_run_with_config(db: &mut Connection, run_id: &str, config: &RunnerCon
             0.02,
             Some("本机 Agent 已开始处理"),
         )?;
-        let batch_rows = load_batch_rows(db, run_id)?;
+        let batch_rows = load_stored_batch_rows(db, run_id)?;
         let mut results = Vec::with_capacity(batch_rows.len());
         for (index, batch) in batch_rows.iter().enumerate() {
             if cancel_requested(db, run_id, &run.task_id)? {
                 bail!("agent_run_cancelled: 本机 Agent 任务已取消")
+            }
+            let batch_payload = payload_for_batch(&payload, &batch.segment_ids)?;
+            if batch.status == "completed" {
+                let mut result = batch
+                    .result
+                    .clone()
+                    .ok_or_else(|| anyhow!("agent_output_invalid: 已完成批次缺少结构化结果"))?;
+                let removed = normalize_batch_result(&batch_payload, &mut result);
+                validate_batch_result(&batch_payload, &batch.segment_ids, &result)?;
+                if removed > 0 {
+                    db.execute(
+                        "UPDATE agent_run_batches SET result_json=?2,updated_at=?3 WHERE id=?1 AND status='completed'",
+                        params![&batch.id, serde_json::to_string(&result)?, now()],
+                    )?;
+                }
+                results.push(result);
+                continue;
             }
             let started_at = now();
             db.execute(
@@ -437,7 +481,6 @@ fn execute_run_with_config(db: &mut Connection, run_id: &str, config: &RunnerCon
                 "UPDATE agent_runs SET current_batch=?2,updated_at=?3 WHERE id=?1",
                 params![run_id, index as i64, &started_at],
             )?;
-            let batch_payload = payload_for_batch(&payload, &batch.segment_ids)?;
             let schema = output_schema(
                 payload
                     .get("kind")
@@ -448,7 +491,7 @@ fn execute_run_with_config(db: &mut Connection, run_id: &str, config: &RunnerCon
                     .and_then(Value::as_str)
                     .unwrap_or_default(),
             );
-            let batch_result = invoke_codex(
+            let mut batch_result = invoke_codex(
                 db,
                 config,
                 run_id,
@@ -459,6 +502,7 @@ fn execute_run_with_config(db: &mut Connection, run_id: &str, config: &RunnerCon
                 &schema,
                 run.timeout_seconds,
             )?;
+            normalize_batch_result(&batch_payload, &mut batch_result.value);
             validate_batch_result(&batch_payload, &batch.segment_ids, &batch_result.value)?;
             let completed_at = now();
             db.execute(
@@ -919,6 +963,11 @@ fn output_schema(kind: &str, base_version_id: &str) -> Value {
         }));
         required.push("speakers");
     } else {
+        let after_schema = if kind == "cut" {
+            json!({"type":"string"})
+        } else {
+            json!({"type":"string","minLength":1})
+        };
         properties.insert(
             "patches".to_owned(),
             json!({
@@ -926,7 +975,7 @@ fn output_schema(kind: &str, base_version_id: &str) -> Value {
                     "type":"object","additionalProperties":false,
                     "properties":{
                         "segmentId":{"type":"string"},"before":{"type":"string"},
-                        "after":{"type":"string"},"reason":{"type":"string","minLength":1},
+                        "after":after_schema,"reason":{"type":"string","minLength":1},
                         "confidence":{"type":["number","null"],"minimum":0,"maximum":1}
                     },
                     "required":["segmentId","before","after","reason","confidence"]
@@ -942,6 +991,27 @@ fn output_schema(kind: &str, base_version_id: &str) -> Value {
         "properties":properties,
         "required":required
     })
+}
+
+fn normalize_batch_result(payload: &Value, result: &mut Value) -> usize {
+    let kind = payload
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("polish");
+    if matches!(kind, "translate" | "cut" | "summary" | "speaker_names") {
+        return 0;
+    }
+    let Some(patches) = result.get_mut("patches").and_then(Value::as_array_mut) else {
+        return 0;
+    };
+    let before = patches.len();
+    patches.retain(|patch| {
+        patch
+            .get("after")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+    });
+    before - patches.len()
 }
 
 fn validate_batch_result(payload: &Value, expected_ids: &[String], result: &Value) -> Result<()> {
@@ -1046,6 +1116,14 @@ fn validate_batch_result(payload: &Value, expected_ids: &[String], result: &Valu
         }
         if patch.get("before").and_then(Value::as_str) != source_text.get(id).copied() {
             bail!("patch_before_mismatch: Agent 建议原文与任务基线不一致")
+        }
+        if kind != "cut"
+            && patch
+                .get("after")
+                .and_then(Value::as_str)
+                .is_none_or(|value| value.trim().is_empty())
+        {
+            bail!("agent_output_invalid: Agent 建议文本不能为空")
         }
     }
     Ok(())
@@ -1280,8 +1358,77 @@ fn insert_batches(
     Ok(())
 }
 
-fn load_batch_rows(db: &Connection, run_id: &str) -> Result<Vec<AgentRunBatch>> {
-    Ok(load(db, run_id)?.batches)
+fn prepare_batches_for_resume(
+    tx: &rusqlite::Transaction<'_>,
+    run_id: &str,
+    previous_base_version_id: &str,
+    next_base_version_id: &str,
+    batches: &[Vec<String>],
+    timestamp: &str,
+) -> Result<usize> {
+    let existing = load_stored_batch_rows(tx, run_id)?;
+    let same_layout = previous_base_version_id == next_base_version_id
+        && existing.len() == batches.len()
+        && existing
+            .iter()
+            .zip(batches)
+            .enumerate()
+            .all(|(ordinal, (stored, expected))| {
+                stored.ordinal as usize == ordinal && stored.segment_ids == *expected
+            });
+    if !same_layout {
+        tx.execute("DELETE FROM agent_run_batches WHERE run_id=?1", [run_id])?;
+        insert_batches(tx, run_id, batches, timestamp)?;
+        return Ok(0);
+    }
+    tx.execute(
+        "UPDATE agent_run_batches
+         SET status=CASE WHEN status='completed' AND result_json IS NOT NULL THEN 'completed' ELSE 'queued' END,
+             result_json=CASE WHEN status='completed' AND result_json IS NOT NULL THEN result_json ELSE NULL END,
+             error_code=NULL,error_message=NULL,
+             started_at=CASE WHEN status='completed' AND result_json IS NOT NULL THEN started_at ELSE NULL END,
+             completed_at=CASE WHEN status='completed' AND result_json IS NOT NULL THEN completed_at ELSE NULL END,
+             updated_at=?2
+         WHERE run_id=?1",
+        params![run_id, timestamp],
+    )?;
+    Ok(existing
+        .iter()
+        .filter(|batch| batch.status == "completed" && batch.result.is_some())
+        .count())
+}
+
+fn load_stored_batch_rows(db: &Connection, run_id: &str) -> Result<Vec<StoredBatch>> {
+    db.prepare(
+        "SELECT id,ordinal,status,segment_ids_json,result_json
+             FROM agent_run_batches WHERE run_id=?1 ORDER BY ordinal",
+    )?
+    .query_map([run_id], |row| {
+        let segment_ids: String = row.get(3)?;
+        let result: Option<String> = row.get(4)?;
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, String>(2)?,
+            segment_ids,
+            result,
+        ))
+    })?
+    .collect::<rusqlite::Result<Vec<_>>>()?
+    .into_iter()
+    .map(|(id, ordinal, status, segment_ids, result)| {
+        Ok(StoredBatch {
+            id,
+            ordinal: ordinal as u32,
+            status,
+            segment_ids: serde_json::from_str(&segment_ids)
+                .context("无法读取 Agent 批次字幕范围")?,
+            result: result
+                .map(|value| serde_json::from_str(&value).context("无法读取 Agent 已完成批次结果"))
+                .transpose()?,
+        })
+    })
+    .collect::<Result<Vec<_>>>()
 }
 
 fn spawn_worker(
@@ -1621,6 +1768,26 @@ mod tests {
     }
 
     #[test]
+    fn blank_review_suggestions_are_omitted_before_validation() {
+        let payload = json!({
+            "kind":"proofread","baseVersionId":"v-1",
+            "segments":[{"id":"s-1","text":"one"},{"id":"s-2","text":"two"}]
+        });
+        let ids = vec!["s-1".to_owned(), "s-2".to_owned()];
+        let mut result = json!({
+            "baseVersionId":"v-1","processedSegmentIds":["s-1","s-2"],
+            "patches":[
+                {"segmentId":"s-1","before":"one","after":"One.","reason":"punctuation","confidence":0.9},
+                {"segmentId":"s-2","before":"two","after":"  ","reason":"no change","confidence":0.8}
+            ]
+        });
+
+        assert_eq!(normalize_batch_result(&payload, &mut result), 1);
+        validate_batch_result(&payload, &ids, &result).unwrap();
+        assert_eq!(result["patches"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
     fn batch_validation_rejects_result_outside_schema() {
         let payload = json!({
             "kind":"polish","baseVersionId":"v-1",
@@ -1639,6 +1806,10 @@ mod tests {
         assert_eq!(
             schema["properties"]["patches"]["items"]["additionalProperties"],
             false
+        );
+        assert_eq!(
+            schema["properties"]["patches"]["items"]["properties"]["after"]["minLength"],
+            1
         );
         assert!(
             schema["required"]
@@ -1692,6 +1863,85 @@ mod tests {
         assert_eq!(reloaded.tasks[0].status, "review");
         assert_eq!(reloaded.patch_sets[0].status, "pending_review");
         assert_eq!(reloaded.patch_sets[0].items[0].after_text, "hello.");
+    }
+
+    #[test]
+    fn completed_batch_results_are_reused_and_blank_suggestions_are_recovered() {
+        let (_temp, mut database, project, task, segment_id) = database_fixture();
+        let run_id = insert_test_run(
+            &mut database,
+            &task,
+            &project.id,
+            &segment_id,
+            "running",
+            &now(),
+        );
+        let result = json!({
+            "baseVersionId":task.base_version_id,
+            "processedSegmentIds":[segment_id],
+            "patches":[
+                {"segmentId":segment_id,"before":"hello","after":"hello.","reason":"punctuation","confidence":0.9},
+                {"segmentId":segment_id,"before":"hello","after":"","reason":"no change","confidence":0.8}
+            ]
+        });
+        database
+            .execute(
+                "UPDATE agent_run_batches
+                 SET status='completed',result_json=?2,attempt_count=1,completed_at=?3
+                 WHERE run_id=?1",
+                params![&run_id, serde_json::to_string(&result).unwrap(), now()],
+            )
+            .unwrap();
+        let config = RunnerConfig {
+            executable: PathBuf::from(r"Z:\missing\codex.exe"),
+            temp_root: PathBuf::from(r"Z:\missing"),
+        };
+
+        execute_run_with_config(&mut database, &run_id, &config).unwrap();
+
+        let run = load(&database, &run_id).unwrap();
+        assert_eq!(run.status, "completed");
+        assert_eq!(run.batches[0].attempt_count, 1);
+        let reloaded = project::load(&database, &project.id).unwrap();
+        assert_eq!(reloaded.tasks[0].status, "review");
+        assert_eq!(reloaded.patch_sets[0].items.len(), 1);
+        assert_eq!(reloaded.patch_sets[0].items[0].after_text, "hello.");
+    }
+
+    #[test]
+    fn resume_preparation_preserves_matching_completed_batches() {
+        let (_temp, mut database, project, task, segment_id) = database_fixture();
+        let run_id = insert_test_run(
+            &mut database,
+            &task,
+            &project.id,
+            &segment_id,
+            "failed",
+            &now(),
+        );
+        let batch_before = load(&database, &run_id).unwrap().batches[0].id.clone();
+        database
+            .execute(
+                "UPDATE agent_run_batches
+                 SET status='completed',result_json='{}',attempt_count=1,completed_at=?2
+                 WHERE run_id=?1",
+                params![&run_id, now()],
+            )
+            .unwrap();
+        let base = task.base_version_id.as_deref().unwrap();
+        let timestamp = now();
+        let tx = database.transaction().unwrap();
+
+        let reused =
+            prepare_batches_for_resume(&tx, &run_id, base, base, &[vec![segment_id]], &timestamp)
+                .unwrap();
+        tx.commit().unwrap();
+
+        let batch_after = load(&database, &run_id).unwrap().batches[0].clone();
+        assert_eq!(reused, 1);
+        assert_eq!(batch_after.id, batch_before);
+        assert_eq!(batch_after.status, "completed");
+        assert_eq!(batch_after.attempt_count, 1);
     }
 
     #[test]
