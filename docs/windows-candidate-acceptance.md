@@ -50,9 +50,15 @@
 ```powershell
 npm run desktop:build
 
+$corePath = & .\skills\siaocut\bin\resolve-core-path.ps1 -Profile Release
+$tauriMetadata = cargo metadata `
+  --manifest-path apps/desktop/src-tauri/Cargo.toml `
+  --no-deps `
+  --format-version 1 | ConvertFrom-Json
+$desktopPath = Join-Path $tauriMetadata.target_directory "release\siaocut-desktop.exe"
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/test-no-console-windows.ps1 `
-  -DesktopPath apps/desktop/src-tauri/target/release/siaocut-desktop.exe `
-  -CorePath target/release/siaocut-core.exe
+  -DesktopPath $desktopPath `
+  -CorePath $corePath
 
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/test-installer-retention.ps1
 ```

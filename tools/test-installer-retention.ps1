@@ -7,6 +7,17 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
+
+function Get-CargoTargetDirectory {
+    param([string]$ManifestPath)
+
+    $metadataOutput = & cargo metadata --manifest-path $ManifestPath --no-deps --format-version 1
+    if ($LASTEXITCODE -ne 0) { throw 'Unable to resolve the Cargo target directory.' }
+    $metadata = ($metadataOutput -join "`n") | ConvertFrom-Json
+    return [IO.Path]::GetFullPath($metadata.target_directory)
+}
+
+$tauriTargetDirectory = Get-CargoTargetDirectory -ManifestPath (Join-Path $root 'apps\desktop\src-tauri\Cargo.toml')
 $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
 $token = [guid]::NewGuid().ToString('N')
 $installDir = Join-Path $tempRoot "SiaoCut-Acceptance-$token"
@@ -50,7 +61,7 @@ function Build-AcceptanceInstaller([string]$Version) {
     } finally {
         Pop-Location
     }
-    $installer = Get-ChildItem (Join-Path $root 'apps\desktop\src-tauri\target\release\bundle\nsis') -Filter 'SiaoCut Acceptance_*-setup.exe' | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+    $installer = Get-ChildItem (Join-Path $tauriTargetDirectory 'release\bundle\nsis') -Filter 'SiaoCut Acceptance_*-setup.exe' | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
     if (-not $installer) { throw "Acceptance installer $Version was not produced." }
     return $installer.FullName
 }

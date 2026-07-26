@@ -8,7 +8,8 @@ param(
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 $root = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
-if (-not $Core) { $Core = Join-Path $root 'target\debug\siaocut-core.exe' }
+$resolver = Join-Path $PSScriptRoot '..\bin\resolve-core-path.ps1'
+if (-not $Core) { $Core = & $resolver -Profile Debug -RepoRoot $root }
 $runtime = Join-Path $root 'apps\desktop\src-tauri\runtime'
 $ffmpeg = Join-Path $runtime 'ffmpeg\ffmpeg.exe'
 $ffprobe = Join-Path $runtime 'ffmpeg\ffprobe.exe'

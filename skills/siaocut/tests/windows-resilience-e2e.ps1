@@ -5,7 +5,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
-if (-not $Core) { $Core = Join-Path $root 'target\release\siaocut-core.exe' }
+$resolver = Join-Path $PSScriptRoot '..\bin\resolve-core-path.ps1'
+if (-not $Core) { $Core = & $resolver -Profile Release -RepoRoot $root }
 $Core = (Resolve-Path -LiteralPath $Core).Path
 $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
 $testRoot = Join-Path $tempRoot ('siaocut-resilience-' + [guid]::NewGuid().ToString('N'))

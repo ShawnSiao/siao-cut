@@ -1,6 +1,7 @@
 param(
     [string]$TestUrl = 'https://www.youtube.com/watch?v=HOfdboHvshg',
     [string]$Model = (Join-Path $env:LOCALAPPDATA 'SiaoCut\models\ggml-base.bin'),
+    [string]$Core = '',
     [ValidateRange(3, 10)]
     [int]$LocalRuns = 3,
     [switch]$SkipUrl,
@@ -9,19 +10,20 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
-$core = Join-Path $root 'target\debug\siaocut-core.exe'
+$resolver = Join-Path $PSScriptRoot '..\bin\resolve-core-path.ps1'
+if (-not $Core) { $Core = & $resolver -Profile Debug -RepoRoot $root }
 $runtime = Join-Path $root 'apps\desktop\src-tauri\runtime'
 $ffmpeg = Join-Path $runtime 'ffmpeg\ffmpeg.exe'
 $ffprobe = Join-Path $runtime 'ffmpeg\ffprobe.exe'
 $whisper = Join-Path $runtime 'whisper\whisper-cli.exe'
 $vadModel = Join-Path $runtime 'whisper\ggml-silero-v6.2.0.bin'
 $ytDlp = Join-Path $runtime 'yt-dlp\yt-dlp.exe'
-foreach ($path in $core, $ffmpeg, $ffprobe, $whisper, $vadModel, $ytDlp, $Model) {
+foreach ($path in $Core, $ffmpeg, $ffprobe, $whisper, $vadModel, $ytDlp, $Model) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         throw "Required automatic-workflow dependency is missing: $path"
     }
 }
-$core = (Resolve-Path -LiteralPath $core).Path
+$Core = (Resolve-Path -LiteralPath $Core).Path
 $Model = (Resolve-Path -LiteralPath $Model).Path
 
 $temporaryRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
@@ -48,7 +50,7 @@ $reviewBlockedBeforeResolution = $false
 
 function Invoke-Core {
     param([string[]]$Arguments)
-    $raw = & $core --json @Arguments 2>&1
+    $raw = & $Core --json @Arguments 2>&1
     if ($LASTEXITCODE -ne 0) {
         throw "SiaoCut command failed: $($Arguments -join ' ')`n$($raw | Out-String)"
     }
@@ -64,7 +66,7 @@ function Invoke-CoreExpectedError {
     $token = [guid]::NewGuid().ToString('N')
     $stdout = Join-Path $work ("expected-error-$token.out")
     $stderr = Join-Path $work ("expected-error-$token.err")
-    $process = Start-Process -FilePath $core -ArgumentList (@('--json') + $Arguments) -RedirectStandardOutput $stdout -RedirectStandardError $stderr -WindowStyle Hidden -Wait -PassThru
+    $process = Start-Process -FilePath $Core -ArgumentList (@('--json') + $Arguments) -RedirectStandardOutput $stdout -RedirectStandardError $stderr -WindowStyle Hidden -Wait -PassThru
     if ($process.ExitCode -eq 0) {
         throw "Expected $Code, but the command succeeded: $($Arguments -join ' ')"
     }
@@ -283,7 +285,7 @@ try {
             $running = Wait-WorkflowState -WorkflowId ([string]$started.workflowId) -Wanted @('running') -Seconds 10
             $pidValue = [int]$running.workerPid
             $process = Get-CimInstance Win32_Process -Filter "ProcessId=$pidValue"
-            if (-not $process -or [IO.Path]::GetFullPath([string]$process.ExecutablePath) -ne [IO.Path]::GetFullPath($core) -or [string]$process.CommandLine -notlike "*__auto_worker*$($started.workflowId)*") {
+            if (-not $process -or [IO.Path]::GetFullPath([string]$process.ExecutablePath) -ne [IO.Path]::GetFullPath($Core) -or [string]$process.CommandLine -notlike "*__auto_worker*$($started.workflowId)*") {
                 throw 'Refusing to stop a process that is not the expected automatic worker.'
             }
             Stop-Process -Id $pidValue -Force

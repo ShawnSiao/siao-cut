@@ -4,10 +4,14 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
-if (-not $CorePath) { $CorePath = Join-Path $repoRoot "target\debug\siaocut-core.exe" }
-if (-not (Test-Path -LiteralPath $CorePath)) {
-    & cargo build --manifest-path (Join-Path $repoRoot "Cargo.toml")
-    if ($LASTEXITCODE -ne 0) { throw "Core build failed" }
+$resolver = Join-Path $PSScriptRoot "..\bin\resolve-core-path.ps1"
+if (-not $CorePath) {
+    $CorePath = & $resolver -Profile Debug -RepoRoot $repoRoot -Optional
+    if (-not $CorePath) {
+        & cargo build --manifest-path (Join-Path $repoRoot "Cargo.toml")
+        if ($LASTEXITCODE -ne 0) { throw "Core build failed" }
+        $CorePath = & $resolver -Profile Debug -RepoRoot $repoRoot
+    }
 }
 $CorePath = (Resolve-Path -LiteralPath $CorePath).Path
 $ffmpeg = (Get-Command ffmpeg -ErrorAction Stop).Source
@@ -93,7 +97,7 @@ try {
         })
     } | ConvertTo-Json -Depth 5
     [IO.File]::WriteAllText($responsePath, $response, [Text.UTF8Encoding]::new($false))
-    Invoke-Core -Arguments @("task", "submit", ([string]$task.taskId), "--worker", "subtitle-mode-e2e", "--response", $responsePath) | Out-Null
+    Invoke-Core -Arguments @("task", "submit", ([string]$task.taskId), "--worker", "subtitle-mode-e2e", "--lease-id", ([string]$claim.leaseId), "--response", $responsePath) | Out-Null
     Invoke-Core -Arguments @("task", "review-all", ([string]$task.taskId), "--action", "apply") | Out-Null
 
     $formats = @("srt", "vtt", "ass", "markdown")

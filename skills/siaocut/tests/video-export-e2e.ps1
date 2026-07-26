@@ -5,7 +5,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-if (-not $Core) { $Core = Join-Path $PSScriptRoot "..\..\..\target\debug\siaocut-core.exe" }
+$resolver = Join-Path $PSScriptRoot "..\bin\resolve-core-path.ps1"
+if (-not $Core) { $Core = & $resolver -Profile Debug }
 $Core = (Resolve-Path -LiteralPath $Core).Path
 $testHome = Join-Path ([System.IO.Path]::GetTempPath()) ("siaocut-video-" + [guid]::NewGuid().ToString("N"))
 $previousHome = $env:SIAOCUT_HOME

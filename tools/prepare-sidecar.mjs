@@ -1,4 +1,5 @@
 import { copyFileSync, existsSync, mkdirSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -16,7 +17,25 @@ if (!new Set(["debug", "release"]).has(profile)) {
   throw new Error(`不支持的 Core 构建配置：${profile}`);
 }
 
-const source = resolve(root, "target", profile, "siaocut-core.exe");
+const cargoMetadata = JSON.parse(
+  execFileSync(
+    "cargo",
+    [
+      "metadata",
+      "--manifest-path",
+      resolve(root, "Cargo.toml"),
+      "--no-deps",
+      "--format-version",
+      "1",
+    ],
+    { encoding: "utf8" },
+  ),
+);
+const source = resolve(
+  cargoMetadata.target_directory,
+  profile,
+  "siaocut-core.exe",
+);
 const target = resolve(
   root,
   "apps",

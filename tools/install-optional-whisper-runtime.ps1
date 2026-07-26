@@ -9,9 +9,18 @@ $root = Split-Path -Parent $PSScriptRoot
 $manifest = [IO.File]::ReadAllText((Join-Path $root 'release\runtime-manifest.json'), [Text.Encoding]::UTF8) | ConvertFrom-Json
 $component = $manifest.components | Where-Object id -eq $Runtime
 if (-not $component -or $component.kind -ne 'optional-runtime') { throw "Unknown optional runtime: $Runtime" }
-if (-not $Core) { $Core = Join-Path $root 'target\release\siaocut-core.exe' }
+if (-not $Core) {
+    $metadataOutput = & cargo metadata --manifest-path (Join-Path $root 'Cargo.toml') --no-deps --format-version 1
+    if ($LASTEXITCODE -ne 0) { throw 'Unable to resolve the Cargo target directory.' }
+    $metadata = ($metadataOutput -join "`n") | ConvertFrom-Json
+    $Core = Join-Path $metadata.target_directory 'release\siaocut-core.exe'
+}
 $Core = (Resolve-Path -LiteralPath $Core).Path
-$downloadDir = Join-Path $env:LOCALAPPDATA 'SiaoCut\downloads'
+$downloadDir = if ($env:SIAOCUT_DOWNLOAD_CACHE_ROOT) {
+    Join-Path $env:SIAOCUT_DOWNLOAD_CACHE_ROOT 'optional-runtime'
+} else {
+    Join-Path $env:LOCALAPPDATA 'SiaoCut\downloads'
+}
 $runtimeDir = Join-Path $env:LOCALAPPDATA "SiaoCut\runtimes\$Runtime"
 $archive = Join-Path $downloadDir ([IO.Path]::GetFileName([uri]$component.url))
 $extract = Join-Path $downloadDir "$Runtime.extracting"

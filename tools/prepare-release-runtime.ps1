@@ -10,7 +10,11 @@ $manifestPath = Join-Path $root 'release\runtime-manifest.json'
 $manifest = [IO.File]::ReadAllText($manifestPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
 $target = Join-Path $root 'apps\desktop\src-tauri\runtime'
 if (-not $CacheDirectory) {
-    $CacheDirectory = Join-Path $root '.release-cache'
+    $CacheDirectory = if ($env:SIAOCUT_DOWNLOAD_CACHE_ROOT) {
+        Join-Path $env:SIAOCUT_DOWNLOAD_CACHE_ROOT 'siaocut-runtime'
+    } else {
+        Join-Path $root '.release-cache'
+    }
 }
 
 New-Item -ItemType Directory -Force -Path $CacheDirectory, $target | Out-Null

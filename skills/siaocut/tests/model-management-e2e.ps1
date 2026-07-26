@@ -4,12 +4,11 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
+$resolver = Join-Path $PSScriptRoot '..\bin\resolve-core-path.ps1'
 if (-not $Core) {
-    $Core = Join-Path $root 'target\release\siaocut-core.exe'
+    $Core = & $resolver -Profile Release -RepoRoot $root
 }
-if (-not (Test-Path -LiteralPath $Core)) {
-    throw "Release Core not found: $Core"
-}
+$Core = (Resolve-Path -LiteralPath $Core).Path
 
 $tempRoot = [IO.Path]::GetFullPath('D:\Temp')
 $testHome = Join-Path $tempRoot ('siaocut-model-e2e-' + [guid]::NewGuid().ToString('N'))
