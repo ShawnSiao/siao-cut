@@ -15,6 +15,18 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
+
+function Get-CargoTargetDirectory {
+    param([string]$ManifestPath)
+
+    $metadataOutput = & cargo metadata --manifest-path $ManifestPath --no-deps --format-version 1
+    if ($LASTEXITCODE -ne 0) { throw 'Unable to resolve the Cargo target directory.' }
+    $metadata = ($metadataOutput -join "`n") | ConvertFrom-Json
+    return [IO.Path]::GetFullPath($metadata.target_directory)
+}
+
+$tauriManifestPath = Join-Path $root 'apps\desktop\src-tauri\Cargo.toml'
+$tauriTargetDirectory = Get-CargoTargetDirectory -ManifestPath $tauriManifestPath
 $thumbprint = ($CertificateThumbprint -replace '\s', '').ToUpperInvariant()
 $certificate = Get-Item -LiteralPath "Cert:\CurrentUser\My\$thumbprint" -ErrorAction Stop
 if (-not $certificate.HasPrivateKey) { throw 'The selected code-signing certificate has no private key.' }
@@ -67,11 +79,11 @@ try {
     & (Join-Path $root 'apps\desktop\node_modules\.bin\tauri.cmd') build --config $configPath
     if ($LASTEXITCODE -ne 0) { throw "Tauri signed build failed with exit code $LASTEXITCODE." }
     Pop-Location
-    $installer = Get-ChildItem (Join-Path $root 'apps\desktop\src-tauri\target\release\bundle\nsis') -Filter '*-setup.exe' | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+    $installer = Get-ChildItem (Join-Path $tauriTargetDirectory 'release\bundle\nsis') -Filter '*-setup.exe' | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
     if (-not $installer) { throw 'Signed NSIS installer was not produced.' }
     $signature = Get-AuthenticodeSignature -LiteralPath $installer.FullName
     if ($signature.Status -ne 'Valid') { throw "Installer signature is not valid: $($signature.StatusMessage)" }
-    $application = Get-Item -LiteralPath (Join-Path $root 'apps\desktop\src-tauri\target\release\siaocut-desktop.exe') -ErrorAction Stop
+    $application = Get-Item -LiteralPath (Join-Path $tauriTargetDirectory 'release\siaocut-desktop.exe') -ErrorAction Stop
     $applicationSignature = Get-AuthenticodeSignature -LiteralPath $application.FullName
     if ($applicationSignature.Status -ne 'Valid') { throw "Application signature is not valid: $($applicationSignature.StatusMessage)" }
     $updaterSignature = Get-Item -LiteralPath ($installer.FullName + '.sig') -ErrorAction Stop

@@ -2,10 +2,10 @@ mod app_updates;
 mod diagnostics;
 
 use diagnostics::Diagnostics;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
-    env,
+    env, fs,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     time::Instant,
@@ -45,6 +45,15 @@ struct RuntimePaths {
     whisper_vulkan: Option<PathBuf>,
     yt_dlp: Option<PathBuf>,
     manifest: Option<PathBuf>,
+    managed_whisper_vulkan: Option<ManagedWhisperRuntime>,
+}
+
+#[derive(Clone, Debug)]
+struct ManagedWhisperRuntime {
+    path: PathBuf,
+    executable_sha256: String,
+    source: String,
+    version: String,
 }
 
 fn repository_root() -> PathBuf {
@@ -94,6 +103,36 @@ fn core_path() -> Result<PathBuf, String> {
 
 fn first_file(candidates: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf> {
     candidates.into_iter().find(|path| path.is_file())
+}
+
+fn managed_whisper_vulkan(
+    manifest: Option<&Path>,
+    whisper_vulkan: Option<&Path>,
+) -> Option<ManagedWhisperRuntime> {
+    let path = whisper_vulkan?.to_path_buf();
+    let manifest: Value = serde_json::from_slice(&fs::read(manifest?).ok()?).ok()?;
+    let component = manifest
+        .get("components")?
+        .as_array()?
+        .iter()
+        .find(|component| component.get("id").and_then(Value::as_str) == Some("whisper-vulkan"))?;
+    let executable_sha256 = component
+        .get("executableSha256")?
+        .as_str()?
+        .to_ascii_lowercase();
+    if executable_sha256.len() != 64
+        || !executable_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    Some(ManagedWhisperRuntime {
+        path,
+        executable_sha256,
+        source: component.get("source")?.as_str()?.to_owned(),
+        version: format!("{}-vulkan", component.get("version")?.as_str()?),
+    })
 }
 
 fn discover_runtime(resource_dir: Option<&Path>) -> Result<RuntimePaths, String> {
@@ -156,6 +195,8 @@ fn discover_runtime(resource_dir: Option<&Path>) -> Result<RuntimePaths, String>
                     .map(|root| root.join("notices/runtime-manifest.json")),
             ),
     );
+    let managed_whisper_vulkan =
+        managed_whisper_vulkan(manifest.as_deref(), whisper_vulkan.as_deref());
     Ok(RuntimePaths {
         core: core_path()?,
         ffmpeg,
@@ -165,6 +206,7 @@ fn discover_runtime(resource_dir: Option<&Path>) -> Result<RuntimePaths, String>
         whisper_vulkan,
         yt_dlp,
         manifest,
+        managed_whisper_vulkan,
     })
 }
 
@@ -184,6 +226,16 @@ fn configure_command(command: &mut tokio::process::Command, runtime: &RuntimePat
     }
     if let Some(path) = &runtime.yt_dlp {
         command.env("SIAOCUT_YTDLP", path);
+    }
+    if let Some(managed) = &runtime.managed_whisper_vulkan {
+        command
+            .env("SIAOCUT_MANAGED_WHISPER_VULKAN_CLI", &managed.path)
+            .env(
+                "SIAOCUT_MANAGED_WHISPER_VULKAN_SHA256",
+                &managed.executable_sha256,
+            )
+            .env("SIAOCUT_MANAGED_WHISPER_VULKAN_SOURCE", &managed.source)
+            .env("SIAOCUT_MANAGED_WHISPER_VULKAN_VERSION", &managed.version);
     }
 }
 
@@ -207,9 +259,19 @@ fn configure_sync_command(command: &mut Command, runtime: &RuntimePaths) {
     if let Some(path) = &runtime.yt_dlp {
         command.env("SIAOCUT_YTDLP", path);
     }
+    if let Some(managed) = &runtime.managed_whisper_vulkan {
+        command
+            .env("SIAOCUT_MANAGED_WHISPER_VULKAN_CLI", &managed.path)
+            .env(
+                "SIAOCUT_MANAGED_WHISPER_VULKAN_SHA256",
+                &managed.executable_sha256,
+            )
+            .env("SIAOCUT_MANAGED_WHISPER_VULKAN_SOURCE", &managed.source)
+            .env("SIAOCUT_MANAGED_WHISPER_VULKAN_VERSION", &managed.version);
+    }
 }
 
-fn validate_core_args(args: &[String]) -> Result<(), String> {
+fn validate_core_args_with_limit(args: &[String], default_max_args: usize) -> Result<(), String> {
     const ALLOWED: &[&str] = &[
         "health",
         "import",
@@ -232,6 +294,7 @@ fn validate_core_args(args: &[String]) -> Result<(), String> {
         "audit",
         "transcribe",
         "transcription",
+        "desktop-request",
     ];
     if args.is_empty() || !ALLOWED.contains(&args[0].as_str()) {
         return Err("桌面应用拒绝了未知 Core 命令。".to_owned());
@@ -239,10 +302,98 @@ fn validate_core_args(args: &[String]) -> Result<(), String> {
     let max_args = if args.first().is_some_and(|command| command == "glossary") {
         410
     } else {
-        32
+        default_max_args
     };
     if args.len() > max_args {
         return Err("Core 命令参数过多。".to_owned());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn validate_core_args(args: &[String]) -> Result<(), String> {
+    validate_core_args_with_limit(args, 32)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", deny_unknown_fields)]
+enum StructuredCoreRequest {
+    #[serde(rename = "transcript_offset")]
+    TranscriptOffset {
+        #[serde(rename = "projectId")]
+        project_id: String,
+        #[serde(rename = "segmentIds")]
+        segment_ids: Vec<String>,
+        delta: f64,
+    },
+    #[serde(rename = "transcription_start")]
+    TranscriptionStart {
+        #[serde(rename = "projectId")]
+        project_id: String,
+        language: String,
+        prompt: Option<String>,
+        hotwords: Vec<String>,
+    },
+}
+
+fn validate_structured_text(label: &str, value: &str, max_chars: usize) -> Result<(), String> {
+    let length = value.chars().count();
+    if value.trim().is_empty() || length > max_chars || value.contains('\0') {
+        return Err(format!("structured_core_request_invalid: invalid {label}"));
+    }
+    Ok(())
+}
+
+fn validate_structured_core_request(payload: &str) -> Result<(), String> {
+    const MAX_STRUCTURED_PAYLOAD_BYTES: usize = 64 * 1024;
+    if payload.len() > MAX_STRUCTURED_PAYLOAD_BYTES {
+        return Err("structured_core_payload_too_large: request exceeds 64 KiB".to_owned());
+    }
+    let request: StructuredCoreRequest = serde_json::from_str(payload)
+        .map_err(|error| format!("structured_core_payload_invalid: {error}"))?;
+    match request {
+        StructuredCoreRequest::TranscriptOffset {
+            project_id,
+            segment_ids,
+            delta,
+        } => {
+            validate_structured_text("项目 ID", &project_id, 256)?;
+            let unique = segment_ids
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>();
+            if segment_ids.is_empty()
+                || segment_ids.len() > 1000
+                || unique.len() != segment_ids.len()
+                || !delta.is_finite()
+            {
+                return Err(
+                    "structured_core_request_invalid: transcript offset request is invalid"
+                        .to_owned(),
+                );
+            }
+            for segment_id in &segment_ids {
+                validate_structured_text("字幕段 ID", segment_id, 256)?;
+            }
+        }
+        StructuredCoreRequest::TranscriptionStart {
+            project_id,
+            language,
+            prompt,
+            hotwords,
+        } => {
+            validate_structured_text("项目 ID", &project_id, 256)?;
+            if !["auto", "en", "zh"].contains(&language.as_str()) || hotwords.len() > 512 {
+                return Err(
+                    "structured_core_request_invalid: transcription request is invalid".to_owned(),
+                );
+            }
+            if let Some(value) = prompt.as_deref() {
+                validate_structured_text("Prompt", value, 1200)?;
+            }
+            for hotword in &hotwords {
+                validate_structured_text("热词", hotword, 200)?;
+            }
+        }
     }
     Ok(())
 }
@@ -298,8 +449,12 @@ fn execute_core_over_named_pipe(args: &[String], home: &Path) -> Result<Value, S
     parse_core_response(&output.stdout, &output.stderr)
 }
 
-async fn execute_core_async(args: Vec<String>, runtime: &RuntimePaths) -> Result<Value, String> {
-    validate_core_args(&args)?;
+async fn execute_core_async_with_limit(
+    args: Vec<String>,
+    runtime: &RuntimePaths,
+    max_args: usize,
+) -> Result<Value, String> {
+    validate_core_args_with_limit(&args, max_args)?;
     let command_name = diagnostic_command_name(&args).to_owned();
     let started = Instant::now();
     log::info!("event=core_request command={command_name} status=started");
@@ -348,6 +503,10 @@ async fn execute_core_async(args: Vec<String>, runtime: &RuntimePaths) -> Result
     Ok(response)
 }
 
+async fn execute_core_async(args: Vec<String>, runtime: &RuntimePaths) -> Result<Value, String> {
+    execute_core_async_with_limit(args, runtime, 32).await
+}
+
 fn diagnostic_command_name(args: &[String]) -> &str {
     args.first().map(String::as_str).unwrap_or("unknown")
 }
@@ -358,6 +517,35 @@ async fn run_core(
     args: Vec<String>,
 ) -> Result<Value, String> {
     execute_core_async(args, &runtime).await
+}
+
+#[tauri::command]
+async fn run_core_structured(
+    runtime: tauri::State<'_, RuntimePaths>,
+    payload: String,
+) -> Result<Value, String> {
+    validate_structured_core_request(&payload)?;
+    let request_file = tempfile::Builder::new()
+        .prefix("siaocut-desktop-request-")
+        .suffix(".json")
+        .tempfile()
+        .map_err(|error| format!("structured_core_request_file_failed: {error}"))?
+        .into_temp_path();
+    fs::write(&request_file, payload.as_bytes())
+        .map_err(|error| format!("structured_core_request_file_failed: {error}"))?;
+    execute_core_async(
+        vec![
+            "desktop-request".to_owned(),
+            request_file.to_string_lossy().into_owned(),
+        ],
+        &runtime,
+    )
+    .await
+}
+
+#[tauri::command]
+fn local_file_available(path: String) -> bool {
+    !path.trim().is_empty() && Path::new(&path).is_file()
 }
 
 #[tauri::command]
@@ -575,6 +763,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             run_core,
+            run_core_structured,
+            local_file_available,
             runtime_info,
             select_asr_backend,
             open_log_directory,
@@ -636,6 +826,75 @@ mod tests {
     }
 
     #[test]
+    fn structured_offset_supports_one_thousand_segment_ids_without_argv_expansion() {
+        let segment_ids = (0..1000)
+            .map(|index| format!("segment-{index:028}"))
+            .collect::<Vec<_>>();
+        let payload = serde_json::json!({
+            "kind": "transcript_offset",
+            "projectId": "project-1",
+            "segmentIds": segment_ids,
+            "delta": 0.125
+        })
+        .to_string();
+        assert!(payload.len() < 64 * 1024);
+        validate_structured_core_request(&payload).unwrap();
+        assert!(validate_core_args(&["desktop-request".into(), "request.json".into()]).is_ok());
+    }
+
+    #[test]
+    fn structured_transcription_preserves_unicode_prompt_and_hotwords() {
+        let payload = serde_json::json!({
+            "kind": "transcription_start",
+            "projectId": "project-中文",
+            "language": "zh",
+            "prompt": "区分「小雅」与 René",
+            "hotwords": ["小雅", "SiaoCut", "café"]
+        })
+        .to_string();
+        validate_structured_core_request(&payload).unwrap();
+        let StructuredCoreRequest::TranscriptionStart {
+            project_id,
+            prompt,
+            hotwords,
+            ..
+        } = serde_json::from_str(&payload).unwrap()
+        else {
+            panic!("expected transcription request")
+        };
+        assert_eq!(project_id, "project-中文");
+        assert_eq!(prompt.as_deref(), Some("区分「小雅」与 René"));
+        assert_eq!(hotwords, ["小雅", "SiaoCut", "café"]);
+    }
+
+    #[test]
+    fn structured_command_rejects_malformed_json() {
+        let error =
+            validate_structured_core_request(r#"{"kind":"transcript_offset","projectId":"p1""#)
+                .unwrap_err();
+        assert!(error.starts_with("structured_core_payload_invalid:"));
+    }
+
+    #[test]
+    fn structured_command_rejects_oversized_payload_before_parsing() {
+        let error = validate_structured_core_request(&"x".repeat(64 * 1024 + 1)).unwrap_err();
+        assert!(error.starts_with("structured_core_payload_too_large:"));
+    }
+
+    #[test]
+    fn structured_command_rejects_more_than_one_thousand_segments() {
+        let payload = serde_json::json!({
+            "kind": "transcript_offset",
+            "projectId": "project-1",
+            "segmentIds": (0..1001).map(|index| format!("segment-{index}")).collect::<Vec<_>>(),
+            "delta": 0.1
+        })
+        .to_string();
+        let error = validate_structured_core_request(&payload).unwrap_err();
+        assert!(error.starts_with("structured_core_request_invalid:"));
+    }
+
+    #[test]
     fn parses_structured_core_errors_written_to_stderr() {
         let response = parse_core_response(
             b"",
@@ -661,6 +920,56 @@ mod tests {
             "private subtitle text".to_owned(),
         ];
         assert_eq!(diagnostic_command_name(&args), "transcript");
+    }
+
+    #[test]
+    fn reads_bundled_vulkan_integrity_from_the_generated_manifest() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest = temp.path().join("runtime-manifest.json");
+        let executable = temp.path().join("whisper-cli.exe");
+        fs::write(&executable, b"runtime").unwrap();
+        fs::write(
+            &manifest,
+            serde_json::json!({
+                "components": [{
+                    "id": "whisper-vulkan",
+                    "version": "1.9.1",
+                    "source": "https://github.com/ggml-org/whisper.cpp",
+                    "executableSha256": "a".repeat(64)
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let managed = managed_whisper_vulkan(Some(&manifest), Some(&executable)).unwrap();
+
+        assert_eq!(managed.path, executable);
+        assert_eq!(managed.executable_sha256, "a".repeat(64));
+        assert_eq!(managed.version, "1.9.1-vulkan");
+    }
+
+    #[test]
+    fn refuses_to_manage_vulkan_without_a_valid_manifest_hash() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest = temp.path().join("runtime-manifest.json");
+        let executable = temp.path().join("whisper-cli.exe");
+        fs::write(&executable, b"runtime").unwrap();
+        fs::write(
+            &manifest,
+            serde_json::json!({
+                "components": [{
+                    "id": "whisper-vulkan",
+                    "version": "1.9.1",
+                    "source": "https://github.com/ggml-org/whisper.cpp",
+                    "executableSha256": "not-a-sha256"
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert!(managed_whisper_vulkan(Some(&manifest), Some(&executable)).is_none());
     }
 
     #[test]

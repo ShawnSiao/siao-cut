@@ -10,10 +10,29 @@ $manifestPath = Join-Path $root 'release\runtime-manifest.json'
 $manifest = [IO.File]::ReadAllText($manifestPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
 $target = Join-Path $root 'apps\desktop\src-tauri\runtime'
 if (-not $CacheDirectory) {
-    $CacheDirectory = Join-Path $root '.release-cache'
+    $CacheDirectory = if ($env:SIAOCUT_DOWNLOAD_CACHE_ROOT) {
+        Join-Path $env:SIAOCUT_DOWNLOAD_CACHE_ROOT 'siaocut-runtime'
+    } else {
+        Join-Path $root '.release-cache'
+    }
 }
 
 New-Item -ItemType Directory -Force -Path $CacheDirectory, $target | Out-Null
+
+function Get-FileSha256 {
+    param([string]$Path)
+    $stream = [IO.File]::OpenRead($Path)
+    try {
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try {
+            return ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+        } finally {
+            $sha.Dispose()
+        }
+    } finally {
+        $stream.Dispose()
+    }
+}
 
 function Get-VerifiedArchive {
     param([object]$Component)
@@ -25,17 +44,7 @@ function Get-VerifiedArchive {
         Write-Host "Downloading $($Component.name) ($([math]::Round($Component.size / 1MB, 1)) MB)..."
         Invoke-WebRequest -UseBasicParsing -Uri $Component.url -OutFile $archive
     }
-    $stream = [IO.File]::OpenRead($archive)
-    try {
-        $sha = [Security.Cryptography.SHA256]::Create()
-        try {
-            $actual = ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
-        } finally {
-            $sha.Dispose()
-        }
-    } finally {
-        $stream.Dispose()
-    }
+    $actual = Get-FileSha256 $archive
     if ($actual -ne $Component.sha256) {
         throw "Hash mismatch for $($Component.id). Expected $($Component.sha256), got $actual. The pinned release manifest must be reviewed before updating."
     }
@@ -105,9 +114,18 @@ Copy-Item -LiteralPath $vadFile -Destination (Join-Path $whisperTarget 'ggml-sil
 $vulkanTarget = Join-Path $target 'whisper-vulkan'
 if ($IncludeVulkan) {
     & (Join-Path $PSScriptRoot 'build-optional-vulkan-runtime.ps1') -Destination $vulkanTarget
+    $vulkanExecutable = Join-Path $vulkanTarget 'whisper-cli.exe'
+    if (-not (Test-Path -LiteralPath $vulkanExecutable)) {
+        throw 'The bundled Vulkan runtime did not produce whisper-cli.exe.'
+    }
+    $vulkanComponent = $manifest.components | Where-Object id -eq 'whisper-vulkan'
+    $vulkanExecutableSha256 = Get-FileSha256 $vulkanExecutable
+    $vulkanComponent | Add-Member -NotePropertyName executableSha256 -NotePropertyValue $vulkanExecutableSha256 -Force
 } elseif (Test-Path -LiteralPath $vulkanTarget) {
     Remove-Item -LiteralPath $vulkanTarget -Recurse -Force
 }
 
-Copy-Item -LiteralPath $manifestPath -Destination (Join-Path $target 'runtime-manifest.json') -Force
+$generatedManifest = $manifest | ConvertTo-Json -Depth 12
+$utf8WithoutBom = [Text.UTF8Encoding]::new($false)
+[IO.File]::WriteAllText((Join-Path $target 'runtime-manifest.json'), $generatedManifest, $utf8WithoutBom)
 Write-Host "Prepared verified release runtime in $target"

@@ -1,5 +1,6 @@
 use anyhow::{Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand, error::ErrorKind};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{env, fs, path::PathBuf};
 
@@ -50,6 +51,10 @@ struct Cli {
 enum Commands {
     Health,
     Contract,
+    #[command(name = "desktop-request", hide = true)]
+    DesktopRequest {
+        input: PathBuf,
+    },
     Import {
         media: PathBuf,
         #[arg(long)]
@@ -96,6 +101,27 @@ enum Commands {
     Transcribe(TranscribeArgs),
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", deny_unknown_fields)]
+enum DesktopRequest {
+    #[serde(rename = "transcript_offset")]
+    TranscriptOffset {
+        #[serde(rename = "projectId")]
+        project_id: String,
+        #[serde(rename = "segmentIds")]
+        segment_ids: Vec<String>,
+        delta: f64,
+    },
+    #[serde(rename = "transcription_start")]
+    TranscriptionStart {
+        #[serde(rename = "projectId")]
+        project_id: String,
+        language: String,
+        prompt: Option<String>,
+        hotwords: Vec<String>,
+    },
+}
+
 #[derive(Subcommand)]
 enum ProjectCommand {
     List,
@@ -107,6 +133,8 @@ enum ProjectCommand {
     },
     Delete {
         project_id: String,
+        #[arg(long)]
+        expected_version: String,
     },
     Restore {
         project_id: String,
@@ -401,6 +429,8 @@ enum TranscriptCommand {
         confirm_replace: bool,
         #[arg(long)]
         expected_sha256: String,
+        #[arg(long)]
+        expected_version: String,
     },
     Quality {
         project_id: String,
@@ -442,11 +472,17 @@ enum TaskCommand {
         task_id: Option<String>,
         #[arg(long)]
         worker: String,
+        #[arg(long)]
+        lease_id: Option<String>,
+        #[arg(long)]
+        payload_output: Option<PathBuf>,
     },
     Submit {
         task_id: String,
         #[arg(long)]
         worker: String,
+        #[arg(long)]
+        lease_id: String,
         #[arg(long)]
         response: PathBuf,
     },
@@ -454,6 +490,8 @@ enum TaskCommand {
         task_id: String,
         #[arg(long)]
         worker: String,
+        #[arg(long)]
+        lease_id: String,
         #[arg(long)]
         progress: f64,
         #[arg(long)]
@@ -463,6 +501,8 @@ enum TaskCommand {
         task_id: String,
         #[arg(long)]
         worker: String,
+        #[arg(long)]
+        lease_id: String,
         #[arg(long)]
         message: String,
     },
@@ -720,6 +760,81 @@ fn envelope(payload: Value) -> Value {
     Value::Object(object)
 }
 
+fn validate_desktop_request_text(label: &str, value: &str, max_chars: usize) -> Result<()> {
+    if value.trim().is_empty() || value.chars().count() > max_chars || value.contains('\0') {
+        bail!("invalid_request: Desktop 结构化请求中的{label}无效")
+    }
+    Ok(())
+}
+
+fn run_desktop_request(database: &mut rusqlite::Connection, input: &PathBuf) -> Result<Value> {
+    const MAX_DESKTOP_REQUEST_BYTES: usize = 64 * 1024;
+    let payload =
+        fs::read(input).map_err(|_| anyhow!("invalid_request: 无法读取 Desktop 结构化请求"))?;
+    if payload.len() > MAX_DESKTOP_REQUEST_BYTES {
+        bail!("invalid_request: Desktop 结构化请求超过 64 KiB")
+    }
+    let request: DesktopRequest = serde_json::from_slice(&payload)
+        .map_err(|_| anyhow!("invalid_request: Desktop 结构化请求 JSON 无效"))?;
+    match request {
+        DesktopRequest::TranscriptOffset {
+            project_id,
+            segment_ids,
+            delta,
+        } => {
+            validate_desktop_request_text("项目 ID", &project_id, 256)?;
+            if segment_ids.is_empty()
+                || segment_ids.len() > 1000
+                || segment_ids
+                    .iter()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+                    != segment_ids.len()
+            {
+                bail!("invalid_request: Desktop 批量偏移请求无效")
+            }
+            for segment_id in &segment_ids {
+                validate_desktop_request_text("字幕段 ID", segment_id, 256)?;
+            }
+            let result = subtitle_workbench::offset(database, &project_id, &segment_ids, delta)?;
+            Ok(envelope(json!({
+                "projectId": project_id,
+                "structureEdit": result,
+                "message": "选中字幕与对应词级证据已批量偏移。"
+            })))
+        }
+        DesktopRequest::TranscriptionStart {
+            project_id,
+            language,
+            prompt,
+            hotwords,
+        } => {
+            validate_desktop_request_text("项目 ID", &project_id, 256)?;
+            if !["auto", "en", "zh"].contains(&language.as_str()) || hotwords.len() > 512 {
+                bail!("invalid_request: Desktop 多人转写请求无效")
+            }
+            if let Some(value) = prompt.as_deref() {
+                validate_desktop_request_text("Prompt", value, 1200)?;
+            }
+            for hotword in &hotwords {
+                validate_desktop_request_text("热词", hotword, 200)?;
+            }
+            let job = transcription::start(
+                database,
+                &project_id,
+                Some(&language),
+                prompt.as_deref(),
+                &hotwords,
+                None,
+            )?;
+            Ok(envelope(json!({
+                "transcriptionJob": job,
+                "message": "多人长音频转写已进入后台队列；不会静默回退到快速转写。"
+            })))
+        }
+    }
+}
+
 fn run(cli: Cli) -> Result<Value> {
     if matches!(&cli.command, Commands::Contract) {
         return Ok(envelope(contracts::contract()));
@@ -752,6 +867,7 @@ fn run(cli: Cli) -> Result<Value> {
                 "runtime": runtime::status()?,
             "message": "Rust + SQLite Core 可用。"
         }))),
+        Commands::DesktopRequest { input } => run_desktop_request(&mut database, &input),
         Commands::Import { media, title } => {
             let project = project::create(&mut database, &media, title)?;
             Ok(envelope(
@@ -855,8 +971,11 @@ fn run(cli: Cli) -> Result<Value> {
             ProjectCommand::DeletePreflight { project_id } => Ok(envelope(json!({
                 "deletionPreflight": project::deletion_preflight(&database, &project_id)?
             }))),
-            ProjectCommand::Delete { project_id } => {
-                project::delete(&mut database, &project_id)?;
+            ProjectCommand::Delete {
+                project_id,
+                expected_version,
+            } => {
+                project::delete_at_version(&mut database, &project_id, &expected_version)?;
                 Ok(envelope(json!({
                     "projectId":project_id,
                     "message":"项目已删除；原始媒体文件未被修改。"
@@ -1111,13 +1230,15 @@ fn run(cli: Cli) -> Result<Value> {
                 input,
                 confirm_replace,
                 expected_sha256,
+                expected_version,
             } => {
-                let result = subtitle_import::import_file(
+                let result = subtitle_import::import_file_at_version(
                     &mut database,
                     &project_id,
                     &input,
                     confirm_replace,
                     &expected_sha256,
+                    &expected_version,
                 )?;
                 Ok(envelope(json!({
                     "projectId": project_id,
@@ -1147,6 +1268,7 @@ fn run(cli: Cli) -> Result<Value> {
                     include_cuts: arguments.include_cuts,
                     allow_stale_translation: arguments.confirm_stale_translation,
                 };
+                export::validate_subtitle_mode(&project, &options)?;
                 let report = export::audit_for_options(&project, &options);
                 if report["ready"] != Value::Bool(true) {
                     bail!("导出前审计未通过，请先处理无效字幕或媒体问题")
@@ -1177,30 +1299,76 @@ fn run(cli: Cli) -> Result<Value> {
                     "message":"任务已创建，等待 Agent 领取。"
                 })))
             }
-            TaskCommand::Claim { task_id, worker } => {
-                match tasks::claim(&mut database, &worker, task_id.as_deref())? {
-                    Some((project, task, payload)) => Ok(envelope(json!({
-                        "projectId":project.id,
-                        "taskId":task.id,
-                        "language":task.language,
-                        "instructionLocale":task.instruction_locale,
-                        "contentLanguage":project.transcript.source_language,
-                        "task":task,
-                        "payload":payload
-                    }))),
-                    None => Ok(envelope(
-                        json!({"task":null,"message":"当前没有待领取任务。"}),
-                    )),
+            TaskCommand::Claim {
+                task_id,
+                worker,
+                lease_id,
+                payload_output,
+            } => {
+                if let Some(payload_output) = payload_output.as_deref() {
+                    match tasks::claim_to_file(
+                        &mut database,
+                        &worker,
+                        task_id.as_deref(),
+                        lease_id.as_deref(),
+                        payload_output,
+                    )? {
+                        Some((project, task, payload_file)) => Ok(envelope(json!({
+                            "projectId":project.id,
+                            "taskId":task.id,
+                            "language":task.language,
+                            "instructionLocale":task.instruction_locale,
+                            "contentLanguage":project.transcript.source_language,
+                            "task":task,
+                            "leaseId":task.lease.as_ref().map(|lease| lease.id.as_str()),
+                            "payloadFile":{
+                                "path":payload_file.path,
+                                "sha256":payload_file.sha256,
+                                "bytes":payload_file.bytes
+                            },
+                            "claimReused":!payload_file.newly_claimed,
+                            "message":if payload_file.newly_claimed {
+                                "任务已领取；完整文本负载已写入指定文件。"
+                            } else {
+                                "当前 Agent 的有效任务负载已重新写入指定文件；未创建新领取记录。"
+                            }
+                        }))),
+                        None => Ok(envelope(
+                            json!({"task":null,"message":"当前没有可由此 Agent 领取或重取的任务。"}),
+                        )),
+                    }
+                } else {
+                    match tasks::claim_with_lease(
+                        &mut database,
+                        &worker,
+                        task_id.as_deref(),
+                        lease_id.as_deref(),
+                    )? {
+                        Some((project, task, payload)) => Ok(envelope(json!({
+                            "projectId":project.id,
+                            "taskId":task.id,
+                            "language":task.language,
+                            "instructionLocale":task.instruction_locale,
+                            "contentLanguage":project.transcript.source_language,
+                            "task":task,
+                            "leaseId":task.lease.as_ref().map(|lease| lease.id.as_str()),
+                            "payload":payload
+                        }))),
+                        None => Ok(envelope(
+                            json!({"task":null,"message":"当前没有待领取任务。"}),
+                        )),
+                    }
                 }
             }
             TaskCommand::Submit {
                 task_id,
                 worker,
+                lease_id,
                 response,
             } => {
                 let response: Value = serde_json::from_str(&fs::read_to_string(response)?)?;
                 let (project_id, task, patch_set) =
-                    tasks::submit(&mut database, &task_id, &worker, response)?;
+                    tasks::submit(&mut database, &task_id, &worker, &lease_id, response)?;
                 Ok(envelope(json!({
                     "projectId":project_id,
                     "taskId":task.id,
@@ -1212,6 +1380,7 @@ fn run(cli: Cli) -> Result<Value> {
             TaskCommand::Heartbeat {
                 task_id,
                 worker,
+                lease_id,
                 progress,
                 message,
             } => {
@@ -1220,6 +1389,7 @@ fn run(cli: Cli) -> Result<Value> {
                     &mut database,
                     &task_id,
                     &worker,
+                    &lease_id,
                     progress,
                     message.as_deref(),
                 )?;
@@ -1230,10 +1400,11 @@ fn run(cli: Cli) -> Result<Value> {
             TaskCommand::Fail {
                 task_id,
                 worker,
+                lease_id,
                 message,
             } => {
                 let project_id = tasks::project_id(&database, &task_id)?;
-                let task = tasks::fail(&mut database, &task_id, &worker, &message)?;
+                let task = tasks::fail(&mut database, &task_id, &worker, &lease_id, &message)?;
                 Ok(envelope(
                     json!({"projectId":project_id,"taskId":task.id,"task":task,"message":"任务已记录为失败，可重新排队。"}),
                 ))
@@ -1960,12 +2131,16 @@ pub(crate) fn execute_args(arguments: Vec<String>) -> ipc::Response {
 async fn main() {
     let arguments = env::args().skip(1).collect::<Vec<_>>();
     if arguments.first().map(String::as_str) == Some("__agent_worker") {
-        let Some(run_id) = arguments.get(1) else {
-            eprintln!("SiaoCut agent worker: missing run id");
+        let (Some(run_id), Some(expected_attempt_count)) = (
+            arguments.get(1),
+            arguments.get(2).and_then(|value| value.parse::<u32>().ok()),
+        ) else {
+            eprintln!("SiaoCut agent worker: missing run id or attempt");
             std::process::exit(2)
         };
-        let start_delay_ms = arguments.get(2).and_then(|value| value.parse().ok());
-        if let Err(error) = agent_runner::run_worker(run_id, start_delay_ms) {
+        let start_delay_ms = arguments.get(3).and_then(|value| value.parse().ok());
+        if let Err(error) = agent_runner::run_worker(run_id, expected_attempt_count, start_delay_ms)
+        {
             eprintln!("SiaoCut agent worker: {error}");
             std::process::exit(1)
         }
@@ -1976,7 +2151,7 @@ async fn main() {
             eprintln!("SiaoCut model worker: missing job or model id");
             std::process::exit(2)
         };
-        if let Err(error) = models::run_worker(job_id, model_id) {
+        if let Err(error) = models::run_worker_isolated(job_id, model_id) {
             eprintln!("SiaoCut model worker: {error}");
             std::process::exit(1)
         }
@@ -2076,5 +2251,131 @@ async fn main() {
     }
     if response.exit_code != 0 {
         std::process::exit(response.exit_code)
+    }
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+    use rusqlite::params;
+    use tempfile::tempdir;
+
+    #[test]
+    fn desktop_request_parses_and_offsets_one_thousand_segments_from_one_file() {
+        let cli = Cli::try_parse_from(["siaocut-core", "desktop-request", "desktop-request.json"])
+            .unwrap();
+        let Commands::DesktopRequest { input } = cli.command else {
+            panic!("expected desktop-request command")
+        };
+        assert_eq!(input, PathBuf::from("desktop-request.json"));
+
+        let temp = tempdir().unwrap();
+        let media = temp.path().join("source.wav");
+        fs::write(&media, b"immutable-source").unwrap();
+        let mut database = db::open_at(&temp.path().join("desktop-request.db")).unwrap();
+        let created =
+            project::create(&mut database, &media, Some("Desktop request".into())).unwrap();
+        database
+            .execute(
+                "UPDATE media SET duration_seconds=2001 WHERE project_id=?1",
+                [&created.id],
+            )
+            .unwrap();
+
+        let segment_ids = (0..1000)
+            .map(|index| format!("segment-{index:04}"))
+            .collect::<Vec<_>>();
+        {
+            let transaction = database.transaction().unwrap();
+            for (index, segment_id) in segment_ids.iter().enumerate() {
+                let start = index as f64 * 2.0;
+                transaction
+                    .execute(
+                        "INSERT INTO segments(id,project_id,start_seconds,end_seconds,text,confidence) VALUES(?1,?2,?3,?4,?5,0.8)",
+                        params![
+                            segment_id,
+                            &created.id,
+                            start,
+                            start + 1.0,
+                            format!("segment {index}")
+                        ],
+                    )
+                    .unwrap();
+            }
+            transaction.commit().unwrap();
+        }
+
+        let request_path = temp.path().join("desktop-request.json");
+        let payload = json!({
+            "kind": "transcript_offset",
+            "projectId": created.id,
+            "segmentIds": segment_ids,
+            "delta": 0.25
+        });
+        fs::write(&request_path, serde_json::to_vec(&payload).unwrap()).unwrap();
+
+        let response = run_desktop_request(&mut database, &request_path).unwrap();
+        assert_eq!(response["status"], "ok");
+        assert_eq!(
+            response["structureEdit"]["affectedSegmentIds"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1000
+        );
+        let shifted = project::load(&database, payload["projectId"].as_str().unwrap()).unwrap();
+        assert_eq!(shifted.transcript.segments.len(), 1000);
+        assert_eq!(shifted.transcript.segments[0].start, 0.25);
+        assert_eq!(shifted.transcript.segments[999].start, 1998.25);
+    }
+
+    #[test]
+    fn project_delete_requires_a_version_bound_confirmation() {
+        assert!(Cli::try_parse_from(["siaocut-core", "project", "delete", "p-test"]).is_err());
+        let cli = Cli::try_parse_from([
+            "siaocut-core",
+            "project",
+            "delete",
+            "p-test",
+            "--expected-version",
+            "v-current",
+        ])
+        .unwrap();
+        let Commands::Project(ProjectCommand::Delete {
+            project_id,
+            expected_version,
+        }) = cli.command
+        else {
+            panic!("expected project delete command")
+        };
+        assert_eq!(project_id, "p-test");
+        assert_eq!(expected_version, "v-current");
+    }
+
+    #[test]
+    fn subtitle_import_requires_a_version_bound_confirmation() {
+        let base = [
+            "siaocut-core",
+            "transcript",
+            "import-file",
+            "p-test",
+            "captions.srt",
+            "--confirm-replace",
+            "--expected-sha256",
+            "abc123",
+        ];
+        assert!(Cli::try_parse_from(base).is_err());
+        let cli = Cli::try_parse_from(base.into_iter().chain(["--expected-version", "v-current"]))
+            .unwrap();
+        let Commands::Transcript(TranscriptCommand::ImportFile {
+            project_id,
+            expected_version,
+            ..
+        }) = cli.command
+        else {
+            panic!("expected transcript import-file command")
+        };
+        assert_eq!(project_id, "p-test");
+        assert_eq!(expected_version, "v-current");
     }
 }

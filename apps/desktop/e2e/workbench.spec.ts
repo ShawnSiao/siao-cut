@@ -6,6 +6,14 @@ async function bindMockMedia(page: Page) {
   await expect(page.getByText("已重新定位原片；内容哈希与项目记录一致。")).toBeVisible();
 }
 
+async function runMockCore(page: Page, args: string[]) {
+  return page.evaluate(async (commandArgs) => {
+    const moduleUrl = "/src/core.mock.ts";
+    const mock = await import(moduleUrl);
+    return mock.mockRun(commandArgs);
+  }, args);
+}
+
 test("switches the application chrome to English without reloading the project", async ({ page }) => {
   await page.goto("/");
   const projectHeading = page.getByRole("heading", { name: "发布口播 · 草稿" });
@@ -29,7 +37,14 @@ test("switches the application chrome to English without reloading the project",
   await page.getByRole("checkbox", { name: "I will continue in an external Agent tool that can access this computer's SiaoCut Core." }).check();
   await page.getByRole("button", { name: "Create handoff task" }).click();
   await expect(page.getByRole("heading", { name: "Task ready to hand off" })).toBeVisible();
-  await expect(page.getByRole("textbox", { name: "Complete instructions to copy to the external Agent" })).toHaveValue(/task claim/);
+  const handoff = page.getByRole("textbox", { name: "Complete instructions to copy to the external Agent" });
+  await expect(handoff).toHaveValue(/task claim/);
+  await expect(handoff).toHaveValue(/--payload-output \$payloadPath/);
+  await expect(handoff).toHaveValue(/Get-FileHash .* SHA256/);
+  await expect(handoff).toHaveValue(/\$leaseId = \[string\]\$payload\.leaseId/);
+  await expect(handoff).toHaveValue(/\$heartbeatProgress = \[Math\]::Max\(0\.05, \[double\]\$claim\.task\.progress\)/);
+  await expect(handoff).toHaveValue(/task heartbeat .* --lease-id \$leaseId/);
+  await expect(handoff).toHaveValue(/task submit .* --lease-id \$leaseId/);
   await expect(projectHeading).toHaveText("发布口播 · 草稿");
   await expect(page.locator("html")).toHaveAttribute("lang", "en-US");
 });
@@ -125,6 +140,25 @@ test("runs local Codex and keeps every result pending review", async ({ page }) 
   await expect(page.getByText("本机 Codex 已完成；建议已进入集中审阅，文稿未自动修改。")).toBeVisible({ timeout: 5000 });
   await expect(editor).toHaveValue(original);
   await expect(page.getByText("本机 Codex 提供的待审建议")).toBeVisible();
+});
+
+test("requeues a failed external Agent task and shows its next claim without flashing back", async ({ page }) => {
+  await page.goto("/");
+  const claimed = await runMockCore(page, ["task", "claim", "t1", "--worker", "e2e-agent"]);
+  const leaseId = claimed.leaseId;
+  expect(typeof leaseId).toBe("string");
+  if (typeof leaseId !== "string") throw new Error("Mock Core did not return a task lease");
+  await runMockCore(page, ["task", "fail", "t1", "--worker", "e2e-agent", "--lease-id", leaseId, "--message", "模拟外部 Agent 失败"]);
+
+  const retry = page.getByRole("button", { name: "重新排队" });
+  await expect(retry).toBeVisible({ timeout: 5_000 });
+  await retry.click();
+  await expect(page.getByText(/正在等待第 2 次领取/)).toBeVisible();
+
+  await runMockCore(page, ["task", "claim", "t1", "--worker", "e2e-agent"]);
+  await expect(page.getByText(/e2e-agent 已领取任务/)).toBeVisible({ timeout: 5_000 });
+  await expect(page.getByText(/第 2 次尝试/)).toBeVisible();
+  await expect(page.getByText("模拟外部 Agent 失败")).toHaveCount(0);
 });
 
 test("keeps the transcript primary at the minimum supported workspace size", async ({ page }) => {
@@ -393,7 +427,7 @@ test("previews and explicitly replaces local subtitle files", async ({ page }) =
 });
 
 test("separates runtime status cards from the transcription model control", async ({ page }) => {
-  await page.setViewportSize({ width: 1368, height: 763 });
+  await page.setViewportSize({ width: 2560, height: 1410 });
   await page.addInitScript(() => localStorage.setItem("siaocut.modelPath", "C:\\Models\\ggml-large-v3-turbo-q5_0-multilingual.bin"));
   await page.goto("/");
 
@@ -407,6 +441,7 @@ test("separates runtime status cards from the transcription model control", asyn
 
   await expect(page.getByRole("heading", { name: "从一段口播开始。" })).toBeVisible();
   const checklist = page.getByLabel("本机运行组件");
+  const welcome = page.locator(".welcome-card");
   const cards = checklist.locator(".runtime-components .runtime-row");
   const model = checklist.locator(".runtime-model-row");
   await expect(cards).toHaveCount(4);
@@ -428,6 +463,15 @@ test("separates runtime status cards from the transcription model control", asyn
   expect(Math.abs(modelBox!.width - cardsBox!.width)).toBeLessThanOrEqual(1);
   const modelDetail = model.locator("small");
   expect(await modelDetail.evaluate((element) => element.scrollWidth <= element.clientWidth && element.scrollHeight <= element.clientHeight)).toBe(true);
+  const welcomeBox = await welcome.boundingBox();
+  const workbenchBox = await page.locator(".workbench").boundingBox();
+  expect(welcomeBox).not.toBeNull();
+  expect(workbenchBox).not.toBeNull();
+  expect(Math.abs((welcomeBox!.y + welcomeBox!.height) - (workbenchBox!.y + workbenchBox!.height - 30))).toBeLessThanOrEqual(2);
+  const welcomeCopy = welcome.locator(":scope > p:not(.eyebrow)");
+  expect(await welcomeCopy.evaluate((element) => element.getBoundingClientRect().height <= Number.parseFloat(getComputedStyle(element).lineHeight) * 1.2)).toBe(true);
+  const whisperDetail = cards.filter({ hasText: "whisper.cpp" }).locator("small");
+  expect(await whisperDetail.evaluate((element) => element.getBoundingClientRect().height <= Number.parseFloat(getComputedStyle(element).lineHeight) * 1.2)).toBe(true);
 });
 
 test("reviews and edits a transcript from the workbench", async ({ page }) => {
@@ -551,6 +595,30 @@ test("runs a resumable one-click workflow through the human review gate", async 
   await status.getByRole("button", { name: "确认完成并继续" }).click();
   await expect(status.getByText(/已完成 · 流程完成/)).toBeVisible({ timeout: 3000 });
   await expect(page.getByText(/一键工作流已完成，视频已导出到/)).toBeVisible();
+});
+
+test("dismisses a cancelled one-click status while keeping an explicit recovery path", async ({ page }) => {
+  await page.goto("/");
+  await page.getByText("更多导入方式").click();
+  await page.getByRole("button", { name: "一键成片", exact: true }).click();
+  let dialog = page.getByRole("dialog", { name: "一键工作流" });
+  await dialog.getByRole("button", { name: "选择文件" }).click();
+  await dialog.getByRole("button", { name: "启动一键工作流" }).click();
+
+  const status = page.getByRole("region", { name: "一键工作流状态" });
+  await expect(status).toBeVisible();
+  await status.getByRole("button", { name: "取消流程" }).click();
+  await expect(status.getByText(/已取消/)).toBeVisible();
+  await status.getByRole("button", { name: "关闭此流程状态" }).click();
+  await expect(status).toHaveCount(0);
+
+  await page.getByRole("button", { name: "一键成片", exact: true }).click();
+  dialog = page.getByRole("dialog", { name: "一键工作流" });
+  const history = dialog.getByRole("region", { name: "最近的一键流程" });
+  await expect(history.getByText(/已取消/)).toBeVisible();
+  await history.getByRole("button", { name: "显式继续" }).click();
+  await expect(page.getByText(/自动工作流已显式继续；这是第 2 次尝试/)).toBeVisible();
+  await expect(page.getByRole("region", { name: "一键工作流状态" })).toBeVisible();
 });
 
 test("uses MOSS as an explicit multispeaker mode with loopback settings and review", async ({ page }) => {

@@ -7,6 +7,7 @@ use crate::{
 use anyhow::{Context, Result, anyhow, bail};
 use rusqlite::{Connection, params};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::{fs, path::Path};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -23,6 +24,7 @@ pub struct SubtitleImportPreview {
     pub format: SubtitleFileFormat,
     pub source_path: String,
     pub sha256: String,
+    pub expected_version_id: String,
     pub segment_count: usize,
     pub segments: Vec<Segment>,
     pub quality: SubtitleQualityReport,
@@ -67,13 +69,7 @@ fn format_from_path(path: &Path) -> Result<SubtitleFileFormat> {
     }
 }
 
-fn read_utf8(path: &Path) -> Result<String> {
-    let bytes = fs::read(path).with_context(|| {
-        format!(
-            "subtitle_import_file_unreadable: 无法读取字幕文件：{}",
-            path.display()
-        )
-    })?;
+fn decode_utf8(bytes: Vec<u8>) -> Result<String> {
     let text = String::from_utf8(bytes).map_err(|_| {
         anyhow!("subtitle_import_encoding_unsupported: 字幕文件必须使用 UTF-8 编码")
     })?;
@@ -253,16 +249,23 @@ fn parse_ass(text: &str) -> Result<Vec<Segment>> {
     Ok(segments)
 }
 
-fn parse(path: &Path) -> Result<(SubtitleFileFormat, Vec<Segment>)> {
+fn read_and_parse(path: &Path) -> Result<(SubtitleFileFormat, Vec<Segment>, String)> {
     let format = format_from_path(path)?;
-    let text = read_utf8(path)?;
+    let bytes = fs::read(path).with_context(|| {
+        format!(
+            "subtitle_import_file_unreadable: 无法读取字幕文件：{}",
+            path.display()
+        )
+    })?;
+    let sha256 = format!("{:x}", Sha256::digest(&bytes));
+    let text = decode_utf8(bytes)?;
     let segments = match format {
         SubtitleFileFormat::Srt => parse_srt(&text),
         SubtitleFileFormat::Vtt => parse_vtt(&text),
         SubtitleFileFormat::Ass => parse_ass(&text),
     }
     .map_err(|error| anyhow!("subtitle_import_parse_failed: {error}"))?;
-    Ok((format, segments))
+    Ok((format, segments, sha256))
 }
 
 pub fn inspect_file(
@@ -271,7 +274,7 @@ pub fn inspect_file(
     path: &Path,
 ) -> Result<SubtitleImportPreview> {
     let project = project::load(db, project_id)?;
-    let (format, segments) = parse(path)?;
+    let (format, segments, sha256) = read_and_parse(path)?;
     let quality = subtitle_quality::inspect_with_language(
         &segments,
         project.media.duration_seconds,
@@ -280,7 +283,12 @@ pub fn inspect_file(
     Ok(SubtitleImportPreview {
         format,
         source_path: path.to_string_lossy().into_owned(),
-        sha256: media::hash_file(path)?,
+        sha256,
+        expected_version_id: project
+            .history
+            .current_version_id
+            .clone()
+            .ok_or_else(|| anyhow!("project_version_missing: 项目没有可确认的当前版本"))?,
         segment_count: segments.len(),
         segments,
         can_import: quality.error_count == 0,
@@ -289,12 +297,33 @@ pub fn inspect_file(
     })
 }
 
+#[cfg(test)]
 pub fn import_file(
     db: &mut Connection,
     project_id: &str,
     path: &Path,
     confirm_replace: bool,
     expected_sha256: &str,
+) -> Result<SubtitleImportResult> {
+    let expected_version_id = project::current_version_id(db, project_id)?
+        .ok_or_else(|| anyhow!("project_version_missing: 项目没有可确认的当前版本"))?;
+    import_file_at_version(
+        db,
+        project_id,
+        path,
+        confirm_replace,
+        expected_sha256,
+        &expected_version_id,
+    )
+}
+
+pub fn import_file_at_version(
+    db: &mut Connection,
+    project_id: &str,
+    path: &Path,
+    confirm_replace: bool,
+    expected_sha256: &str,
+    expected_version_id: &str,
 ) -> Result<SubtitleImportResult> {
     if !confirm_replace {
         bail!("subtitle_import_confirmation_required: 替换项目字幕需要显式确认")
@@ -304,6 +333,9 @@ pub fn import_file(
         bail!("subtitle_import_hash_invalid: 预检 SHA-256 格式无效")
     }
     let preview = inspect_file(db, project_id, path)?;
+    if preview.expected_version_id != expected_version_id {
+        bail!("subtitle_import_version_mismatch: 项目在字幕导入确认后发生变化，请重新预检")
+    }
     if !preview.sha256.eq_ignore_ascii_case(expected_sha256) {
         bail!("subtitle_import_file_changed: 字幕文件在预检后发生变化，请重新预检")
     }
@@ -313,11 +345,16 @@ pub fn import_file(
 
     let inserted_segments = preview.segments.len();
     let mut impact = SubtitleImportImpact::default();
-    project::mutate_with_snapshot(
+    project::mutate_with_snapshot_at_version(
         db,
         project_id,
+        Some(expected_version_id),
+        "subtitle_import_version_mismatch: 项目在字幕导入确认后发生变化，请重新预检",
         &format!("导入 {:?} 字幕", preview.format),
         |tx| {
+            if media::hash_file(path)? != preview.sha256 {
+                bail!("subtitle_import_file_changed: 字幕文件在确认后发生变化，请重新预检")
+            }
             impact.replaced_segments = tx.query_row(
                 "SELECT COUNT(*) FROM segments WHERE project_id=?1",
                 [project_id],
@@ -431,6 +468,47 @@ mod tests {
         assert_eq!(
             project::load(&db, &project.id).unwrap().transcript,
             before.transcript
+        );
+    }
+
+    #[test]
+    fn subtitle_import_rejects_a_project_changed_after_preview() {
+        let temp = tempdir().unwrap();
+        let media_path = temp.path().join("source.wav");
+        let subtitle_path = temp.path().join("captions.srt");
+        fs::write(&media_path, b"source").unwrap();
+        fs::write(
+            &subtitle_path,
+            "1\n00:00:00,000 --> 00:00:01,000\nreplacement",
+        )
+        .unwrap();
+        let mut db = crate::db::open_at(&temp.path().join("stale-preview.sqlite")).unwrap();
+        let created = project::create(&mut db, &media_path, None).unwrap();
+        project::add_segment(&mut db, &created.id, 0.0, 1.0, "original".into(), None).unwrap();
+        let preview = inspect_file(&db, &created.id, &subtitle_path).unwrap();
+        project::add_segment(&mut db, &created.id, 1.1, 2.0, "newer".into(), None).unwrap();
+
+        let error = import_file_at_version(
+            &mut db,
+            &created.id,
+            &subtitle_path,
+            true,
+            &preview.sha256,
+            &preview.expected_version_id,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("subtitle_import_version_mismatch"));
+        assert_eq!(
+            project::load(&db, &created.id)
+                .unwrap()
+                .transcript
+                .segments
+                .iter()
+                .map(|segment| segment.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["original", "newer"]
         );
     }
 

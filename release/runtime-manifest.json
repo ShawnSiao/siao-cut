@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-07-18",
+  "updatedAt": "2026-07-28",
   "components": [
     {
       "id": "ffmpeg-cpu",
@@ -9,9 +9,9 @@
       "kind": "bundled-runtime",
       "backend": "cpu",
       "source": "https://github.com/BtbN/FFmpeg-Builds",
-      "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-win64-lgpl-shared-8.1.zip",
-      "size": 70503568,
-      "sha256": "f711e0478c03fd48624c59a0487e0c5d904779a3c67280a0a7b49b0002f12b43",
+      "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-07-27-14-00/ffmpeg-n8.1.2-31-g8c9502e9b0-win64-lgpl-shared-8.1.zip",
+      "size": 70510962,
+      "sha256": "0c434d097268f8ee61c96eab3faf048ead646f4ff38ee21027012d23f84e5c19",
       "license": "LGPL-2.1-or-later",
       "bundled": true
     },

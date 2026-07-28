@@ -7,7 +7,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-if (-not $Core) { $Core = Join-Path $PSScriptRoot "..\..\..\target\debug\siaocut-core.exe" }
+$resolver = Join-Path $PSScriptRoot "..\bin\resolve-core-path.ps1"
+if (-not $Core) { $Core = & $resolver -Profile Debug }
 $Core = (Resolve-Path -LiteralPath $Core).Path
 $Source = (Resolve-Path -LiteralPath $Source).Path
 $testRoot = Join-Path "D:\Temp" ("siaocut-duration-" + [guid]::NewGuid().ToString("N"))

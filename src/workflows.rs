@@ -154,10 +154,12 @@ mod tests {
             .unwrap()
             .unwrap();
         let base = claim.2["baseVersionId"].as_str().unwrap();
+        let lease_id = claim.1.lease.as_ref().unwrap().id.clone();
         tasks::submit(
             &mut db,
             &workflow.task_id,
             "workflow-agent",
+            &lease_id,
             json!({"baseVersionId":base,"patches":[{"segmentId":segment.id,"before":"你好","after":"你好。","reason":"补充句号","confidence":0.99}]}),
         )
         .unwrap();

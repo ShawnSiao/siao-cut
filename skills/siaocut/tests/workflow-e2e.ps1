@@ -1,8 +1,10 @@
 param(
-    [string]$Core = (Join-Path $PSScriptRoot "..\..\..\target\debug\siaocut-core.exe")
+    [string]$Core = ""
 )
 
 $ErrorActionPreference = "Stop"
+$resolver = Join-Path $PSScriptRoot "..\bin\resolve-core-path.ps1"
+if (-not $Core) { $Core = & $resolver -Profile Debug }
 $Core = (Resolve-Path -LiteralPath $Core).Path
 $testHome = Join-Path ([System.IO.Path]::GetTempPath()) ("siaocut-skill-" + [guid]::NewGuid().ToString("N"))
 $previousHome = $env:SIAOCUT_HOME
@@ -41,7 +43,7 @@ try {
     } | ConvertTo-Json -Depth 6
     [System.IO.File]::WriteAllText($responsePath, $responseJson, (New-Object System.Text.UTF8Encoding($false)))
 
-    $submitted = Invoke-SiaoCut @("task", "submit", $claim.taskId, "--worker", "skill-e2e", "--response", $responsePath)
+    $submitted = Invoke-SiaoCut @("task", "submit", $claim.taskId, "--worker", "skill-e2e", "--lease-id", $claim.leaseId, "--response", $responsePath)
     if ($submitted.task.status -ne "review") { throw "Task did not enter review state" }
     $beforeReview = Invoke-SiaoCut @("project", "show", $project.projectId)
     if ($beforeReview.project.transcript.segments[0].text -ne "hello world") { throw "Agent result changed the project before review" }
@@ -72,7 +74,7 @@ try {
     } | ConvertTo-Json -Depth 6
     [System.IO.File]::WriteAllText($conflictResponsePath, $conflictResponseJson, (New-Object System.Text.UTF8Encoding($false)))
 
-    $conflictSubmitted = Invoke-SiaoCut @("task", "submit", $conflictClaim.taskId, "--worker", "skill-e2e-conflict", "--response", $conflictResponsePath)
+    $conflictSubmitted = Invoke-SiaoCut @("task", "submit", $conflictClaim.taskId, "--worker", "skill-e2e-conflict", "--lease-id", $conflictClaim.leaseId, "--response", $conflictResponsePath)
     if ($conflictSubmitted.patchSet.items[0].status -ne "conflict") { throw "Human edit did not produce a review conflict" }
     $conflictDiff = Invoke-SiaoCut @("task", "diff", $conflictClaim.taskId)
     if ($conflictDiff.patchSet.items[0].currentText -ne "Human edit wins.") { throw "Conflict diff is missing the current human text" }

@@ -4,12 +4,14 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
+$resolver = Join-Path $PSScriptRoot "..\bin\resolve-core-path.ps1"
 if (-not $CorePath) {
-    $CorePath = Join-Path $repoRoot "target\debug\siaocut-core.exe"
-}
-if (-not (Test-Path -LiteralPath $CorePath)) {
-    & cargo build --manifest-path (Join-Path $repoRoot "Cargo.toml")
-    if ($LASTEXITCODE -ne 0) { throw "Core 构建失败" }
+    $CorePath = & $resolver -Profile Debug -RepoRoot $repoRoot -Optional
+    if (-not $CorePath) {
+        & cargo build --manifest-path (Join-Path $repoRoot "Cargo.toml")
+        if ($LASTEXITCODE -ne 0) { throw "Core 构建失败" }
+        $CorePath = & $resolver -Profile Debug -RepoRoot $repoRoot
+    }
 }
 $CorePath = (Resolve-Path -LiteralPath $CorePath).Path
 $ffmpeg = (Get-Command ffmpeg -ErrorAction Stop).Source

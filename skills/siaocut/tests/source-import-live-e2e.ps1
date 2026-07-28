@@ -1,15 +1,17 @@
 param(
     [string]$TestUrl = 'https://www.youtube.com/watch?v=HOfdboHvshg',
+    [string]$Core = '',
     [switch]$KeepArtifacts
 )
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
-$core = Join-Path $root 'target\debug\siaocut-core.exe'
+$resolver = Join-Path $PSScriptRoot '..\bin\resolve-core-path.ps1'
+if (-not $Core) { $Core = & $resolver -Profile Debug -RepoRoot $root }
 $ytDlp = Join-Path $root 'apps\desktop\src-tauri\runtime\yt-dlp\yt-dlp.exe'
 $ffmpeg = Join-Path $root 'apps\desktop\src-tauri\runtime\ffmpeg\ffmpeg.exe'
 $ffprobe = Join-Path $root 'apps\desktop\src-tauri\runtime\ffmpeg\ffprobe.exe'
-foreach ($path in $core, $ytDlp, $ffmpeg, $ffprobe) {
+foreach ($path in $Core, $ytDlp, $ffmpeg, $ffprobe) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         throw "Required executable is missing: $path"
     }
@@ -24,7 +26,7 @@ New-Item -ItemType Directory -Force -Path $work | Out-Null
 
 function Invoke-Core {
     param([string[]]$Arguments)
-    $raw = & $core --json @Arguments 2>&1
+    $raw = & $Core --json @Arguments 2>&1
     if ($LASTEXITCODE -ne 0) {
         throw ($raw | Out-String)
     }

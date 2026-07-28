@@ -5,13 +5,13 @@ use crate::{
 };
 use anyhow::{Context, Result, anyhow, bail};
 use reqwest::{StatusCode, blocking::Client, header::RANGE};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::Serialize;
 use std::{
     env, fs,
     fs::OpenOptions,
     io::{Read, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     thread,
     time::{Duration, Instant},
 };
@@ -114,47 +114,50 @@ fn models_dir() -> PathBuf {
     db::home_dir().join("models")
 }
 
-fn target_path(spec: ModelSpec) -> PathBuf {
-    models_dir().join(spec.file_name)
+fn target_path_in(models_dir: &Path, spec: ModelSpec) -> PathBuf {
+    models_dir.join(spec.file_name)
 }
 
-fn partial_path(spec: ModelSpec) -> PathBuf {
-    models_dir().join(format!("{}.part", spec.file_name))
+fn partial_path_in(models_dir: &Path, spec: ModelSpec) -> PathBuf {
+    models_dir.join(format!("{}.part", spec.file_name))
+}
+
+fn model_status(spec: ModelSpec, models_dir: &Path, verify: bool) -> Result<ModelStatus> {
+    let path = target_path_in(models_dir, spec);
+    let bytes = fs::metadata(&path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    let installed = path.is_file();
+    let verified = if verify && installed {
+        Some(bytes == spec.size && hash_file(&path)? == spec.sha256)
+    } else {
+        None
+    };
+    Ok(ModelStatus {
+        spec,
+        path: path.to_string_lossy().to_string(),
+        installed,
+        bytes_on_disk: bytes,
+        verified,
+        verification_status: if !installed {
+            "not_installed"
+        } else {
+            match verified {
+                Some(true) => "verified",
+                Some(false) => "failed",
+                None => "not_checked",
+            }
+        }
+        .to_owned(),
+    })
 }
 
 pub fn catalog(verify: bool) -> Result<Vec<ModelStatus>> {
+    let models_dir = models_dir();
     MODEL_SPECS
         .iter()
         .copied()
-        .map(|item| {
-            let path = target_path(item);
-            let bytes = fs::metadata(&path)
-                .map(|metadata| metadata.len())
-                .unwrap_or(0);
-            let installed = path.is_file();
-            let verified = if verify && installed {
-                Some(bytes == item.size && hash_file(&path)? == item.sha256)
-            } else {
-                None
-            };
-            Ok(ModelStatus {
-                spec: item,
-                path: path.to_string_lossy().to_string(),
-                installed,
-                bytes_on_disk: bytes,
-                verified,
-                verification_status: if !installed {
-                    "not_installed"
-                } else {
-                    match verified {
-                        Some(true) => "verified",
-                        Some(false) => "failed",
-                        None => "not_checked",
-                    }
-                }
-                .to_owned(),
-            })
-        })
+        .map(|item| model_status(item, &models_dir, verify))
         .collect()
 }
 
@@ -168,23 +171,34 @@ pub fn verify(model_id: &str) -> Result<ModelStatus> {
 
 pub fn create_download(db: &Connection, model_id: &str) -> Result<ModelDownloadJob> {
     let spec = spec(model_id)?;
-    fs::create_dir_all(models_dir())?;
-    if target_path(spec).is_file() {
-        let status = verify(model_id)?;
+    create_download_in(db, spec, &models_dir(), spawn_worker)
+}
+
+fn create_download_in(
+    db: &Connection,
+    spec: ModelSpec,
+    models_dir: &Path,
+    spawn: impl FnOnce(&str, &str) -> Result<()>,
+) -> Result<ModelDownloadJob> {
+    fs::create_dir_all(models_dir)?;
+    if target_path_in(models_dir, spec).is_file() {
+        let status = model_status(spec, models_dir, true)?;
         if status.verified == Some(true) {
-            bail!("模型已经安装并通过校验：{model_id}")
+            bail!("模型已经安装并通过校验：{}", spec.id)
         }
         bail!("model_hash_mismatch: 已有模型未通过校验，请先移除后重新下载")
     }
-    if let Some(job) = active_job(db, model_id)? {
-        return Ok(job);
+    // This fast path preserves idempotent polling. The transaction below
+    // repeats the check and remains the authority for concurrent creators.
+    if let Some(active) = active_job(db, spec.id)? {
+        return Ok(active);
     }
-    let partial_bytes = fs::metadata(partial_path(spec))
+    let partial_bytes = fs::metadata(partial_path_in(models_dir, spec))
         .map(|metadata| metadata.len())
         .unwrap_or(0)
         .min(spec.size);
     let remaining = spec.size.saturating_sub(partial_bytes);
-    let available = crate::util::available_space(&models_dir())?;
+    let available = crate::util::available_space(models_dir)?;
     let reserve = 128 * 1024 * 1024;
     if available < remaining.saturating_add(reserve) {
         bail!(
@@ -195,13 +209,15 @@ pub fn create_download(db: &Connection, model_id: &str) -> Result<ModelDownloadJ
     let timestamp = now();
     let job = ModelDownloadJob {
         id: new_id("m"),
-        model_id: model_id.to_owned(),
+        model_id: spec.id.to_owned(),
         status: "queued".into(),
         stage_code: Some("queued".into()),
         progress: partial_bytes as f64 / spec.size as f64,
         bytes_downloaded: partial_bytes,
         total_bytes: spec.size,
-        target_path: target_path(spec).to_string_lossy().to_string(),
+        target_path: target_path_in(models_dir, spec)
+            .to_string_lossy()
+            .to_string(),
         cancel_requested_at: None,
         error_message: None,
         error_code: None,
@@ -210,11 +226,30 @@ pub fn create_download(db: &Connection, model_id: &str) -> Result<ModelDownloadJ
         completed_at: None,
         worker_pid: None,
     };
-    db.execute(
+
+    // Serialize the active-job check and insert across every SQLite connection.
+    // A process-local mutex would not protect the detached worker/service model.
+    db.busy_timeout(Duration::from_secs(5))?;
+    let tx = Transaction::new_unchecked(db, TransactionBehavior::Immediate)
+        .context("无法锁定模型下载任务队列")?;
+    if let Some(active) = active_job(&tx, spec.id)? {
+        tx.commit()?;
+        return Ok(active);
+    }
+    tx.execute(
         "INSERT INTO model_downloads(id,model_id,status,progress,bytes_downloaded,total_bytes,target_path,created_at,updated_at) VALUES(?1,?2,'queued',?3,?4,?5,?6,?7,?7)",
         params![job.id, job.model_id, job.progress, job.bytes_downloaded, job.total_bytes, job.target_path, job.created_at],
     )?;
-    spawn_worker(&job.id, model_id)?;
+    tx.commit()?;
+
+    if let Err(error) = spawn(&job.id, spec.id) {
+        let timestamp = now();
+        let _ = db.execute(
+            "UPDATE model_downloads SET status='failed',error_message=?2,updated_at=?3,completed_at=?3 WHERE id=?1 AND status='queued'",
+            params![job.id, error.to_string(), timestamp],
+        );
+        return Err(error);
+    }
     Ok(job)
 }
 
@@ -302,9 +337,12 @@ pub fn reconcile_interrupted(db: &Connection) -> Result<()> {
             .unwrap_or(true);
         let worker_alive = job.worker_pid.is_some_and(crate::util::process_is_active);
         if stale && !worker_alive {
+            let timestamp = now();
             db.execute(
-                "UPDATE model_downloads SET status='interrupted',error_message='上次下载进程已中断，可以继续下载。',worker_pid=NULL,updated_at=?2 WHERE id=?1",
-                params![id, now()],
+                "UPDATE model_downloads
+                 SET status='interrupted',error_message='上次下载进程已中断，可以继续下载。',worker_pid=NULL,updated_at=?2
+                 WHERE id=?1 AND status=?3 AND updated_at=?4 AND worker_pid IS ?5",
+                params![id, timestamp, &job.status, &job.updated_at, job.worker_pid],
             )?;
         }
     }
@@ -313,11 +351,15 @@ pub fn reconcile_interrupted(db: &Connection) -> Result<()> {
 
 pub fn remove(db: &Connection, model_id: &str) -> Result<()> {
     let spec = spec(model_id)?;
-    if active_job(db, model_id)?.is_some() {
+    remove_in(db, spec, &models_dir())
+}
+
+fn remove_in(db: &Connection, spec: ModelSpec, models_dir: &Path) -> Result<()> {
+    if active_job(db, spec.id)?.is_some() {
         bail!("请先取消正在进行的模型下载")
     }
-    let target = target_path(spec);
-    let partial = partial_path(spec);
+    let target = target_path_in(models_dir, spec);
+    let partial = partial_path_in(models_dir, spec);
     if target.is_file() {
         fs::remove_file(target)?;
     }
@@ -333,7 +375,7 @@ fn spawn_worker(job_id: &str, model_id: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn run_worker(job_id: &str, model_id: &str) -> Result<()> {
+fn run_worker(job_id: &str, model_id: &str) -> Result<()> {
     if let Some(delay) = env::var("SIAOCUT_MODEL_START_DELAY_MS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
@@ -341,7 +383,36 @@ pub fn run_worker(job_id: &str, model_id: &str) -> Result<()> {
         thread::sleep(Duration::from_millis(delay));
     }
     let db = db::open()?;
-    let result = download(&db, job_id, spec(model_id)?);
+    run_download_attempt(&db, job_id, spec(model_id)?, &models_dir())
+}
+
+/// Run the synchronous reqwest worker on a thread that has never entered Tokio.
+///
+/// `reqwest::blocking::Client` owns an internal async runtime. Creating or
+/// dropping it on a Tokio runtime thread can panic, so the model worker keeps
+/// its complete blocking-client lifecycle on this dedicated OS thread.
+pub fn run_worker_isolated(job_id: &str, model_id: &str) -> Result<()> {
+    let job_id = job_id.to_owned();
+    let model_id = model_id.to_owned();
+    run_on_blocking_thread(move || run_worker(&job_id, &model_id))
+}
+
+fn run_on_blocking_thread(work: impl FnOnce() -> Result<()> + Send + 'static) -> Result<()> {
+    thread::Builder::new()
+        .name("siaocut-model-worker".into())
+        .spawn(work)
+        .context("无法启动隔离的模型下载线程")?
+        .join()
+        .map_err(|_| anyhow!("模型下载 Worker 线程异常退出"))?
+}
+
+fn run_download_attempt(
+    db: &Connection,
+    job_id: &str,
+    spec: ModelSpec,
+    models_dir: &Path,
+) -> Result<()> {
+    let result = download_in(db, job_id, spec, models_dir);
     if let Err(error) = &result {
         let timestamp = now();
         let _ = db.execute(
@@ -352,7 +423,7 @@ pub fn run_worker(job_id: &str, model_id: &str) -> Result<()> {
     result
 }
 
-fn download(db: &Connection, job_id: &str, spec: ModelSpec) -> Result<()> {
+fn download_in(db: &Connection, job_id: &str, spec: ModelSpec, models_dir: &Path) -> Result<()> {
     let initial = load_job(db, job_id)?;
     if initial.model_id != spec.id {
         bail!("模型下载任务与模型不匹配")
@@ -361,8 +432,8 @@ fn download(db: &Connection, job_id: &str, spec: ModelSpec) -> Result<()> {
         finish_cancelled(db, job_id)?;
         return Ok(());
     }
-    let partial = partial_path(spec);
-    let target = target_path(spec);
+    let partial = partial_path_in(models_dir, spec);
+    let target = target_path_in(models_dir, spec);
     let mut existing = fs::metadata(&partial)
         .map(|metadata| metadata.len())
         .unwrap_or(0);
@@ -467,6 +538,186 @@ fn finish_cancelled(db: &Connection, job_id: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
+    use std::{
+        net::{TcpListener, TcpStream},
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicUsize, Ordering},
+            mpsc,
+        },
+    };
+    use tempfile::tempdir;
+
+    #[derive(Clone, Copy)]
+    struct ResponsePlan {
+        max_bytes: Option<usize>,
+        chunk_size: usize,
+        chunk_delay: Duration,
+    }
+
+    impl ResponsePlan {
+        fn complete() -> Self {
+            Self {
+                max_bytes: None,
+                chunk_size: 64 * 1024,
+                chunk_delay: Duration::ZERO,
+            }
+        }
+    }
+
+    struct MockModelServer {
+        url: &'static str,
+        range_starts: Arc<Mutex<Vec<u64>>>,
+        thread: thread::JoinHandle<()>,
+    }
+
+    impl MockModelServer {
+        fn start(payload: Vec<u8>, plans: Vec<ResponsePlan>) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let address = listener.local_addr().unwrap();
+            let url = Box::leak(format!("http://{address}/model.bin").into_boxed_str());
+            let range_starts = Arc::new(Mutex::new(Vec::new()));
+            let observed_ranges = Arc::clone(&range_starts);
+            let thread = thread::spawn(move || {
+                for plan in plans {
+                    let mut stream = accept_blocking_model_connection(&listener);
+                    let range_start = read_range_start(&mut stream);
+                    observed_ranges.lock().unwrap().push(range_start);
+                    write_model_response(&mut stream, &payload, range_start, plan);
+                }
+            });
+            Self {
+                url,
+                range_starts,
+                thread,
+            }
+        }
+
+        fn finish(self) -> Vec<u64> {
+            self.thread.join().unwrap();
+            self.range_starts.lock().unwrap().clone()
+        }
+    }
+
+    fn accept_blocking_model_connection(listener: &TcpListener) -> TcpStream {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "timed out waiting for model download request"
+                    );
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("mock model server accept failed: {error}"),
+            }
+        };
+        stream.set_nonblocking(false).unwrap();
+        stream
+    }
+
+    fn read_range_start(stream: &mut TcpStream) -> u64 {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 1024];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let count = stream.read(&mut buffer).unwrap();
+            assert!(count > 0, "model request ended before headers");
+            request.extend_from_slice(&buffer[..count]);
+        }
+        String::from_utf8_lossy(&request)
+            .lines()
+            .find_map(|line| {
+                line.to_ascii_lowercase()
+                    .strip_prefix("range: bytes=")
+                    .and_then(|value| value.split('-').next())
+                    .and_then(|value| value.parse().ok())
+            })
+            .unwrap_or(0)
+    }
+
+    fn write_model_response(
+        stream: &mut TcpStream,
+        payload: &[u8],
+        range_start: u64,
+        plan: ResponsePlan,
+    ) {
+        let start = usize::try_from(range_start).unwrap();
+        assert!(start <= payload.len());
+        let remaining = payload.len() - start;
+        let status = if start > 0 {
+            "HTTP/1.1 206 Partial Content"
+        } else {
+            "HTTP/1.1 200 OK"
+        };
+        let content_range = if start > 0 {
+            format!(
+                "Content-Range: bytes {start}-{}/{}\r\n",
+                payload.len() - 1,
+                payload.len()
+            )
+        } else {
+            String::new()
+        };
+        let headers = format!(
+            "{status}\r\nContent-Length: {remaining}\r\nAccept-Ranges: bytes\r\n{content_range}Connection: close\r\n\r\n"
+        );
+        stream.write_all(headers.as_bytes()).unwrap();
+        let send_bytes = plan.max_bytes.unwrap_or(remaining).min(remaining);
+        for chunk in payload[start..start + send_bytes].chunks(plan.chunk_size) {
+            if stream.write_all(chunk).is_err() {
+                break;
+            }
+            if stream.flush().is_err() {
+                break;
+            }
+            if !plan.chunk_delay.is_zero() {
+                thread::sleep(plan.chunk_delay);
+            }
+        }
+    }
+
+    fn test_spec(url: &'static str, payload: &[u8]) -> ModelSpec {
+        let sha256 = Box::leak(format!("{:x}", Sha256::digest(payload)).into_boxed_str());
+        ModelSpec {
+            id: "test-model",
+            name: "Test model",
+            file_name: "test-model.bin",
+            description: "Local model download fixture",
+            source: "local test server",
+            url,
+            size: payload.len() as u64,
+            sha256,
+            license: "MIT",
+            recommended: false,
+        }
+    }
+
+    fn create_test_job(db: &Connection, spec: ModelSpec, models_dir: &Path) -> ModelDownloadJob {
+        create_download_in(db, spec, models_dir, |_, _| Ok(())).unwrap()
+    }
+
+    fn wait_for_job(
+        db: &Connection,
+        job_id: &str,
+        predicate: impl Fn(&ModelDownloadJob) -> bool,
+    ) -> ModelDownloadJob {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let job = load_job(db, job_id).unwrap();
+            if predicate(&job) {
+                return job;
+            }
+            assert!(Instant::now() < deadline, "timed out waiting for {job_id}");
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
 
     #[test]
     fn catalog_exposes_three_auditable_profiles() {
@@ -478,6 +729,26 @@ mod tests {
     }
 
     #[test]
+    fn accepted_mock_connection_waits_for_delayed_range_headers() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let client = thread::spawn(move || {
+            let mut stream = TcpStream::connect(address).unwrap();
+            thread::sleep(Duration::from_millis(100));
+            stream
+                .write_all(
+                    b"GET /model.bin HTTP/1.1\r\nHost: localhost\r\nRange: bytes=123-\r\n\r\n",
+                )
+                .unwrap();
+        });
+
+        let mut stream = accept_blocking_model_connection(&listener);
+        assert_eq!(read_range_start(&mut stream), 123);
+        client.join().unwrap();
+    }
+
+    #[test]
     fn rejects_unknown_model() {
         assert!(
             spec("untrusted")
@@ -485,5 +756,221 @@ mod tests {
                 .to_string()
                 .contains("未知转录模型")
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn blocking_client_lifecycle_is_isolated_from_tokio_runtime() {
+        tokio::task::yield_now().await;
+        assert!(tokio::runtime::Handle::try_current().is_ok());
+
+        run_on_blocking_thread(|| {
+            assert!(tokio::runtime::Handle::try_current().is_err());
+            let client = Client::builder().build()?;
+            drop(client);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn concurrent_create_reuses_job_committed_by_lock_holder() {
+        let temp = tempdir().unwrap();
+        let database_path = temp.path().join("concurrent-models.db");
+        let lock_holder = db::open_at(&database_path).unwrap();
+        let concurrent = db::open_at(&database_path).unwrap();
+        let models_dir = temp.path().join("models");
+        fs::create_dir_all(&models_dir).unwrap();
+        let spec = ModelSpec {
+            id: "test-model",
+            name: "Test model",
+            file_name: "test-model.bin",
+            description: "Atomic create fixture",
+            source: "test",
+            url: "http://127.0.0.1/unused",
+            size: 1024,
+            sha256: "0000000000000000000000000000000000000000000000000000000000000000",
+            license: "MIT",
+            recommended: false,
+        };
+        let tx = Transaction::new_unchecked(&lock_holder, TransactionBehavior::Immediate).unwrap();
+        let spawn_count = Arc::new(AtomicUsize::new(0));
+        let concurrent_spawn_count = Arc::clone(&spawn_count);
+        let (started_tx, started_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        let concurrent_models_dir = models_dir.clone();
+        let handle = thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let result = create_download_in(&concurrent, spec, &concurrent_models_dir, |_, _| {
+                concurrent_spawn_count.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            });
+            result_tx.send(result).unwrap();
+        });
+        started_rx.recv().unwrap();
+        assert!(
+            result_rx.recv_timeout(Duration::from_millis(150)).is_err(),
+            "concurrent creator bypassed the immediate transaction"
+        );
+
+        let timestamp = now();
+        tx.execute(
+            "INSERT INTO model_downloads(id,model_id,status,progress,bytes_downloaded,total_bytes,target_path,created_at,updated_at) VALUES('m-lock-holder',?1,'queued',0,0,?2,?3,?4,?4)",
+            params![
+                spec.id,
+                spec.size,
+                target_path_in(&models_dir, spec).to_string_lossy(),
+                timestamp
+            ],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        let returned = result_rx
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        handle.join().unwrap();
+
+        assert_eq!(returned.id, "m-lock-holder");
+        assert_eq!(spawn_count.load(Ordering::SeqCst), 0);
+        let db = db::open_at(&database_path).unwrap();
+        let active_count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM model_downloads WHERE model_id=?1 AND status IN ('queued','running')",
+                [spec.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(active_count, 1);
+    }
+
+    #[test]
+    fn cancellation_preserves_partial_then_range_resume_installs_and_removes() {
+        let payload = (0..2 * 1024 * 1024)
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
+        let server = MockModelServer::start(
+            payload.clone(),
+            vec![
+                ResponsePlan {
+                    max_bytes: None,
+                    chunk_size: 32 * 1024,
+                    chunk_delay: Duration::from_millis(35),
+                },
+                ResponsePlan::complete(),
+            ],
+        );
+        let spec = test_spec(server.url, &payload);
+        let temp = tempdir().unwrap();
+        let database_path = temp.path().join("cancel-resume.db");
+        let models_dir = temp.path().join("models");
+        let db = db::open_at(&database_path).unwrap();
+        let first = create_test_job(&db, spec, &models_dir);
+        let worker_database_path = database_path.clone();
+        let worker_models_dir = models_dir.clone();
+        let first_id = first.id.clone();
+        let worker = thread::spawn(move || {
+            run_on_blocking_thread(move || {
+                let db = db::open_at(&worker_database_path)?;
+                run_download_attempt(&db, &first_id, spec, &worker_models_dir)
+            })
+        });
+
+        wait_for_job(&db, &first.id, |job| {
+            job.status == "running" && job.bytes_downloaded > 0
+        });
+        cancel(&db, &first.id).unwrap();
+        worker.join().unwrap().unwrap();
+        let cancelled = load_job(&db, &first.id).unwrap();
+        assert_eq!(cancelled.status, "cancelled");
+        let partial = partial_path_in(&models_dir, spec);
+        let partial_bytes = fs::metadata(&partial).unwrap().len();
+        assert!(partial_bytes > 0);
+        assert!(partial_bytes < spec.size);
+
+        let resumed = create_test_job(&db, spec, &models_dir);
+        assert_eq!(resumed.bytes_downloaded, partial_bytes);
+        let resumed_id = resumed.id.clone();
+        let resumed_database_path = database_path.clone();
+        let resumed_models_dir = models_dir.clone();
+        run_on_blocking_thread(move || {
+            let db = db::open_at(&resumed_database_path)?;
+            run_download_attempt(&db, &resumed_id, spec, &resumed_models_dir)
+        })
+        .unwrap();
+
+        let completed = load_job(&db, &resumed.id).unwrap();
+        assert_eq!(completed.status, "completed");
+        assert_eq!(completed.progress, 1.0);
+        assert_eq!(
+            model_status(spec, &models_dir, true).unwrap().verified,
+            Some(true)
+        );
+        let ranges = server.finish();
+        assert_eq!(ranges[0], 0);
+        assert_eq!(ranges[1], partial_bytes);
+
+        remove_in(&db, spec, &models_dir).unwrap();
+        assert!(!target_path_in(&models_dir, spec).exists());
+        assert!(!partial.exists());
+    }
+
+    #[test]
+    fn failed_download_is_recorded_and_retry_resumes_partial() {
+        let payload = (0..512 * 1024)
+            .map(|index| (index % 239) as u8)
+            .collect::<Vec<_>>();
+        let first_attempt_bytes = 96 * 1024;
+        let server = MockModelServer::start(
+            payload.clone(),
+            vec![
+                ResponsePlan {
+                    max_bytes: Some(first_attempt_bytes),
+                    chunk_size: 16 * 1024,
+                    chunk_delay: Duration::ZERO,
+                },
+                ResponsePlan::complete(),
+            ],
+        );
+        let spec = test_spec(server.url, &payload);
+        let temp = tempdir().unwrap();
+        let database_path = temp.path().join("failure-recovery.db");
+        let models_dir = temp.path().join("models");
+        let db = db::open_at(&database_path).unwrap();
+        let failed = create_test_job(&db, spec, &models_dir);
+        let failed_id = failed.id.clone();
+        let first_database_path = database_path.clone();
+        let first_models_dir = models_dir.clone();
+        let error = run_on_blocking_thread(move || {
+            let db = db::open_at(&first_database_path)?;
+            run_download_attempt(&db, &failed_id, spec, &first_models_dir)
+        })
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("不完整")
+                || error.to_string().contains("request or response body error")
+        );
+        let failed = load_job(&db, &failed.id).unwrap();
+        assert_eq!(failed.status, "failed");
+        assert!(failed.error_message.is_some());
+        assert!(failed.completed_at.is_some());
+        assert_eq!(failed.worker_pid, None);
+        let partial_bytes = fs::metadata(partial_path_in(&models_dir, spec))
+            .unwrap()
+            .len();
+        assert_eq!(partial_bytes, first_attempt_bytes as u64);
+
+        let retry = create_test_job(&db, spec, &models_dir);
+        assert_eq!(retry.bytes_downloaded, partial_bytes);
+        let retry_id = retry.id.clone();
+        let retry_database_path = database_path.clone();
+        let retry_models_dir = models_dir.clone();
+        run_on_blocking_thread(move || {
+            let db = db::open_at(&retry_database_path)?;
+            run_download_attempt(&db, &retry_id, spec, &retry_models_dir)
+        })
+        .unwrap();
+        assert_eq!(load_job(&db, &retry.id).unwrap().status, "completed");
+        let ranges = server.finish();
+        assert_eq!(ranges, vec![0, partial_bytes]);
     }
 }

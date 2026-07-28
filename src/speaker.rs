@@ -7,7 +7,9 @@ use crate::{
 use anyhow::{Context, Result, anyhow, bail};
 use bzip2::read::BzDecoder;
 use reqwest::{StatusCode, blocking::Client, header::RANGE};
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use rusqlite::{
+    Connection, ErrorCode, OptionalExtension, Transaction, TransactionBehavior, params,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -346,8 +348,27 @@ pub fn create_install(db: &Connection) -> Result<SpeakerJob> {
         bail!("disk_space_low: 说话人模型安装至少需要约 260 MB 可用空间")
     }
     let downloaded = downloaded_bytes();
-    let job = insert_job(db, "install", None, "等待下载", downloaded, DOWNLOAD_SIZE)?;
-    spawn_worker(&job.id)?;
+    let (job, inserted) = insert_job(
+        db,
+        "install",
+        None,
+        "等待下载",
+        downloaded,
+        DOWNLOAD_SIZE,
+        None,
+    )?;
+    if !inserted {
+        return Ok(job);
+    }
+    if let Err(error) = spawn_worker(&job.id) {
+        db.execute(
+            "UPDATE speaker_jobs
+             SET status='failed',error_message=?2,completed_at=?3,updated_at=?3
+             WHERE id=?1 AND status='queued'",
+            params![&job.id, error.to_string(), now()],
+        )?;
+        return Err(error);
+    }
     Ok(job)
 }
 
@@ -366,8 +387,36 @@ pub fn create_analysis(db: &Connection, project_id: &str) -> Result<SpeakerJob> 
     if let Some(job) = active_job(db, "analyze", Some(project_id))? {
         return Ok(job);
     }
-    let job = insert_job(db, "analyze", Some(project_id), "等待分析", 0, 0)?;
-    spawn_worker(&job.id)?;
+    let source_sha256 = hash_file(&source)?;
+    if source_sha256 != loaded.media.sha256 {
+        bail!("speaker_source_changed: 项目原始媒体校验值已变化")
+    }
+    let base_version_id = loaded
+        .history
+        .current_version_id
+        .as_deref()
+        .ok_or_else(|| anyhow!("speaker_project_version_missing: 项目没有可绑定的当前版本"))?;
+    let (job, inserted) = insert_job(
+        db,
+        "analyze",
+        Some(project_id),
+        "等待分析",
+        0,
+        0,
+        Some((base_version_id, &source_sha256)),
+    )?;
+    if !inserted {
+        return Ok(job);
+    }
+    if let Err(error) = spawn_worker(&job.id) {
+        db.execute(
+            "UPDATE speaker_jobs
+             SET status='failed',error_message=?2,completed_at=?3,updated_at=?3
+             WHERE id=?1 AND status='queued'",
+            params![&job.id, error.to_string(), now()],
+        )?;
+        return Err(error);
+    }
     Ok(job)
 }
 
@@ -378,11 +427,15 @@ fn insert_job(
     stage: &str,
     bytes_downloaded: u64,
     total_bytes: u64,
-) -> Result<SpeakerJob> {
+    binding: Option<(&str, &str)>,
+) -> Result<(SpeakerJob, bool)> {
     let id = new_id("speaker");
     let timestamp = now();
-    db.execute(
-        "INSERT INTO speaker_jobs(id,kind,project_id,status,stage,progress,bytes_downloaded,total_bytes,created_at,updated_at,attempt_count) VALUES(?1,?2,?3,'queued',?4,?5,?6,?7,?8,?8,1)",
+    let (base_version_id, source_sha256) = binding
+        .map(|(version, source)| (Some(version), Some(source)))
+        .unwrap_or((None, None));
+    let inserted = db.execute(
+        "INSERT INTO speaker_jobs(id,kind,project_id,status,stage,progress,bytes_downloaded,total_bytes,created_at,updated_at,attempt_count,base_version_id,source_sha256) VALUES(?1,?2,?3,'queued',?4,?5,?6,?7,?8,?8,1,?9,?10)",
         params![
             id,
             kind,
@@ -391,10 +444,25 @@ fn insert_job(
             if total_bytes == 0 { 0.0 } else { bytes_downloaded as f64 / total_bytes as f64 },
             bytes_downloaded,
             total_bytes,
-            timestamp
+            timestamp,
+            base_version_id,
+            source_sha256
         ],
-    )?;
-    load_job(db, &id)
+    );
+    match inserted {
+        Ok(_) => Ok((load_job(db, &id)?, true)),
+        Err(error)
+            if error.sqlite_error_code() == Some(ErrorCode::ConstraintViolation)
+                && active_job(db, kind, project_id)?.is_some() =>
+        {
+            Ok((
+                active_job(db, kind, project_id)?
+                    .ok_or_else(|| anyhow!("speaker_job_duplicate: 活动任务已发生变化"))?,
+                false,
+            ))
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn active_job(db: &Connection, kind: &str, project_id: Option<&str>) -> Result<Option<SpeakerJob>> {
@@ -465,10 +533,16 @@ pub fn cancel(db: &Connection, job_id: &str) -> Result<SpeakerJob> {
         bail!("speaker_job_not_cancellable: 当前说话人任务不能取消")
     }
     let timestamp = now();
-    db.execute(
-        "UPDATE speaker_jobs SET status='cancelled',cancel_requested_at=?2,worker_pid=NULL,completed_at=?2,updated_at=?2 WHERE id=?1",
+    let changed = db.execute(
+        "UPDATE speaker_jobs
+         SET status='cancelled',cancel_requested_at=?2,worker_pid=NULL,
+             completed_at=?2,updated_at=?2
+         WHERE id=?1 AND status IN ('queued','running')",
         params![job_id, timestamp],
     )?;
+    if changed != 1 {
+        bail!("speaker_job_not_cancellable: 当前说话人任务已完成或被其他操作处理")
+    }
     if let Some(pid) = job.worker_pid
         && pid != std::process::id()
         && crate::util::process_is_active(pid)
@@ -488,32 +562,77 @@ pub fn resume(db: &Connection, job_id: &str) -> Result<SpeakerJob> {
     } else {
         0
     };
-    db.execute(
-        "UPDATE speaker_jobs SET status='queued',stage=?2,progress=?3,bytes_downloaded=?4,cancel_requested_at=NULL,error_message=NULL,completed_at=NULL,worker_pid=NULL,attempt_count=attempt_count+1,updated_at=?5 WHERE id=?1",
+    let (base_version_id, source_sha256) = if job.kind == "analyze" {
+        let project_id = job
+            .project_id
+            .as_deref()
+            .ok_or_else(|| anyhow!("speaker_project_missing: 分析任务缺少项目"))?;
+        let project = project::load(db, project_id)?;
+        let source_sha256 = hash_file(Path::new(&project.media.source_path))?;
+        if source_sha256 != project.media.sha256 {
+            bail!("speaker_source_changed: 项目原始媒体校验值已变化")
+        }
+        (project.history.current_version_id, Some(source_sha256))
+    } else {
+        (None, None)
+    };
+    let changed = db.execute(
+        "UPDATE speaker_jobs
+         SET status='queued',stage=?2,progress=?3,bytes_downloaded=?4,
+             cancel_requested_at=NULL,error_message=NULL,completed_at=NULL,worker_pid=NULL,
+             attempt_count=attempt_count+1,updated_at=?5,base_version_id=?6,source_sha256=?7
+         WHERE id=?1 AND status IN ('cancelled','failed','interrupted')",
         params![
             job_id,
-            if job.kind == "install" { "等待下载" } else { "等待分析" },
-            if job.total_bytes == 0 { 0.0 } else { downloaded as f64 / job.total_bytes as f64 },
+            if job.kind == "install" {
+                "等待下载"
+            } else {
+                "等待分析"
+            },
+            if job.total_bytes == 0 {
+                0.0
+            } else {
+                downloaded as f64 / job.total_bytes as f64
+            },
             downloaded,
-            now()
+            now(),
+            base_version_id,
+            source_sha256
         ],
-    )?;
-    spawn_worker(job_id)?;
+    );
+    match changed {
+        Ok(1) => {}
+        Ok(_) => bail!("speaker_job_not_resumable: 当前说话人任务不能继续"),
+        Err(error) if error.sqlite_error_code() == Some(ErrorCode::ConstraintViolation) => {
+            bail!("speaker_job_duplicate: 当前项目已有活动说话人任务")
+        }
+        Err(error) => return Err(error.into()),
+    }
+    if let Err(error) = spawn_worker(job_id) {
+        db.execute(
+            "UPDATE speaker_jobs
+             SET status='failed',error_message=?2,completed_at=?3,updated_at=?3
+             WHERE id=?1 AND status='queued'",
+            params![job_id, error.to_string(), now()],
+        )?;
+        return Err(error);
+    }
     load_job(db, job_id)
 }
 
 pub fn reconcile_interrupted(db: &Connection) -> Result<()> {
     let rows = db
-        .prepare("SELECT id,worker_pid,updated_at FROM speaker_jobs WHERE status IN ('queued','running')")?
+        .prepare("SELECT id,status,worker_pid,updated_at FROM speaker_jobs WHERE status IN ('queued','running')")?
         .query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
-                row.get::<_, Option<u32>>(1)?,
-                row.get::<_, String>(2)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<u32>>(2)?,
+                row.get::<_, String>(3)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    for (id, pid, updated_at) in rows {
+    for (id, status, pid, updated_at) in rows {
         let stale = chrono::DateTime::parse_from_rfc3339(&updated_at)
             .map(|time| {
                 chrono::Utc::now()
@@ -524,8 +643,11 @@ pub fn reconcile_interrupted(db: &Connection) -> Result<()> {
             .unwrap_or(true);
         if stale && !pid.is_some_and(crate::util::process_is_active) {
             db.execute(
-                "UPDATE speaker_jobs SET status='interrupted',error_message='上次说话人任务已中断，可以显式继续。',worker_pid=NULL,updated_at=?2 WHERE id=?1",
-                params![id, now()],
+                "UPDATE speaker_jobs
+                 SET status='interrupted',error_message='上次说话人任务已中断，可以显式继续。',
+                     worker_pid=NULL,updated_at=?2
+                 WHERE id=?1 AND status=?3 AND updated_at=?4 AND worker_pid IS ?5",
+                params![id, now(), status, updated_at, pid],
             )?;
         }
     }
@@ -554,12 +676,25 @@ pub fn run_worker(job_id: &str) -> Result<()> {
     };
     match result {
         Ok(()) => {
+            if kind == "analyze" {
+                if load_job(&db, job_id)?.status != "completed" {
+                    bail!("speaker_job_state_changed: 说话人分析结果未完成原子发布")
+                }
+                return Ok(());
+            }
             let completed = now();
-            db.execute(
-                "UPDATE speaker_jobs SET status='completed',stage='完成',progress=1,worker_pid=NULL,completed_at=?2,updated_at=?2 WHERE id=?1 AND status='running'",
+            let changed = db.execute(
+                "UPDATE speaker_jobs
+                 SET status='completed',stage='完成',progress=1,worker_pid=NULL,
+                     completed_at=?2,updated_at=?2
+                 WHERE id=?1 AND status='running' AND cancel_requested_at IS NULL",
                 params![job_id, completed],
             )?;
-            Ok(())
+            if changed == 1 || load_job(&db, job_id)?.status == "cancelled" {
+                Ok(())
+            } else {
+                bail!("speaker_job_state_changed: 说话人安装任务在完成前状态已变化")
+            }
         }
         Err(error) => {
             let current = load_job(&db, job_id)?;
@@ -568,7 +703,10 @@ pub fn run_worker(job_id: &str) -> Result<()> {
             }
             let failed = now();
             db.execute(
-                "UPDATE speaker_jobs SET status='failed',worker_pid=NULL,error_message=?2,completed_at=?3,updated_at=?3 WHERE id=?1",
+                "UPDATE speaker_jobs
+                 SET status='failed',worker_pid=NULL,error_message=?2,
+                     completed_at=?3,updated_at=?3
+                 WHERE id=?1 AND status='running'",
                 params![job_id, error.to_string(), failed],
             )?;
             Err(error)
@@ -686,10 +824,24 @@ fn update_job(
     progress: Option<f64>,
     bytes: Option<u64>,
 ) -> Result<()> {
-    db.execute(
+    let changed = db.execute(
         "UPDATE speaker_jobs SET stage=?2,progress=COALESCE(?3,progress),bytes_downloaded=COALESCE(?4,bytes_downloaded),updated_at=?5 WHERE id=?1 AND status='running'",
         params![job_id, stage, progress, bytes, now()],
     )?;
+    if changed != 1 {
+        let status = db
+            .query_row(
+                "SELECT status FROM speaker_jobs WHERE id=?1",
+                [job_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .ok_or_else(|| anyhow!("speaker_job_not_found: 说话人任务不存在：{job_id}"))?;
+        if status == "cancelled" {
+            bail!("speaker_cancelled: 说话人任务已取消")
+        }
+        bail!("speaker_job_state_changed: 说话人任务状态已变化，停止后台处理")
+    }
     Ok(())
 }
 
@@ -809,8 +961,21 @@ fn analyze_project(db: &mut Connection, job_id: &str) -> Result<()> {
         .project_id
         .as_deref()
         .ok_or_else(|| anyhow!("speaker_project_missing: 分析任务缺少项目"))?;
+    let (base_version_id, expected_source_sha256): (String, String) = db
+        .query_row(
+            "SELECT base_version_id,source_sha256 FROM speaker_jobs WHERE id=?1",
+            [job_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .context("speaker_job_binding_missing: 分析任务缺少项目版本或媒体校验绑定")?;
     let loaded = project::load(db, project_id)?;
     let source = Path::new(&loaded.media.source_path).canonicalize()?;
+    if loaded.history.current_version_id.as_deref() != Some(base_version_id.as_str())
+        || loaded.media.sha256 != expected_source_sha256
+        || hash_file(&source)? != expected_source_sha256
+    {
+        bail!("speaker_project_changed: 说话人分析开始前项目或原始媒体已发生变化")
+    }
     let work_dir = package_dir().join("work").join(job_id);
     if work_dir.exists() {
         fs::remove_dir_all(&work_dir)?;
@@ -861,9 +1026,44 @@ fn analyze_project(db: &mut Connection, job_id: &str) -> Result<()> {
     update_job(db, job_id, "建立字幕关联", Some(0.88), None)?;
     let parsed = parse_runtime_output(&String::from_utf8_lossy(&output.stdout))?;
     let track = build_track(&loaded.transcript.segments, &parsed);
-    project::mutate_with_snapshot(db, project_id, "生成说话人轨", |tx| {
-        replace_track_tx(tx, project_id, Some(&track))
-    })?;
+    if hash_file(&source)? != expected_source_sha256 {
+        bail!("speaker_source_changed: 说话人分析期间原始媒体内容发生变化")
+    }
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    if project::current_version_id(&tx, project_id)?.as_deref() != Some(base_version_id.as_str()) {
+        bail!("speaker_project_changed: 说话人分析期间项目已被修改，结果未发布")
+    }
+    let (job_status, cancel_requested, recorded_source): (String, bool, String) = tx.query_row(
+        "SELECT j.status,j.cancel_requested_at IS NOT NULL,m.sha256
+         FROM speaker_jobs j
+         JOIN media m ON m.project_id=j.project_id
+         WHERE j.id=?1 AND j.project_id=?2",
+        params![job_id, project_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    if job_status != "running" || cancel_requested {
+        bail!("speaker_cancelled: 说话人分析在发布结果前已取消")
+    }
+    if recorded_source != expected_source_sha256 {
+        bail!("speaker_source_changed: 说话人分析期间项目媒体绑定发生变化")
+    }
+    if hash_file(&source)? != expected_source_sha256 {
+        bail!("speaker_source_changed: 说话人分析期间原始媒体内容发生变化")
+    }
+    replace_track_tx(&tx, project_id, Some(&track))?;
+    project::snapshot_in_transaction(&tx, project_id, "生成说话人轨")?;
+    let completed_at = now();
+    let completed = tx.execute(
+        "UPDATE speaker_jobs
+         SET status='completed',stage='完成',progress=1,worker_pid=NULL,
+             completed_at=?2,updated_at=?2
+         WHERE id=?1 AND status='running' AND cancel_requested_at IS NULL",
+        params![job_id, completed_at],
+    )?;
+    if completed != 1 {
+        bail!("speaker_cancelled: 说话人分析在发布结果前已取消")
+    }
+    tx.commit()?;
     if work_dir.exists() {
         fs::remove_dir_all(work_dir)?;
     }
@@ -1267,6 +1467,59 @@ mod tests {
         let track = load_track(&db, "missing-project").unwrap();
         assert_eq!(track.status, "not_analyzed");
         assert!(track.speakers.is_empty());
+    }
+
+    #[test]
+    fn stale_speaker_analysis_binding_is_rejected_before_running_tools() {
+        let temp = tempdir().unwrap();
+        let media = temp.path().join("stale-speaker.wav");
+        fs::write(&media, b"fixture").unwrap();
+        let mut db = crate::db::open_at(&temp.path().join("stale-speaker.db")).unwrap();
+        let created = crate::project::create(&mut db, &media, None).unwrap();
+        db.execute(
+            "INSERT INTO speaker_jobs(
+                 id,kind,project_id,status,stage,created_at,updated_at,
+                 base_version_id,source_sha256
+             ) VALUES(
+                 'stale-speaker-job','analyze',?1,'running','analyzing','now','now',?2,?3
+             )",
+            params![
+                &created.id,
+                created.history.current_version_id.as_deref().unwrap(),
+                &created.media.sha256
+            ],
+        )
+        .unwrap();
+        crate::project::add_segment(&mut db, &created.id, 0.0, 1.0, "newer content".into(), None)
+            .unwrap();
+
+        let error = analyze_project(&mut db, "stale-speaker-job")
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("speaker_project_changed"));
+        assert_eq!(load_track(&db, &created.id).unwrap().status, "not_analyzed");
+    }
+
+    #[test]
+    fn speaker_stage_update_stops_after_cancellation() {
+        let temp = tempdir().unwrap();
+        let db = crate::db::open_at(&temp.path().join("cancelled-speaker.db")).unwrap();
+        db.execute(
+            "INSERT INTO speaker_jobs(
+                 id,kind,status,stage,created_at,updated_at
+             ) VALUES(
+                 'cancelled-speaker-job','install','cancelled','cancelled','now','now'
+             )",
+            [],
+        )
+        .unwrap();
+
+        let error = update_job(&db, "cancelled-speaker-job", "不应继续", Some(0.5), None)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("speaker_cancelled"));
     }
 
     #[test]

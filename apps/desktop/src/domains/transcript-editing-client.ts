@@ -1,4 +1,4 @@
-import { runCore } from "../core";
+import { runCore, runCoreStructured } from "../core";
 import type { CanvasSettings, Project, TranscriptionLanguage } from "../types";
 
 export const transcriptEditingClient = {
@@ -12,9 +12,9 @@ export const transcriptEditingClient = {
   splitSegment: (projectId: string, segmentId: string, textOffset: number, at: number) => runCore(["transcript", "split", projectId, segmentId, "--text-offset", String(textOffset), "--at", String(at)]),
   mergeSegments: (projectId: string, firstId: string, secondId: string) => runCore(["transcript", "merge", projectId, firstId, secondId]),
   updateTiming: (projectId: string, segmentId: string, start: number, end: number) => runCore(["transcript", "timing", projectId, segmentId, "--start", String(start), "--end", String(end)]),
-  offsetSegments: (projectId: string, segmentIds: string[], delta: number) => runCore(["transcript", "offset", projectId, ...segmentIds.flatMap((segmentId) => ["--segment", segmentId]), "--delta", String(delta)]),
+  offsetSegments: (projectId: string, segmentIds: string[], delta: number) => runCoreStructured({ kind: "transcript_offset", projectId, segmentIds, delta }),
   inspectSubtitleFile: (projectId: string, path: string) => runCore(["transcript", "inspect-file", projectId, path]),
-  importSubtitleFile: (projectId: string, path: string, expectedSha256: string) => runCore(["transcript", "import-file", projectId, path, "--confirm-replace", "--expected-sha256", expectedSha256]),
+  importSubtitleFile: (projectId: string, path: string, expectedSha256: string, expectedVersionId: string) => runCore(["transcript", "import-file", projectId, path, "--confirm-replace", "--expected-sha256", expectedSha256, "--expected-version", expectedVersionId]),
   setCanvas: (projectId: string, settings: CanvasSettings) => runCore(["canvas", "set", projectId, "--aspect-ratio", settings.aspectRatio, "--framing", settings.framing]),
   setSubtitleStyle: (projectId: string, preset: Project["subtitleStyle"]["preset"], position: Project["subtitleStyle"]["position"]) => runCore(["transcript", "set-style", projectId, "--preset", preset, "--position", position]),
   prepareMedia: (projectId: string) => runCore(["media", "prepare", projectId]),

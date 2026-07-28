@@ -15,7 +15,6 @@ const contextMessageKeys: Record<JobFailureContext, TranslationKey> = {
 };
 
 const codeMessageKeys: Partial<Record<string, TranslationKey>> = {
-  job_failed: "app.error.jobFailed",
   job_interrupted: "app.error.jobInterrupted",
   disk_space_low: "app.error.diskSpaceLow",
   model_hash_mismatch: "app.error.integrityCheckFailed",

@@ -229,7 +229,12 @@ pub fn start(
     )?;
     tx.commit()?;
     if let Err(error) = spawn_worker(&id, start_delay_ms) {
-        db.execute("UPDATE transcription_jobs SET status='failed',stage='failed',error_message=?2,completed_at=?3,updated_at=?3 WHERE id=?1", params![id, error.to_string(), now()])?;
+        db.execute(
+            "UPDATE transcription_jobs
+             SET status='failed',stage='failed',error_message=?2,completed_at=?3,updated_at=?3
+             WHERE id=?1 AND status='queued' AND worker_pid IS NULL",
+            params![id, error.to_string(), now()],
+        )?;
         return Err(error);
     }
     load(db, &id)
@@ -427,7 +432,9 @@ pub fn resume(
     tx.commit()?;
     if let Err(error) = spawn_worker(job_id, start_delay_ms) {
         db.execute(
-            "UPDATE transcription_jobs SET status='failed',stage='failed',error_message=?2,completed_at=?3,updated_at=?3 WHERE id=?1",
+            "UPDATE transcription_jobs
+             SET status='failed',stage='failed',error_message=?2,completed_at=?3,updated_at=?3
+             WHERE id=?1 AND status='queued' AND worker_pid IS NULL",
             params![job_id, error.to_string(), now()],
         )?;
         return Err(error).context("无法继续 MOSS 转写");
@@ -495,10 +502,10 @@ pub fn discard_candidate(db: &mut Connection, job_id: &str) -> Result<Transcript
 }
 
 pub fn reconcile_interrupted(db: &Connection) -> Result<()> {
-    let jobs = db.prepare("SELECT id,worker_pid,updated_at FROM transcription_jobs WHERE status IN ('queued','running','finalizing')")?
-        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<u32>>(1)?, row.get::<_, String>(2)?)))?
+    let jobs = db.prepare("SELECT id,status,worker_pid,updated_at FROM transcription_jobs WHERE status IN ('queued','running','finalizing')")?
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<u32>>(2)?, row.get::<_, String>(3)?)))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    for (id, pid, updated_at) in jobs {
+    for (id, status, pid, updated_at) in jobs {
         let stale = chrono::DateTime::parse_from_rfc3339(&updated_at)
             .map(|value| {
                 chrono::Utc::now()
@@ -508,7 +515,14 @@ pub fn reconcile_interrupted(db: &Connection) -> Result<()> {
             })
             .unwrap_or(true);
         if stale && !pid.is_some_and(crate::util::process_is_active) {
-            db.execute("UPDATE transcription_jobs SET status='interrupted',stage='interrupted',error_message='上次 MOSS 转写进程已中断，可以显式继续。',worker_pid=NULL,updated_at=?2 WHERE id=?1", params![id, now()])?;
+            db.execute(
+                "UPDATE transcription_jobs
+                 SET status='interrupted',stage='interrupted',
+                     error_message='上次 MOSS 转写进程已中断，可以显式继续。',
+                     worker_pid=NULL,updated_at=?2
+                 WHERE id=?1 AND status=?3 AND updated_at=?4 AND worker_pid IS ?5",
+                params![id, now(), status, updated_at, pid],
+            )?;
         }
     }
     cleanup_orphaned_artifacts(db)?;
@@ -526,15 +540,7 @@ fn cleanup_orphaned_artifacts(db: &Connection) -> Result<()> {
             let Some(job_id) = path.file_stem().and_then(|value| value.to_str()) else {
                 continue;
             };
-            let active = db
-                .query_row(
-                    "SELECT status IN ('queued','running','finalizing') FROM transcription_jobs WHERE id=?1",
-                    [job_id],
-                    |row| row.get::<_, bool>(0),
-                )
-                .optional()?
-                .unwrap_or(false);
-            if !active {
+            if !artifact_job_is_recoverable(db, job_id)? {
                 let _ = fs::remove_file(path);
             }
         }
@@ -548,15 +554,7 @@ fn cleanup_orphaned_artifacts(db: &Connection) -> Result<()> {
                 continue;
             };
             if let Some(job_id) = file_name.strip_suffix(".json.partial") {
-                let active = db
-                    .query_row(
-                        "SELECT status IN ('queued','running','finalizing') FROM transcription_jobs WHERE id=?1",
-                        [job_id],
-                        |row| row.get::<_, bool>(0),
-                    )
-                    .optional()?
-                    .unwrap_or(false);
-                if !active {
+                if !artifact_job_is_recoverable(db, job_id)? {
                     let _ = fs::remove_file(path);
                 }
                 continue;
@@ -569,20 +567,32 @@ fn cleanup_orphaned_artifacts(db: &Connection) -> Result<()> {
                 [path.to_string_lossy().as_ref()],
                 |row| row.get::<_, bool>(0),
             )?;
-            let recoverable_job = file_name.strip_suffix(".json").is_some_and(|job_id| {
-                db.query_row(
-                    "SELECT status IN ('queued','running','finalizing','cancelled','interrupted','failed') FROM transcription_jobs WHERE id=?1",
-                    [job_id],
-                    |row| row.get::<_, bool>(0),
-                )
-                .unwrap_or(false)
-            });
+            let recoverable_job = file_name
+                .strip_suffix(".json")
+                .map(|job_id| artifact_job_is_recoverable(db, job_id))
+                .transpose()?
+                .unwrap_or(false);
             if !referenced && !recoverable_job {
                 let _ = fs::remove_file(path);
             }
         }
     }
     Ok(())
+}
+
+fn artifact_job_is_recoverable(db: &Connection, job_id: &str) -> Result<bool> {
+    Ok(db
+        .query_row(
+            "SELECT status IN (
+                 'queued','running','finalizing','awaiting_apply',
+                 'cancelled','interrupted','failed'
+             )
+             FROM transcription_jobs WHERE id=?1",
+            [job_id],
+            |row| row.get::<_, bool>(0),
+        )
+        .optional()?
+        .unwrap_or(false))
 }
 
 fn spawn_worker(job_id: &str, start_delay_ms: Option<u64>) -> Result<()> {
@@ -1010,6 +1020,27 @@ fn finalize_result(
             return Ok(FinalizationOutcome::AwaitingApply);
         }
     }
+    if let Err(error) = project::assert_transcript_replacement_safe(&tx, &job.project_id) {
+        if expected_current_version.is_none()
+            && error
+                .to_string()
+                .contains("transcription_replacement_conflict")
+        {
+            tx.execute(
+                "UPDATE transcription_jobs
+                 SET status='awaiting_apply',stage='awaiting_apply',result_run_id=?2,
+                     error_message=?3,worker_pid=NULL,completed_at=NULL,updated_at=?4
+                 WHERE id=?1 AND status='finalizing'",
+                params![job.id, run_id, error.to_string(), now()],
+            )?;
+            tx.commit()?;
+            return Ok(FinalizationOutcome::AwaitingApply);
+        }
+        return Err(error);
+    }
+    if hash_file(Path::new(&project_value.media.source_path))? != source_sha256 {
+        bail!("transcription_source_changed: 转写期间原始媒体内容发生变化，结果未应用")
+    }
 
     let transaction_result = (|| -> Result<()> {
         tx.execute(
@@ -1315,6 +1346,111 @@ mod tests {
     }
 
     #[test]
+    fn retranscription_preserves_a_candidate_while_segments_have_dependencies() {
+        let temp = tempdir().unwrap();
+        let media = temp.path().join("dependent.wav");
+        fs::write(&media, b"media").unwrap();
+        let mut database = crate::db::open_at(&temp.path().join("dependent.db")).unwrap();
+        let created =
+            crate::project::create(&mut database, &media, Some("dependent".into())).unwrap();
+        let original = crate::project::add_segment(
+            &mut database,
+            &created.id,
+            0.0,
+            1.0,
+            "原字幕".into(),
+            None,
+        )
+        .unwrap();
+        let base = crate::project::load(&database, &created.id).unwrap();
+        let timestamp = now();
+        database
+            .execute(
+                "INSERT INTO transcription_jobs(
+                 id,project_id,provider_id,endpoint,model_id,hotwords_json,status,stage,
+                 base_version_id,source_sha256,created_at,updated_at
+             ) VALUES(
+                 'job-dependent',?1,?2,?3,?4,'[]','finalizing','validating_result',
+                 ?5,?6,?7,?7
+             )",
+                params![
+                    &base.id,
+                    PROVIDER_ID,
+                    DEFAULT_ENDPOINT,
+                    DEFAULT_MODEL_ID,
+                    &base.history.current_version_id,
+                    &base.media.sha256,
+                    &timestamp
+                ],
+            )
+            .unwrap();
+        database
+            .execute(
+                "INSERT INTO edits(
+                 id,project_id,kind,status,segment_id,start_seconds,end_seconds,reason,created_at
+             ) VALUES(
+                 'dependent-edit',?1,'semantic_cut','applied',?2,0,1,'fixture',?3
+             )",
+                params![&base.id, &original.id, &timestamp],
+            )
+            .unwrap();
+        let job = load(&database, "job-dependent").unwrap();
+        let raw = r#"{"segments":[{"start":0.0,"end":1.0,"speaker":"S01","text":"候选字幕"}]}"#;
+        let raw_path = temp.path().join("job-dependent.json");
+        fs::write(&raw_path, raw).unwrap();
+        let segments = parsed_segments(PROVIDER_ID, raw).unwrap();
+
+        import_result(
+            &mut database,
+            &job,
+            &base,
+            "run-dependent",
+            &raw_path,
+            raw,
+            &segments,
+        )
+        .unwrap();
+
+        assert_eq!(
+            load(&database, "job-dependent").unwrap().status,
+            "awaiting_apply"
+        );
+        assert_eq!(
+            crate::project::load(&database, &base.id)
+                .unwrap()
+                .transcript
+                .segments[0]
+                .text,
+            "原字幕"
+        );
+        let expected = crate::project::current_version_id(&database, &base.id)
+            .unwrap()
+            .unwrap();
+        let error = apply_candidate(&mut database, "job-dependent", &expected, true)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("transcription_replacement_conflict"));
+        assert_eq!(
+            load(&database, "job-dependent").unwrap().status,
+            "awaiting_apply"
+        );
+
+        database
+            .execute("DELETE FROM edits WHERE id='dependent-edit'", [])
+            .unwrap();
+        let applied = apply_candidate(&mut database, "job-dependent", &expected, true).unwrap();
+        assert_eq!(applied.status, "completed");
+        assert_eq!(
+            crate::project::load(&database, &base.id)
+                .unwrap()
+                .transcript
+                .segments[0]
+                .text,
+            "候选字幕"
+        );
+    }
+
+    #[test]
     fn candidate_apply_rechecks_version_and_discard_removes_result() {
         let temp = tempdir().unwrap();
         let media = temp.path().join("discard.wav");
@@ -1385,6 +1521,43 @@ mod tests {
             assert!(path.exists());
         }
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn orphan_cleanup_preserves_artifacts_for_resumable_jobs() {
+        let temp = tempdir().unwrap();
+        let media = temp.path().join("recoverable-artifact.wav");
+        fs::write(&media, b"media").unwrap();
+        let mut database =
+            crate::db::open_at(&temp.path().join("recoverable-artifact.db")).unwrap();
+        let project_value = crate::project::create(&mut database, &media, None).unwrap();
+        database
+            .execute(
+                "INSERT INTO transcription_jobs(
+                     id,project_id,provider_id,endpoint,model_id,hotwords_json,
+                     status,stage,created_at,updated_at
+                 ) VALUES(
+                     'recoverable-artifact-job',?1,?2,?3,?4,'[]',
+                     'interrupted','interrupted','now','now'
+                 )",
+                params![
+                    &project_value.id,
+                    PROVIDER_ID,
+                    DEFAULT_ENDPOINT,
+                    DEFAULT_MODEL_ID
+                ],
+            )
+            .unwrap();
+
+        assert!(artifact_job_is_recoverable(&database, "recoverable-artifact-job").unwrap());
+        database
+            .execute(
+                "UPDATE transcription_jobs SET status='completed'
+                 WHERE id='recoverable-artifact-job'",
+                [],
+            )
+            .unwrap();
+        assert!(!artifact_job_is_recoverable(&database, "recoverable-artifact-job").unwrap());
     }
 
     #[test]

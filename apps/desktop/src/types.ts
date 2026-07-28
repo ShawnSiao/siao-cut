@@ -138,6 +138,10 @@ export type Task = {
   progress: number;
   errorMessage: string | null;
   errorCode?: CoreErrorCode | null;
+  attemptCount?: number;
+  completedAt?: string | null;
+  cancelRequestedAt?: string | null;
+  baseVersionId?: string | null;
   workflowId?: string | null;
   instructionLocale: UiLocale;
 };
@@ -582,6 +586,7 @@ export type TranscriptionCandidateSummary = {
 
 export type ProjectDeletionPreflight = {
   projectId: string;
+  expectedVersionId: string;
   deletable: boolean;
   blockers: Array<{ kind: string; id: string; status: string }>;
 };
@@ -671,6 +676,7 @@ export type SubtitleImportPreview = {
   format: "srt" | "vtt" | "ass";
   sourcePath: string;
   sha256: string;
+  expectedVersionId: string;
   segmentCount: number;
   segments: Segment[];
   quality: SubtitleQualityReport;
@@ -705,6 +711,7 @@ export type CoreEnvelope = {
   code?: CoreErrorCode;
   message?: string;
   taskId?: string;
+  task?: Task | null;
   agentRunId?: string;
   codex?: CodexHealth;
   agentRun?: AgentRun;

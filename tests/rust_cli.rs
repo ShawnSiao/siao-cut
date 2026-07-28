@@ -1,4 +1,5 @@
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{fs, path::Path, process::Command};
 use tempfile::tempdir;
 
@@ -116,6 +117,270 @@ fn invalid_arguments_still_return_usage_error() {
     assert_eq!(output.status.code(), Some(2));
     assert!(output.stdout.is_empty());
     assert!(String::from_utf8_lossy(&output.stderr).contains("unrecognized subcommand"));
+}
+
+#[test]
+fn task_claim_can_deliver_and_idempotently_reissue_a_complete_payload_file() {
+    let temp = tempdir().unwrap();
+    let media = temp.path().join("claim-payload.wav");
+    fs::write(&media, b"audio").unwrap();
+    let imported = run_direct(temp.path(), &["import", media.to_str().unwrap()]);
+    let project_id = imported["projectId"].as_str().unwrap();
+    run_direct(
+        temp.path(),
+        &[
+            "transcript",
+            "add",
+            project_id,
+            "--start",
+            "0",
+            "--end",
+            "2",
+            "--text",
+            "需要完整交接的字幕文本",
+        ],
+    );
+    let workflow = run_direct(
+        temp.path(),
+        &["workflow", "create", project_id, "--kind", "summary"],
+    );
+    let task_id = workflow["taskId"].as_str().unwrap();
+    let first_output = temp.path().join("claim-payload.json");
+    fs::write(&first_output, b"previous payload").unwrap();
+    let first = run_direct(
+        temp.path(),
+        &[
+            "task",
+            "claim",
+            task_id,
+            "--worker",
+            "file-agent",
+            "--payload-output",
+            first_output.to_str().unwrap(),
+        ],
+    );
+
+    assert!(first.get("payload").is_none());
+    assert_eq!(first["claimReused"], false);
+    assert_eq!(first["task"]["status"], "claimed");
+    assert_eq!(first["task"]["attemptCount"], 1);
+    assert_eq!(
+        Path::new(first["payloadFile"]["path"].as_str().unwrap()),
+        first_output.canonicalize().unwrap()
+    );
+    let first_bytes = fs::read(&first_output).unwrap();
+    assert_eq!(first["payloadFile"]["bytes"], first_bytes.len() as u64);
+    assert_eq!(
+        first["payloadFile"]["sha256"],
+        format!("{:x}", Sha256::digest(&first_bytes))
+    );
+    let payload: Value = serde_json::from_slice(&first_bytes).unwrap();
+    let lease_id = payload["leaseId"].as_str().unwrap().to_owned();
+    assert_eq!(payload["taskId"], task_id);
+    assert_eq!(payload["attemptCount"], 1);
+    assert_eq!(first["leaseId"], lease_id);
+    assert!(payload["segments"].is_array());
+    assert!(payload["baseVersionId"].is_string());
+    assert!(payload["instructions"].is_string());
+    assert!(payload["responseSchema"].is_object());
+
+    let second_output = first_output.clone();
+    let second = run_direct(
+        temp.path(),
+        &[
+            "task",
+            "claim",
+            task_id,
+            "--worker",
+            "file-agent",
+            "--lease-id",
+            lease_id.as_str(),
+            "--payload-output",
+            second_output.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(second["claimReused"], true);
+    assert_eq!(second["task"]["status"], "claimed");
+    assert_eq!(second["task"]["attemptCount"], 1);
+    assert_eq!(fs::read(&second_output).unwrap(), first_bytes);
+    assert!(fs::read_dir(temp.path()).unwrap().all(|entry| {
+        let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+        !name.contains(".siaocut-claim-")
+            && !name.ends_with(".partial")
+            && !name.ends_with(".backup")
+            && !name.ends_with(".rollback")
+    }));
+    let task_events = run_direct(temp.path(), &["task", "events", task_id, "--after", "0"]);
+    assert_eq!(
+        task_events["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["kind"] == "claimed")
+            .count(),
+        1
+    );
+
+    run_direct(
+        temp.path(),
+        &[
+            "task",
+            "fail",
+            task_id,
+            "--worker",
+            "file-agent",
+            "--lease-id",
+            lease_id.as_str(),
+            "--message",
+            "第一次尝试失败",
+        ],
+    );
+    run_direct(temp.path(), &["task", "retry", task_id]);
+    let stale_reclaim = run_direct_error(
+        temp.path(),
+        &[
+            "task",
+            "claim",
+            task_id,
+            "--worker",
+            "file-agent",
+            "--lease-id",
+            lease_id.as_str(),
+        ],
+    );
+    assert_eq!(stale_reclaim["code"], "task_lease_mismatch");
+    let second_attempt_output = temp.path().join("claim-payload-attempt-2.json");
+    let second_attempt = run_direct(
+        temp.path(),
+        &[
+            "task",
+            "claim",
+            task_id,
+            "--worker",
+            "file-agent",
+            "--payload-output",
+            second_attempt_output.to_str().unwrap(),
+        ],
+    );
+    let second_attempt_payload: Value =
+        serde_json::from_slice(&fs::read(&second_attempt_output).unwrap()).unwrap();
+    let second_lease_id = second_attempt_payload["leaseId"].as_str().unwrap();
+    assert_ne!(lease_id, second_lease_id);
+    assert_eq!(second_attempt["task"]["attemptCount"], 2);
+
+    let stale_heartbeat = run_direct_error(
+        temp.path(),
+        &[
+            "task",
+            "heartbeat",
+            task_id,
+            "--worker",
+            "file-agent",
+            "--lease-id",
+            lease_id.as_str(),
+            "--progress",
+            "0.5",
+        ],
+    );
+    assert_eq!(stale_heartbeat["code"], "task_lease_mismatch");
+    let stale_fail = run_direct_error(
+        temp.path(),
+        &[
+            "task",
+            "fail",
+            task_id,
+            "--worker",
+            "file-agent",
+            "--lease-id",
+            lease_id.as_str(),
+            "--message",
+            "旧尝试不应覆盖新任务",
+        ],
+    );
+    assert_eq!(stale_fail["code"], "task_lease_mismatch");
+    let stale_response = temp.path().join("stale-response.json");
+    fs::write(
+        &stale_response,
+        json!({
+            "baseVersionId": second_attempt_payload["baseVersionId"],
+            "summary": "旧尝试不应提交"
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let stale_submit = run_direct_error(
+        temp.path(),
+        &[
+            "task",
+            "submit",
+            task_id,
+            "--worker",
+            "file-agent",
+            "--lease-id",
+            lease_id.as_str(),
+            "--response",
+            stale_response.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(stale_submit["code"], "task_lease_mismatch");
+    let current_project = run_direct(temp.path(), &["project", "show", project_id]);
+    let current_task = current_project["project"]["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|task| task["id"] == task_id)
+        .unwrap();
+    assert_eq!(current_task["status"], "claimed");
+    assert_eq!(current_task["lease"]["id"], second_lease_id);
+
+    let failed_workflow = run_direct(
+        temp.path(),
+        &["workflow", "create", project_id, "--kind", "proofread"],
+    );
+    let failed_task_id = failed_workflow["taskId"].as_str().unwrap();
+    let output_directory = temp.path().join("payload-output-directory");
+    fs::create_dir(&output_directory).unwrap();
+    let failed = run_direct_error(
+        temp.path(),
+        &[
+            "task",
+            "claim",
+            failed_task_id,
+            "--worker",
+            "file-agent",
+            "--payload-output",
+            output_directory.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(failed["code"], "task_payload_output_failed");
+    let project = run_direct(temp.path(), &["project", "show", project_id]);
+    let failed_task = project["project"]["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|task| task["id"] == failed_task_id)
+        .unwrap();
+    assert_eq!(failed_task["status"], "queued");
+    assert_eq!(failed_task["attemptCount"], 0);
+    assert!(failed_task["lease"].is_null());
+    let failed_events = run_direct(
+        temp.path(),
+        &["task", "events", failed_task_id, "--after", "0"],
+    );
+    assert!(
+        failed_events["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|event| event["kind"] != "claimed")
+    );
+    assert!(fs::read_dir(temp.path()).unwrap().all(|entry| {
+        let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+        !name.contains(".siaocut-claim-")
+            && !name.ends_with(".partial")
+            && !name.ends_with(".backup")
+            && !name.ends_with(".rollback")
+    }));
 }
 
 #[test]
@@ -353,6 +618,9 @@ fn subtitle_file_cli_previews_confirms_checks_and_recovers() {
         true
     );
     let hash = preview["subtitleImportPreview"]["sha256"].as_str().unwrap();
+    let expected_version = preview["subtitleImportPreview"]["expectedVersionId"]
+        .as_str()
+        .unwrap();
 
     let confirmation = run_direct_error(
         temp.path(),
@@ -363,6 +631,8 @@ fn subtitle_file_cli_previews_confirms_checks_and_recovers() {
             captions.to_str().unwrap(),
             "--expected-sha256",
             hash,
+            "--expected-version",
+            expected_version,
         ],
     );
     assert_eq!(
@@ -385,6 +655,8 @@ fn subtitle_file_cli_previews_confirms_checks_and_recovers() {
             "--confirm-replace",
             "--expected-sha256",
             hash,
+            "--expected-version",
+            expected_version,
         ],
     );
     assert_eq!(applied["subtitleImport"]["insertedSegments"], 2);
@@ -609,6 +881,25 @@ fn project_agent_and_export_contract_remain_compatible() {
         ],
     );
     let segment_id = added["segment"]["id"].as_str().unwrap();
+    let missing_translation_output = temp.path().join("missing-translation.srt");
+    let missing_translation = run_error(
+        temp.path(),
+        &[
+            "transcript",
+            "export",
+            project_id,
+            "--format",
+            "srt",
+            "--lang",
+            "en",
+            "--subtitle-mode",
+            "translated",
+            "-o",
+            missing_translation_output.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(missing_translation["code"], "translation_missing");
+    assert!(!missing_translation_output.exists());
     let glossary = run(
         temp.path(),
         &[
@@ -665,6 +956,7 @@ fn project_agent_and_export_contract_remain_compatible() {
         "你好"
     );
     let base_version_id = claim["payload"]["baseVersionId"].as_str().unwrap();
+    let lease_id = claim["leaseId"].as_str().unwrap();
     let heartbeat = run(
         temp.path(),
         &[
@@ -673,6 +965,8 @@ fn project_agent_and_export_contract_remain_compatible() {
             task_id,
             "--worker",
             "integration-agent",
+            "--lease-id",
+            lease_id,
             "--progress",
             "0.5",
             "--message",
@@ -697,6 +991,8 @@ fn project_agent_and_export_contract_remain_compatible() {
             task_id,
             "--worker",
             "integration-agent",
+            "--lease-id",
+            lease_id,
             "--response",
             response_file.to_str().unwrap(),
         ],
@@ -834,7 +1130,7 @@ fn recoverable_agent_cli_uses_fake_codex_and_stops_at_review() {
     fs::write(
         &fake_codex,
         format!(
-            "@echo off\r\nif \"%~1\"==\"--version\" (\r\n  echo codex-cli 0.fake\r\n  exit /b 0\r\n)\r\nif \"%~1\"==\"login\" (\r\n  echo Logged in using ChatGPT\r\n  exit /b 0\r\n)\r\n> result.json echo {{\"baseVersionId\":\"{base_version_id}\",\"processedSegmentIds\":[\"{segment_id}\"],\"patches\":[{{\"segmentId\":\"{segment_id}\",\"before\":\"hello\",\"after\":\"hello.\",\"reason\":\"fake CLI integration\",\"confidence\":0.9}}]}}\r\necho {{\"type\":\"thread.started\",\"thread_id\":\"fake-cli-thread\"}}\r\necho {{\"type\":\"turn.completed\"}}\r\nexit /b 0\r\n"
+            "@echo off\r\nif \"%~1\"==\"--version\" (\r\n  echo codex-cli 0.145.0\r\n  exit /b 0\r\n)\r\nif \"%~1\"==\"login\" (\r\n  echo Logged in using ChatGPT\r\n  exit /b 0\r\n)\r\n> result.json echo {{\"baseVersionId\":\"{base_version_id}\",\"processedSegmentIds\":[\"{segment_id}\"],\"patches\":[{{\"segmentId\":\"{segment_id}\",\"before\":\"hello\",\"after\":\"hello.\",\"reason\":\"fake CLI integration\",\"confidence\":0.9}}]}}\r\necho {{\"type\":\"thread.started\",\"thread_id\":\"fake-cli-thread\"}}\r\necho {{\"type\":\"turn.completed\"}}\r\nexit /b 0\r\n"
         ),
     )
     .unwrap();
@@ -1238,6 +1534,7 @@ fn voice_subtitle_agent_and_style_changes_share_one_recoverable_time_map() {
         &["task", "claim", "--worker", "combined-acceptance"],
     );
     let task_id = claim["taskId"].as_str().unwrap();
+    let lease_id = claim["leaseId"].as_str().unwrap();
     assert_eq!(claim["instructionLocale"], "en-US");
     let response = temp.path().join("combined-agent-response.json");
     fs::write(
@@ -1263,6 +1560,8 @@ fn voice_subtitle_agent_and_style_changes_share_one_recoverable_time_map() {
             task_id,
             "--worker",
             "combined-acceptance",
+            "--lease-id",
+            lease_id,
             "--response",
             response.to_str().unwrap(),
         ],
@@ -1366,6 +1665,7 @@ fn subtitle_format_and_language_matrix_stays_explicit() {
         temp.path(),
         &["task", "claim", "--worker", "subtitle-matrix"],
     );
+    let lease_id = claim["leaseId"].as_str().unwrap();
     let response = temp.path().join("subtitle-matrix-response.json");
     fs::write(
         &response,
@@ -1390,6 +1690,8 @@ fn subtitle_format_and_language_matrix_stays_explicit() {
             task_id,
             "--worker",
             "subtitle-matrix",
+            "--lease-id",
+            lease_id,
             "--response",
             response.to_str().unwrap(),
         ],

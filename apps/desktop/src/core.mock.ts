@@ -151,6 +151,7 @@ const mockSubtitlePreview: SubtitleImportPreview = {
   format: "srt",
   sourcePath: "demo.srt",
   sha256: "a".repeat(64),
+  expectedVersionId: "v1",
   segmentCount: 2,
   segments: [
     { id: "preview-1", start: 0, end: 2, text: "导入后的第一条字幕", confidence: null },
@@ -329,9 +330,12 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
       if (job.projectId === args[2] && ["queued", "running", "finalizing", "awaiting_apply"].includes(job.status))
         blockers.push({ kind: "transcription", id: job.id, status: job.status });
     }
-    return { apiVersion: "0.1", status: "ok", deletionPreflight: { projectId: args[2], deletable: blockers.length === 0, blockers } };
+    return { apiVersion: "0.1", status: "ok", deletionPreflight: { projectId: args[2], expectedVersionId: candidate?.history.currentVersionId ?? "", deletable: blockers.length === 0, blockers } };
   }
   if (command === "project" && subcommand === "delete") {
+    const candidate = mockProjects.find((project) => project.id === args[2]);
+    if (valueAfter("--expected-version") !== (candidate?.history.currentVersionId ?? ""))
+      throw new Error("project_delete_version_mismatch: 项目在删除确认后发生变化，请重新确认");
     mockProjects = mockProjects.filter((project) => project.id !== args[2]);
     mockProject = mockProjects[0] ?? structuredClone(sampleProject);
     return { apiVersion: "0.1", status: "ok", projectId: args[2], message: "项目已删除；原始媒体文件未被修改。" };
@@ -524,10 +528,12 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
     return finishMockStructureEdit("offset", segmentIds, null, [], impact);
   }
   if (command === "transcript" && subcommand === "inspect-file") {
-    return { apiVersion: "0.1", status: "ok", subtitleImportPreview: structuredClone(mockSubtitlePreview), message: "字幕文件已预检；尚未写入项目。" };
+    return { apiVersion: "0.1", status: "ok", subtitleImportPreview: { ...structuredClone(mockSubtitlePreview), expectedVersionId: mockProject.history.currentVersionId ?? "" }, message: "字幕文件已预检；尚未写入项目。" };
   }
   if (command === "transcript" && subcommand === "import-file") {
     if (!args.includes("--confirm-replace")) throw new Error("替换项目字幕需要显式确认");
+    if (valueAfter("--expected-version") !== mockProject.history.currentVersionId)
+      throw new Error("subtitle_import_version_mismatch: 项目在字幕导入确认后发生变化，请重新预检");
     const nextProject = structuredClone(mockProject);
     nextProject.transcript = {
       sourceLanguage: nextProject.transcript.sourceLanguage,
@@ -1005,7 +1011,7 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
     return { apiVersion: "0.1", status: "ok", project: mockProject, workflowId, taskId, message: "工作流已创建，需要 Agent 继续。" };
   }
   if (command === "agent" && subcommand === "health") {
-    return { apiVersion: "0.1", status: "ok", codex: { available: true, authenticated: true, version: "codex-cli 0.144.5", authMode: "chatgpt" }, message: "Codex CLI 已就绪。" };
+    return { apiVersion: "0.1", status: "ok", codex: { available: true, authenticated: true, version: "codex-cli 0.145.0", authMode: "chatgpt" }, message: "Codex CLI 已就绪。" };
   }
   if (command === "agent" && subcommand === "start") {
     const task = mockProject.tasks.find((candidate) => candidate.id === args[2]);
@@ -1022,7 +1028,7 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
       currentBatch: 1,
       batchCount: 1,
       timeoutSeconds: Number(valueAfter("--timeout-seconds") ?? 900),
-      cliVersion: "codex-cli 0.144.5",
+      cliVersion: "codex-cli 0.145.0",
       authMode: "chatgpt",
       codexThreadId: null,
       cancelRequestedAt: null,
@@ -1146,10 +1152,62 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
     if (set) set.status = status;
     return { apiVersion: "0.1", status: "ok", project: mockProject };
   }
+  if (command === "task" && subcommand === "claim") {
+    const task = mockProject.tasks.find((item) => item.id === args[2]);
+    const worker = valueAfter("--worker");
+    const requestedLeaseId = valueAfter("--lease-id");
+    if (!task || !worker) return { apiVersion: "0.1", status: "error", error: { code: "invalid_request", message: "Agent 任务或 worker 不存在。" } };
+    const reusing = ["claimed", "running"].includes(task.status);
+    if (reusing && (task.lease?.worker !== worker || task.lease?.id !== requestedLeaseId)) {
+      return { apiVersion: "0.1", status: "error", error: { code: "task_lease_mismatch", message: "当前任务租约已失效。" } };
+    }
+    if (!reusing) {
+      const attemptCount = (task.attemptCount ?? 0) + 1;
+      const createdAt = new Date().toISOString();
+      task.status = "claimed";
+      task.attemptCount = attemptCount;
+      task.lease = {
+        worker,
+        id: `mock-lease-${task.id}-${attemptCount}`,
+        expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
+      };
+      task.lastActivity = { kind: "claimed", progress: null, message: "Agent 已领取任务", createdAt };
+    }
+    syncMockProject(mockProject);
+    return { apiVersion: "0.1", status: "ok", task: structuredClone(task), leaseId: task.lease?.id, claimReused: reusing };
+  }
+  if (command === "task" && subcommand === "fail") {
+    const task = mockProject.tasks.find((item) => item.id === args[2]);
+    const worker = valueAfter("--worker");
+    const leaseId = valueAfter("--lease-id");
+    if (!task || !["claimed", "running"].includes(task.status) || task.lease?.worker !== worker || task.lease?.id !== leaseId) {
+      return { apiVersion: "0.1", status: "error", error: { code: "task_lease_mismatch", message: "当前任务租约已失效。" } };
+    }
+    const message = valueAfter("--message") ?? "Agent 处理失败";
+    const createdAt = new Date().toISOString();
+    task.status = "failed";
+    task.errorMessage = message;
+    task.lease = null;
+    task.lastActivity = { kind: "failed", progress: null, message, createdAt };
+    syncMockProject(mockProject);
+    return { apiVersion: "0.1", status: "ok", task: structuredClone(task) };
+  }
   if (command === "task" && ["retry", "cancel"].includes(subcommand)) {
     const task = mockProject.tasks.find((item) => item.id === args[2]);
-    if (task) task.status = subcommand === "retry" ? "queued" : "cancelled";
-    return { apiVersion: "0.1", status: "ok", project: mockProject };
+    if (!task) return { apiVersion: "0.1", status: "error", error: { code: "invalid_request", message: "Agent 任务不存在。" } };
+    const createdAt = new Date().toISOString();
+    task.status = subcommand === "retry" ? "queued" : "cancelled";
+    task.progress = 0;
+    task.errorMessage = null;
+    task.lease = null;
+    task.lastActivity = {
+      kind: subcommand === "retry" ? "queued" : "cancelled",
+      progress: subcommand === "retry" ? 0 : null,
+      message: subcommand === "retry" ? "任务已重新排队" : "任务已取消",
+      createdAt,
+    };
+    syncMockProject(mockProject);
+    return { apiVersion: "0.1", status: "ok", task: structuredClone(task), project: structuredClone(mockProject) };
   }
   return {
     apiVersion: "0.1",
