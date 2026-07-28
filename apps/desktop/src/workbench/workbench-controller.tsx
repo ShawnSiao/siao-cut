@@ -2402,7 +2402,7 @@ function WorkbenchController() {
         <div className="privacy"><ShieldCheck size={15}/><span>{tr("app.s0246")}</span></div>
       </aside>
 
-      <section className="workbench">
+      <section className={`workbench${project ? "" : " empty-workbench"}`}>
         <header className="topbar">
           <div className="topbar-heading"><p className="eyebrow">{tr("app.s0247")}</p><h1>{project?.title ?? tr("app.s0248")}</h1></div>
 	          <div className="command-bar creator-command-bar" aria-label={tr("app.s0249")}>

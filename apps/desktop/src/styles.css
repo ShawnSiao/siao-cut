@@ -143,9 +143,10 @@ h2 { margin: 4px 0 0; font-size: 15px; letter-spacing: -.02em; }
 .auto-progress-error { grid-column: 2 / -1; margin: 0; color: #f1aea1; font-size: 12px; }
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
-.welcome-card { min-height: 540px; display: grid; place-items: center; align-content: center; text-align: center; border: 1px solid var(--line); border-radius: 14px; background: linear-gradient(145deg, #151c22, #11171c); padding: 40px; }
+.workbench.empty-workbench { display: flex; flex-direction: column; }
+.welcome-card { min-height: 540px; display: grid; flex: 1 0 auto; place-items: center; align-content: center; text-align: center; border: 1px solid var(--line); border-radius: 14px; background: linear-gradient(145deg, #151c22, #11171c); padding: 40px; }
 .welcome-card h2 { margin: 10px 0; font-size: 30px; }
-.welcome-card > p:not(.eyebrow) { max-width: 480px; color: #9da9b2; line-height: 1.75; font-size: 13px; }
+.welcome-card > p:not(.eyebrow) { max-width: 720px; color: #9da9b2; line-height: 1.75; text-wrap: balance; font-size: 13px; }
 .welcome-icon { width: 64px; height: 64px; display: grid; place-items: center; margin-bottom: 22px; border: 1px solid #4a6137; border-radius: 18px; background: #1b2a18; color: var(--acid); }
 .welcome-actions { display: flex; gap: 8px; }
 .stage-grid, .editor-grid { display: grid; gap: 17px; }
@@ -395,8 +396,8 @@ h2 { margin: 4px 0 0; font-size: 15px; letter-spacing: -.02em; }
 .dialog-close { position: absolute; top: 12px; right: 12px; display: grid; place-items: center; border: 0; border-radius: var(--radius-control); background: transparent; padding: 6px; color: var(--text-muted); }
 .dialog-close:hover { background: var(--bg-control); color: var(--text-primary); }
 .runtime-checklist { display: grid; gap: 7px; }
-.runtime-checklist.compact { width: min(720px, 100%); gap: 8px; margin: 9px 0 19px; }
-.runtime-components { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.runtime-checklist.compact { width: min(960px, 100%); gap: 8px; margin: 9px 0 19px; }
+.runtime-components { display: grid; grid-template-columns: minmax(130px, .8fr) minmax(130px, .8fr) minmax(330px, 1.9fr) minmax(170px, 1fr); gap: 8px; }
 .runtime-row { min-height: 56px; display: grid; grid-template-columns: 19px minmax(0, 1fr) auto; align-items: center; gap: 9px; border: 1px solid var(--line); border-radius: 9px; background: #11171c; padding: 9px 11px; color: #aab5bd; }
 .runtime-row > span { min-width: 0; display: grid; gap: 3px; text-align: left; }
 .runtime-row strong { color: #e7ebe8; font-size: 13px; }
@@ -629,7 +630,8 @@ h2 { margin: 4px 0 0; font-size: 15px; letter-spacing: -.02em; }
 .model-progress > span { position: absolute; inset: 0 auto 0 0; background: var(--info-soft); }
 .model-progress small { position: relative; z-index: 1; display: grid; height: 100%; place-items: center; color: #d9e0d6; }
 .runtime-disclosure { margin: 10px 0 0; line-height: 1.5; }
-@media (max-width: 760px) { .model-options { grid-template-columns: 1fr; } .runtime-components { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 1200px) { .runtime-components { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 760px) { .model-options { grid-template-columns: 1fr; } }
 @media (max-width: 1200px) {
   .workbench { padding-inline: 20px; }
   .stage-grid { grid-template-columns: minmax(480px, 1fr) 250px; }

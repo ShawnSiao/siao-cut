@@ -427,7 +427,7 @@ test("previews and explicitly replaces local subtitle files", async ({ page }) =
 });
 
 test("separates runtime status cards from the transcription model control", async ({ page }) => {
-  await page.setViewportSize({ width: 1368, height: 763 });
+  await page.setViewportSize({ width: 2560, height: 1410 });
   await page.addInitScript(() => localStorage.setItem("siaocut.modelPath", "C:\\Models\\ggml-large-v3-turbo-q5_0-multilingual.bin"));
   await page.goto("/");
 
@@ -441,6 +441,7 @@ test("separates runtime status cards from the transcription model control", asyn
 
   await expect(page.getByRole("heading", { name: "从一段口播开始。" })).toBeVisible();
   const checklist = page.getByLabel("本机运行组件");
+  const welcome = page.locator(".welcome-card");
   const cards = checklist.locator(".runtime-components .runtime-row");
   const model = checklist.locator(".runtime-model-row");
   await expect(cards).toHaveCount(4);
@@ -462,6 +463,15 @@ test("separates runtime status cards from the transcription model control", asyn
   expect(Math.abs(modelBox!.width - cardsBox!.width)).toBeLessThanOrEqual(1);
   const modelDetail = model.locator("small");
   expect(await modelDetail.evaluate((element) => element.scrollWidth <= element.clientWidth && element.scrollHeight <= element.clientHeight)).toBe(true);
+  const welcomeBox = await welcome.boundingBox();
+  const workbenchBox = await page.locator(".workbench").boundingBox();
+  expect(welcomeBox).not.toBeNull();
+  expect(workbenchBox).not.toBeNull();
+  expect(Math.abs((welcomeBox!.y + welcomeBox!.height) - (workbenchBox!.y + workbenchBox!.height - 30))).toBeLessThanOrEqual(2);
+  const welcomeCopy = welcome.locator(":scope > p:not(.eyebrow)");
+  expect(await welcomeCopy.evaluate((element) => element.getBoundingClientRect().height <= Number.parseFloat(getComputedStyle(element).lineHeight) * 1.2)).toBe(true);
+  const whisperDetail = cards.filter({ hasText: "whisper.cpp" }).locator("small");
+  expect(await whisperDetail.evaluate((element) => element.getBoundingClientRect().height <= Number.parseFloat(getComputedStyle(element).lineHeight) * 1.2)).toBe(true);
 });
 
 test("reviews and edits a transcript from the workbench", async ({ page }) => {
