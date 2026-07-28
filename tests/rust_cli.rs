@@ -678,6 +678,63 @@ fn subtitle_file_cli_previews_confirms_checks_and_recovers() {
 }
 
 #[test]
+fn transcript_replacement_preflight_reports_version_and_dependency_counts() {
+    let temp = tempdir().unwrap();
+    let media = temp.path().join("preflight.wav");
+    fs::write(&media, b"audio").unwrap();
+    let imported = run_direct(temp.path(), &["import", media.to_str().unwrap()]);
+    let project_id = imported["projectId"].as_str().unwrap();
+    let added = run_direct(
+        temp.path(),
+        &[
+            "transcript",
+            "add",
+            project_id,
+            "--start",
+            "0",
+            "--end",
+            "1",
+            "--text",
+            "Keep",
+        ],
+    );
+    let segment_id = added["segment"]["id"].as_str().unwrap();
+    let database = rusqlite::Connection::open(temp.path().join("siaocut.db")).unwrap();
+    database
+        .execute(
+            "INSERT INTO edits(
+                 id,project_id,kind,status,segment_id,start_seconds,end_seconds,reason,created_at
+             ) VALUES('dependent-edit',?1,'semantic_cut','applied',?2,0,1,'keep','now')",
+            [project_id, segment_id],
+        )
+        .unwrap();
+    drop(database);
+
+    let preflight = run_direct(
+        temp.path(),
+        &["transcript", "replacement-preflight", project_id],
+    );
+
+    assert_eq!(
+        preflight["transcriptReplacementPreflight"]["canReplace"],
+        false
+    );
+    assert_eq!(
+        preflight["transcriptReplacementPreflight"]["blockers"]["edits"],
+        1
+    );
+    assert_eq!(
+        preflight["transcriptReplacementPreflight"]["blockers"]["patchItems"],
+        0
+    );
+    assert!(
+        preflight["transcriptReplacementPreflight"]["currentVersionId"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
+    );
+}
+
+#[test]
 fn speech_analyze_exposes_local_rhythm_evidence() {
     let temp = tempdir().unwrap();
     let media = temp.path().join("speech.wav");

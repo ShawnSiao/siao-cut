@@ -237,6 +237,22 @@ pub struct ProjectDeletionPreflight {
     pub blockers: Vec<ProjectDeletionBlocker>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptReplacementBlockers {
+    pub edits: i64,
+    pub patch_items: i64,
+    pub task_segments: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptReplacementPreflight {
+    pub can_replace: bool,
+    pub current_version_id: String,
+    pub blockers: TranscriptReplacementBlockers,
+}
+
 pub fn deletion_preflight(db: &Connection, project_id: &str) -> Result<ProjectDeletionPreflight> {
     db.query_row("SELECT 1 FROM projects WHERE id=?1", [project_id], |row| {
         row.get::<_, i64>(0)
@@ -440,7 +456,15 @@ pub(crate) fn snapshot_in_transaction(
     Ok(version)
 }
 
-pub(crate) fn assert_transcript_replacement_safe(db: &Connection, project_id: &str) -> Result<()> {
+pub fn transcript_replacement_preflight(
+    db: &Connection,
+    project_id: &str,
+) -> Result<TranscriptReplacementPreflight> {
+    db.query_row("SELECT 1 FROM projects WHERE id=?1", [project_id], |row| {
+        row.get::<_, i64>(0)
+    })
+    .optional()?
+    .ok_or_else(|| anyhow!("project_not_found: 项目不存在：{project_id}"))?;
     let (edits, patch_items, task_segments): (i64, i64, i64) = db.query_row(
         "SELECT
              (SELECT COUNT(*) FROM edits WHERE project_id=?1),
@@ -454,7 +478,20 @@ pub(crate) fn assert_transcript_replacement_safe(db: &Connection, project_id: &s
         [project_id],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     )?;
-    if edits > 0 || patch_items > 0 || task_segments > 0 {
+    Ok(TranscriptReplacementPreflight {
+        can_replace: edits == 0 && patch_items == 0 && task_segments == 0,
+        current_version_id: current_version_id(db, project_id)?
+            .ok_or_else(|| anyhow!("project_version_missing: 项目没有可确认的当前版本"))?,
+        blockers: TranscriptReplacementBlockers {
+            edits,
+            patch_items,
+            task_segments,
+        },
+    })
+}
+
+pub(crate) fn assert_transcript_replacement_safe(db: &Connection, project_id: &str) -> Result<()> {
+    if !transcript_replacement_preflight(db, project_id)?.can_replace {
         bail!(
             "transcription_replacement_conflict: 当前字幕仍被剪辑、Agent 建议或任务基线引用；请先处理这些依赖后再重新转录"
         )

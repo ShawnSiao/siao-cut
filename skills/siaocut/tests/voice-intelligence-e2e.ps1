@@ -274,7 +274,7 @@ try {
     foreach ($fixture in $fixtures) {
         $sourceHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $fixture.path).Hash.ToLowerInvariant()
         $imported = Invoke-Core -Arguments @('import', $fixture.path, '--title', "Voice benchmark $($fixture.id)")
-        $transcribeArguments = @('transcribe', [string]$imported.projectId, '--model', $Model)
+        $transcribeArguments = @('transcribe', [string]$imported.projectId, '--model', $Model, '--expected-version', [string]$imported.project.history.currentVersionId)
         if ($fixture.language) { $transcribeArguments += @('--language', [string]$fixture.language) }
         Invoke-Core -Arguments $transcribeArguments | Out-Null
         $before = Get-ProjectInvariant -ProjectId ([string]$imported.projectId)

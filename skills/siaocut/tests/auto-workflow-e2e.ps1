@@ -335,7 +335,7 @@ try {
     }
 
     $manualImport = Invoke-Core -Arguments @('import', $media, '--title', 'Manual parity run')
-    Invoke-Core -Arguments @('transcribe', [string]$manualImport.projectId, '--model', $Model, '--language', 'en') | Out-Null
+    Invoke-Core -Arguments @('transcribe', [string]$manualImport.projectId, '--model', $Model, '--language', 'en', '--expected-version', [string]$manualImport.project.history.currentVersionId) | Out-Null
     $manualDetected = Invoke-Core -Arguments @('cut', 'detect', [string]$manualImport.projectId)
     foreach ($edit in @($manualDetected.suggestions)) {
         Invoke-Core -Arguments @('cut', 'restore', [string]$manualImport.projectId, [string]$edit.id) | Out-Null

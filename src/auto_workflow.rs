@@ -734,11 +734,15 @@ fn run_transcribe(db: &mut Connection, workflow: &AutoWorkflow) -> Result<()> {
             params![&workflow.id, version_id],
         )?;
     } else {
+        let expected_version_id = project::current_version_id(db, project_id)?
+            .ok_or_else(|| anyhow!("project_version_missing: 项目没有可确认的当前版本"))?;
         media::transcribe(
             db,
             project_id,
             Path::new(&workflow.model_path),
             workflow.transcribe_language.as_deref(),
+            &expected_version_id,
+            false,
         )?;
         let version_id = transcription_version(db, project_id)?
             .ok_or_else(|| anyhow!("auto_workflow_state_invalid: 转录完成但缺少版本证据"))?;

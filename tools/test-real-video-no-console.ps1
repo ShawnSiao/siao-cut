@@ -131,7 +131,7 @@ try {
     if (-not $projectId) { $projectId = $import.project.id }
     if (-not $projectId) { throw 'Import response did not contain a project id.' }
 
-    $transcription = Invoke-CoreObserved @('transcribe', $projectId, '--model', $model, '--language', $Language)
+    $transcription = Invoke-CoreObserved @('transcribe', $projectId, '--model', $model, '--language', $Language, '--expected-version', [string]$import.project.history.currentVersionId)
     if ($consoleEvidence.Count -gt 0) {
         throw "Console windows appeared during media processing: $($consoleEvidence -join ', ')"
     }
