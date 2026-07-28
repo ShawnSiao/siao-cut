@@ -103,6 +103,7 @@ tools/                构建、发布和仓库检查工具
 - [用户手册](docs/workbench-user-guide.md)
 - [系统架构](ARCHITECTURE.md)
 - [0.3 语音智能](docs/voice-intelligence-0.3.md)
+- [快速字幕时间安全模式](docs/quick-transcription-timing.md)
 - [MOSS 多人长音频转写](docs/multispeaker-transcription.md)
 - [英文创作者源码 Beta](docs/english-creator-beta.md)
 - [发布与更新](docs/release-updates.md)

@@ -28,9 +28,9 @@ SiaoCut Skill ─ siaocut.ps1 ─ CLI client
 
 - FFmpeg comes from `SIAOCUT_FFMPEG` or `PATH`; FFprobe is used opportunistically during import.
 - `whisper-cli.exe` comes from `SIAOCUT_WHISPER_CLI`, otherwise `%LOCALAPPDATA%\SiaoCut\bin\whisper-cli.exe`.
-- Models are explicitly selected with `transcribe <projectId> --model <path>`; Core does not silently download a model or send media over the network.
+- Models are explicitly selected with `transcribe <projectId> --model <path> --expected-version <currentVersionId>`; Core does not silently download a model or send media over the network.
 - Curated Tiny / Base / Small downloads are background jobs with fixed size and SHA-256. A cancelled `.part` file is retained for an explicit later resume.
-- `transcribe` uses FFmpeg to normalize audio, invokes whisper.cpp with JSON output, validates timestamps, and replaces only the generated source transcript. Existing translations become `stale`.
+- `transcribe` uses FFmpeg to normalize audio, invokes whisper.cpp without internal VAD, and validates the complete segment and word timeline before an atomic write. Replacing an existing transcript also requires a read-only preflight and `--confirm-replace`. Existing translations become `stale`.
 
 ## Stable CLI contract
 

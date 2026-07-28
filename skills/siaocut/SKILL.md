@@ -17,7 +17,7 @@ Use this Skill when the user asks to 转写、润色字幕、翻译字幕、剪�
 - Use `siaocut --json` for every command. Treat `status: "error"` as a stop condition.
 - Do not edit SQLite, project data, or model metadata directly. The CLI is the only writer.
 - Run `health` before transcription. If `health.engines.asr` or `health.engines.ffmpeg` is `not_configured`, explain the missing local dependency; do not invent a transcript.
-- Use `transcribe <projectId> --model <absolute local model path> [--language en|zh|auto]` only after the user has selected or installed a local model. This command sends neither media nor transcript to a network service.
+- Use `transcribe <projectId> --model <absolute local model path> --expected-version <currentVersionId> [--language en|zh|auto]` only after the user has selected or installed a local model. Read `currentVersionId` from the latest project response. Existing subtitles additionally require `transcript replacement-preflight <projectId>` and explicit `--confirm-replace`; never infer replacement approval. This command sends neither media nor transcript to a network service.
 - Agent tasks receive text and timestamps, never the media path. Do not read media files to answer a task.
 - Claim an Agent task with `--payload-output <absolute path outside the repository>`. Read the complete task payload, including its unpredictable `leaseId` and `attemptCount`, from that file; the console response intentionally contains only compact metadata. Do not invent or reuse a lease ID from another attempt.
 - If the claim console response is lost or truncated, read `leaseId` from the successfully written payload file, then repeat the targeted claim with `--lease-id <that-lease-id>`. This reissues the same payload without creating a new attempt. Do not call `task fail` merely to recover the claim payload.
@@ -33,8 +33,8 @@ Use this Skill when the user asks to 转写、润色字幕、翻译字幕、剪�
 ## Project flow
 
 ```powershell
-siaocut --json import "C:\Videos\talk.mp4" --title "产品发布口播"
-siaocut --json transcribe <projectId> --model "$env:LOCALAPPDATA\SiaoCut\models\ggml-tiny.en.bin" --language en
+$imported = siaocut --json import "C:\Videos\talk.mp4" --title "产品发布口播" | ConvertFrom-Json
+siaocut --json transcribe $imported.projectId --model "$env:LOCALAPPDATA\SiaoCut\models\ggml-tiny.en.bin" --language en --expected-version $imported.project.history.currentVersionId
 siaocut --json workflow create <projectId> --kind translate --lang en
 $claimPayload = Join-Path $env:TEMP "siaocut-<taskId>-claim.json"
 siaocut --json task claim <taskId> --worker external-agent --payload-output $claimPayload

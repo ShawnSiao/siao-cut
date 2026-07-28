@@ -102,6 +102,7 @@ tools/                Build, release, and repository-checking tools
 
 - [Architecture](ARCHITECTURE.md)
 - [Voice intelligence 0.3](docs/voice-intelligence-0.3.md)
+- [Quick-transcription timing safety](docs/quick-transcription-timing.en.md)
 - [MOSS multispeaker transcription](docs/multispeaker-transcription.en.md)
 - [English Creator Source Beta](docs/english-creator-beta.md)
 - [Release and updates](docs/release-updates.en.md)

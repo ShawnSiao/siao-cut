@@ -19,6 +19,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ### Fixed
 
+- Quick transcription now keeps word timing on the original-media timeline, rejects untrusted timing before any project write, and exposes an explicit undoable regeneration flow for existing subtitles.
 - Transcription result application now preserves later project edits and requires explicit replacement confirmation.
 - Prepared transcription results can recover after an interrupted finalization step.
 - Subtitle merge tests now wait for the asynchronous transcript refresh.
