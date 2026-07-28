@@ -526,10 +526,7 @@ fn execute_run_with_config(db: &mut Connection, run_id: &str, config: &RunnerCon
         }
         ensure_project_version(db, &run.project_id, &run.base_version_id)?;
         let response = aggregate_results(&payload, &results)?;
-        db.execute(
-            "UPDATE agent_runs SET status='submitting',progress=0.95,updated_at=?2 WHERE id=?1",
-            params![run_id, now()],
-        )?;
+        mark_run_submitting(db, run_id, run.attempt_count)?;
         let (_, _, patch_set) = tasks::submit(db, &run.task_id, &worker, &lease_id, response)?;
         if patch_set.status != "pending_review" {
             bail!("agent_output_invalid: Agent 结果未进入人工审阅")
@@ -1477,6 +1474,20 @@ fn cancel_requested(db: &Connection, run_id: &str, task_id: &str) -> Result<bool
     .map_err(Into::into)
 }
 
+fn mark_run_submitting(db: &Connection, run_id: &str, expected_attempt_count: u32) -> Result<()> {
+    let changed = db.execute(
+        "UPDATE agent_runs
+         SET status='submitting',progress=0.95,updated_at=?2
+         WHERE id=?1 AND status='running' AND attempt_count=?3
+               AND cancel_requested_at IS NULL",
+        params![run_id, now(), expected_attempt_count],
+    )?;
+    if changed != 1 {
+        bail!("agent_run_cancelled: 本机 Agent 任务在提交结果前已取消或状态已变化")
+    }
+    Ok(())
+}
+
 fn finalize_worker_error(
     db: &mut Connection,
     run_id: &str,
@@ -1994,6 +2005,30 @@ mod tests {
                 .iter()
                 .all(|event| event.kind != "cancelled")
         );
+    }
+
+    #[test]
+    fn cancelled_run_cannot_be_restored_to_submitting() {
+        let (_temp, mut database, project, task, segment_id) = database_fixture();
+        tasks::claim(&mut database, "codex-cancel-race", Some(&task.id))
+            .unwrap()
+            .unwrap();
+        let run_id = insert_test_run(
+            &mut database,
+            &task,
+            &project.id,
+            &segment_id,
+            "running",
+            &now(),
+        );
+        cancel(&mut database, &run_id).unwrap();
+
+        let error = mark_run_submitting(&database, &run_id, 1)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("agent_run_cancelled"));
+        assert_eq!(load(&database, &run_id).unwrap().status, "cancelled");
     }
 
     #[test]

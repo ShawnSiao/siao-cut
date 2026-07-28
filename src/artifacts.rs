@@ -153,7 +153,7 @@ pub fn prepare(db: &mut Connection, project_id: &str) -> Result<MediaArtifacts> 
                 if let Err(error) = tx.commit() {
                     return Err(rollback_preview_publication(error.into(), published));
                 }
-                published.finish()?;
+                published.finish();
                 load(db, project_id)?.ok_or_else(|| anyhow!("预览资源记录不存在"))
             })();
             if let Err(error) = &publication {
@@ -207,18 +207,23 @@ impl PublishedDirectory {
         Ok(())
     }
 
-    fn finish(self) -> Result<()> {
-        if let Some(backup) = self.backup
-            && backup.is_dir()
-        {
-            fs::remove_dir_all(&backup).with_context(|| {
+    fn finish(self) {
+        self.finish_with(|backup| {
+            fs::remove_dir_all(backup).with_context(|| {
                 format!(
                     "preview_cleanup_failed: 预览已提交，但无法清理旧预览备份 {}",
                     backup.display()
                 )
-            })?;
+            })
+        });
+    }
+
+    fn finish_with(self, cleanup: impl FnOnce(&Path) -> Result<()>) {
+        if let Some(backup) = self.backup
+            && backup.is_dir()
+        {
+            let _ = cleanup(&backup);
         }
-        Ok(())
     }
 }
 
@@ -723,6 +728,26 @@ mod tests {
 
         assert_eq!(fs::read(target.join("proxy.mp4")).unwrap(), b"old");
         assert!(!staged.exists());
+    }
+
+    #[test]
+    fn committed_preview_cleanup_failure_does_not_report_publication_failure() {
+        let temp = tempdir().unwrap();
+        let target = temp.path().join("preview");
+        let backup = temp.path().join("preview.backup");
+        fs::create_dir_all(&target).unwrap();
+        fs::create_dir_all(&backup).unwrap();
+        fs::write(target.join("proxy.mp4"), b"new").unwrap();
+        fs::write(backup.join("proxy.mp4"), b"old").unwrap();
+        let published = PublishedDirectory {
+            target: target.clone(),
+            backup: Some(backup.clone()),
+        };
+
+        published.finish_with(|_| bail!("injected cleanup failure"));
+
+        assert_eq!(fs::read(target.join("proxy.mp4")).unwrap(), b"new");
+        assert!(backup.is_dir());
     }
 
     #[test]

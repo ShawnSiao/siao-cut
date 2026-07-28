@@ -1,6 +1,6 @@
 use crate::{
     db::{self, home_dir},
-    media::{ffprobe_duration, hash_file, tool_path},
+    media::{hash_file, tool_path},
     project,
     util::{KillOnCloseJob, hidden_command, new_id, now},
 };
@@ -766,13 +766,18 @@ fn finalize_download(db: &mut Connection, job_id: &str, output: &Path) -> Result
     if bytes > MAX_FILE_SIZE_BYTES {
         bail!("source_size_limit: 下载结果超过 4 GB")
     }
-    let duration = ffprobe_duration(&output)
+    let prepared_media = project::prepare_media(&output, Some(job.title))?;
+    if prepared_media.bytes() != bytes {
+        bail!("source_output_changed: 下载结果在校验期间发生变化")
+    }
+    let duration = prepared_media
+        .duration_seconds()
         .filter(|duration| duration.is_finite() && *duration > 0.0)
         .ok_or_else(|| anyhow!("source_media_probe_failed: 无法验证下载结果的媒体时长"))?;
     if duration > MAX_DURATION_SECONDS {
         bail!("source_duration_limit: 下载结果超过 2 小时")
     }
-    let output_sha256 = hash_file(&output)?;
+    let output_sha256 = prepared_media.sha256().to_owned();
     let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let (status, existing_project_id): (String, Option<String>) = tx.query_row(
         "SELECT status,project_id FROM source_imports WHERE id=?1",
@@ -786,9 +791,7 @@ fn finalize_download(db: &mut Connection, job_id: &str, output: &Path) -> Result
     if !["queued", "running", "finalizing"].contains(&status.as_str()) {
         bail!("source_job_state_invalid: URL 导入任务当前状态不能完成")
     }
-    if hash_file(&output)? != output_sha256 {
-        bail!("source_output_changed: 下载结果在校验期间发生变化")
-    }
+    project::assert_prepared_media_current(&prepared_media)?;
     let transitioned = tx.execute(
         "UPDATE source_imports
          SET status='finalizing',progress=0.99,bytes_downloaded=?2,total_bytes=?2,
@@ -806,19 +809,16 @@ fn finalize_download(db: &mut Connection, job_id: &str, output: &Path) -> Result
         bail!("source_finalize_conflict: URL 导入任务已被其他工作进程完成")
     }
     let project_id = new_id("p");
-    project::insert_with_id_in_transaction(&tx, &output, Some(job.title), &project_id)?;
+    project::insert_prepared_with_id_in_transaction(&tx, &prepared_media, &project_id)?;
     let inserted_media: (String, String, Option<i64>) = tx.query_row(
         "SELECT source_path,sha256,CAST(duration_seconds * 1000 AS INTEGER)
          FROM media WHERE project_id=?1",
         [&project_id],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     )?;
-    let final_bytes = fs::metadata(&output)?.len();
-    let final_hash = hash_file(&output)?;
-    if inserted_media.0 != output.to_string_lossy()
+    project::assert_prepared_media_current(&prepared_media)?;
+    if inserted_media.0 != prepared_media.source_path()
         || inserted_media.1 != output_sha256
-        || final_hash != output_sha256
-        || final_bytes != bytes
         || inserted_media.2.unwrap_or_default() <= 0
     {
         bail!("source_output_changed: 下载结果在项目发布期间发生变化")

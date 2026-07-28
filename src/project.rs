@@ -9,11 +9,16 @@ use crate::{
     util::{new_id, now},
     workflows,
 };
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::Serialize;
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, path::Path};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+    time::SystemTime,
+};
 
 pub fn load(db: &Connection, id: &str) -> Result<Project> {
     let base: (String, String, String, String, String, String, String, String) = db
@@ -510,30 +515,54 @@ pub fn create(db: &mut Connection, media_path: &Path, title: Option<String>) -> 
     create_with_id(db, media_path, title, &new_id("p"))
 }
 
-pub(crate) fn create_with_id(
-    db: &mut Connection,
-    media_path: &Path,
-    title: Option<String>,
-    id: &str,
-) -> Result<Project> {
-    if let Ok(project) = load(db, id) {
-        return Ok(project);
-    }
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    insert_with_id_in_transaction(&tx, media_path, title, id)?;
-    tx.commit()?;
-    load(db, id)
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct MediaFileIdentity {
+    bytes: u64,
+    modified_at: Option<SystemTime>,
 }
 
-pub(crate) fn insert_with_id_in_transaction(
-    tx: &Transaction<'_>,
-    media_path: &Path,
-    title: Option<String>,
-    id: &str,
-) -> Result<()> {
-    if load(tx, id).is_ok() {
-        return Ok(());
+#[derive(Clone, Debug)]
+pub(crate) struct PreparedMedia {
+    path: PathBuf,
+    source_path: String,
+    sha256: String,
+    extension: String,
+    duration_seconds: Option<f64>,
+    title: String,
+    identity: MediaFileIdentity,
+}
+
+impl PreparedMedia {
+    pub(crate) fn bytes(&self) -> u64 {
+        self.identity.bytes
     }
+
+    pub(crate) fn duration_seconds(&self) -> Option<f64> {
+        self.duration_seconds
+    }
+
+    pub(crate) fn sha256(&self) -> &str {
+        &self.sha256
+    }
+
+    pub(crate) fn source_path(&self) -> &str {
+        &self.source_path
+    }
+}
+
+fn media_file_identity(path: &Path) -> Result<MediaFileIdentity> {
+    let metadata =
+        fs::metadata(path).with_context(|| format!("无法读取媒体文件信息：{}", path.display()))?;
+    if !metadata.is_file() {
+        bail!("媒体文件不存在：{}", path.display())
+    }
+    Ok(MediaFileIdentity {
+        bytes: metadata.len(),
+        modified_at: metadata.modified().ok(),
+    })
+}
+
+pub(crate) fn prepare_media(media_path: &Path, title: Option<String>) -> Result<PreparedMedia> {
     if !media_path.is_file() {
         bail!("媒体文件不存在：{}", media_path.display())
     }
@@ -545,24 +574,77 @@ pub(crate) fn insert_with_id_in_transaction(
     if ![".mp4", ".mov", ".mkv", ".mp3", ".m4a", ".wav"].contains(&extension.as_str()) {
         bail!("仅支持 mp4/mov/mkv/mp3/m4a/wav")
     }
-    let created_at = now();
+    let path = media_path.canonicalize()?;
+    let identity_before = media_file_identity(&path)?;
+    let sha256 = hash_file(&path)?;
+    let duration_seconds = ffprobe_duration(&path);
+    let identity = media_file_identity(&path)?;
+    if identity != identity_before {
+        bail!("media_changed_during_import: 媒体文件在校验期间发生变化")
+    }
     let title = title.unwrap_or_else(|| {
-        media_path
-            .file_stem()
+        path.file_stem()
             .and_then(|value| value.to_str())
             .unwrap_or("未命名项目")
             .to_owned()
     });
-    let source_path = media_path.canonicalize()?.to_string_lossy().to_string();
-    let sha256 = hash_file(media_path)?;
-    let duration = ffprobe_duration(media_path);
+    Ok(PreparedMedia {
+        source_path: path.to_string_lossy().to_string(),
+        path,
+        sha256,
+        extension,
+        duration_seconds,
+        title,
+        identity,
+    })
+}
+
+pub(crate) fn assert_prepared_media_current(media: &PreparedMedia) -> Result<()> {
+    if media_file_identity(&media.path)? != media.identity {
+        bail!("media_changed_during_import: 媒体文件在项目发布期间发生变化")
+    }
+    Ok(())
+}
+
+pub(crate) fn create_with_id(
+    db: &mut Connection,
+    media_path: &Path,
+    title: Option<String>,
+    id: &str,
+) -> Result<Project> {
+    if let Ok(project) = load(db, id) {
+        return Ok(project);
+    }
+    let media = prepare_media(media_path, title)?;
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    insert_prepared_with_id_in_transaction(&tx, &media, id)?;
+    tx.commit()?;
+    load(db, id)
+}
+
+pub(crate) fn insert_prepared_with_id_in_transaction(
+    tx: &Transaction<'_>,
+    media: &PreparedMedia,
+    id: &str,
+) -> Result<()> {
+    if load(tx, id).is_ok() {
+        return Ok(());
+    }
+    assert_prepared_media_current(media)?;
+    let created_at = now();
     tx.execute(
         "INSERT INTO projects(id,title,created_at,updated_at) VALUES(?1,?2,?3,?3)",
-        params![id, title, created_at],
+        params![id, &media.title, created_at],
     )?;
     tx.execute(
         "INSERT INTO media(project_id,source_path,sha256,extension,duration_seconds) VALUES(?1,?2,?3,?4,?5)",
-        params![id, source_path, sha256, extension, duration],
+        params![
+            id,
+            &media.source_path,
+            &media.sha256,
+            &media.extension,
+            media.duration_seconds
+        ],
     )?;
     tx.execute(
         "INSERT INTO project_glossaries(project_id,current_version,updated_at) VALUES(?1,0,?2)",
@@ -1305,6 +1387,30 @@ mod tests {
     fn rejects_invalid_segments() {
         assert!(assert_segment(1.0, 1.0, "x").is_err());
         assert!(assert_segment(0.0, 1.0, " ").is_err());
+    }
+
+    #[test]
+    fn prepared_media_rejects_changes_before_the_short_write_transaction() {
+        let temp = tempdir().unwrap();
+        let media = temp.path().join("changed.wav");
+        std::fs::write(&media, b"audio").unwrap();
+        let prepared = prepare_media(&media, Some("Changed".into())).unwrap();
+        std::fs::write(&media, b"audio changed after preparation").unwrap();
+        let mut db = crate::db::open_at(&temp.path().join("changed.db")).unwrap();
+        let tx = db
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+
+        let error = insert_prepared_with_id_in_transaction(&tx, &prepared, "changed-project")
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("media_changed_during_import"));
+        drop(tx);
+        assert!(
+            load(&db, "changed-project").is_err(),
+            "the rejected project must not be inserted"
+        );
     }
 
     #[test]

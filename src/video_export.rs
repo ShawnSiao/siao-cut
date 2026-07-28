@@ -1,7 +1,7 @@
 use crate::{
     artifacts,
     canvas::{self, CanvasTarget},
-    db,
+    contracts, db,
     export::{self, ExportOptions},
     media::{hash_file, tool_path},
     model::{ExportJob, SubtitleMode, TimelineMap},
@@ -351,13 +351,9 @@ pub fn run_worker(job_id: &str, start_delay_ms: Option<u64>) -> Result<()> {
                 let _ = fs::remove_file(partial);
             }
         }
-        let timestamp = now();
-        let _ = db.execute(
-            "UPDATE export_jobs
-             SET status='failed',error_message=?2,worker_pid=NULL,updated_at=?3,completed_at=?3
-             WHERE id=?1 AND status='running'",
-            params![job_id, error.to_string(), timestamp],
-        );
+        if finish_worker_error(&db, job_id, &error)? {
+            return Ok(());
+        }
         return Err(error);
     }
     Ok(())
@@ -1004,10 +1000,32 @@ fn rollback_publications(
 fn finish_cancelled(db: &Connection, job_id: &str) -> Result<()> {
     let timestamp = now();
     db.execute(
-        "UPDATE export_jobs SET status='cancelled',worker_pid=NULL,updated_at=?2,completed_at=?2 WHERE id=?1",
+        "UPDATE export_jobs
+         SET status='cancelled',error_message=NULL,worker_pid=NULL,updated_at=?2,completed_at=?2
+         WHERE id=?1",
         params![job_id, timestamp],
     )?;
     Ok(())
+}
+
+fn finish_worker_error(db: &Connection, job_id: &str, error: &anyhow::Error) -> Result<bool> {
+    let cancel_requested: bool = db.query_row(
+        "SELECT cancel_requested_at IS NOT NULL FROM export_jobs WHERE id=?1",
+        [job_id],
+        |row| row.get(0),
+    )?;
+    if contracts::error_code(error) == "export_cancelled" || cancel_requested {
+        finish_cancelled(db, job_id)?;
+        return Ok(true);
+    }
+    let timestamp = now();
+    db.execute(
+        "UPDATE export_jobs
+         SET status='failed',error_message=?2,worker_pid=NULL,updated_at=?3,completed_at=?3
+         WHERE id=?1 AND status='running'",
+        params![job_id, error.to_string(), timestamp],
+    )?;
+    Ok(false)
 }
 
 #[cfg(test)]
@@ -1035,6 +1053,41 @@ mod tests {
         );
         assert!(first.to_string_lossy().contains(".video.part.mp4"));
         assert!(second.to_string_lossy().contains(".video.part.mp4"));
+    }
+
+    #[test]
+    fn late_export_cancellation_remains_cancelled_in_worker_error_cleanup() {
+        let database = Connection::open_in_memory().unwrap();
+        database
+            .execute_batch(
+                "CREATE TABLE export_jobs(
+                     id TEXT PRIMARY KEY,
+                     status TEXT NOT NULL,
+                     cancel_requested_at TEXT,
+                     error_message TEXT,
+                     worker_pid INTEGER,
+                     updated_at TEXT,
+                     completed_at TEXT
+                 );
+                 INSERT INTO export_jobs(
+                     id,status,cancel_requested_at,updated_at
+                 ) VALUES('late-cancel','running','now','now');",
+            )
+            .unwrap();
+
+        let handled =
+            finish_worker_error(&database, "late-cancel", &anyhow!("ffmpeg exited")).unwrap();
+
+        assert!(handled);
+        let (status, error_message): (String, Option<String>) = database
+            .query_row(
+                "SELECT status,error_message FROM export_jobs WHERE id='late-cancel'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "cancelled");
+        assert!(error_message.is_none());
     }
 
     #[test]
