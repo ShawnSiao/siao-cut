@@ -2,7 +2,7 @@ import { changeUiLocale, getUiLocale, tr, type UiLocale } from "../i18n";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type SyntheticEvent } from "react";
 import { Activity, Bot, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Clock3, Copy, Cpu, Database, Download, FileVideo2, FileText, Film, FolderOpen, FolderPlus, HardDrive, History, Link2, LoaderCircle, Play, RefreshCw, RotateCcw, Search, Scissors, Settings2, ShieldCheck, Sparkles, Trash2, Undo2, Redo2, Headphones, ListChecks, MoreHorizontal, MoveHorizontal, Users, X, } from "lucide-react";
 import { authorizeArtifact, authorizeMedia, localFileAvailable, openLogDirectory, pickMedia, pickModel, pickSubtitleFile, pickTranscriptPath, pickVideoPath, runtimeInfo, selectAsrBackend, updaterPolicy } from "../core";
-import type { AgentRun, AudioAnalysisJob, AudioRisk, AutoWorkflow, CanvasSettings, CodexHealth, CutPreview, ExportJob, ModelDownloadJob, ModelStatus, Project, ProjectDeletionPreflight, RuntimeInfo, Segment, SourceImportJob, SourcePreview, SpeakerIdentity, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SpeechEvidence, SpeechInsights, SpeechPause, SubtitleImportPreview, SubtitleQualityIssue, Task, TranscriptionJob, TranscriptionLanguage, TranscriptionProviderConfig, TranscriptionProviderHealth, TranscriptionReviewItem } from "../types";
+import type { AgentRun, AudioAnalysisJob, AudioRisk, AutoWorkflow, CanvasSettings, CodexHealth, CutPreview, ExportJob, ModelDownloadJob, ModelStatus, Project, ProjectDeletionPreflight, RuntimeInfo, Segment, SourceImportJob, SourcePreview, SpeakerIdentity, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SpeechEvidence, SpeechInsights, SpeechPause, SubtitleImportPreview, SubtitleQualityIssue, Task, TranscriptReplacementPreflight, TranscriptionJob, TranscriptionLanguage, TranscriptionProviderConfig, TranscriptionProviderHealth, TranscriptionReviewItem } from "../types";
 import { Button, Dialog, IconButton, StatusBadge } from "../components/ui";
 import { JobFailureDetails } from "../components/job-failure";
 import { AudioQualityPanel, PatchReviewCard, RuntimeChecklist, SegmentRow, SpeakerTrackPanel, SpeechInsightsPanel, TranscriptionReviewPanel } from "../components/workbench-panels";
@@ -102,6 +102,7 @@ const RuntimeSettingsDialog = lazy(() => import("../components/runtime-settings-
 const SourceImportDialog = lazy(() => import("../components/source-import-dialog"));
 const AgentHandoffDialog = lazy(() => import("../components/agent-handoff-dialog"));
 const SubtitleImportDialog = lazy(() => import("../components/subtitle-import-dialog"));
+const QuickRetranscriptionDialog = lazy(() => import("../components/quick-retranscription-dialog"));
 
 function upsertById<T extends { id: string }>(items: T[], next: T): T[] {
     const index = items.findIndex((item) => item.id === next.id);
@@ -241,6 +242,11 @@ function WorkbenchController() {
     const [subtitleImportBusy, setSubtitleImportBusy] = useState<string | null>(null);
     const [subtitleImportError, setSubtitleImportError] = useState<string | null>(null);
     const [subtitleReplaceConfirmed, setSubtitleReplaceConfirmed] = useState(false);
+    const [showQuickRetranscription, setShowQuickRetranscription] = useState(false);
+    const [quickRetranscriptionPreflight, setQuickRetranscriptionPreflight] = useState<TranscriptReplacementPreflight | null>(null);
+    const [quickRetranscriptionChecking, setQuickRetranscriptionChecking] = useState(false);
+    const [quickRetranscriptionConfirmed, setQuickRetranscriptionConfirmed] = useState(false);
+    const [quickRetranscriptionError, setQuickRetranscriptionError] = useState<string | null>(null);
     const [structureEditMode, setStructureEditMode] = useState<StructureEditMode | null>(null);
     const [structureStart, setStructureStart] = useState("");
     const [structureEnd, setStructureEnd] = useState("");
@@ -940,6 +946,13 @@ function WorkbenchController() {
             transcription: blocker.status === "awaiting_apply" ? tr("app.delete.blocker.transcriptionCandidate") : tr("app.delete.blocker.transcription"),
         }[blocker.kind] ?? tr("app.delete.blocker.unknown", { kind: blocker.kind, status: blocker.status }))).join(" ")
         : null;
+    const quickRetranscriptionBlockMessage = quickRetranscriptionPreflight && !quickRetranscriptionPreflight.canReplace
+        ? tr("app.quickRetranscribe.blocked", {
+            edits: quickRetranscriptionPreflight.blockers.edits,
+            patchItems: quickRetranscriptionPreflight.blockers.patchItems,
+            taskSegments: quickRetranscriptionPreflight.blockers.taskSegments,
+        })
+        : null;
     const projectTransitionLocked = Boolean(busy || structureBusy || subtitleImportBusy || deleteBusy || deletePreflightBusy || autoBusy || sourceBusy || Object.keys(taskActions).length > 0);
     const visibleAutoWorkflows = autoWorkflows.filter((workflow) => (
         (trackedAutoWorkflowIds.includes(workflow.id) || ACTIVE_AUTO_WORKFLOW_STATUSES.has(workflow.status))
@@ -1006,6 +1019,10 @@ function WorkbenchController() {
         setShowSubtitleImport(false);
         setSubtitleImportPreview(null);
         setSubtitleImportPath("");
+        setShowQuickRetranscription(false);
+        setQuickRetranscriptionPreflight(null);
+        setQuickRetranscriptionConfirmed(false);
+        setQuickRetranscriptionError(null);
         setStructureEditMode(null);
         setShowTranscriptionCandidate(false);
     }, [project?.id]);
@@ -1452,10 +1469,86 @@ function WorkbenchController() {
             setModelPathAvailable(false);
             throw new Error(tr("app.s0123"));
         }
-        const result = await transcriptEditingClient.quickTranscribe(project.id, modelPath, transcriptionLanguage);
+        const expectedVersionId = project.history.currentVersionId;
+        if (!expectedVersionId)
+            throw new Error(tr("app.quickRetranscribe.versionMissing"));
+        const result = await transcriptEditingClient.quickTranscribe(project.id, modelPath, transcriptionLanguage, expectedVersionId);
         await refreshProject(project.id);
         setNotice(Number(result.segments ?? 0) === 0 ? tr("app.s0124") : tr("app.s0125"));
     });
+    const openQuickRetranscription = async () => {
+        if (!project || quickRetranscriptionChecking)
+            return;
+        setShowQuickRetranscription(true);
+        setQuickRetranscriptionPreflight(null);
+        setQuickRetranscriptionConfirmed(false);
+        setQuickRetranscriptionError(null);
+        setQuickRetranscriptionChecking(true);
+        try {
+            const envelope = await transcriptEditingClient.transcriptReplacementPreflight(project.id);
+            if (!envelope.transcriptReplacementPreflight)
+                throw new Error(tr("app.quickRetranscribe.preflightMissing"));
+            setQuickRetranscriptionPreflight(envelope.transcriptReplacementPreflight);
+        }
+        catch (cause) {
+            setQuickRetranscriptionError(cause instanceof Error ? cause.message : String(cause));
+        }
+        finally {
+            setQuickRetranscriptionChecking(false);
+        }
+    };
+    const closeQuickRetranscription = () => {
+        if (busyRef.current)
+            return;
+        setShowQuickRetranscription(false);
+        setQuickRetranscriptionPreflight(null);
+        setQuickRetranscriptionConfirmed(false);
+        setQuickRetranscriptionError(null);
+    };
+    const confirmQuickRetranscription = async () => {
+        if (!project || !quickRetranscriptionPreflight?.canReplace || !quickRetranscriptionConfirmed || busyRef.current)
+            return;
+        busyRef.current = true;
+        setBusy(tr("app.quickRetranscribe.running"));
+        setError(null);
+        setQuickRetranscriptionError(null);
+        try {
+            if (!capabilities.hasBoundMedia)
+                throw new Error(tr("app.capability.mediaRequired"));
+            if (!runtime?.ffmpegConfigured)
+                throw new Error(tr("app.s0121"));
+            if (!runtime.asrConfigured)
+                throw new Error(tr("app.s0122"));
+            if (!modelPath || !modelPathAvailable || !await localFileAvailable(modelPath)) {
+                setModelPathAvailable(false);
+                throw new Error(tr("app.s0123"));
+            }
+            const result = await transcriptEditingClient.quickTranscribe(
+                project.id,
+                modelPath,
+                transcriptionLanguage,
+                quickRetranscriptionPreflight.currentVersionId,
+                true,
+            );
+            if (result.timingValidation?.status !== "verified"
+                || result.timingValidation.timeDomain !== "original_media"
+                || result.timingValidation.vadUsed) {
+                throw new Error(tr("app.quickRetranscribe.validationMissing"));
+            }
+            await refreshProject(project.id);
+            setShowQuickRetranscription(false);
+            setQuickRetranscriptionPreflight(null);
+            setQuickRetranscriptionConfirmed(false);
+            setNotice(tr("app.quickRetranscribe.completed", { count: result.timingValidation.segmentCount }));
+        }
+        catch (cause) {
+            setQuickRetranscriptionError(cause instanceof Error ? cause.message : String(cause));
+        }
+        finally {
+            busyRef.current = false;
+            setBusy(null);
+        }
+    };
     const saveTranscriptionProvider = (endpoint: string, modelId: string) => withBusy(tr("app.moss.settings.saving"), async () => {
         const envelope = await backgroundTaskClient.configureTranscription(endpoint, modelId);
         if (!envelope.config)
@@ -2412,7 +2505,7 @@ function WorkbenchController() {
 	              <IconButton label={tr("app.s0252")} shortcut="Ctrl+Shift+Z" disabled={!project?.history.canRedo || Boolean(busy)} onClick={() => navigateHistory("redo")}><Redo2 size={15}/></IconButton>
 	            </div>
 	            <Button variant="primary" className="creator-primary-action" disabled={Boolean(busy) || (creatorPhase === "transcribe" && (!canStartTranscription || transcriptionActive))} title={creatorPhase === "transcribe" ? transcribeCapabilityTitle : undefined} onClick={runCreatorPrimaryAction}>{creatorPhase === "review" ? <ListChecks size={15}/> : creatorPhase === "export" ? <Download size={15}/> : <Sparkles size={15}/>} {creatorPrimaryLabel}</Button>
-	            <div className="command-more" ref={commandMoreRef}><IconButton label={tr("app.s0256")} onClick={() => setShowMoreMenu((current) => !current)}><MoreHorizontal size={17}/></IconButton>{showMoreMenu && <Suspense fallback={null}><AppCommandMenu canDetectSuggestions={Boolean(project?.transcript.words.length) && !busy} canPreparePreview={capabilities.canPreparePreview && !busy} canRelinkMedia={capabilities.canRelinkMedia && !busy} mediaCapabilityTitle={mediaCapabilityTitle} onDetectSuggestions={() => { setShowMoreMenu(false); void detectSuggestions(); }} onPreparePreview={() => { setShowMoreMenu(false); void preparePreview(); }} onRelinkMedia={() => { setShowMoreMenu(false); void relinkMedia(); }}/></Suspense>}</div>
+	            <div className="command-more" ref={commandMoreRef}><IconButton label={tr("app.s0256")} onClick={() => setShowMoreMenu((current) => !current)}><MoreHorizontal size={17}/></IconButton>{showMoreMenu && <Suspense fallback={null}><AppCommandMenu canDetectSuggestions={Boolean(project?.transcript.words.length) && !busy} canPreparePreview={capabilities.canPreparePreview && !busy} canRelinkMedia={capabilities.canRelinkMedia && !busy} canRetranscribe={Boolean(project?.transcript.segments.length) && capabilities.hasBoundMedia && !busy} mediaCapabilityTitle={mediaCapabilityTitle} onDetectSuggestions={() => { setShowMoreMenu(false); void detectSuggestions(); }} onPreparePreview={() => { setShowMoreMenu(false); void preparePreview(); }} onRelinkMedia={() => { setShowMoreMenu(false); void relinkMedia(); }} onRetranscribe={() => { setShowMoreMenu(false); void openQuickRetranscription(); }}/></Suspense>}</div>
 	          </div>
 	        </header>
 	        <nav className="creator-flow" aria-label={tr("app.creator.flow.label")}>{creatorSteps.map((step, index) => <span key={step} className={index < creatorStepIndex ? "done" : index === creatorStepIndex ? "active" : "pending"}><i>{index < creatorStepIndex ? <Check size={12}/> : index + 1}</i>{tr(`app.creator.step.${step}`)}</span>)}</nav>
@@ -2704,6 +2797,7 @@ function WorkbenchController() {
         onRefresh={() => void initialize()}
       /></Suspense>}
       {showTranscriptionCandidate && transcriptionJob?.status === "awaiting_apply" && <Suspense fallback={null}><TranscriptionCandidateDialog job={transcriptionJob} busy={Boolean(busy)} confirmed={transcriptionApplyConfirmed} onConfirmedChange={setTranscriptionApplyConfirmed} onApply={applyTranscriptionCandidate} onDiscard={discardTranscriptionCandidate} onClose={() => { if (!busy) { setShowTranscriptionCandidate(false); setTranscriptionApplyConfirmed(false); } }}/></Suspense>}
+      {showQuickRetranscription && <Suspense fallback={null}><QuickRetranscriptionDialog preflight={quickRetranscriptionPreflight} checking={quickRetranscriptionChecking} busy={Boolean(busy)} confirmed={quickRetranscriptionConfirmed} blockerMessage={quickRetranscriptionBlockMessage} error={quickRetranscriptionError} onConfirmedChange={setQuickRetranscriptionConfirmed} onConfirm={() => void confirmQuickRetranscription()} onClose={closeQuickRetranscription}/></Suspense>}
       {currentDeleteCandidate && <Suspense fallback={null}><ProjectDeleteDialog project={currentDeleteCandidate} checking={deletePreflightBusy} deleting={deleteBusy} deletable={Boolean(deletionPreflight?.deletable)} blockerMessage={deleteBlockMessage} error={deleteError} onClose={closeDeleteDialog} onDelete={() => void deleteProject()}/></Suspense>}
       {showSourceImport && <Suspense fallback={null}><SourceImportDialog
         returnFocusRef={sourceButtonRef}

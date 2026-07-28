@@ -704,6 +704,25 @@ export type SubtitleStructureEdit = {
   project: Project;
 };
 
+export type TimingValidation = {
+  status: "verified";
+  timeDomain: "original_media";
+  mode: "whisper_no_vad";
+  vadUsed: false;
+  segmentCount: number;
+  wordCount: number;
+};
+
+export type TranscriptReplacementPreflight = {
+  canReplace: boolean;
+  currentVersionId: string;
+  blockers: {
+    edits: number;
+    patchItems: number;
+    taskSegments: number;
+  };
+};
+
 export type CoreEnvelope = {
   apiVersion: string;
   status: "ok" | "error";
@@ -750,6 +769,8 @@ export type CoreEnvelope = {
   subtitleStyle?: SubtitleStyle;
   subtitleStylePresets?: SubtitleStylePresetOption[];
   subtitleImportPreview?: SubtitleImportPreview;
+  transcriptReplacementPreflight?: TranscriptReplacementPreflight;
+  timingValidation?: TimingValidation;
   structureEdit?: SubtitleStructureEdit;
   subtitleImport?: {
     format: "srt" | "vtt" | "ass";
