@@ -91,6 +91,11 @@ test("keeps command groups non-overlapping in Chinese and English", async ({ pag
         const rect = element.getBoundingClientRect();
         return rect.left >= 0 && rect.right <= window.innerWidth + 1 && rect.width > 0 && rect.height > 0;
       }))).toBe(true);
+      const timelineOverflow = await page.locator(".subtitle-timeline-scroll").evaluate((element) => ({
+        clientWidth: element.clientWidth,
+        scrollWidth: element.scrollWidth,
+      }));
+      expect(timelineOverflow.scrollWidth).toBeGreaterThan(timelineOverflow.clientWidth);
       await expect(page.locator(".creator-drawer")).toHaveCount(1);
       await expect(page.locator('.creator-drawer [role="tab"][aria-selected="true"]')).toHaveCount(1);
       await page.getByRole("tab", { name: locale === "zh-CN" ? "导出" : "Export" }).click();
@@ -99,6 +104,36 @@ test("keeps command groups non-overlapping in Chinese and English", async ({ pag
       await expect(page.locator(".creator-drawer .export-panel")).toHaveCount(0);
     }
   }
+});
+
+test("uses B by default, restores C after A, and links review markers to detail panels", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto("/");
+  const timeline = page.locator(".subtitle-timeline-panel");
+  await expect(timeline).toBeVisible();
+  await expect(timeline.getByRole("button", { name: "精细编辑" })).toHaveAttribute("aria-pressed", "true");
+  await expect(timeline.getByRole("slider", { name: "缩放比例" })).toHaveValue("160");
+
+  await timeline.getByRole("button", { name: /字幕 2，/ }).click();
+  await expect(timeline.getByText(/已选 · 字幕 2/)).toBeVisible();
+
+  const canvas = await timeline.locator(".subtitle-timeline-canvas").boundingBox();
+  expect(canvas).not.toBeNull();
+  await page.mouse.move(canvas!.x + canvas!.width * 0.25, canvas!.y + 48);
+  await page.mouse.down();
+  await page.mouse.up();
+  await expect(page.getByRole("status", { name: "播放器状态" })).toContainText("01:09");
+
+  await timeline.getByRole("button", { name: /高级审校/ }).click();
+  await expect(timeline.getByText("说话人", { exact: true })).toBeVisible();
+  await timeline.locator(".subtitle-timeline-review-markers button.warning").first().click();
+  await expect(page.getByRole("tab", { name: /^质量/ })).toHaveAttribute("aria-selected", "true");
+
+  await timeline.getByRole("button", { name: "收起时间线" }).click();
+  await expect(timeline).toHaveClass(/overview/);
+  await expect(timeline.locator(".subtitle-timeline-overview")).toBeVisible();
+  await timeline.getByRole("button", { name: "展开时间线" }).click();
+  await expect(timeline.getByRole("button", { name: /高级审校/ })).toHaveAttribute("aria-pressed", "true");
 });
 
 test("uses direct transcript keys for time-confirmed split and adjacent merge", async ({ page }) => {
@@ -179,6 +214,11 @@ test("keeps the transcript primary at the minimum supported workspace size", asy
   expect(context!.y).toBeGreaterThanOrEqual(transcript!.y + transcript!.height - 1);
   expect(commands!.x + commands!.width).toBeLessThanOrEqual(1080);
   expect(subtitleTools!.x + subtitleTools!.width).toBeLessThanOrEqual(1080);
+  const timelineOverflow = await page.locator(".subtitle-timeline-scroll").evaluate((element) => ({
+    clientWidth: element.clientWidth,
+    scrollWidth: element.scrollWidth,
+  }));
+  expect(timelineOverflow.scrollWidth).toBeGreaterThan(timelineOverflow.clientWidth);
   await expect(page.getByRole("button", { name: "拆分" })).toBeAttached();
   await expect(page.getByRole("button", { name: "偏移" })).toBeAttached();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
@@ -512,8 +552,7 @@ test("reviews and edits a transcript from the workbench", async ({ page }) => {
   await page.getByRole("button", { name: "应用软剪辑" }).click();
   await expect(page.getByText("已应用软剪辑；预览时间线已更新，原片未修改。")).toBeVisible();
   await expect(page.getByText("成片 04:37 · 原片 04:38")).toBeVisible();
-  await page.getByRole("button", { name: "展开时间线" }).click();
-  await page.getByText("恢复此处").click();
+  await page.getByRole("button", { name: "恢复剪辑" }).click();
   await expect(page.getByText("已恢复此处；预览时间线已更新。")).toBeVisible();
   await page.getByRole("tab", { name: "分析" }).click();
   const wordEvidence = page.getByRole("region", { name: "词级时间" });
