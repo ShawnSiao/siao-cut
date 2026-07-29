@@ -58,6 +58,6 @@ React 仅调用已注册的 Tauri 命令。Tauri Rust 层以参数数组调用 `
 
 ## Windows release boundary
 
-NSIS 将 Release Core 作为 sidecar，并携带固定哈希的 LGPL FFmpeg、whisper.cpp CPU 运行时和从锁定提交构建的 Vulkan 运行时。Core 会在切换 Vulkan 时执行硬件探测，不可用时保留 CPU 基线。模型位于 `%LOCALAPPDATA%\SiaoCut\models`，必须由用户明确选择后下载。安装、升级与卸载不应删除该数据目录。
+NSIS 将 Release Core 作为 sidecar，并携带固定哈希的 LGPL FFmpeg，以及从同一锁定提交和补丁构建的 whisper.cpp CPU、Vulkan 运行时。发布准备分别执行真实后端时间轴验收，并把可执行文件、源码、补丁和证据哈希写入相邻元数据。Core 只有在这些身份重新核验通过时才启用 VAD；否则使用无 VAD 安全路径。切换 Vulkan 时还会执行硬件探测，不可用时保留 CPU 基线。CUDA 运行时必须在本机完成同源构建和真实验收后才能选择。模型位于 `%LOCALAPPDATA%\SiaoCut\models`，必须由用户明确选择后下载。安装、升级与卸载不应删除该数据目录。
 
 代码签名与二进制打包是两个独立门槛：本地可以生成完整但未签名的候选包；只有配置受信任证书并通过 `Get-AuthenticodeSignature` 后，才是可公开分发的正式安装包。

@@ -21,7 +21,7 @@ SiaoCut is a Windows-local-first editing workbench for AI talking-head creators.
 
 | Area | Current implementation |
 | --- | --- |
-| Local transcription | Normalizes audio with FFmpeg and transcribes through whisper.cpp on CPU or a compatible Vulkan GPU. The model is always selected explicitly. |
+| Local transcription | Normalizes audio with FFmpeg and transcribes through same-source whisper.cpp builds on CPU or a compatible Vulkan GPU. VAD is enabled only for runtimes that passed original-media timeline verification; every other runtime falls back safely. The model is always selected explicitly. |
 | Multispeaker long-form (experimental) | Explicitly connects to a loopback MOSS service for segments, anonymous speaker labels, and review items. SiaoCut does not install the service, CUDA, Python, or model weights. |
 | Transcript editing | Provides positioned subtitle editing, translation review, soft cuts, undo, redo, and version restore. Source media is never overwritten. |
 | Speech evidence | Flags pace, pauses, filler words, low confidence, loudness, silence, and possible clipping. An optional local model can create a speaker track for review. |
@@ -36,6 +36,7 @@ SiaoCut is a Windows-local-first editing workbench for AI talking-head creators.
 - The desktop app, CLI, and Skill modify projects through the Rust Core instead of writing SQLite directly.
 - Speech analysis and Agent output are evidence or suggestions. Applying text changes or cuts requires human review.
 - Real-world coverage still needs to expand across dialects, overlapping speech, complex noise, and additional hardware.
+- CPU and Vulkan have independent VAD timeline acceptance entry points. CUDA cannot be selected until a local source build completes a real backend acceptance run; driver presence alone is not verification.
 - MOSS accepts only a loopback service, not a remote endpoint or API key. An unavailable service never triggers a silent Whisper fallback.
 
 ## Run from source

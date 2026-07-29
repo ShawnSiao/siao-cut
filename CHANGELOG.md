@@ -16,10 +16,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 - Pull request CI now validates stacked branches as well as branches that target `main` directly.
 - External Agent states distinguish waiting for claim, active processing, submitted results, and human review.
+- CPU, Vulkan, and CUDA whisper.cpp build entries now share one pinned source commit and timeline patch. Runtime metadata binds the executable, backend, source, patch, and acceptance evidence.
 
 ### Fixed
 
-- Quick transcription now keeps word timing on the original-media timeline, rejects untrusted timing before any project write, and exposes an explicit undoable regeneration flow for existing subtitles.
+- Quick transcription enables VAD only for runtimes with independently verified original-media token timing. Unknown or unverified runtimes automatically use the no-VAD safe path, and the desktop UI reports the actual mode.
+- Quick transcription rejects untrusted timing before any project write and exposes an explicit undoable regeneration flow for existing subtitles.
 - Transcription result application now preserves later project edits and requires explicit replacement confirmation.
 - Prepared transcription results can recover after an interrupted finalization step.
 - Subtitle merge tests now wait for the asynchronous transcript refresh.
