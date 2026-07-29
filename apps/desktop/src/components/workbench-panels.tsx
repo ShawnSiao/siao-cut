@@ -154,7 +154,7 @@ export function TranscriptionReviewPanel({ items, disabled, onLocate, onResolve 
     if (!items.length) return null;
     return <section className="moss-review-list" aria-label={tr("app.moss.review.title")}>
       <header><strong>{tr("app.moss.review.title")}</strong><small>{items.length}</small></header>
-      {items.map((item) => <article className={`review-item moss-review ${item.severity}`} key={item.id}>
+      {items.map((item) => <article className={`review-item moss-review ${item.severity}`} key={item.id} data-review-detail-id={`transcription:${item.id}`} tabIndex={-1}>
         <span className={`review-tag ${item.severity}`}><CircleAlert size={12}/>{item.kind === "rapid_speaker_switch" ? tr("app.moss.review.rapidSwitch") : item.kind === "short_fragment" ? tr("app.moss.review.shortFragment") : tr("app.moss.review.punctuation")}</span>
         <p>{item.message}</p>
         <div className="patch-actions">{item.segmentId && <button disabled={disabled} onClick={() => onLocate(item.segmentId!)}>{tr("app.moss.review.locate")}</button>}<span/><button disabled={disabled} onClick={() => onResolve(item.id, "ignored")}>{tr("app.moss.review.ignore")}</button><button className="apply" disabled={disabled} onClick={() => onResolve(item.id, "resolved")}>{tr("app.moss.review.resolved")}</button></div>

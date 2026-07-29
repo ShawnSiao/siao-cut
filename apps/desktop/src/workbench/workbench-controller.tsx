@@ -17,6 +17,7 @@ import { transcriptEditingClient } from "../domains/transcript-editing-client";
 import { translationClient } from "../domains/translation-client";
 import { useBackgroundTaskRegistry } from "../hooks/use-background-task-registry";
 import { useWorkbenchFeedback } from "../hooks/use-workbench-feedback";
+import { SubtitleTimelinePanel, type TimelineReviewMarker } from "./subtitle-timeline-panel";
 
 export async function resolveCanvasMedia(
     projectId: string,
@@ -229,7 +230,7 @@ function WorkbenchController() {
     const [showExportPanel, setShowExportPanel] = useState(false);
     const [drawerTab, setDrawerTab] = useState<"review" | "quality" | "analysis" | "history" | "export">("review");
     const [playerExpanded, setPlayerExpanded] = useState(true);
-    const [timelineExpanded, setTimelineExpanded] = useState(false);
+    const [reviewFocusDetailId, setReviewFocusDetailId] = useState<string | null>(null);
     const [showSubtitleSafeArea, setShowSubtitleSafeArea] = useState(true);
     const [showMoreMenu, setShowMoreMenu] = useState(false);
     const [search, setSearch] = useState("");
@@ -1043,6 +1044,18 @@ function WorkbenchController() {
             previous?.focus();
         };
     }, [showExportPanel]);
+    useEffect(() => {
+        if (!reviewFocusDetailId)
+            return;
+        const frame = window.requestAnimationFrame(() => {
+            const target = document.querySelector<HTMLElement>(`[data-review-detail-id="${reviewFocusDetailId}"]`);
+            if (!target)
+                return;
+            target.scrollIntoView({ block: "nearest" });
+            target.focus({ preventScroll: true });
+        });
+        return () => window.cancelAnimationFrame(frame);
+    }, [drawerTab, reviewFocusDetailId]);
     const selectSegment = (segment: Segment) => {
         setSelectedId(segment.id);
         setSelectedSegmentIds([segment.id]);
@@ -2440,6 +2453,61 @@ function WorkbenchController() {
         setDrawerTab(tab);
         setShowExportPanel(tab === "export");
     };
+    const seekTimeline = (time: number) => {
+        const duration = playback.duration || project?.media.durationSeconds || project?.timeline.sourceDuration || 0;
+        const nextTime = Math.max(0, Math.min(duration, Number.isFinite(time) ? time : 0));
+        if (videoRef.current)
+            videoRef.current.currentTime = nextTime;
+        setPlayback((current) => ({ ...current, currentTime: nextTime }));
+    };
+    const toggleTimelinePlayback = () => {
+        const video = videoRef.current;
+        if (!video)
+            return;
+        if (video.paused)
+            void video.play();
+        else
+            video.pause();
+    };
+    const nudgeTimelineSegment = async (segmentId: string, delta: number) => {
+        if (!project || structureBusy || busy)
+            return;
+        setStructureBusy(true);
+        setError(null);
+        try {
+            const envelope = await transcriptEditingClient.offsetSegments(project.id, [segmentId], delta);
+            if (!envelope.structureEdit?.project)
+                throw new Error(tr("app.s0162"));
+            const nextProject = envelope.structureEdit.project;
+            setProject(nextProject);
+            setProjects((current) => current.map((item) => item.id === nextProject.id ? nextProject : item));
+            setSelectedId(segmentId);
+            setSelectedSegmentIds([segmentId]);
+            setSelectionAnchorId(segmentId);
+            setWordRange(null);
+            setCutPreview(null);
+            await Promise.all([refreshSpeakerTrack(project.id), refreshTranscription(project.id)]);
+            setNotice(tr("app.timeline.nudgeCompleted", {
+                direction: delta < 0 ? tr("app.timeline.directionEarlier") : tr("app.timeline.directionLater"),
+                amount: Math.abs(delta).toFixed(1),
+            }));
+        }
+        catch (cause) {
+            setError(cause instanceof Error ? cause.message : String(cause));
+        }
+        finally {
+            setStructureBusy(false);
+        }
+    };
+    const openTimelineReviewDetail = (marker: TimelineReviewMarker) => {
+        const segment = project?.transcript.segments.find((candidate) => candidate.id === marker.segmentId);
+        if (segment)
+            selectSegment(segment);
+        if (marker.detailTarget === "quality")
+            setQualityFilter("all");
+        setReviewFocusDetailId(marker.detailId);
+        openCreatorDrawer(marker.detailTarget);
+    };
     const agentRunActive = Boolean(agentRun && ["queued", "running", "submitting"].includes(agentRun.status));
     const creatorPhase = !project ? "prepare"
         : !capabilities.hasTranscript || transcriptionActive ? "transcribe"
@@ -2617,8 +2685,8 @@ function WorkbenchController() {
 	                      <p className="runtime-disclosure"><ShieldCheck size={13}/>{tr("app.creator.agent.boundary")}</p>
 	                    </section>
 	                    <div className="review-panel-scroll creator-review-list" role="region" aria-label={tr("app.s0297")} tabIndex={0}>
-	                      {orderedPatchSets.map((set) => <section className="patch-set" key={set.id}><header><span>{set.kind}{set.language ? ` · ${set.language.toUpperCase()}` : ""}</span>{set.items.length > 1 && <div><button onClick={() => reviewAll(set.taskId, "keep")}>{tr("app.s0298")}</button>{!set.items.some((item) => item.status === "conflict") && <button onClick={() => reviewAll(set.taskId, "apply")}>{tr("app.s0299")}</button>}</div>}</header>{set.items.map((item) => <PatchReviewCard key={item.id} item={item} onReview={(action) => reviewPatch(item.id, action)} onSelect={() => { const segment = project.transcript.segments.find((candidate) => candidate.id === item.segmentId); if (segment) selectSegment(segment); }}/>)}</section>)}
-	                      {pendingEdits.map((edit) => <article className="review-item" key={edit.id}><span className="review-tag">{tr("app.composite.reviewSuggestion", { kind: cutSuggestionLabel(edit.suggestion?.suggestionType) })}</span><strong>{editReasonLabel(edit)}</strong><p>{edit.suggestion ? tr("app.composite.suggestionEvidence", { range: `${formatTime(edit.start)} — ${formatTime(edit.end)}`, confidence: Math.round(edit.suggestion.confidence * 100) }) : `${formatTime(edit.start)} — ${formatTime(edit.end)}`}</p><div className="cut-actions"><button onClick={() => selectSegment(project.transcript.segments.find((segment) => segment.id === edit.segmentId)!)}>{tr("app.s0303")}</button>{edit.kind === "word_cut" && <button onClick={() => previewCut(edit.id)}><Headphones size={11}/>{tr("app.s0304")}</button>}<button onClick={() => updateCut(edit.id, "apply")}>{tr("app.s0305")}</button></div></article>)}
+	                      {orderedPatchSets.map((set) => <section className="patch-set" key={set.id}><header><span>{set.kind}{set.language ? ` · ${set.language.toUpperCase()}` : ""}</span>{set.items.length > 1 && <div><button onClick={() => reviewAll(set.taskId, "keep")}>{tr("app.s0298")}</button>{!set.items.some((item) => item.status === "conflict") && <button onClick={() => reviewAll(set.taskId, "apply")}>{tr("app.s0299")}</button>}</div>}</header>{set.items.map((item) => <div key={item.id} data-review-detail-id={`agent:${item.id}`} tabIndex={-1}><PatchReviewCard item={item} onReview={(action) => reviewPatch(item.id, action)} onSelect={() => { const segment = project.transcript.segments.find((candidate) => candidate.id === item.segmentId); if (segment) selectSegment(segment); }}/></div>)}</section>)}
+	                      {pendingEdits.map((edit) => <article className="review-item" key={edit.id} data-review-detail-id={`edit:${edit.id}`} tabIndex={-1}><span className="review-tag">{tr("app.composite.reviewSuggestion", { kind: cutSuggestionLabel(edit.suggestion?.suggestionType) })}</span><strong>{editReasonLabel(edit)}</strong><p>{edit.suggestion ? tr("app.composite.suggestionEvidence", { range: `${formatTime(edit.start)} — ${formatTime(edit.end)}`, confidence: Math.round(edit.suggestion.confidence * 100) }) : `${formatTime(edit.start)} — ${formatTime(edit.end)}`}</p><div className="cut-actions"><button onClick={() => selectSegment(project.transcript.segments.find((segment) => segment.id === edit.segmentId)!)}>{tr("app.s0303")}</button>{edit.kind === "word_cut" && <button onClick={() => previewCut(edit.id)}><Headphones size={11}/>{tr("app.s0304")}</button>}<button onClick={() => updateCut(edit.id, "apply")}>{tr("app.s0305")}</button></div></article>)}
 	                      {audioRisks.map((risk, index) => <article className="review-item audio-risk-item" key={`${risk.kind}-${risk.start}-${index}`}><span className="review-tag warning"><CircleAlert size={12}/>{tr("app.s0306")}</span><strong>{audioRiskLabel(risk.kind)}</strong><p>{tr("app.composite.audioRiskEvidence", { range: `${formatTime(risk.start)} — ${formatTime(risk.end)}`, measured: risk.measuredValue, threshold: risk.threshold, unit: audioUnitLabel(risk.unit) })}</p><button onClick={() => locateAudioRisk(risk)}>{tr("app.s0309")}</button></article>)}
 	                      <TranscriptionReviewPanel items={transcriptionReviews} disabled={Boolean(busy)} onLocate={(segmentId) => { const segment = project.transcript.segments.find((item) => item.id === segmentId); if (segment) selectSegment(segment); }} onResolve={resolveTranscriptionReview}/>
 	                      {failedTasks.map((task) => <article className={`agent-task-status ${task.status}`} key={task.id}>
@@ -2647,7 +2715,7 @@ function WorkbenchController() {
 	                      {actionableReviewCount === 0 && processingTasks.length === 0 && !agentRunActive && <div className="all-clear"><Check size={20}/><span>{tr("app.s0329")}</span></div>}
 	                    </div>
 	                  </>}
-	                  {drawerTab === "quality" && <section className={`subtitle-quality-summary creator-quality ${project.subtitleQuality.status}`} aria-label={tr("app.s0357")}><div className="subtitle-quality-state">{project.subtitleQuality.status === "good" ? <Check size={15}/> : <CircleAlert size={15}/>}<span><strong>{subtitleQualityStatusLabel(project.subtitleQuality)}</strong><small>{project.subtitleQuality.errorCount}{tr("app.s0358") + " "}{project.subtitleQuality.warningCount}{tr("app.s0359")}</small></span></div><div className="subtitle-quality-filters" aria-label={tr("app.s0360")}><button className={qualityFilter === "all" ? "active" : ""} onClick={() => setQualityFilter("all")}>{tr("app.s0361")}</button><button className={qualityFilter === "error" ? "active" : ""} disabled={!project.subtitleQuality.errorCount} onClick={() => setQualityFilter("error")}>{tr("app.s0362") + " "}{project.subtitleQuality.errorCount}</button><button className={qualityFilter === "warning" ? "active" : ""} disabled={!project.subtitleQuality.warningCount} onClick={() => setQualityFilter("warning")}>{tr("app.s0363") + " "}{project.subtitleQuality.warningCount}</button></div>{visibleQualityIssues.length > 0 ? <div className="subtitle-quality-issues">{visibleQualityIssues.map((issue) => <button className={issue.severity} key={issue.id} onClick={() => locateSubtitleIssue(issue)}><CircleAlert size={12}/><span><strong>{subtitleIssueLabel(issue.kind)}</strong><small>{formatTime(issue.start)}{tr("app.s0364")}</small></span></button>)}</div> : <div className="all-clear"><Check size={20}/><span>{tr("app.creator.quality.ready")}</span></div>}<button className="button primary full" onClick={() => openCreatorDrawer("export")}>{tr("app.creator.quality.continue")}</button></section>}
+	                  {drawerTab === "quality" && <section className={`subtitle-quality-summary creator-quality ${project.subtitleQuality.status}`} aria-label={tr("app.s0357")}><div className="subtitle-quality-state">{project.subtitleQuality.status === "good" ? <Check size={15}/> : <CircleAlert size={15}/>}<span><strong>{subtitleQualityStatusLabel(project.subtitleQuality)}</strong><small>{project.subtitleQuality.errorCount}{tr("app.s0358") + " "}{project.subtitleQuality.warningCount}{tr("app.s0359")}</small></span></div><div className="subtitle-quality-filters" aria-label={tr("app.s0360")}><button className={qualityFilter === "all" ? "active" : ""} onClick={() => setQualityFilter("all")}>{tr("app.s0361")}</button><button className={qualityFilter === "error" ? "active" : ""} disabled={!project.subtitleQuality.errorCount} onClick={() => setQualityFilter("error")}>{tr("app.s0362") + " "}{project.subtitleQuality.errorCount}</button><button className={qualityFilter === "warning" ? "active" : ""} disabled={!project.subtitleQuality.warningCount} onClick={() => setQualityFilter("warning")}>{tr("app.s0363") + " "}{project.subtitleQuality.warningCount}</button></div>{visibleQualityIssues.length > 0 ? <div className="subtitle-quality-issues">{visibleQualityIssues.map((issue) => <button className={issue.severity} key={issue.id} data-review-detail-id={`quality:${issue.id}`} onClick={() => locateSubtitleIssue(issue)}><CircleAlert size={12}/><span><strong>{subtitleIssueLabel(issue.kind)}</strong><small>{formatTime(issue.start)}{tr("app.s0364")}</small></span></button>)}</div> : <div className="all-clear"><Check size={20}/><span>{tr("app.creator.quality.ready")}</span></div>}<button className="button primary full" onClick={() => openCreatorDrawer("export")}>{tr("app.creator.quality.continue")}</button></section>}
 	                  {drawerTab === "analysis" && <div className="inspector-view creator-analysis">
 	                    <SpeechInsightsPanel insights={project.speechInsights} onLocateEvidence={locateSpeechEvidence} onLocatePause={locateSpeechPause}/>
 	                    <AudioQualityPanel job={audioAnalysisJob} onStart={startAudioAnalysis} onCancel={cancelAudioAnalysis} onResume={resumeAudioAnalysis} onLocate={locateAudioRisk} disabled={!capabilities.canAnalyzeAudio || Boolean(busy)}/>
@@ -2664,11 +2732,26 @@ function WorkbenchController() {
 	              </aside>
 	            </section>
 
-            <section className={`timeline-panel ${timelineExpanded ? "expanded" : "collapsed"}`}>
-              <div className="section-title"><div><p className="eyebrow">{tr("app.s0387")}</p><h2>{tr("app.s0388")}</h2></div><button className="timeline-toggle" aria-expanded={timelineExpanded} onClick={() => setTimelineExpanded((current) => !current)}>{timelineExpanded ? <ChevronDown size={14}/> : <ChevronUp size={14}/>}{timelineExpanded ? tr("app.creator.timeline.collapse") : tr("app.creator.timeline.expand")}</button></div>
-              {timelineExpanded && <>{waveformUrl && <img className="waveform" src={waveformUrl} alt={tr("app.s0390")}/>}
-              <div className="timeline-track">{project.transcript.segments.map((segment) => { const edit = project.edits.find((candidate) => candidate.segmentId === segment.id && ["suggested", "proposed", "applied"].includes(candidate.status)); const association = associationBySegment.get(segment.id); const speaker = association ? speakerById.get(association.speakerId) : undefined; return <div className="timeline-segment-shell" key={segment.id} style={{ flexGrow: Math.max(1, segment.end - segment.start) }}><button className={`timeline-segment ${edit && ["suggested", "proposed"].includes(edit.status) ? "suggested" : ""} ${edit?.status === "applied" ? "applied" : ""} ${selectedSegmentIds.includes(segment.id) ? "selected" : ""} ${selectedId === segment.id ? "active" : ""}`} onClick={() => selectSegment(segment)} title={`${speaker ? `${speaker.label} · ` : ""}${segment.text}`}>{speaker && <i className={`speaker-color speaker-${speaker.colorIndex % 6}`}/>}{segment.text}</button>{edit?.status === "applied" && <button className="timeline-restore" onClick={() => void updateCut(edit.id, "restore")}><Scissors size={11}/>{tr("app.s0391")}</button>}</div>; })}</div></>}
-            </section>
+            <SubtitleTimelinePanel
+              project={project}
+              speakerTrack={speakerTrack}
+              transcriptionReviews={transcriptionReviews}
+              waveformUrl={waveformUrl}
+              playback={playback}
+              selectedId={selectedId}
+              selectedSegmentIds={selectedSegmentIds}
+              busy={Boolean(busy) || structureBusy}
+              onSelectSegment={selectSegment}
+              onSeek={seekTimeline}
+              onTogglePlayback={toggleTimelinePlayback}
+              onNudgeSelected={(segmentId, delta) => void nudgeTimelineSegment(segmentId, delta)}
+              onOpenTiming={(segment) => {
+                selectSegment(segment);
+                openStructureEdit("timing", segment);
+              }}
+              onOpenReviewDetail={openTimelineReviewDetail}
+              onRestoreCut={(editId) => void updateCut(editId, "restore")}
+            />
           </>)}
       </section>
       {showAgentHandoff && project && <Suspense fallback={null}><AgentHandoffDialog

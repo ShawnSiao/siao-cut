@@ -5,8 +5,10 @@ import App, { AUTO_WORKFLOW_DISMISSED_STORAGE_KEY, PatchReviewCard, TRANSCRIPTIO
 import { mockRun } from "./core.mock";
 import { agentReviewClient } from "./domains/agent-review-client";
 import { projectSessionClient } from "./domains/project-session-client";
+import { transcriptEditingClient } from "./domains/transcript-editing-client";
 import { sampleProject } from "./mock";
 import type { AutoWorkflow } from "./types";
+import { TIMELINE_PREFERENCES_STORAGE_KEY } from "./workbench/subtitle-timeline-panel";
 
 afterEach(() => {
   cleanup();
@@ -14,6 +16,7 @@ afterEach(() => {
   localStorage.removeItem(TRANSCRIPTION_LANGUAGE_STORAGE_KEY);
   localStorage.removeItem("siaocut.transcriptionMode");
   localStorage.removeItem(AUTO_WORKFLOW_DISMISSED_STORAGE_KEY);
+  localStorage.removeItem(TIMELINE_PREFERENCES_STORAGE_KEY);
   vi.useRealTimers();
   vi.restoreAllMocks();
 });
@@ -578,6 +581,8 @@ describe("SiaoCut review workbench", () => {
     expect(await screen.findByRole("heading", { name: "发布口播 · 草稿" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "转录" })).toBeInTheDocument();
     expect(screen.getByText("字幕时间轴")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "精细编辑" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("slider", { name: "缩放比例" })).toHaveValue("160");
     expect(screen.getAllByText("需要你确认").length).toBeGreaterThan(0);
   });
 
@@ -923,6 +928,30 @@ describe("SiaoCut review workbench", () => {
       expect(screen.getAllByRole("textbox", { name: /字幕文本/ })).toHaveLength(3);
       expect(screen.getByDisplayValue(/今天想和大家聊聊.*它不是替你决定内容/)).toBeInTheDocument();
     });
+  });
+
+  it("nudges the whole selected subtitle from the precision timeline", async () => {
+    render(<App />);
+    const timeline = await screen.findByRole("region", { name: "字幕时间轴" });
+    fireEvent.click(within(timeline).getByRole("button", { name: /字幕 2，00:13\.2 至 00:18\.6/ }));
+    fireEvent.click(within(timeline).getByRole("button", { name: "后移 0.1 秒" }));
+
+    await waitFor(() => expect(screen.getByText(/字幕已后移 0\.1 秒/)).toBeInTheDocument());
+    expect(within(timeline).getByText("00:13.3 — 00:18.7")).toBeInTheDocument();
+    expect(within(timeline).getByText(/整段移动，字幕时长保持不变/)).toBeInTheDocument();
+  });
+
+  it("keeps subtitle timing unchanged when a timeline nudge fails", async () => {
+    vi.spyOn(transcriptEditingClient, "offsetSegments").mockRejectedValueOnce(new Error("时间微调失败"));
+    render(<App />);
+    const timeline = await screen.findByRole("region", { name: "字幕时间轴" });
+    fireEvent.click(within(timeline).getByRole("button", { name: /字幕 2，00:13\.2 至 00:18\.6/ }));
+    expect(within(timeline).getByText("00:13.2 — 00:18.6")).toBeInTheDocument();
+
+    fireEvent.click(within(timeline).getByRole("button", { name: "后移 0.1 秒" }));
+
+    expect(await screen.findByText("时间微调失败")).toBeInTheDocument();
+    expect(within(timeline).getByText("00:13.2 — 00:18.6")).toBeInTheDocument();
   });
 
   it("batch replaces transcript text and exposes all export formats", async () => {
