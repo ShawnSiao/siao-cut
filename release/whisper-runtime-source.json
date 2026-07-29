@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "siaocut-whisper-vad-timeline-v1",
+  "source": "https://github.com/ggml-org/whisper.cpp",
+  "sourceCommit": "080bbbe85230f624f0b52127f1ae1218247989f9",
+  "upstreamTokenMappingFix": {
+    "commit": "5cad7abb1e229a27c00730c1882305d282ee6941",
+    "pullRequest": "https://github.com/ggml-org/whisper.cpp/pull/3910"
+  },
+  "patch": {
+    "path": "release/patches/whisper.cpp-vad-token-json-original-timeline.patch",
+    "sha256": "e8bc54eb4499a2b59cd2b632554d96f45bb7290cc9a37d2b53837be3e9f5fe74",
+    "targets": [
+      "examples/cli/cli.cpp"
+    ]
+  },
+  "sourceCapabilities": {
+    "segmentTimestampDomain": "original_media",
+    "tokenApiTimestampDomain": "original_media",
+    "cliJsonTokenTimestampDomain": "original_media"
+  }
+}
