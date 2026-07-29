@@ -48,16 +48,17 @@
     },
     {
       "id": "whisper-cpu",
-      "name": "whisper.cpp CPU x64",
-      "version": "1.9.1",
-      "kind": "bundled-runtime",
+      "name": "SiaoCut whisper.cpp CPU x64",
+      "version": "1.9.1-siaocut.1",
+      "kind": "bundled-source-built-runtime",
       "backend": "cpu",
       "source": "https://github.com/ggml-org/whisper.cpp",
-      "url": "https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.1/whisper-bin-x64.zip",
-      "size": 7982101,
-      "sha256": "7d8be46ecd31828e1eb7a2ecdd0d6b314feafd82163038ab6092594b0a063539",
+      "sourceCommit": "080bbbe85230f624f0b52127f1ae1218247989f9",
+      "sourceContract": "release/whisper-runtime-source.json",
+      "patchSha256": "e8bc54eb4499a2b59cd2b632554d96f45bb7290cc9a37d2b53837be3e9f5fe74",
       "license": "MIT",
-      "bundled": true
+      "bundled": true,
+      "vadTimelineVerification": "required-before-bundling"
     },
     {
       "id": "whisper-vad-silero-6.2",
@@ -75,29 +76,33 @@
     },
     {
       "id": "whisper-cuda-11",
-      "name": "whisper.cpp CUDA 11.8 x64",
-      "version": "1.9.1",
-      "kind": "optional-runtime",
+      "name": "SiaoCut whisper.cpp CUDA x64",
+      "version": "1.9.1-siaocut.1",
+      "kind": "optional-source-built-runtime",
       "backend": "cuda",
       "source": "https://github.com/ggml-org/whisper.cpp",
-      "url": "https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.1/whisper-cublas-11.8.0-bin-x64.zip",
-      "size": 278557654,
-      "sha256": "aecdce0e4d4bb758a7c72a31f3f9f19a7b6d861405fd2da743cd86398633c963",
+      "sourceCommit": "080bbbe85230f624f0b52127f1ae1218247989f9",
+      "sourceContract": "release/whisper-runtime-source.json",
+      "patchSha256": "e8bc54eb4499a2b59cd2b632554d96f45bb7290cc9a37d2b53837be3e9f5fe74",
       "license": "MIT",
       "bundled": false,
-      "requires": "兼容 CUDA 11.8 的 NVIDIA 驱动"
+      "requires": "本地 CUDA Toolkit、兼容 NVIDIA 驱动和独立时间轴验收",
+      "vadTimelineVerification": "required-before-selection"
     },
     {
       "id": "whisper-vulkan",
-      "name": "whisper.cpp Vulkan x64",
-      "version": "1.9.1",
+      "name": "SiaoCut whisper.cpp Vulkan x64",
+      "version": "1.9.1-siaocut.1",
       "sourceCommit": "080bbbe85230f624f0b52127f1ae1218247989f9",
       "kind": "optional-built-runtime",
       "backend": "vulkan",
       "source": "https://github.com/ggml-org/whisper.cpp",
+      "sourceContract": "release/whisper-runtime-source.json",
+      "patchSha256": "e8bc54eb4499a2b59cd2b632554d96f45bb7290cc9a37d2b53837be3e9f5fe74",
       "license": "MIT",
       "bundled": "when-built-with-vulkan-sdk",
-      "requires": "支持 Vulkan 1.2 的显卡与驱动；不兼容时可切回 CPU"
+      "requires": "支持 Vulkan 1.2 的显卡与驱动；不兼容时可切回 CPU",
+      "vadTimelineVerification": "required-before-bundling"
     }
   ],
   "speakerPackages": [
