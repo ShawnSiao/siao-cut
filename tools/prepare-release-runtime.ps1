@@ -95,21 +95,36 @@ foreach ($license in $ytDlp.licenseFiles) {
     Copy-Item -LiteralPath $licenseSource -Destination (Join-Path $licenseTarget $license.target) -Force
 }
 
-$whisper = $manifest.components | Where-Object id -eq 'whisper-cpu'
-$whisperArchive = Get-VerifiedArchive $whisper
-$whisperExtract = Join-Path $CacheDirectory 'whisper-cpu'
-Expand-CleanArchive $whisperArchive $whisperExtract
-$whisperExe = Get-ChildItem -LiteralPath $whisperExtract -Recurse -Filter 'whisper-cli.exe' | Select-Object -First 1
-if (-not $whisperExe) { throw 'whisper-cli.exe was not found in the verified archive.' }
 $whisperTarget = Join-Path $target 'whisper'
-if (Test-Path -LiteralPath $whisperTarget) { Remove-Item -LiteralPath $whisperTarget -Recurse -Force }
-New-Item -ItemType Directory -Force -Path $whisperTarget | Out-Null
-Copy-Item -LiteralPath $whisperExe.FullName -Destination $whisperTarget -Force
-Copy-Item -Path (Join-Path $whisperExe.DirectoryName 'ggml*.dll') -Destination $whisperTarget -Force
-Copy-Item -LiteralPath (Join-Path $whisperExe.DirectoryName 'whisper.dll') -Destination $whisperTarget -Force
+& (Join-Path $PSScriptRoot 'build-whisper-runtime.ps1') -Backend cpu -Destination $whisperTarget
+if ($LASTEXITCODE -ne 0) { throw 'The source-built CPU runtime failed.' }
+$whisperExecutable = Join-Path $whisperTarget 'whisper-cli.exe'
+$whisperMetadata = Join-Path $whisperTarget 'runtime-metadata.json'
+if (-not (Test-Path -LiteralPath $whisperExecutable) -or -not (Test-Path -LiteralPath $whisperMetadata)) {
+    throw 'The source-built CPU runtime is incomplete.'
+}
 $vad = $manifest.components | Where-Object id -eq 'whisper-vad-silero-6.2'
 $vadFile = Get-VerifiedArchive $vad
-Copy-Item -LiteralPath $vadFile -Destination (Join-Path $whisperTarget 'ggml-silero-v6.2.0.bin') -Force
+$installedVad = Join-Path $whisperTarget 'ggml-silero-v6.2.0.bin'
+Copy-Item -LiteralPath $vadFile -Destination $installedVad -Force
+$timelineModel = Get-VerifiedArchive ($manifest.models | Where-Object id -eq 'tiny')
+$cpuEvidence = Join-Path $whisperTarget 'vad-timeline-evidence.json'
+& (Join-Path $PSScriptRoot 'test-whisper-vad-timeline.ps1') `
+    -PatchedWhisper $whisperExecutable `
+    -ExpectedPatchedBackend cpu `
+    -Model $timelineModel `
+    -VadModel $installedVad `
+    -EvidenceOutput $cpuEvidence `
+    -RuntimeMetadata $whisperMetadata | Write-Host
+if ($LASTEXITCODE -ne 0) { throw 'The source-built CPU runtime failed VAD timeline verification.' }
+$cpuRuntimeMetadata = [IO.File]::ReadAllText($whisperMetadata, [Text.Encoding]::UTF8) | ConvertFrom-Json
+if ($cpuRuntimeMetadata.vadTimelineVerification.status -ne 'verified') {
+    throw 'The source-built CPU runtime was not certified for original-media VAD timestamps.'
+}
+$whisperComponent = $manifest.components | Where-Object id -eq 'whisper-cpu'
+$whisperComponent | Add-Member -NotePropertyName executableSha256 -NotePropertyValue $cpuRuntimeMetadata.executableSha256 -Force
+$whisperComponent | Add-Member -NotePropertyName runtimeMetadataSha256 -NotePropertyValue (Get-FileSha256 $whisperMetadata) -Force
+$whisperComponent.vadTimelineVerification = 'verified'
 
 $vulkanTarget = Join-Path $target 'whisper-vulkan'
 if ($IncludeVulkan) {
@@ -118,9 +133,25 @@ if ($IncludeVulkan) {
     if (-not (Test-Path -LiteralPath $vulkanExecutable)) {
         throw 'The bundled Vulkan runtime did not produce whisper-cli.exe.'
     }
+    $vulkanMetadata = Join-Path $vulkanTarget 'runtime-metadata.json'
+    $vulkanEvidence = Join-Path $vulkanTarget 'vad-timeline-evidence.json'
+    & (Join-Path $PSScriptRoot 'test-whisper-vad-timeline.ps1') `
+        -PatchedWhisper $vulkanExecutable `
+        -ExpectedPatchedBackend vulkan `
+        -Model $timelineModel `
+        -VadModel $installedVad `
+        -EvidenceOutput $vulkanEvidence `
+        -RuntimeMetadata $vulkanMetadata | Write-Host
+    if ($LASTEXITCODE -ne 0) { throw 'The source-built Vulkan runtime failed VAD timeline verification.' }
+    $vulkanRuntimeMetadata = [IO.File]::ReadAllText($vulkanMetadata, [Text.Encoding]::UTF8) | ConvertFrom-Json
+    if ($vulkanRuntimeMetadata.vadTimelineVerification.status -ne 'verified') {
+        throw 'The source-built Vulkan runtime was not certified for original-media VAD timestamps.'
+    }
     $vulkanComponent = $manifest.components | Where-Object id -eq 'whisper-vulkan'
     $vulkanExecutableSha256 = Get-FileSha256 $vulkanExecutable
     $vulkanComponent | Add-Member -NotePropertyName executableSha256 -NotePropertyValue $vulkanExecutableSha256 -Force
+    $vulkanComponent | Add-Member -NotePropertyName runtimeMetadataSha256 -NotePropertyValue (Get-FileSha256 $vulkanMetadata) -Force
+    $vulkanComponent.vadTimelineVerification = 'verified'
 } elseif (Test-Path -LiteralPath $vulkanTarget) {
     Remove-Item -LiteralPath $vulkanTarget -Recurse -Force
 }

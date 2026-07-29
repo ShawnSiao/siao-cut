@@ -354,6 +354,9 @@ enum CanvasCommand {
 
 #[derive(Subcommand)]
 enum TranscriptCommand {
+    ReplacementPreflight {
+        project_id: String,
+    },
     Style {
         project_id: String,
     },
@@ -748,6 +751,10 @@ struct TranscribeArgs {
     model: PathBuf,
     #[arg(long)]
     language: Option<String>,
+    #[arg(long)]
+    expected_version: String,
+    #[arg(long)]
+    confirm_replace: bool,
 }
 
 fn envelope(payload: Value) -> Value {
@@ -853,20 +860,32 @@ fn run(cli: Cli) -> Result<Value> {
         Commands::Contract => {
             unreachable!("contract command returns before database initialization")
         }
-        Commands::Health => Ok(envelope(json!({
-            "home": db::home_dir(),
-            "database": db::database_path(),
-            "engines": {
-                "asr": if media::command_available(&media::whisper_cli_path()) { "configured" } else { "not_configured" },
-                "ffmpeg": if media::command_available(&media::tool_path("SIAOCUT_FFMPEG", "ffmpeg")) { "configured" } else { "not_configured" },
-                "vad": if media::whisper_vad_model_path().is_some() { "configured" } else { "not_configured" },
-                "sourceImport": if source_import::configured() { "configured" } else { "not_configured" }
-                ,"speaker": if speaker::package_status(false)?.installed { "configured" } else { "not_configured" }
-            },
+        Commands::Health => {
+            let vad_model_configured = media::whisper_vad_model_path().is_some();
+            let vad_timeline = media::whisper_vad_timeline_capability();
+            Ok(envelope(json!({
+                "home": db::home_dir(),
+                "database": db::database_path(),
+                "engines": {
+                    "asr": if media::command_available(&media::whisper_cli_path()) { "configured" } else { "not_configured" },
+                    "ffmpeg": if media::command_available(&media::tool_path("SIAOCUT_FFMPEG", "ffmpeg")) { "configured" } else { "not_configured" },
+                    "vad": if !vad_model_configured {
+                        "not_configured"
+                    } else if vad_timeline.verified {
+                        "verified"
+                    } else {
+                        "safe_fallback"
+                    },
+                    "vadModel": if vad_model_configured { "configured" } else { "not_configured" },
+                    "sourceImport": if source_import::configured() { "configured" } else { "not_configured" },
+                    "speaker": if speaker::package_status(false)?.installed { "configured" } else { "not_configured" }
+                },
+                "vadTimeline": vad_timeline,
                 "models": models::catalog(false)?,
                 "runtime": runtime::status()?,
-            "message": "Rust + SQLite Core 可用。"
-        }))),
+                "message": "Rust + SQLite Core 可用。"
+            })))
+        }
         Commands::DesktopRequest { input } => run_desktop_request(&mut database, &input),
         Commands::Import { media, title } => {
             let project = project::create(&mut database, &media, title)?;
@@ -1088,6 +1107,13 @@ fn run(cli: Cli) -> Result<Value> {
             }
         },
         Commands::Transcript(command) => match command {
+            TranscriptCommand::ReplacementPreflight { project_id } => Ok(envelope(json!({
+                "projectId": project_id,
+                "transcriptReplacementPreflight": project::transcript_replacement_preflight(
+                    &database,
+                    &project_id
+                )?
+            }))),
             TranscriptCommand::Style { project_id } => {
                 let project = project::load(&database, &project_id)?;
                 Ok(envelope(json!({
@@ -2034,16 +2060,20 @@ fn run(cli: Cli) -> Result<Value> {
             ))
         }
         Commands::Transcribe(arguments) => {
-            let (project, segments) = media::transcribe(
+            let result = media::transcribe(
                 &mut database,
                 &arguments.project_id,
                 &arguments.model,
                 arguments.language.as_deref(),
+                &arguments.expected_version,
+                arguments.confirm_replace,
             )?;
+            let segments = result.timing_validation.segment_count;
             Ok(envelope(json!({
-                "projectId":project.id,
+                "projectId":result.project.id,
                 "segments":segments,
-                "project":project,
+                "project":result.project,
+                "timingValidation":result.timing_validation,
                 "message": if segments == 0 { "未检测到清晰人声；没有生成字幕。" } else { "已完成本地转录。" }
             })))
         }
@@ -2377,5 +2407,37 @@ mod cli_tests {
         };
         assert_eq!(project_id, "p-test");
         assert_eq!(expected_version, "v-current");
+    }
+
+    #[test]
+    fn quick_transcription_requires_a_version_bound_request() {
+        let base = [
+            "siaocut-core",
+            "transcribe",
+            "p-test",
+            "--model",
+            "model.bin",
+            "--language",
+            "zh",
+        ];
+        assert!(Cli::try_parse_from(base).is_err());
+        let cli = Cli::try_parse_from(base.into_iter().chain([
+            "--expected-version",
+            "v-current",
+            "--confirm-replace",
+        ]))
+        .unwrap();
+        let Commands::Transcribe(TranscribeArgs {
+            project_id,
+            expected_version,
+            confirm_replace,
+            ..
+        }) = cli.command
+        else {
+            panic!("expected transcribe command")
+        };
+        assert_eq!(project_id, "p-test");
+        assert_eq!(expected_version, "v-current");
+        assert!(confirm_replace);
     }
 }

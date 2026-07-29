@@ -187,10 +187,15 @@ export function RuntimeChecklist({ runtime, modelPath, modelAvailable = Boolean(
     onChooseModel: () => void;
     compact?: boolean;
 }) {
+    const vadDetail = runtime?.vadConfigured
+        ? runtime.vadTimelineVerified
+            ? ` · ${tr("app.runtime.vadVerified")}`
+            : ` · ${tr("app.runtime.vadSafeFallback")}`
+        : "";
     const items = [
         { icon: Database, label: "Core", ok: Boolean(runtime), detail: runtime ? `API ${runtime.coreApiVersion}` : tr("app.s0585") },
         { icon: HardDrive, label: "FFmpeg", ok: runtime?.ffmpegConfigured ?? false, detail: runtime?.ffmpegConfigured ? tr("app.s0586") : tr("app.s0587") },
-        { icon: Cpu, label: "whisper.cpp", ok: runtime?.asrConfigured ?? false, detail: runtime?.asrConfigured ? `${runtime.asrBackend.toUpperCase()}${runtime.asrDevice ? ` · ${runtime.asrDevice}` : ""}${runtime.vadConfigured ? " · VAD" : ""}` : tr("app.s0587") },
+        { icon: Cpu, label: "whisper.cpp", ok: runtime?.asrConfigured ?? false, detail: runtime?.asrConfigured ? `${runtime.asrBackend.toUpperCase()}${runtime.asrDevice ? ` · ${runtime.asrDevice}` : ""}${vadDetail}` : tr("app.s0587") },
         { icon: Download, label: tr("app.s0513"), ok: runtime?.ytDlpConfigured ?? false, detail: runtime?.ytDlpConfigured ? "yt-dlp 2026.06.09" : tr("app.s0587") },
     ];
     const modelName = modelPath ? `${modelPath.split(/[\\/]/).pop()}${modelAvailable ? "" : ` · ${tr("app.s0590")}`}` : tr("app.s0468");

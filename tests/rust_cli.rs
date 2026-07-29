@@ -395,6 +395,13 @@ fn health_uses_stable_json_envelope() {
             .unwrap()
             .ends_with("siaocut.db")
     );
+    assert_eq!(response["engines"]["vad"], "not_configured");
+    assert_eq!(response["vadTimeline"]["verified"], false);
+    assert_eq!(response["vadTimeline"]["status"], "safe_fallback");
+    assert_eq!(
+        response["vadTimeline"]["reasonCode"],
+        "vad_runtime_unresolved"
+    );
 }
 
 #[test]
@@ -674,6 +681,63 @@ fn subtitle_file_cli_previews_confirms_checks_and_recovers() {
     assert_eq!(
         undone["project"]["transcript"]["segments"][0]["text"],
         "Original"
+    );
+}
+
+#[test]
+fn transcript_replacement_preflight_reports_version_and_dependency_counts() {
+    let temp = tempdir().unwrap();
+    let media = temp.path().join("preflight.wav");
+    fs::write(&media, b"audio").unwrap();
+    let imported = run_direct(temp.path(), &["import", media.to_str().unwrap()]);
+    let project_id = imported["projectId"].as_str().unwrap();
+    let added = run_direct(
+        temp.path(),
+        &[
+            "transcript",
+            "add",
+            project_id,
+            "--start",
+            "0",
+            "--end",
+            "1",
+            "--text",
+            "Keep",
+        ],
+    );
+    let segment_id = added["segment"]["id"].as_str().unwrap();
+    let database = rusqlite::Connection::open(temp.path().join("siaocut.db")).unwrap();
+    database
+        .execute(
+            "INSERT INTO edits(
+                 id,project_id,kind,status,segment_id,start_seconds,end_seconds,reason,created_at
+             ) VALUES('dependent-edit',?1,'semantic_cut','applied',?2,0,1,'keep','now')",
+            [project_id, segment_id],
+        )
+        .unwrap();
+    drop(database);
+
+    let preflight = run_direct(
+        temp.path(),
+        &["transcript", "replacement-preflight", project_id],
+    );
+
+    assert_eq!(
+        preflight["transcriptReplacementPreflight"]["canReplace"],
+        false
+    );
+    assert_eq!(
+        preflight["transcriptReplacementPreflight"]["blockers"]["edits"],
+        1
+    );
+    assert_eq!(
+        preflight["transcriptReplacementPreflight"]["blockers"]["patchItems"],
+        0
+    );
+    assert!(
+        preflight["transcriptReplacementPreflight"]["currentVersionId"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
     );
 }
 

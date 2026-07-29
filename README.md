@@ -21,7 +21,7 @@ SiaoCut 是面向 AI 口播创作者的 Windows 本地优先剪辑工作台。�
 
 | 功能 | 当前实现 |
 | --- | --- |
-| 本地转写 | 使用 FFmpeg 规范化音频，通过 whisper.cpp 在 CPU 或兼容的 Vulkan GPU 上转写；模型由使用者明确选择。 |
+| 本地转写 | 使用 FFmpeg 规范化音频，通过同源构建的 whisper.cpp 在 CPU 或兼容的 Vulkan GPU 上转写；只有通过原始媒体时间轴验收的运行时才启用 VAD，其他运行时自动安全回退。模型由使用者明确选择。 |
 | 多人长音频（实验） | 显式连接本机回环 MOSS 服务，生成分段、匿名说话人标签和待审复核项；服务、CUDA、Python 和模型不随 SiaoCut 安装。 |
 | 文稿剪辑 | 支持字幕定位与编辑、翻译审阅、软剪辑、撤销、重做和版本恢复。原片不会被覆盖。 |
 | 语音证据 | 标记语速、停顿、口头语、低置信度、响度、静音和疑似削波；可选说话人模型用于生成待审阅说话人轨。 |
@@ -36,6 +36,7 @@ SiaoCut 是面向 AI 口播创作者的 Windows 本地优先剪辑工作台。�
 - 桌面应用、CLI 和 Skill 都通过 Rust Core 修改项目，不直接写入 SQLite。
 - 语音分析和 Agent 结果只提供证据或建议；应用文本修改和剪辑前需要人工确认。
 - 真实方言、重叠语音、复杂噪声和更多硬件组合仍需要扩充验证。
+- CPU 与 Vulkan 有独立的 VAD 时间轴验收入口；CUDA 必须在本机源码构建并完成真实后端验收后才能选择，不能以驱动存在代替验证。
 - MOSS 只允许本机回环服务，不支持远程地址或 API 密钥；服务不可用时不会静默回退到 Whisper。
 
 ## 从源码开始
@@ -103,6 +104,7 @@ tools/                构建、发布和仓库检查工具
 - [用户手册](docs/workbench-user-guide.md)
 - [系统架构](ARCHITECTURE.md)
 - [0.3 语音智能](docs/voice-intelligence-0.3.md)
+- [快速字幕时间安全模式](docs/quick-transcription-timing.md)
 - [MOSS 多人长音频转写](docs/multispeaker-transcription.md)
 - [英文创作者源码 Beta](docs/english-creator-beta.md)
 - [发布与更新](docs/release-updates.md)

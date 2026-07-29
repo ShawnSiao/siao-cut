@@ -426,6 +426,26 @@ test("previews and explicitly replaces local subtitle files", async ({ page }) =
   await expect(transcript.locator("textarea").first()).toHaveValue("导入后的第二条字幕");
 });
 
+test("preflights and confirms original-timeline quick subtitle regeneration", async ({ page }) => {
+  await page.setViewportSize({ width: 1444, height: 972 });
+  await page.goto("/");
+  await bindMockMedia(page);
+
+  await page.getByRole("button", { name: "更多命令" }).click();
+  await page.getByRole("menuitem", { name: "重新生成快速字幕" }).click();
+  const dialog = page.getByRole("dialog", { name: "确认重新生成快速字幕" });
+  await expect(dialog.getByText(/只有通过原始媒体时间轴验收/)).toBeVisible();
+  await expect(dialog.getByText(/原片、既有导出文件和历史版本不会修改/)).toBeVisible();
+  const confirm = dialog.getByRole("button", { name: "确认并重新转写" });
+  await expect(confirm).toBeDisabled();
+  await dialog.getByRole("checkbox", { name: /确认替换当前字幕/ }).check();
+  await expect(confirm).toBeEnabled();
+  await confirm.click();
+
+  await expect(dialog).toBeHidden();
+  await expect(page.getByText(/快速字幕已重新生成并通过时间校验/)).toBeVisible();
+});
+
 test("separates runtime status cards from the transcription model control", async ({ page }) => {
   await page.setViewportSize({ width: 2560, height: 1410 });
   await page.addInitScript(() => localStorage.setItem("siaocut.modelPath", "C:\\Models\\ggml-large-v3-turbo-q5_0-multilingual.bin"));

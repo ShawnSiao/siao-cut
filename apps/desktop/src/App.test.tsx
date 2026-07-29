@@ -967,6 +967,31 @@ describe("SiaoCut review workbench", () => {
     expect(replace).toBeEnabled();
   });
 
+  it("preflights and explicitly confirms safe quick subtitle regeneration", async () => {
+    render(<App />);
+    const commands = await screen.findByLabelText("项目命令");
+    fireEvent.click(within(commands).getByRole("button", { name: "更多命令" }));
+    let menu = await screen.findByRole("menu");
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "重新定位原片" }));
+    await waitFor(() => expect(screen.getByText("已重新定位原片；内容哈希与项目记录一致。")).toBeInTheDocument());
+    fireEvent.click(within(commands).getByRole("button", { name: "更多命令" }));
+    menu = await screen.findByRole("menu");
+    const regenerate = within(menu).getByRole("menuitem", { name: "重新生成快速字幕" });
+    expect(regenerate).toBeEnabled();
+    fireEvent.click(regenerate);
+
+    const dialog = await screen.findByRole("dialog", { name: "确认重新生成快速字幕" });
+    expect(within(dialog).getByText(/校验未通过时，当前项目保持不变/)).toBeInTheDocument();
+    const confirm = within(dialog).getByRole("button", { name: "确认并重新转写" });
+    expect(confirm).toBeDisabled();
+    fireEvent.click(within(dialog).getByRole("checkbox", { name: /确认替换当前字幕/ }));
+    expect(confirm).toBeEnabled();
+    fireEvent.click(confirm);
+
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "确认重新生成快速字幕" })).not.toBeInTheDocument());
+    expect(screen.getByText(/快速字幕已重新生成并通过时间校验/)).toBeInTheDocument();
+  });
+
   it("rejects a split that would create a punctuation-only subtitle", async () => {
     render(<App />);
     const toolbar = await screen.findByRole("region", { name: "字幕结构工具栏" });

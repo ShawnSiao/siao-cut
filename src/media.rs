@@ -6,14 +6,13 @@ use crate::{
 };
 use anyhow::{Context, Result, anyhow, bail};
 use rusqlite::{Connection, params};
+use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
     env, fs,
     path::{Path, PathBuf},
 };
-
-const VAD_RETRY_MIN_MEAN_VOLUME_DBFS: f64 = -55.0;
 
 pub fn tool_path(variable: &str, default: &str) -> String {
     env::var(variable).unwrap_or_else(|_| default.to_owned())
@@ -34,6 +33,34 @@ pub fn whisper_cli_path() -> String {
     }
 }
 
+pub fn whisper_vad_model_path() -> Option<String> {
+    env::var("SIAOCUT_WHISPER_VAD_MODEL")
+        .ok()
+        .or_else(|| {
+            let bundled = home_dir().join("bin").join("ggml-silero-v6.2.0.bin");
+            bundled
+                .is_file()
+                .then(|| bundled.to_string_lossy().to_string())
+        })
+        .filter(|path| Path::new(path).is_file())
+}
+
+fn resolved_whisper_runtime() -> Result<(String, String)> {
+    if let Some(selection) = crate::runtime::verified_selected_runtime()? {
+        return Ok((selection.whisper_path, selection.backend));
+    }
+    Ok((whisper_cli_path(), "cpu".into()))
+}
+
+pub fn whisper_vad_timeline_capability() -> crate::runtime::VadTimelineCapability {
+    match resolved_whisper_runtime() {
+        Ok((whisper, backend)) => {
+            crate::runtime::vad_timeline_capability(Path::new(&whisper), &backend)
+        }
+        Err(_) => crate::runtime::vad_timeline_capability(Path::new(""), "cpu"),
+    }
+}
+
 struct TemporaryRunDirectory(PathBuf);
 
 impl TemporaryRunDirectory {
@@ -47,18 +74,6 @@ impl Drop for TemporaryRunDirectory {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
     }
-}
-
-pub fn whisper_vad_model_path() -> Option<String> {
-    env::var("SIAOCUT_WHISPER_VAD_MODEL")
-        .ok()
-        .or_else(|| {
-            let bundled = home_dir().join("bin").join("ggml-silero-v6.2.0.bin");
-            bundled
-                .is_file()
-                .then(|| bundled.to_string_lossy().to_string())
-        })
-        .filter(|path| Path::new(path).is_file())
 }
 
 pub fn hash_file(path: &Path) -> Result<String> {
@@ -141,12 +156,23 @@ pub fn transcribe(
     project_id: &str,
     model: &Path,
     language: Option<&str>,
-) -> Result<(Project, usize)> {
+    expected_version_id: &str,
+    confirm_replace: bool,
+) -> Result<TranscriptionResult> {
     if !model.is_file() {
         bail!("模型不存在：{}", model.display())
     }
     let project = project::load(db, project_id)?;
-    let base_version_id = project.history.current_version_id.clone();
+    if project.history.current_version_id.as_deref() != Some(expected_version_id) {
+        bail!("transcription_project_changed: 项目已在本地转录开始前发生变化，请重新确认")
+    }
+    let replacing_transcript = !project.transcript.segments.is_empty();
+    if replacing_transcript && !confirm_replace {
+        bail!("transcription_apply_confirmation_required: 重新生成字幕前必须明确确认替换当前字幕")
+    }
+    if replacing_transcript {
+        project::assert_transcript_replacement_safe(db, project_id)?;
+    }
     let source_sha256 = hash_file(Path::new(&project.media.source_path))?;
     if source_sha256 != project.media.sha256 {
         bail!("media_hash_changed: 原片校验值已变化，不能开始本地转录")
@@ -178,12 +204,24 @@ pub fn transcribe(
             String::from_utf8_lossy(&result.stderr).trim()
         )
     }
+    let audio_duration = ffprobe_duration(&wav)
+        .filter(|duration| duration.is_finite() && *duration > 0.0)
+        .ok_or_else(|| {
+            anyhow!("transcription_timing_invalid: 无法确认标准化音频时长，结果未应用")
+        })?;
 
-    let whisper = crate::runtime::verified_selected_whisper_path()?
-        .map(|path| path.to_string_lossy().to_string())
-        .unwrap_or_else(whisper_cli_path);
+    let (whisper, backend) = resolved_whisper_runtime()?;
+    let vad_capability = crate::runtime::vad_timeline_capability(Path::new(&whisper), &backend);
+    let vad_model = vad_capability
+        .verified
+        .then(whisper_vad_model_path)
+        .flatten();
+    let timing_mode = if vad_model.is_some() {
+        TranscriptionTimingMode::verified_vad()
+    } else {
+        TranscriptionTimingMode::no_vad()
+    };
     let output_base = run_directory.join("transcript");
-    let vad_model = whisper_vad_model_path();
     run_whisper(
         &whisper,
         model,
@@ -192,22 +230,18 @@ pub fn transcribe(
         language,
         vad_model.as_deref(),
     )?;
-    if vad_model.is_some() {
-        let json_path = output_base.with_extension("json");
-        let retry_without_vad = whisper_word_timeline_is_compressed(&json_path)?
-            || (whisper_transcription_is_empty(&json_path)?
-                && audio_has_retryable_signal(&ffmpeg, &wav)?);
-        if retry_without_vad {
-            run_whisper(&whisper, model, &wav, &output_base, language, None)?;
-        }
-    }
-    import_whisper_json_at_baseline(
+    import_whisper_json_at_baseline_with_mode(
         db,
         &project.id,
         &output_base.with_extension("json"),
-        base_version_id.as_deref(),
-        &project.media.source_path,
-        &source_sha256,
+        TranscriptionImportBaseline {
+            expected_version_id,
+            expected_source_path: &project.media.source_path,
+            expected_source_sha256: &source_sha256,
+            audio_duration,
+            confirm_replace,
+        },
+        timing_mode,
     )
 }
 
@@ -257,116 +291,27 @@ fn run_whisper(
     Ok(())
 }
 
-fn whisper_transcription_is_empty(json_path: &Path) -> Result<bool> {
-    let raw: Value = serde_json::from_str(
-        &fs::read_to_string(json_path).context("whisper.cpp 未生成 JSON 输出")?,
-    )?;
-    Ok(raw
-        .get("transcription")
-        .and_then(Value::as_array)
-        .is_some_and(Vec::is_empty))
-}
-
-fn whisper_word_timeline_is_compressed(json_path: &Path) -> Result<bool> {
-    let raw: Value = serde_json::from_str(
-        &fs::read_to_string(json_path).context("whisper.cpp 未生成 JSON 输出")?,
-    )?;
-    let Some(entries) = raw.get("transcription").and_then(Value::as_array) else {
-        return Ok(false);
-    };
-    let segment_end = entries
-        .iter()
-        .filter_map(|item| {
-            item.pointer("/timestamps/to")
-                .and_then(Value::as_str)
-                .and_then(|value| parse_whisper_timestamp(value).ok())
-        })
-        .fold(0.0_f64, f64::max);
-    let word_end = entries
-        .iter()
-        .flat_map(|item| {
-            item.get("tokens")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-        })
-        .filter_map(|token| {
-            let text = token.get("text").and_then(Value::as_str)?.trim();
-            if text.is_empty() || text.starts_with("[_") || text.starts_with("<|") {
-                return None;
-            }
-            token
-                .pointer("/timestamps/to")
-                .and_then(Value::as_str)
-                .and_then(|value| parse_whisper_timestamp(value).ok())
-        })
-        .fold(0.0_f64, f64::max);
-    let paired_gaps = entries
-        .iter()
-        .filter_map(|item| {
-            let segment_end = item
-                .pointer("/timestamps/to")
-                .and_then(Value::as_str)
-                .and_then(|value| parse_whisper_timestamp(value).ok())?;
-            let word_end = item
-                .get("tokens")
-                .and_then(Value::as_array)?
-                .iter()
-                .filter_map(|token| {
-                    let text = token.get("text").and_then(Value::as_str)?.trim();
-                    if text.is_empty() || text.starts_with("[_") || text.starts_with("<|") {
-                        return None;
-                    }
-                    token
-                        .pointer("/timestamps/to")
-                        .and_then(Value::as_str)
-                        .and_then(|value| parse_whisper_timestamp(value).ok())
-                })
-                .fold(0.0_f64, f64::max);
-            (word_end > 0.0).then_some(segment_end - word_end)
-        })
-        .collect::<Vec<_>>();
-
-    let gap = segment_end - word_end;
-    let growing_drift = paired_gaps
-        .first()
-        .zip(paired_gaps.last())
-        .is_some_and(|(first, last)| last - first > 5.0);
-    Ok(segment_end > 0.0
-        && word_end > 0.0
-        && gap > 5.0
-        && word_end < segment_end * 0.98
-        && growing_drift)
-}
-
-fn audio_has_retryable_signal(ffmpeg: &str, wav: &Path) -> Result<bool> {
-    let result = hidden_command(ffmpeg)
-        .args(["-hide_banner", "-nostats", "-i"])
-        .arg(wav)
-        .args(["-af", "volumedetect", "-f", "null", "-"])
-        .output()
-        .with_context(|| format!("无法启动 FFmpeg 音量检查：{ffmpeg}"))?;
-    if !result.status.success() {
-        bail!(
-            "FFmpeg 音量检查失败：{}",
-            String::from_utf8_lossy(&result.stderr).trim()
-        )
-    }
-    Ok(
-        parse_mean_volume_dbfs(&String::from_utf8_lossy(&result.stderr))
-            .is_some_and(|value| value > VAD_RETRY_MIN_MEAN_VOLUME_DBFS),
-    )
-}
-
-fn parse_mean_volume_dbfs(output: &str) -> Option<f64> {
-    output.lines().rev().find_map(|line| {
-        let value = line.split("mean_volume:").nth(1)?.trim();
-        let numeric = value.split_whitespace().next()?;
-        numeric.parse::<f64>().ok()
-    })
-}
-
 const MAX_CAPTION_DURATION_SECONDS: f64 = 8.0;
+const AUDIO_DURATION_TOLERANCE_SECONDS: f64 = 0.25;
+const PARENT_SEGMENT_TOLERANCE_SECONDS: f64 = 0.5;
+const TIMELINE_ORDER_TOLERANCE_SECONDS: f64 = 0.001;
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimingValidation {
+    pub status: String,
+    pub time_domain: String,
+    pub mode: String,
+    pub vad_used: bool,
+    pub segment_count: usize,
+    pub word_count: usize,
+}
+
+#[derive(Debug)]
+pub struct TranscriptionResult {
+    pub project: Project,
+    pub timing_validation: TimingValidation,
+}
 
 #[derive(Debug)]
 struct TimedToken {
@@ -382,39 +327,122 @@ struct ImportedSegment {
     words: Vec<Word>,
 }
 
-fn fallback_text_segments(start: f64, end: f64, text: &str) -> Vec<ImportedSegment> {
-    let characters = text.chars().collect::<Vec<_>>();
-    if characters.is_empty() {
-        return Vec::new();
+#[derive(Debug)]
+struct ValidatedWhisperTranscript {
+    language: Option<String>,
+    segments: Vec<ImportedSegment>,
+}
+
+struct TranscriptionImportBaseline<'a> {
+    expected_version_id: &'a str,
+    expected_source_path: &'a str,
+    expected_source_sha256: &'a str,
+    audio_duration: f64,
+    confirm_replace: bool,
+}
+
+#[derive(Clone, Copy)]
+struct TranscriptionTimingMode {
+    mode: &'static str,
+    vad_used: bool,
+}
+
+impl TranscriptionTimingMode {
+    const fn no_vad() -> Self {
+        Self {
+            mode: "whisper_no_vad",
+            vad_used: false,
+        }
     }
-    let required = ((end - start) / MAX_CAPTION_DURATION_SECONDS)
-        .ceil()
-        .max(1.0) as usize;
-    let chunk_count = required.min(characters.len());
-    (0..chunk_count)
-        .filter_map(|index| {
-            let from = index * characters.len() / chunk_count;
-            let to = (index + 1) * characters.len() / chunk_count;
-            let text = characters[from..to].iter().collect::<String>();
-            let segment_start = start + (end - start) * index as f64 / chunk_count as f64;
-            let natural_end = start + (end - start) * (index + 1) as f64 / chunk_count as f64;
-            let segment_end = natural_end.min(segment_start + MAX_CAPTION_DURATION_SECONDS);
-            (!text.trim().is_empty()).then(|| ImportedSegment {
-                start: segment_start,
-                end: segment_end,
-                text: text.trim().to_owned(),
-                words: Vec::new(),
-            })
+
+    const fn verified_vad() -> Self {
+        Self {
+            mode: "whisper_verified_vad",
+            vad_used: true,
+        }
+    }
+}
+
+fn timing_error(detail: impl std::fmt::Display) -> anyhow::Error {
+    anyhow!("transcription_timing_invalid: {detail}")
+}
+
+fn parse_timing_field(value: Option<&str>, label: &str) -> Result<f64> {
+    let timestamp =
+        parse_whisper_timestamp(value.unwrap_or("")).map_err(|_| timing_error(label))?;
+    if !timestamp.is_finite() || timestamp < 0.0 {
+        return Err(timing_error(label));
+    }
+    Ok(timestamp)
+}
+
+fn is_special_token(text: &str) -> bool {
+    let text = text.trim();
+    text.starts_with("[_") || text.starts_with("<|")
+}
+
+fn is_punctuation_only(text: &str) -> bool {
+    let text = text.trim();
+    !text.is_empty()
+        && text.chars().all(|character| {
+            character.is_ascii_punctuation()
+                || matches!(
+                    character,
+                    '，' | '。'
+                        | '！'
+                        | '？'
+                        | '；'
+                        | '：'
+                        | '、'
+                        | '（'
+                        | '）'
+                        | '【'
+                        | '】'
+                        | '《'
+                        | '》'
+                        | '〈'
+                        | '〉'
+                        | '「'
+                        | '」'
+                        | '『'
+                        | '』'
+                        | '〔'
+                        | '〕'
+                        | '…'
+                        | '—'
+                        | '–'
+                        | '·'
+                        | '～'
+                        | '“'
+                        | '”'
+                        | '‘'
+                        | '’'
+                )
         })
+}
+
+fn comparable_text(text: &str) -> String {
+    text.chars()
+        .filter(|character| !character.is_whitespace())
         .collect()
 }
 
-fn whisper_item_segments(item: &Value) -> Result<Vec<ImportedSegment>> {
+fn whisper_item_segments(item: &Value, audio_duration: f64) -> Result<Vec<ImportedSegment>> {
     let timestamps = item.get("timestamps").unwrap_or(&Value::Null);
-    let item_start =
-        parse_whisper_timestamp(timestamps.get("from").and_then(Value::as_str).unwrap_or(""))?;
-    let item_end =
-        parse_whisper_timestamp(timestamps.get("to").and_then(Value::as_str).unwrap_or(""))?;
+    let item_start = parse_timing_field(
+        timestamps.get("from").and_then(Value::as_str),
+        "字幕段缺少有效开始时间，结果未应用",
+    )?;
+    let item_end = parse_timing_field(
+        timestamps.get("to").and_then(Value::as_str),
+        "字幕段缺少有效结束时间，结果未应用",
+    )?;
+    if item_end <= item_start {
+        return Err(timing_error("字幕段结束时间不晚于开始时间，结果未应用"));
+    }
+    if item_end > audio_duration + AUDIO_DURATION_TOLERANCE_SECONDS {
+        return Err(timing_error("字幕段超出标准化音频时长，结果未应用"));
+    }
     let text = item
         .get("text")
         .and_then(Value::as_str)
@@ -424,42 +452,67 @@ fn whisper_item_segments(item: &Value) -> Result<Vec<ImportedSegment>> {
         return Ok(Vec::new());
     }
 
-    let mut pending_text = String::new();
-    let mut tokens = Vec::new();
-    for token in item
+    let token_values = item
         .get("tokens")
         .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
+        .ok_or_else(|| timing_error("非空字幕段缺少词级时间，结果未应用"))?;
+    let mut pending_text = String::new();
+    let mut tokens: Vec<TimedToken> = Vec::new();
+    let mut previous_word_start = None;
+    let mut previous_word_end = None;
+    for token in token_values {
         let raw_text = token.get("text").and_then(Value::as_str).unwrap_or("");
         let word_text = raw_text.trim();
-        if word_text.starts_with("[_") || word_text.starts_with("<|") {
+        if is_special_token(word_text) {
             continue;
         }
         if word_text.is_empty() {
             pending_text.push_str(raw_text);
             continue;
         }
-        let Some(timestamps) = token.get("timestamps") else {
-            continue;
-        };
-        let Some(from) = timestamps.get("from").and_then(Value::as_str) else {
-            continue;
-        };
-        let Some(to) = timestamps.get("to").and_then(Value::as_str) else {
-            continue;
-        };
-        let Ok(word_start) = parse_whisper_timestamp(from) else {
-            continue;
-        };
-        let Ok(word_end) = parse_whisper_timestamp(to) else {
-            continue;
-        };
-        if word_end <= word_start {
+        if is_punctuation_only(word_text) {
+            if let Some(previous) = tokens.last_mut() {
+                previous.rendered_text.push_str(raw_text);
+                previous.word.text.push_str(word_text);
+            } else {
+                pending_text.push_str(raw_text);
+            }
             continue;
         }
+        let timestamps = token
+            .get("timestamps")
+            .ok_or_else(|| timing_error("词级内容缺少时间戳，结果未应用"))?;
+        let word_start = parse_timing_field(
+            timestamps.get("from").and_then(Value::as_str),
+            "词级内容缺少有效开始时间，结果未应用",
+        )?;
+        let word_end = parse_timing_field(
+            timestamps.get("to").and_then(Value::as_str),
+            "词级内容缺少有效结束时间，结果未应用",
+        )?;
+        if word_end <= word_start {
+            return Err(timing_error("词级内容结束时间不晚于开始时间，结果未应用"));
+        }
+        if word_end - word_start > MAX_CAPTION_DURATION_SECONDS {
+            return Err(timing_error("单个词级时间范围异常，结果未应用"));
+        }
+        if word_start + PARENT_SEGMENT_TOLERANCE_SECONDS < item_start
+            || word_end > item_end + PARENT_SEGMENT_TOLERANCE_SECONDS
+        {
+            return Err(timing_error("词级时间不在所属字幕段附近，结果未应用"));
+        }
+        if word_end > audio_duration + AUDIO_DURATION_TOLERANCE_SECONDS {
+            return Err(timing_error("词级时间超出标准化音频时长，结果未应用"));
+        }
+        if previous_word_start
+            .is_some_and(|previous| word_start + TIMELINE_ORDER_TOLERANCE_SECONDS < previous)
+            || previous_word_end
+                .is_some_and(|previous| word_end + TIMELINE_ORDER_TOLERANCE_SECONDS < previous)
+        {
+            return Err(timing_error("词级时间出现倒退，结果未应用"));
+        }
         let rendered_text = format!("{pending_text}{raw_text}");
+        let stored_text = format!("{}{}", pending_text.trim(), word_text);
         pending_text.clear();
         tokens.push(TimedToken {
             rendered_text,
@@ -468,18 +521,28 @@ fn whisper_item_segments(item: &Value) -> Result<Vec<ImportedSegment>> {
                 segment_id: String::new(),
                 start: word_start,
                 end: word_end,
-                text: word_text.to_owned(),
+                text: stored_text,
                 confidence: token.get("p").and_then(Value::as_f64),
             },
         });
+        previous_word_start = Some(word_start);
+        previous_word_end = Some(word_end);
     }
 
-    if tokens.is_empty()
-        || tokens
-            .iter()
-            .any(|token| token.word.end - token.word.start > MAX_CAPTION_DURATION_SECONDS)
+    if tokens.is_empty() {
+        return Err(timing_error("非空字幕段没有可信词级时间，结果未应用"));
+    }
+    if !pending_text.is_empty()
+        && let Some(previous) = tokens.last_mut()
     {
-        return Ok(fallback_text_segments(item_start, item_end, text));
+        previous.rendered_text.push_str(&pending_text);
+    }
+    let reconstructed = tokens
+        .iter()
+        .map(|token| token.rendered_text.as_str())
+        .collect::<String>();
+    if comparable_text(&reconstructed) != comparable_text(text) {
+        return Err(timing_error("词级内容不能完整还原字幕段文本，结果未应用"));
     }
 
     let mut groups: Vec<Vec<TimedToken>> = Vec::new();
@@ -517,34 +580,13 @@ fn whisper_item_segments(item: &Value) -> Result<Vec<ImportedSegment>> {
         .collect())
 }
 
-#[cfg(test)]
-fn import_whisper_json(
-    db: &mut Connection,
-    project_id: &str,
-    json_path: &Path,
-) -> Result<(Project, usize)> {
-    let project = project::load(db, project_id)?;
-    import_whisper_json_at_baseline(
-        db,
-        project_id,
-        json_path,
-        project.history.current_version_id.as_deref(),
-        &project.media.source_path,
-        &project.media.sha256,
-    )
-}
-
-fn import_whisper_json_at_baseline(
-    db: &mut Connection,
-    project_id: &str,
-    json_path: &Path,
-    expected_version_id: Option<&str>,
-    expected_source_path: &str,
-    expected_source_sha256: &str,
-) -> Result<(Project, usize)> {
-    let raw: Value = serde_json::from_str(
-        &fs::read_to_string(json_path).context("whisper.cpp 未生成 JSON 输出")?,
-    )?;
+fn validate_whisper_transcript(
+    raw: &Value,
+    audio_duration: f64,
+) -> Result<ValidatedWhisperTranscript> {
+    if !audio_duration.is_finite() || audio_duration <= 0.0 {
+        return Err(timing_error("标准化音频时长无效，结果未应用"));
+    }
     let entries = raw
         .get("transcription")
         .and_then(Value::as_array)
@@ -560,14 +602,128 @@ fn import_whisper_json_at_baseline(
                     .filter_map(|item| item.get("text").and_then(Value::as_str)),
             )
         });
-    let mut count = 0;
-    if hash_file(Path::new(expected_source_path))? != expected_source_sha256 {
+    let mut previous_segment_start = None;
+    let mut previous_segment_end = None;
+    let mut segments = Vec::new();
+    for item in entries {
+        let timestamps = item.get("timestamps").unwrap_or(&Value::Null);
+        let item_start = parse_timing_field(
+            timestamps.get("from").and_then(Value::as_str),
+            "字幕段缺少有效开始时间，结果未应用",
+        )?;
+        let item_end = parse_timing_field(
+            timestamps.get("to").and_then(Value::as_str),
+            "字幕段缺少有效结束时间，结果未应用",
+        )?;
+        if previous_segment_start
+            .is_some_and(|previous| item_start + TIMELINE_ORDER_TOLERANCE_SECONDS < previous)
+            || previous_segment_end
+                .is_some_and(|previous| item_end + TIMELINE_ORDER_TOLERANCE_SECONDS < previous)
+        {
+            return Err(timing_error("字幕段时间出现倒退，结果未应用"));
+        }
+        segments.extend(whisper_item_segments(item, audio_duration)?);
+        previous_segment_start = Some(item_start);
+        previous_segment_end = Some(item_end);
+    }
+
+    let mut previous_word_start = None;
+    let mut previous_word_end = None;
+    for word in segments.iter().flat_map(|segment| segment.words.iter()) {
+        if previous_word_start
+            .is_some_and(|previous| word.start + TIMELINE_ORDER_TOLERANCE_SECONDS < previous)
+            || previous_word_end
+                .is_some_and(|previous| word.end + TIMELINE_ORDER_TOLERANCE_SECONDS < previous)
+        {
+            return Err(timing_error("跨字幕段的词级时间出现倒退，结果未应用"));
+        }
+        previous_word_start = Some(word.start);
+        previous_word_end = Some(word.end);
+    }
+
+    Ok(ValidatedWhisperTranscript { language, segments })
+}
+
+#[cfg(test)]
+fn import_whisper_json(
+    db: &mut Connection,
+    project_id: &str,
+    json_path: &Path,
+    audio_duration: f64,
+    confirm_replace: bool,
+) -> Result<(Project, usize)> {
+    let project = project::load(db, project_id)?;
+    let result = import_whisper_json_at_baseline(
+        db,
+        project_id,
+        json_path,
+        TranscriptionImportBaseline {
+            expected_version_id: project
+                .history
+                .current_version_id
+                .as_deref()
+                .ok_or_else(|| anyhow!("project_version_missing: 项目没有可确认的当前版本"))?,
+            expected_source_path: &project.media.source_path,
+            expected_source_sha256: &project.media.sha256,
+            audio_duration,
+            confirm_replace,
+        },
+    )?;
+    Ok((result.project, result.timing_validation.segment_count))
+}
+
+#[cfg(test)]
+fn import_whisper_json_at_baseline(
+    db: &mut Connection,
+    project_id: &str,
+    json_path: &Path,
+    baseline: TranscriptionImportBaseline<'_>,
+) -> Result<TranscriptionResult> {
+    import_whisper_json_at_baseline_with_mode(
+        db,
+        project_id,
+        json_path,
+        baseline,
+        TranscriptionTimingMode::no_vad(),
+    )
+}
+
+fn import_whisper_json_at_baseline_with_mode(
+    db: &mut Connection,
+    project_id: &str,
+    json_path: &Path,
+    baseline: TranscriptionImportBaseline<'_>,
+    timing_mode: TranscriptionTimingMode,
+) -> Result<TranscriptionResult> {
+    let raw: Value = serde_json::from_str(
+        &fs::read_to_string(json_path).context("whisper.cpp 未生成 JSON 输出")?,
+    )?;
+    let validated = validate_whisper_transcript(&raw, baseline.audio_duration)?;
+    let current = project::load(db, project_id)?;
+    if current.history.current_version_id.as_deref() != Some(baseline.expected_version_id) {
+        bail!("transcription_project_changed: 本地转录期间项目已被修改，结果未应用")
+    }
+    let replacing_transcript = !current.transcript.segments.is_empty();
+    if replacing_transcript && !baseline.confirm_replace {
+        bail!("transcription_apply_confirmation_required: 重新生成字幕前必须明确确认替换当前字幕")
+    }
+    if replacing_transcript && validated.segments.is_empty() {
+        bail!("transcription_timing_invalid: 重新转录未识别到可信人声，当前字幕已保留")
+    }
+    if hash_file(Path::new(baseline.expected_source_path))? != baseline.expected_source_sha256 {
         bail!("transcription_source_changed: 本地转录期间原始媒体内容发生变化，结果未应用")
     }
+    let segment_count = validated.segments.len();
+    let word_count = validated
+        .segments
+        .iter()
+        .map(|segment| segment.words.len())
+        .sum();
+    let ValidatedWhisperTranscript { language, segments } = validated;
     project::mutate_with_snapshot_at_version(
         db,
         project_id,
-        expected_version_id,
+        Some(baseline.expected_version_id),
         "transcription_project_changed: 本地转录期间项目已被修改，结果未应用",
         "whisper.cpp 本地转录",
         |tx| {
@@ -576,40 +732,37 @@ fn import_whisper_json_at_baseline(
                 [project_id],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )?;
-            if recorded.0 != expected_source_path || recorded.1 != expected_source_sha256 {
+            if recorded.0 != baseline.expected_source_path
+                || recorded.1 != baseline.expected_source_sha256
+            {
                 bail!("transcription_source_changed: 本地转录期间项目媒体绑定发生变化，结果未应用")
             }
-            if hash_file(Path::new(expected_source_path))? != expected_source_sha256 {
+            if hash_file(Path::new(baseline.expected_source_path))?
+                != baseline.expected_source_sha256
+            {
                 bail!("transcription_source_changed: 本地转录期间原始媒体内容发生变化，结果未应用")
             }
             project::assert_transcript_replacement_safe(tx, project_id)?;
             tx.execute("DELETE FROM segments WHERE project_id=?1", [project_id])?;
-            for item in entries {
-                for imported in whisper_item_segments(item)? {
-                    let confidence = if imported.words.is_empty() {
-                        None
-                    } else {
-                        let values = imported
-                            .words
-                            .iter()
-                            .filter_map(|word| word.confidence)
-                            .collect::<Vec<_>>();
-                        (!values.is_empty())
-                            .then(|| values.iter().sum::<f64>() / values.len() as f64)
-                    };
-                    let segment = Segment {
-                        id: new_id("s"),
-                        start: imported.start,
-                        end: imported.end,
-                        text: imported.text,
-                        confidence,
-                    };
-                    tx.execute("INSERT INTO segments(id,project_id,start_seconds,end_seconds,text,confidence) VALUES(?1,?2,?3,?4,?5,?6)",params![&segment.id,project_id,segment.start,segment.end,&segment.text,segment.confidence])?;
-                    for (ordinal, mut word) in imported.words.into_iter().enumerate() {
-                        word.segment_id.clone_from(&segment.id);
-                        tx.execute("INSERT INTO words(id,project_id,segment_id,start_seconds,end_seconds,text,confidence,ordinal) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",params![&word.id,project_id,&word.segment_id,word.start,word.end,&word.text,word.confidence,ordinal as i64])?;
-                    }
-                    count += 1;
+            for imported in segments {
+                let values = imported
+                    .words
+                    .iter()
+                    .filter_map(|word| word.confidence)
+                    .collect::<Vec<_>>();
+                let confidence =
+                    (!values.is_empty()).then(|| values.iter().sum::<f64>() / values.len() as f64);
+                let segment = Segment {
+                    id: new_id("s"),
+                    start: imported.start,
+                    end: imported.end,
+                    text: imported.text,
+                    confidence,
+                };
+                tx.execute("INSERT INTO segments(id,project_id,start_seconds,end_seconds,text,confidence) VALUES(?1,?2,?3,?4,?5,?6)",params![&segment.id,project_id,segment.start,segment.end,&segment.text,segment.confidence])?;
+                for (ordinal, mut word) in imported.words.into_iter().enumerate() {
+                    word.segment_id.clone_from(&segment.id);
+                    tx.execute("INSERT INTO words(id,project_id,segment_id,start_seconds,end_seconds,text,confidence,ordinal) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",params![&word.id,project_id,&word.segment_id,word.start,word.end,&word.text,word.confidence,ordinal as i64])?;
                 }
             }
             if let Some(language) = language {
@@ -625,7 +778,17 @@ fn import_whisper_json_at_baseline(
             Ok(())
         },
     )?;
-    Ok((project::load(db, project_id)?, count))
+    Ok(TranscriptionResult {
+        project: project::load(db, project_id)?,
+        timing_validation: TimingValidation {
+            status: "verified".into(),
+            time_domain: "original_media".into(),
+            mode: timing_mode.mode.into(),
+            vad_used: timing_mode.vad_used,
+            segment_count,
+            word_count,
+        },
+    })
 }
 
 #[cfg(test)]
@@ -641,62 +804,70 @@ mod tests {
     }
 
     #[test]
-    fn detects_an_empty_vad_transcription_for_safe_retry() {
-        let temp = tempdir().unwrap();
-        let empty = temp.path().join("empty.json");
-        let populated = temp.path().join("populated.json");
-        fs::write(&empty, r#"{"transcription":[]}"#).unwrap();
-        fs::write(&populated, r#"{"transcription":[{"text":"speech"}]}"#).unwrap();
-        assert!(whisper_transcription_is_empty(&empty).unwrap());
-        assert!(!whisper_transcription_is_empty(&populated).unwrap());
+    fn rejects_subtle_vad_timeline_compression_without_a_drift_threshold() {
+        let compressed = serde_json::json!({
+            "transcription": [
+                {
+                    "timestamps": {"from":"00:00:00,200","to":"00:00:03,000"},
+                    "text":" first",
+                    "tokens":[{"text":" first","timestamps":{"from":"00:00:00,250","to":"00:00:02,800"}}]
+                },
+                {
+                    "timestamps":{"from":"00:00:12,500","to":"00:00:16,060"},
+                    "text":" last",
+                    "tokens":[{"text":" last","timestamps":{"from":"00:00:09,000","to":"00:00:12,200"}}]
+                }
+            ]
+        });
+
+        let error = validate_whisper_transcript(&compressed, 16.77)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("transcription_timing_invalid"));
+        assert!(error.contains("所属字幕段"));
     }
 
     #[test]
-    fn detects_a_vad_compressed_word_timeline_for_safe_retry() {
-        let temp = tempdir().unwrap();
-        let compressed = temp.path().join("compressed.json");
-        let aligned = temp.path().join("aligned.json");
-        fs::write(
-            &compressed,
-            r#"{"transcription":[{"timestamps":{"from":"00:00:00,820","to":"00:00:14,920"},"text":" first","tokens":[{"text":" first","timestamps":{"from":"00:00:00,070","to":"00:00:06,400"}}]},{"timestamps":{"from":"00:02:18,280","to":"00:02:21,840"},"text":" last","tokens":[{"text":" last","timestamps":{"from":"00:01:25,470","to":"00:01:26,600"}}]}]}"#,
-        )
-        .unwrap();
-        fs::write(
-            &aligned,
-            r#"{"transcription":[{"timestamps":{"from":"00:00:00,820","to":"00:00:14,920"},"text":" first","tokens":[{"text":" first","timestamps":{"from":"00:00:00,900","to":"00:00:06,400"}}]},{"timestamps":{"from":"00:02:18,280","to":"00:02:21,840"},"text":" last","tokens":[{"text":" last","timestamps":{"from":"00:02:18,470","to":"00:02:21,600"}}]}]}"#,
-        )
-        .unwrap();
+    fn accepts_word_timing_in_the_original_media_domain() {
+        let aligned = serde_json::json!({
+            "transcription": [
+                {
+                    "timestamps": {"from":"00:00:00,200","to":"00:00:03,000"},
+                    "text":" first",
+                    "tokens":[{"text":" first","timestamps":{"from":"00:00:00,250","to":"00:00:02,800"}}]
+                },
+                {
+                    "timestamps":{"from":"00:00:12,500","to":"00:00:16,060"},
+                    "text":" last",
+                    "tokens":[{"text":" last","timestamps":{"from":"00:00:12,700","to":"00:00:15,800"}}]
+                }
+            ]
+        });
 
-        assert!(whisper_word_timeline_is_compressed(&compressed).unwrap());
-        assert!(!whisper_word_timeline_is_compressed(&aligned).unwrap());
+        let validated = validate_whisper_transcript(&aligned, 16.77).unwrap();
+
+        assert_eq!(validated.segments.len(), 2);
+        assert_eq!(validated.segments[1].end, 15.8);
     }
 
     #[test]
-    fn detects_gradual_vad_drift_before_subtitles_end_early() {
-        let temp = tempdir().unwrap();
-        let gradual = temp.path().join("gradual.json");
-        fs::write(
-            &gradual,
-            r#"{"transcription":[{"timestamps":{"from":"00:00:00,240","to":"00:00:04,260"},"text":" first","tokens":[{"text":" first","timestamps":{"from":"00:00:00,060","to":"00:00:03,870"}}]},{"timestamps":{"from":"00:03:27,440","to":"00:03:30,820"},"text":" last","tokens":[{"text":" last","timestamps":{"from":"00:03:15,380","to":"00:03:16,400"}}]}]}"#,
-        )
-        .unwrap();
+    fn attaches_zero_duration_punctuation_without_storing_a_separate_word() {
+        let item = serde_json::json!({
+            "timestamps":{"from":"00:00:00,000","to":"00:00:01,500"},
+            "text":"你好。",
+            "tokens":[
+                {"text":"你好","timestamps":{"from":"00:00:00,100","to":"00:00:01,200"}},
+                {"text":"。","timestamps":{"from":"00:00:01,200","to":"00:00:01,200"}}
+            ]
+        });
 
-        assert!(whisper_word_timeline_is_compressed(&gradual).unwrap());
-    }
+        let segments = whisper_item_segments(&item, 2.0).unwrap();
 
-    #[test]
-    fn vad_retry_requires_audible_signal_instead_of_digital_silence() {
-        let audible = "[Parsed_volumedetect_0] mean_volume: -27.4 dB";
-        let silence = "[Parsed_volumedetect_0] mean_volume: -91.0 dB";
-        let negative_infinity = "[Parsed_volumedetect_0] mean_volume: -inf dB";
-        assert_eq!(parse_mean_volume_dbfs(audible), Some(-27.4));
-        assert_eq!(parse_mean_volume_dbfs(silence), Some(-91.0));
-        assert_eq!(
-            parse_mean_volume_dbfs(negative_infinity),
-            Some(f64::NEG_INFINITY)
-        );
-        assert!(parse_mean_volume_dbfs(audible).unwrap() > VAD_RETRY_MIN_MEAN_VOLUME_DBFS);
-        assert!(parse_mean_volume_dbfs(silence).unwrap() <= VAD_RETRY_MIN_MEAN_VOLUME_DBFS);
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].text, "你好。");
+        assert_eq!(segments[0].words.len(), 1);
+        assert_eq!(segments[0].words[0].text, "你好。");
     }
 
     #[test]
@@ -709,14 +880,15 @@ mod tests {
         let result = temp.path().join("result.json");
         fs::write(
             &result,
-            r#"{"transcription":[{"timestamps":{"from":"00:00:00,000","to":"00:00:01,500"},"text":" hello "}]}"#,
+            r#"{"transcription":[{"timestamps":{"from":"00:00:00,000","to":"00:00:01,500"},"text":" hello ","tokens":[{"text":" hello ","timestamps":{"from":"00:00:00,100","to":"00:00:01,400"}}]}]}"#,
         )
         .unwrap();
-        let (updated, count) = import_whisper_json(&mut db, &project.id, &result).unwrap();
+        let (updated, count) =
+            import_whisper_json(&mut db, &project.id, &result, 2.0, false).unwrap();
         assert_eq!(count, 1);
         assert_eq!(updated.transcript.segments[0].text, "hello");
-        assert_eq!(updated.transcript.segments[0].end, 1.5);
-        assert!(updated.transcript.words.is_empty());
+        assert_eq!(updated.transcript.segments[0].end, 1.4);
+        assert_eq!(updated.transcript.words.len(), 1);
     }
 
     #[test]
@@ -731,7 +903,7 @@ mod tests {
         let result = temp.path().join("stale-result.json");
         fs::write(
             &result,
-            r#"{"transcription":[{"timestamps":{"from":"00:00:00,000","to":"00:00:01,000"},"text":" stale result"}]}"#,
+            r#"{"transcription":[{"timestamps":{"from":"00:00:00,000","to":"00:00:01,000"},"text":" stale result","tokens":[{"text":" stale result","timestamps":{"from":"00:00:00,100","to":"00:00:00,900"}}]}]}"#,
         )
         .unwrap();
 
@@ -739,9 +911,13 @@ mod tests {
             &mut db,
             &created.id,
             &result,
-            baseline_version.as_deref(),
-            &created.media.source_path,
-            &created.media.sha256,
+            TranscriptionImportBaseline {
+                expected_version_id: baseline_version.as_deref().unwrap(),
+                expected_source_path: &created.media.source_path,
+                expected_source_sha256: &created.media.sha256,
+                audio_duration: 2.0,
+                confirm_replace: true,
+            },
         )
         .unwrap_err()
         .to_string();
@@ -770,10 +946,19 @@ mod tests {
         )
         .unwrap();
         let baseline = project::load(&db, &created.id).unwrap();
+        let preflight = project::transcript_replacement_preflight(&db, &created.id).unwrap();
+        assert!(!preflight.can_replace);
+        assert_eq!(
+            preflight.current_version_id,
+            baseline.history.current_version_id.as_deref().unwrap()
+        );
+        assert_eq!(preflight.blockers.edits, 1);
+        assert_eq!(preflight.blockers.patch_items, 0);
+        assert_eq!(preflight.blockers.task_segments, 0);
         let result = temp.path().join("replacement.json");
         fs::write(
             &result,
-            r#"{"transcription":[{"timestamps":{"from":"00:00:00,000","to":"00:00:01,000"},"text":" replacement"}]}"#,
+            r#"{"transcription":[{"timestamps":{"from":"00:00:00,000","to":"00:00:01,000"},"text":" replacement","tokens":[{"text":" replacement","timestamps":{"from":"00:00:00,100","to":"00:00:00,900"}}]}]}"#,
         )
         .unwrap();
 
@@ -781,9 +966,13 @@ mod tests {
             &mut db,
             &created.id,
             &result,
-            baseline.history.current_version_id.as_deref(),
-            &created.media.source_path,
-            &created.media.sha256,
+            TranscriptionImportBaseline {
+                expected_version_id: baseline.history.current_version_id.as_deref().unwrap(),
+                expected_source_path: &created.media.source_path,
+                expected_source_sha256: &created.media.sha256,
+                audio_duration: 2.0,
+                confirm_replace: true,
+            },
         )
         .unwrap_err()
         .to_string();
@@ -793,6 +982,145 @@ mod tests {
             project::load(&db, &created.id).unwrap().transcript.segments[0].text,
             "keep me"
         );
+    }
+
+    #[test]
+    fn invalid_word_timing_never_replaces_an_existing_transcript() {
+        let temp = tempdir().unwrap();
+        let mut db = db::open_at(&temp.path().join("invalid-timing.db")).unwrap();
+        let media = temp.path().join("talk.wav");
+        fs::write(&media, b"audio").unwrap();
+        let created = project::create(&mut db, &media, None).unwrap();
+        project::add_segment(&mut db, &created.id, 0.0, 1.0, "keep me".into(), None).unwrap();
+        let baseline = project::load(&db, &created.id).unwrap();
+        let result = temp.path().join("compressed.json");
+        fs::write(
+            &result,
+            r#"{"transcription":[{"timestamps":{"from":"00:00:12,500","to":"00:00:16,060"},"text":" replacement","tokens":[{"text":" replacement","timestamps":{"from":"00:00:09,000","to":"00:00:12,200"}}]}]}"#,
+        )
+        .unwrap();
+
+        let error = import_whisper_json_at_baseline(
+            &mut db,
+            &created.id,
+            &result,
+            TranscriptionImportBaseline {
+                expected_version_id: baseline.history.current_version_id.as_deref().unwrap(),
+                expected_source_path: &created.media.source_path,
+                expected_source_sha256: &created.media.sha256,
+                audio_duration: 16.77,
+                confirm_replace: true,
+            },
+        )
+        .unwrap_err()
+        .to_string();
+
+        let preserved = project::load(&db, &created.id).unwrap();
+        assert!(error.contains("transcription_timing_invalid"));
+        assert_eq!(preserved.transcript.segments[0].text, "keep me");
+        assert_eq!(
+            preserved.history.current_version_id,
+            baseline.history.current_version_id
+        );
+    }
+
+    #[test]
+    fn empty_retranscription_preserves_existing_subtitles() {
+        let temp = tempdir().unwrap();
+        let mut db = db::open_at(&temp.path().join("empty-retranscription.db")).unwrap();
+        let media = temp.path().join("talk.wav");
+        fs::write(&media, b"audio").unwrap();
+        let created = project::create(&mut db, &media, None).unwrap();
+        project::add_segment(&mut db, &created.id, 0.0, 1.0, "keep me".into(), None).unwrap();
+        let baseline = project::load(&db, &created.id).unwrap();
+        let result = temp.path().join("empty.json");
+        fs::write(&result, r#"{"transcription":[]}"#).unwrap();
+
+        let error = import_whisper_json_at_baseline(
+            &mut db,
+            &created.id,
+            &result,
+            TranscriptionImportBaseline {
+                expected_version_id: baseline.history.current_version_id.as_deref().unwrap(),
+                expected_source_path: &created.media.source_path,
+                expected_source_sha256: &created.media.sha256,
+                audio_duration: 2.0,
+                confirm_replace: true,
+            },
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("当前字幕已保留"));
+        assert_eq!(
+            project::load(&db, &created.id).unwrap().transcript.segments[0].text,
+            "keep me"
+        );
+    }
+
+    #[test]
+    fn empty_first_transcription_is_a_verified_no_speech_result() {
+        let temp = tempdir().unwrap();
+        let mut db = db::open_at(&temp.path().join("empty-first-transcription.db")).unwrap();
+        let media = temp.path().join("silence.wav");
+        fs::write(&media, b"audio").unwrap();
+        let created = project::create(&mut db, &media, None).unwrap();
+        let result = temp.path().join("empty.json");
+        fs::write(&result, r#"{"transcription":[]}"#).unwrap();
+
+        let imported = import_whisper_json_at_baseline(
+            &mut db,
+            &created.id,
+            &result,
+            TranscriptionImportBaseline {
+                expected_version_id: created.history.current_version_id.as_deref().unwrap(),
+                expected_source_path: &created.media.source_path,
+                expected_source_sha256: &created.media.sha256,
+                audio_duration: 2.0,
+                confirm_replace: false,
+            },
+        )
+        .unwrap();
+
+        assert!(imported.project.transcript.segments.is_empty());
+        assert_eq!(imported.timing_validation.status, "verified");
+        assert_eq!(imported.timing_validation.segment_count, 0);
+        assert_eq!(imported.timing_validation.word_count, 0);
+        assert!(!imported.timing_validation.vad_used);
+    }
+
+    #[test]
+    fn records_verified_vad_as_the_applied_timing_mode() {
+        let temp = tempdir().unwrap();
+        let mut db = db::open_at(&temp.path().join("verified-vad-mode.db")).unwrap();
+        let media = temp.path().join("talk.wav");
+        fs::write(&media, b"audio").unwrap();
+        let created = project::create(&mut db, &media, None).unwrap();
+        let result = temp.path().join("verified-vad.json");
+        fs::write(
+            &result,
+            r#"{"transcription":[{"timestamps":{"from":"00:00:00,000","to":"00:00:01,000"},"text":" verified","tokens":[{"text":" verified","timestamps":{"from":"00:00:00,100","to":"00:00:00,900"}}]}]}"#,
+        )
+        .unwrap();
+
+        let imported = import_whisper_json_at_baseline_with_mode(
+            &mut db,
+            &created.id,
+            &result,
+            TranscriptionImportBaseline {
+                expected_version_id: created.history.current_version_id.as_deref().unwrap(),
+                expected_source_path: &created.media.source_path,
+                expected_source_sha256: &created.media.sha256,
+                audio_duration: 2.0,
+                confirm_replace: false,
+            },
+            TranscriptionTimingMode::verified_vad(),
+        )
+        .unwrap();
+
+        assert_eq!(imported.timing_validation.mode, "whisper_verified_vad");
+        assert!(imported.timing_validation.vad_used);
+        assert_eq!(imported.timing_validation.time_domain, "original_media");
     }
 
     #[test]
@@ -808,7 +1136,8 @@ mod tests {
             r#"{"result":{"language":"en"},"transcription":[{"timestamps":{"from":"00:00:00,500","to":"00:00:01,500"},"text":" hello world","tokens":[{"text":"[_BEG_]","timestamps":{"from":"00:00:00,000","to":"00:00:00,000"},"p":0.9},{"text":" hello","timestamps":{"from":"00:00:00,100","to":"00:00:00,600"},"p":0.8},{"text":" world","timestamps":{"from":"00:00:00,700","to":"00:00:01,300"},"p":0.6}]}]}"#,
         )
         .unwrap();
-        let (updated, count) = import_whisper_json(&mut db, &project.id, &result).unwrap();
+        let (updated, count) =
+            import_whisper_json(&mut db, &project.id, &result, 2.0, false).unwrap();
         assert_eq!(count, 1);
         assert_eq!(updated.transcript.source_language, "en");
         assert_eq!(updated.transcript.words.len(), 2);
@@ -832,11 +1161,11 @@ mod tests {
         let result = temp.path().join("language.json");
         fs::write(
             &result,
-            r#"{"result":{"language":"zh"},"transcription":[{"timestamps":{"from":"00:00:00,000","to":"00:00:04,000"},"text":"What racing reveals about working with artificial intelligence and how teams use data to improve performance."}]}"#,
+            r#"{"result":{"language":"zh"},"transcription":[{"timestamps":{"from":"00:00:00,000","to":"00:00:04,000"},"text":"What racing reveals about working with artificial intelligence and how teams use data to improve performance.","tokens":[{"text":"What racing reveals about working with artificial intelligence and how teams use data to improve performance.","timestamps":{"from":"00:00:00,100","to":"00:00:03,900"}}]}]}"#,
         )
         .unwrap();
 
-        let (updated, _) = import_whisper_json(&mut db, &project.id, &result).unwrap();
+        let (updated, _) = import_whisper_json(&mut db, &project.id, &result, 5.0, false).unwrap();
 
         assert_eq!(updated.transcript.source_language, "en");
     }
@@ -855,7 +1184,8 @@ mod tests {
         )
         .unwrap();
 
-        let (updated, count) = import_whisper_json(&mut db, &project.id, &result).unwrap();
+        let (updated, count) =
+            import_whisper_json(&mut db, &project.id, &result, 25.0, false).unwrap();
 
         assert_eq!(count, 4);
         assert!(
@@ -885,19 +1215,15 @@ mod tests {
     }
 
     #[test]
-    fn bounds_long_captions_without_word_evidence() {
+    fn rejects_nonempty_captions_without_word_evidence() {
         let item = serde_json::json!({
             "timestamps":{"from":"00:00:00,000","to":"00:00:24,000"},
             "text":"这是没有词级时间的长字幕"
         });
 
-        let segments = whisper_item_segments(&item).unwrap();
+        let error = whisper_item_segments(&item, 25.0).unwrap_err().to_string();
 
-        assert!(segments.len() >= 3);
-        assert!(segments.iter().all(|segment| {
-            !segment.text.is_empty()
-                && segment.end - segment.start <= MAX_CAPTION_DURATION_SECONDS
-                && segment.words.is_empty()
-        }));
+        assert!(error.contains("transcription_timing_invalid"));
+        assert!(error.contains("缺少词级时间"));
     }
 }

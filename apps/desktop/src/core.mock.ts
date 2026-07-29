@@ -530,6 +530,17 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
   if (command === "transcript" && subcommand === "inspect-file") {
     return { apiVersion: "0.1", status: "ok", subtitleImportPreview: { ...structuredClone(mockSubtitlePreview), expectedVersionId: mockProject.history.currentVersionId ?? "" }, message: "字幕文件已预检；尚未写入项目。" };
   }
+  if (command === "transcript" && subcommand === "replacement-preflight") {
+    return {
+      apiVersion: "0.1",
+      status: "ok",
+      transcriptReplacementPreflight: {
+        canReplace: true,
+        currentVersionId: mockProject.history.currentVersionId ?? "",
+        blockers: { edits: 0, patchItems: 0, taskSegments: 0 },
+      },
+    };
+  }
   if (command === "transcript" && subcommand === "import-file") {
     if (!args.includes("--confirm-replace")) throw new Error("替换项目字幕需要显式确认");
     if (valueAfter("--expected-version") !== mockProject.history.currentVersionId)
@@ -558,9 +569,33 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
     return { apiVersion: "0.1", status: "ok", projectId: mockProject.id, outputPath: valueAfter("--output"), format: valueAfter("--format"), message: "字幕已导出。" };
   }
   if (command === "transcribe") {
+    if (valueAfter("--expected-version") !== mockProject.history.currentVersionId)
+      throw new Error("transcription_project_changed: 项目已发生变化，请重新确认");
+    if (mockProject.transcript.segments.length && !args.includes("--confirm-replace"))
+      throw new Error("transcription_apply_confirmation_required: 重新生成字幕前必须明确确认替换当前字幕");
     const language = valueAfter("--language");
     if (language === "en" || language === "zh") mockProject.transcript.sourceLanguage = language;
-    return { apiVersion: "0.1", status: "ok", project: mockProject, message: "已完成本地转录。" };
+    if (args.includes("--confirm-replace")) {
+      const versionId = `v-quick-${Date.now()}`;
+      mockProject.versions.push({ id: versionId, reason: "whisper.cpp 本地转录", createdAt: new Date().toISOString() });
+      mockProject.history = { canUndo: true, canRedo: false, currentVersionId: versionId };
+      mockProjects = mockProjects.map((item) => item.id === mockProject.id ? mockProject : item);
+    }
+    return {
+      apiVersion: "0.1",
+      status: "ok",
+      segments: mockProject.transcript.segments.length,
+      project: mockProject,
+      timingValidation: {
+        status: "verified",
+        timeDomain: "original_media",
+        mode: "whisper_no_vad",
+        vadUsed: false,
+        segmentCount: mockProject.transcript.segments.length,
+        wordCount: mockProject.transcript.words.length,
+      },
+      message: "已完成本地转录。",
+    };
   }
   if (command === "speech" && subcommand === "analyze") return { apiVersion: "0.1", status: "ok", projectId: mockProject.id, speechInsights: mockProject.speechInsights, message: "已根据本机词级时间生成语音节奏分析。" };
   if (command === "speech" && subcommand === "audio-start") {
