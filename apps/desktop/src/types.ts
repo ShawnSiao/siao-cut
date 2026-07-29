@@ -788,6 +788,9 @@ export type RuntimeInfo = {
   ffmpegConfigured: boolean;
   asrConfigured: boolean;
   vadConfigured: boolean;
+  vadTimelineVerified: boolean;
+  vadStatus: "verified" | "safe_fallback" | "not_configured";
+  vadReasonCode: string | null;
   ytDlpConfigured: boolean;
   asrBackend: string;
   asrDevice: string | null;

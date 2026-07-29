@@ -19,5 +19,10 @@
     "segmentTimestampDomain": "original_media",
     "tokenApiTimestampDomain": "original_media",
     "cliJsonTokenTimestampDomain": "original_media"
+  },
+  "verification": {
+    "schemaVersion": 1,
+    "fixtureSha256": "e2d55c32ca5900c677bf86c541dedd98e7e67c31cc0d967d7509b0eba36871cb",
+    "verifier": "tools/test-whisper-vad-timeline.ps1"
   }
 }

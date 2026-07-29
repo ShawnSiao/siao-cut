@@ -860,20 +860,32 @@ fn run(cli: Cli) -> Result<Value> {
         Commands::Contract => {
             unreachable!("contract command returns before database initialization")
         }
-        Commands::Health => Ok(envelope(json!({
-            "home": db::home_dir(),
-            "database": db::database_path(),
-            "engines": {
-                "asr": if media::command_available(&media::whisper_cli_path()) { "configured" } else { "not_configured" },
-                "ffmpeg": if media::command_available(&media::tool_path("SIAOCUT_FFMPEG", "ffmpeg")) { "configured" } else { "not_configured" },
-                "vad": if media::whisper_vad_model_path().is_some() { "configured" } else { "not_configured" },
-                "sourceImport": if source_import::configured() { "configured" } else { "not_configured" }
-                ,"speaker": if speaker::package_status(false)?.installed { "configured" } else { "not_configured" }
-            },
+        Commands::Health => {
+            let vad_model_configured = media::whisper_vad_model_path().is_some();
+            let vad_timeline = media::whisper_vad_timeline_capability();
+            Ok(envelope(json!({
+                "home": db::home_dir(),
+                "database": db::database_path(),
+                "engines": {
+                    "asr": if media::command_available(&media::whisper_cli_path()) { "configured" } else { "not_configured" },
+                    "ffmpeg": if media::command_available(&media::tool_path("SIAOCUT_FFMPEG", "ffmpeg")) { "configured" } else { "not_configured" },
+                    "vad": if !vad_model_configured {
+                        "not_configured"
+                    } else if vad_timeline.verified {
+                        "verified"
+                    } else {
+                        "safe_fallback"
+                    },
+                    "vadModel": if vad_model_configured { "configured" } else { "not_configured" },
+                    "sourceImport": if source_import::configured() { "configured" } else { "not_configured" },
+                    "speaker": if speaker::package_status(false)?.installed { "configured" } else { "not_configured" }
+                },
+                "vadTimeline": vad_timeline,
                 "models": models::catalog(false)?,
                 "runtime": runtime::status()?,
-            "message": "Rust + SQLite Core 可用。"
-        }))),
+                "message": "Rust + SQLite Core 可用。"
+            })))
+        }
         Commands::DesktopRequest { input } => run_desktop_request(&mut database, &input),
         Commands::Import { media, title } => {
             let project = project::create(&mut database, &media, title)?;

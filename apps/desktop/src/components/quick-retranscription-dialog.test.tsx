@@ -23,7 +23,7 @@ describe("QuickRetranscriptionDialog", () => {
       />,
     );
 
-    expect(screen.getByText(/关闭 Whisper 内部 VAD/)).toBeInTheDocument();
+    expect(screen.getByText(/只有通过原始媒体时间轴验收/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "确认并重新转写" })).toBeDisabled();
     fireEvent.click(screen.getByRole("checkbox", { name: /确认替换当前字幕/ }));
     expect(onConfirmedChange).toHaveBeenCalledWith(true);

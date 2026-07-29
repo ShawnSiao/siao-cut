@@ -434,7 +434,7 @@ test("preflights and confirms original-timeline quick subtitle regeneration", as
   await page.getByRole("button", { name: "更多命令" }).click();
   await page.getByRole("menuitem", { name: "重新生成快速字幕" }).click();
   const dialog = page.getByRole("dialog", { name: "确认重新生成快速字幕" });
-  await expect(dialog.getByText(/关闭 Whisper 内部 VAD/)).toBeVisible();
+  await expect(dialog.getByText(/只有通过原始媒体时间轴验收/)).toBeVisible();
   await expect(dialog.getByText(/原片、既有导出文件和历史版本不会修改/)).toBeVisible();
   const confirm = dialog.getByRole("button", { name: "确认并重新转写" });
   await expect(confirm).toBeDisabled();

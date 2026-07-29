@@ -45,6 +45,22 @@ pub fn whisper_vad_model_path() -> Option<String> {
         .filter(|path| Path::new(path).is_file())
 }
 
+fn resolved_whisper_runtime() -> Result<(String, String)> {
+    if let Some(selection) = crate::runtime::verified_selected_runtime()? {
+        return Ok((selection.whisper_path, selection.backend));
+    }
+    Ok((whisper_cli_path(), "cpu".into()))
+}
+
+pub fn whisper_vad_timeline_capability() -> crate::runtime::VadTimelineCapability {
+    match resolved_whisper_runtime() {
+        Ok((whisper, backend)) => {
+            crate::runtime::vad_timeline_capability(Path::new(&whisper), &backend)
+        }
+        Err(_) => crate::runtime::vad_timeline_capability(Path::new(""), "cpu"),
+    }
+}
+
 struct TemporaryRunDirectory(PathBuf);
 
 impl TemporaryRunDirectory {
@@ -194,12 +210,27 @@ pub fn transcribe(
             anyhow!("transcription_timing_invalid: 无法确认标准化音频时长，结果未应用")
         })?;
 
-    let whisper = crate::runtime::verified_selected_whisper_path()?
-        .map(|path| path.to_string_lossy().to_string())
-        .unwrap_or_else(whisper_cli_path);
+    let (whisper, backend) = resolved_whisper_runtime()?;
+    let vad_capability = crate::runtime::vad_timeline_capability(Path::new(&whisper), &backend);
+    let vad_model = vad_capability
+        .verified
+        .then(whisper_vad_model_path)
+        .flatten();
+    let timing_mode = if vad_model.is_some() {
+        TranscriptionTimingMode::verified_vad()
+    } else {
+        TranscriptionTimingMode::no_vad()
+    };
     let output_base = run_directory.join("transcript");
-    run_whisper(&whisper, model, &wav, &output_base, language, None)?;
-    import_whisper_json_at_baseline(
+    run_whisper(
+        &whisper,
+        model,
+        &wav,
+        &output_base,
+        language,
+        vad_model.as_deref(),
+    )?;
+    import_whisper_json_at_baseline_with_mode(
         db,
         &project.id,
         &output_base.with_extension("json"),
@@ -210,6 +241,7 @@ pub fn transcribe(
             audio_duration,
             confirm_replace,
         },
+        timing_mode,
     )
 }
 
@@ -307,6 +339,28 @@ struct TranscriptionImportBaseline<'a> {
     expected_source_sha256: &'a str,
     audio_duration: f64,
     confirm_replace: bool,
+}
+
+#[derive(Clone, Copy)]
+struct TranscriptionTimingMode {
+    mode: &'static str,
+    vad_used: bool,
+}
+
+impl TranscriptionTimingMode {
+    const fn no_vad() -> Self {
+        Self {
+            mode: "whisper_no_vad",
+            vad_used: false,
+        }
+    }
+
+    const fn verified_vad() -> Self {
+        Self {
+            mode: "whisper_verified_vad",
+            vad_used: true,
+        }
+    }
 }
 
 fn timing_error(detail: impl std::fmt::Display) -> anyhow::Error {
@@ -618,11 +672,28 @@ fn import_whisper_json(
     Ok((result.project, result.timing_validation.segment_count))
 }
 
+#[cfg(test)]
 fn import_whisper_json_at_baseline(
     db: &mut Connection,
     project_id: &str,
     json_path: &Path,
     baseline: TranscriptionImportBaseline<'_>,
+) -> Result<TranscriptionResult> {
+    import_whisper_json_at_baseline_with_mode(
+        db,
+        project_id,
+        json_path,
+        baseline,
+        TranscriptionTimingMode::no_vad(),
+    )
+}
+
+fn import_whisper_json_at_baseline_with_mode(
+    db: &mut Connection,
+    project_id: &str,
+    json_path: &Path,
+    baseline: TranscriptionImportBaseline<'_>,
+    timing_mode: TranscriptionTimingMode,
 ) -> Result<TranscriptionResult> {
     let raw: Value = serde_json::from_str(
         &fs::read_to_string(json_path).context("whisper.cpp 未生成 JSON 输出")?,
@@ -712,8 +783,8 @@ fn import_whisper_json_at_baseline(
         timing_validation: TimingValidation {
             status: "verified".into(),
             time_domain: "original_media".into(),
-            mode: "whisper_no_vad".into(),
-            vad_used: false,
+            mode: timing_mode.mode.into(),
+            vad_used: timing_mode.vad_used,
             segment_count,
             word_count,
         },
@@ -1016,6 +1087,40 @@ mod tests {
         assert_eq!(imported.timing_validation.segment_count, 0);
         assert_eq!(imported.timing_validation.word_count, 0);
         assert!(!imported.timing_validation.vad_used);
+    }
+
+    #[test]
+    fn records_verified_vad_as_the_applied_timing_mode() {
+        let temp = tempdir().unwrap();
+        let mut db = db::open_at(&temp.path().join("verified-vad-mode.db")).unwrap();
+        let media = temp.path().join("talk.wav");
+        fs::write(&media, b"audio").unwrap();
+        let created = project::create(&mut db, &media, None).unwrap();
+        let result = temp.path().join("verified-vad.json");
+        fs::write(
+            &result,
+            r#"{"transcription":[{"timestamps":{"from":"00:00:00,000","to":"00:00:01,000"},"text":" verified","tokens":[{"text":" verified","timestamps":{"from":"00:00:00,100","to":"00:00:00,900"}}]}]}"#,
+        )
+        .unwrap();
+
+        let imported = import_whisper_json_at_baseline_with_mode(
+            &mut db,
+            &created.id,
+            &result,
+            TranscriptionImportBaseline {
+                expected_version_id: created.history.current_version_id.as_deref().unwrap(),
+                expected_source_path: &created.media.source_path,
+                expected_source_sha256: &created.media.sha256,
+                audio_duration: 2.0,
+                confirm_replace: false,
+            },
+            TranscriptionTimingMode::verified_vad(),
+        )
+        .unwrap();
+
+        assert_eq!(imported.timing_validation.mode, "whisper_verified_vad");
+        assert!(imported.timing_validation.vad_used);
+        assert_eq!(imported.timing_validation.time_domain, "original_media");
     }
 
     #[test]

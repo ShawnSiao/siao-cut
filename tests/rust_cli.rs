@@ -395,6 +395,13 @@ fn health_uses_stable_json_envelope() {
             .unwrap()
             .ends_with("siaocut.db")
     );
+    assert_eq!(response["engines"]["vad"], "not_configured");
+    assert_eq!(response["vadTimeline"]["verified"], false);
+    assert_eq!(response["vadTimeline"]["status"], "safe_fallback");
+    assert_eq!(
+        response["vadTimeline"]["reasonCode"],
+        "vad_runtime_unresolved"
+    );
 }
 
 #[test]

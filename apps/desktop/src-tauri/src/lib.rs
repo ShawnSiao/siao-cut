@@ -21,6 +21,9 @@ struct RuntimeInfo {
     ffmpeg_configured: bool,
     asr_configured: bool,
     vad_configured: bool,
+    vad_timeline_verified: bool,
+    vad_status: String,
+    vad_reason_code: Option<String>,
     yt_dlp_configured: bool,
     asr_backend: String,
     asr_device: Option<String>,
@@ -627,7 +630,21 @@ async fn runtime_info_for(
             == Some("configured"),
         asr_configured: health.pointer("/engines/asr").and_then(Value::as_str)
             == Some("configured"),
-        vad_configured: runtime.whisper_vad_model.is_some(),
+        vad_configured: health.pointer("/engines/vadModel").and_then(Value::as_str)
+            == Some("configured"),
+        vad_timeline_verified: health
+            .pointer("/vadTimeline/verified")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        vad_status: health
+            .pointer("/engines/vad")
+            .and_then(Value::as_str)
+            .unwrap_or("safe_fallback")
+            .to_owned(),
+        vad_reason_code: health
+            .pointer("/vadTimeline/reasonCode")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
         yt_dlp_configured: runtime.yt_dlp.is_some(),
         asr_backend: health
             .pointer("/runtime/backend")
