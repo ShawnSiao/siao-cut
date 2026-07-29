@@ -39,7 +39,17 @@ if (-not $runDirectory.StartsWith($tempBase, [StringComparison]::OrdinalIgnoreCa
 New-Item -ItemType Directory -Path $runDirectory | Out-Null
 
 function Get-Sha256([string]$Path) {
-    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    $stream = [IO.File]::OpenRead($Path)
+    try {
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try {
+            return ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+        } finally {
+            $sha.Dispose()
+        }
+    } finally {
+        $stream.Dispose()
+    }
 }
 
 function Invoke-WhisperJson([string]$Whisper, [string]$Name, [string]$Fixture) {
