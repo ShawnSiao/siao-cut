@@ -949,7 +949,11 @@ mod tests {
         fs::write(&bundled_ffmpeg, b"must not be discovered").unwrap();
         let manifest = temp.path().join("notices/runtime-manifest.json");
         fs::create_dir_all(manifest.parent().unwrap()).unwrap();
-        fs::write(&manifest, br#"{"packageProfile":"app-only","components":[]}"#).unwrap();
+        fs::write(
+            &manifest,
+            br#"{"packageProfile":"app-only","components":[]}"#,
+        )
+        .unwrap();
 
         let paths = discover_runtime(Some(temp.path())).unwrap();
 
