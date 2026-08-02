@@ -1,25 +1,26 @@
 {
   "schemaVersion": 1,
   "updatedAt": "2026-07-28",
+  "packageProfile": "app-only",
   "components": [
     {
       "id": "ffmpeg-cpu",
       "name": "FFmpeg 8.1 LGPL shared",
       "version": "8.1",
-      "kind": "bundled-runtime",
+      "kind": "on-demand-runtime",
       "backend": "cpu",
       "source": "https://github.com/BtbN/FFmpeg-Builds",
       "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-07-27-14-00/ffmpeg-n8.1.2-31-g8c9502e9b0-win64-lgpl-shared-8.1.zip",
       "size": 70510962,
       "sha256": "0c434d097268f8ee61c96eab3faf048ead646f4ff38ee21027012d23f84e5c19",
       "license": "LGPL-2.1-or-later",
-      "bundled": true
+      "bundled": false
     },
     {
       "id": "yt-dlp",
       "name": "yt-dlp Windows x64",
       "version": "2026.06.09",
-      "kind": "bundled-source-import-sidecar",
+      "kind": "on-demand-source-import-sidecar",
       "source": "https://github.com/yt-dlp/yt-dlp",
       "url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.06.09/yt-dlp.exe",
       "size": 18202192,
@@ -43,28 +44,28 @@
           "target": "yt-dlp-GPL-3.0-and-third-party.txt"
         }
       ],
-      "bundled": true,
+      "bundled": false,
       "selfUpdate": false
     },
     {
       "id": "whisper-cpu",
       "name": "SiaoCut whisper.cpp CPU x64",
       "version": "1.9.1-siaocut.1",
-      "kind": "bundled-source-built-runtime",
+      "kind": "on-demand-source-built-runtime",
       "backend": "cpu",
       "source": "https://github.com/ggml-org/whisper.cpp",
       "sourceCommit": "080bbbe85230f624f0b52127f1ae1218247989f9",
       "sourceContract": "release/whisper-runtime-source.json",
       "patchSha256": "e8bc54eb4499a2b59cd2b632554d96f45bb7290cc9a37d2b53837be3e9f5fe74",
       "license": "MIT",
-      "bundled": true,
-      "vadTimelineVerification": "required-before-bundling"
+      "bundled": false,
+      "vadTimelineVerification": "required-before-selection"
     },
     {
       "id": "whisper-vad-silero-6.2",
       "name": "Silero VAD for whisper.cpp",
       "version": "6.2.0",
-      "kind": "bundled-runtime-model",
+      "kind": "on-demand-runtime-model",
       "backend": "cpu",
       "source": "https://huggingface.co/ggml-org/whisper-vad",
       "upstream": "https://github.com/snakers4/silero-vad",
@@ -72,7 +73,7 @@
       "size": 885098,
       "sha256": "2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987",
       "license": "MIT",
-      "bundled": true
+      "bundled": false
     },
     {
       "id": "whisper-cuda-11",
@@ -100,9 +101,9 @@
       "sourceContract": "release/whisper-runtime-source.json",
       "patchSha256": "e8bc54eb4499a2b59cd2b632554d96f45bb7290cc9a37d2b53837be3e9f5fe74",
       "license": "MIT",
-      "bundled": "when-built-with-vulkan-sdk",
+      "bundled": false,
       "requires": "支持 Vulkan 1.2 的显卡与驱动；不兼容时可切回 CPU",
-      "vadTimelineVerification": "required-before-bundling"
+      "vadTimelineVerification": "required-before-selection"
     }
   ],
   "speakerPackages": [

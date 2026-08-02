@@ -1,20 +1,22 @@
-# Windows Candidate Acceptance Record
+# Windows App-Only Package Acceptance Record
 
-This document records reproducible results for the unsigned 0.2.0 candidate. The candidate is for local release preparation only and is not a formal Release.
+This document records reproducible acceptance requirements for the SiaoCut Windows app-only package. The candidate is for local release preparation only and is not a formal Release.
+
+The current package profile is `app-only`: the installer contains only the desktop app, `siaocut-core`, frontend assets, icons, and static component metadata. FFmpeg, FFprobe, Whisper CPU/Vulkan, VAD, model weights, and `yt-dlp` are configured externally on demand.
 
 ## Candidate
 
 | Item | Result |
 | --- | --- |
-| Source commit | `f24cfca6121b1df10e1fc58ccfee50ab0db29c30` |
+| Source commit | This change set (see Git commit) |
 | File | `SiaoCut_0.2.0_x64-setup.exe` |
-| Size | 77,116,423 bytes |
-| SHA-256 | `7c2a0bd3820a248215294a9f2baa4d4c9bb8ac236613b12c9b12c4db9aa0488b` |
-| Build time | 2026-07-21 12:00:45 UTC |
+| Size | 6,634,877 bytes (about 6.33 MiB) |
+| SHA-256 | `bdaaaf31e411d91ab9a6eeb2971f6fe885461724434e24f24643cc1991847677` |
+| Build time | 2026-08-02 18:11:51 (Asia/Shanghai) |
 | Authenticode | `NotSigned`, as expected for this unsigned candidate |
 | Test system | Windows 10 22H2, build 19045 |
 
-The candidate was produced with `npm run desktop:build`. It includes pinned FFmpeg, whisper.cpp CPU/Vulkan runtimes, a Silero VAD model, and yt-dlp. No formal signing material was read.
+The previous 0.2.0 candidate record describes a historical package that contained runtime files; it is not evidence for the current `app-only` package. The current candidate is produced with `npm run desktop:build`, does not read formal signing material, and does not download or compile runtime components before packaging.
 
 ## Automated acceptance
 
@@ -24,8 +26,9 @@ The candidate was produced with `npm run desktop:build`. It includes pinned FFmp
 | No console window | Passed | A desktop window was present; console windows and shell child processes were both 0 |
 | Core CLI JSON health | Passed | `status=ok`, API version `0.1` |
 | Isolated install and desktop startup | Passed | A separate `SiaoCut Acceptance` product was installed to a temporary directory and started |
-| Core sidecar and runtime integrity | Passed | CPU, Vulkan, VAD, yt-dlp, manifests, and licenses were present; pinned file hashes matched |
-| URL source inspection | Passed | The installed Core inspected an authorized public URL without creating a project before confirmation |
+| Core sidecar and app-only package boundary | Passed | `siaocut-core` and static manifests are present; runtime directories, executables, and model weights are absent |
+| Startup without dependencies | Passed | The desktop app starts and Core health reports `not_configured` without treating missing components as an install failure |
+| External runtime acceptance | Passed | Explicit `SIAOCUT_*` paths validate external components and public URL preflight without copying them into the install directory |
 | Over-install contract | Passed | The same source was packaged as 0.1.1 and 0.2.0 to test NSIS replacement behavior |
 | Data after over-install | Passed | The isolated retention probe remained under `%LOCALAPPDATA%\SiaoCut\retention-probes` |
 | Data after uninstall | Passed | The isolated retention probe remained after uninstalling the test product |
@@ -44,6 +47,12 @@ The over-install evidence is `same-source-installer-contract` with `historicalBi
 | Formal Authenticode and Tauri updater signing | Not applicable | Formal signing is outside this acceptance round |
 
 Until these gaps are closed, 0.2.0 is a "Windows 10 unsigned candidate," not a formal release with complete Windows 10/11 upgrade acceptance.
+
+## Package size and static-resource boundary
+
+- The clean build measured 6,634,877 bytes, below the SiaoVPlay reference size of about `30 MB`.
+- The acceptance script records compressed installer and installed-directory sizes; it blocks above `50 MiB` and lists the largest files.
+- `notices/runtime-manifest.json` only exposes source, version, size, SHA-256, and license metadata. It does not mean that the component is installed with the package.
 
 ## Reproduction
 
