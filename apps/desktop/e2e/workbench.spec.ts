@@ -179,6 +179,7 @@ test("runs local Codex and keeps every result pending review", async ({ page }) 
 
 test("requeues a failed external Agent task and shows its next claim without flashing back", async ({ page }) => {
   await page.goto("/");
+  await expect(page.getByRole("heading", { name: "发布口播 · 草稿" })).toBeVisible();
   const claimed = await runMockCore(page, ["task", "claim", "t1", "--worker", "e2e-agent"]);
   const leaseId = claimed.leaseId;
   expect(typeof leaseId).toBe("string");
