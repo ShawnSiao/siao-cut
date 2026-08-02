@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "cargo build --manifest-path ../../Cargo.toml && node ../../tools/prepare-sidecar.mjs && npm run dev",
     "devUrl": "http://127.0.0.1:4313",
-    "beforeBuildCommand": "cargo build --release --manifest-path ../../Cargo.toml && node ../../tools/prepare-sidecar.mjs && powershell -NoProfile -ExecutionPolicy Bypass -File ../../tools/prepare-release-runtime.ps1 -IncludeVulkan && npm run build",
+    "beforeBuildCommand": "cargo build --release --manifest-path ../../Cargo.toml && node ../../tools/prepare-sidecar.mjs && npm run build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -38,12 +38,7 @@
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico"],
     "externalBin": ["binaries/siaocut-core"],
     "resources": {
-      "runtime/ffmpeg/": "runtime/ffmpeg/",
-      "runtime/whisper/": "runtime/whisper/",
-      "runtime/whisper-vulkan/": "runtime/whisper-vulkan/",
-      "runtime/yt-dlp/": "runtime/yt-dlp/",
-      "runtime/licenses/": "notices/licenses/",
-      "runtime/runtime-manifest.json": "runtime/runtime-manifest.json",
+      "../../../release/licenses/": "notices/licenses/",
       "../../../release/runtime-manifest.json": "notices/runtime-manifest.json",
       "../../../THIRD_PARTY_NOTICES.md": "notices/THIRD_PARTY_NOTICES.md"
     },

@@ -21,7 +21,7 @@ SiaoCut 是面向 AI 口播创作者的 Windows 本地优先剪辑工作台。�
 
 | 功能 | 当前实现 |
 | --- | --- |
-| 本地转写 | 使用 FFmpeg 规范化音频，通过同源构建的 whisper.cpp 在 CPU 或兼容的 Vulkan GPU 上转写；只有通过原始媒体时间轴验收的运行时才启用 VAD，其他运行时自动安全回退。模型由使用者明确选择。 |
+| 本地转写 | 使用外部配置的 FFmpeg 规范化音频，通过同源构建的 whisper.cpp 在 CPU 或兼容的 Vulkan GPU 上转写；只有通过原始媒体时间轴验收的运行时才启用 VAD，其他运行时自动安全回退。模型由使用者明确选择。 |
 | 多人长音频（实验） | 显式连接本机回环 MOSS 服务，生成分段、匿名说话人标签和待审复核项；服务、CUDA、Python 和模型不随 SiaoCut 安装。 |
 | 文稿剪辑 | 支持字幕定位与编辑、翻译审阅、软剪辑、撤销、重做和版本恢复。原片不会被覆盖。 |
 | 语音证据 | 标记语速、停顿、口头语、低置信度、响度、静音和疑似削波；可选说话人模型用于生成待审阅说话人轨。 |
@@ -33,6 +33,7 @@ SiaoCut 是面向 AI 口播创作者的 Windows 本地优先剪辑工作台。�
 
 - 当前只支持 Windows 10 和 Windows 11。
 - 媒体处理在本机完成。模型、运行时和 URL 媒体只在明确操作后从标示来源下载。
+- 应用安装包只包含桌面程序、Rust Core 和组件元数据；FFmpeg、Whisper、VAD、模型与 `yt-dlp` 不随包提供，缺少时应用仍可启动并显示未配置状态。
 - 桌面应用、CLI 和 Skill 都通过 Rust Core 修改项目，不直接写入 SQLite。
 - 语音分析和 Agent 结果只提供证据或建议；应用文本修改和剪辑前需要人工确认。
 - 真实方言、重叠语音、复杂噪声和更多硬件组合仍需要扩充验证。
@@ -65,7 +66,7 @@ npm run desktop:dev
 .\skills\siaocut\bin\siaocut.ps1 --json health
 ```
 
-默认数据目录为 `%LOCALAPPDATA%\SiaoCut`。开发和测试可以使用 `SIAOCUT_HOME` 覆盖；`SIAOCUT_FFMPEG`、`SIAOCUT_FFPROBE` 和 `SIAOCUT_WHISPER_CLI` 可指向经过核验的本机二进制。
+默认数据目录为 `%LOCALAPPDATA%\SiaoCut`。开发和测试可以使用 `SIAOCUT_HOME` 覆盖；`SIAOCUT_FFMPEG`、`SIAOCUT_FFPROBE`、`SIAOCUT_WHISPER_CLI`、`SIAOCUT_WHISPER_VAD_MODEL` 和 `SIAOCUT_YTDLP` 可指向经过核验的本机组件。组件目录与校验信息见安装包中的 `notices/runtime-manifest.json`。
 
 完整 CLI 工作流见 [`skills/siaocut/SKILL.md`](skills/siaocut/SKILL.md)。
 

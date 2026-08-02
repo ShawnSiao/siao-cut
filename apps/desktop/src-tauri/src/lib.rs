@@ -139,64 +139,16 @@ fn managed_whisper_vulkan(
 }
 
 fn discover_runtime(resource_dir: Option<&Path>) -> Result<RuntimePaths, String> {
-    let bundled = resource_dir.map(|root| root.join("runtime"));
-    let ffmpeg = first_file(
-        env::var_os("SIAOCUT_FFMPEG")
-            .map(PathBuf::from)
-            .into_iter()
-            .chain(bundled.iter().map(|root| root.join("ffmpeg/ffmpeg.exe"))),
-    );
-    let ffprobe = first_file(
-        env::var_os("SIAOCUT_FFPROBE")
-            .map(PathBuf::from)
-            .into_iter()
-            .chain(bundled.iter().map(|root| root.join("ffmpeg/ffprobe.exe"))),
-    );
-    let whisper = first_file(
-        env::var_os("SIAOCUT_WHISPER_CLI")
-            .map(PathBuf::from)
-            .into_iter()
-            .chain(
-                bundled
-                    .iter()
-                    .map(|root| root.join("whisper/whisper-cli.exe")),
-            ),
-    );
-    let whisper_vulkan = first_file(
-        env::var_os("SIAOCUT_WHISPER_VULKAN_CLI")
-            .map(PathBuf::from)
-            .into_iter()
-            .chain(
-                bundled
-                    .iter()
-                    .map(|root| root.join("whisper-vulkan/whisper-cli.exe")),
-            ),
-    );
-    let whisper_vad_model = first_file(
-        env::var_os("SIAOCUT_WHISPER_VAD_MODEL")
-            .map(PathBuf::from)
-            .into_iter()
-            .chain(
-                bundled
-                    .iter()
-                    .map(|root| root.join("whisper/ggml-silero-v6.2.0.bin")),
-            ),
-    );
-    let yt_dlp = first_file(
-        env::var_os("SIAOCUT_YTDLP")
-            .map(PathBuf::from)
-            .into_iter()
-            .chain(bundled.iter().map(|root| root.join("yt-dlp/yt-dlp.exe"))),
-    );
+    let ffmpeg = first_file(env::var_os("SIAOCUT_FFMPEG").map(PathBuf::from));
+    let ffprobe = first_file(env::var_os("SIAOCUT_FFPROBE").map(PathBuf::from));
+    let whisper = first_file(env::var_os("SIAOCUT_WHISPER_CLI").map(PathBuf::from));
+    let whisper_vulkan = first_file(env::var_os("SIAOCUT_WHISPER_VULKAN_CLI").map(PathBuf::from));
+    let whisper_vad_model = first_file(env::var_os("SIAOCUT_WHISPER_VAD_MODEL").map(PathBuf::from));
+    let yt_dlp = first_file(env::var_os("SIAOCUT_YTDLP").map(PathBuf::from));
     let manifest = first_file(
-        bundled
-            .iter()
-            .map(|root| root.join("runtime-manifest.json"))
-            .chain(
-                resource_dir
-                    .into_iter()
-                    .map(|root| root.join("notices/runtime-manifest.json")),
-            ),
+        resource_dir
+            .into_iter()
+            .map(|root| root.join("notices/runtime-manifest.json")),
     );
     let managed_whisper_vulkan =
         managed_whisper_vulkan(manifest.as_deref(), whisper_vulkan.as_deref());
@@ -571,7 +523,7 @@ async fn select_asr_backend(
             let whisper = runtime
                 .whisper_vulkan
                 .as_ref()
-                .ok_or_else(|| "当前安装包未包含 Vulkan 运行时；仍可继续使用 CPU。".to_owned())?;
+                .ok_or_else(|| "尚未配置 Vulkan 运行时；仍可继续使用 CPU。".to_owned())?;
             vec![
                 "runtime".into(),
                 "select".into(),
@@ -940,7 +892,7 @@ mod tests {
     }
 
     #[test]
-    fn reads_bundled_vulkan_integrity_from_the_generated_manifest() {
+    fn reads_external_vulkan_integrity_from_a_manifest() {
         let temp = tempfile::tempdir().unwrap();
         let manifest = temp.path().join("runtime-manifest.json");
         let executable = temp.path().join("whisper-cli.exe");
@@ -987,6 +939,26 @@ mod tests {
         .unwrap();
 
         assert!(managed_whisper_vulkan(Some(&manifest), Some(&executable)).is_none());
+    }
+
+    #[test]
+    fn ignores_runtime_files_under_resource_dir_for_app_only_packages() {
+        let temp = tempfile::tempdir().unwrap();
+        let bundled_ffmpeg = temp.path().join("runtime/ffmpeg/ffmpeg.exe");
+        fs::create_dir_all(bundled_ffmpeg.parent().unwrap()).unwrap();
+        fs::write(&bundled_ffmpeg, b"must not be discovered").unwrap();
+        let manifest = temp.path().join("notices/runtime-manifest.json");
+        fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        fs::write(
+            &manifest,
+            br#"{"packageProfile":"app-only","components":[]}"#,
+        )
+        .unwrap();
+
+        let paths = discover_runtime(Some(temp.path())).unwrap();
+
+        assert_ne!(paths.ffmpeg.as_deref(), Some(bundled_ffmpeg.as_path()));
+        assert_eq!(paths.manifest.as_deref(), Some(manifest.as_path()));
     }
 
     #[test]

@@ -156,6 +156,15 @@ if ($IncludeVulkan) {
     Remove-Item -LiteralPath $vulkanTarget -Recurse -Force
 }
 
+$manifest.packageProfile = 'runtime-enabled-fixture'
+foreach ($componentId in @('ffmpeg-cpu', 'yt-dlp', 'whisper-cpu', 'whisper-vad-silero-6.2')) {
+    $component = $manifest.components | Where-Object id -eq $componentId
+    if ($component) { $component.bundled = $true }
+}
+if ($IncludeVulkan) {
+    $vulkanComponent = $manifest.components | Where-Object id -eq 'whisper-vulkan'
+    if ($vulkanComponent) { $vulkanComponent.bundled = $true }
+}
 $generatedManifest = $manifest | ConvertTo-Json -Depth 12
 $utf8WithoutBom = [Text.UTF8Encoding]::new($false)
 [IO.File]::WriteAllText((Join-Path $target 'runtime-manifest.json'), $generatedManifest, $utf8WithoutBom)

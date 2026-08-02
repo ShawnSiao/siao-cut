@@ -21,7 +21,7 @@ SiaoCut is a Windows-local-first editing workbench for AI talking-head creators.
 
 | Area | Current implementation |
 | --- | --- |
-| Local transcription | Normalizes audio with FFmpeg and transcribes through same-source whisper.cpp builds on CPU or a compatible Vulkan GPU. VAD is enabled only for runtimes that passed original-media timeline verification; every other runtime falls back safely. The model is always selected explicitly. |
+| Local transcription | Normalizes audio with an externally configured FFmpeg and transcribes through same-source whisper.cpp builds on CPU or a compatible Vulkan GPU. VAD is enabled only for runtimes that passed original-media timeline verification; every other runtime falls back safely. The model is always selected explicitly. |
 | Multispeaker long-form (experimental) | Explicitly connects to a loopback MOSS service for segments, anonymous speaker labels, and review items. SiaoCut does not install the service, CUDA, Python, or model weights. |
 | Transcript editing | Provides positioned subtitle editing, translation review, soft cuts, undo, redo, and version restore. Source media is never overwritten. |
 | Speech evidence | Flags pace, pauses, filler words, low confidence, loudness, silence, and possible clipping. An optional local model can create a speaker track for review. |
@@ -33,6 +33,7 @@ SiaoCut is a Windows-local-first editing workbench for AI talking-head creators.
 
 - Windows 10 and Windows 11 are the only supported platforms today.
 - Media processing stays local. Models, runtimes, and URL media are downloaded from disclosed sources only after an explicit action.
+- The installer contains only the desktop app, Rust Core, and component metadata. FFmpeg, Whisper, VAD, models, and `yt-dlp` are external components; the app starts and reports them as not configured when they are absent.
 - The desktop app, CLI, and Skill modify projects through the Rust Core instead of writing SQLite directly.
 - Speech analysis and Agent output are evidence or suggestions. Applying text changes or cuts requires human review.
 - Real-world coverage still needs to expand across dialects, overlapping speech, complex noise, and additional hardware.
@@ -65,7 +66,7 @@ Development mode starts the local UI. Before transcription or export, check the 
 .\skills\siaocut\bin\siaocut.ps1 --json health
 ```
 
-The default data directory is `%LOCALAPPDATA%\SiaoCut`. Development and tests can override it with `SIAOCUT_HOME`. Use `SIAOCUT_FFMPEG`, `SIAOCUT_FFPROBE`, and `SIAOCUT_WHISPER_CLI` to select audited local binaries.
+The default data directory is `%LOCALAPPDATA%\SiaoCut`. Development and tests can override it with `SIAOCUT_HOME`. Use `SIAOCUT_FFMPEG`, `SIAOCUT_FFPROBE`, `SIAOCUT_WHISPER_CLI`, `SIAOCUT_WHISPER_VAD_MODEL`, and `SIAOCUT_YTDLP` to select audited local components. Component metadata and verification details are included in `notices/runtime-manifest.json`.
 
 See [`skills/siaocut/SKILL.md`](skills/siaocut/SKILL.md) for the complete CLI workflow.
 
