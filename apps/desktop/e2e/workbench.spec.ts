@@ -212,7 +212,7 @@ test("keeps the transcript primary at the minimum supported workspace size", asy
   expect(commands).not.toBeNull();
   expect(subtitleTools).not.toBeNull();
   expect(transcript!.width).toBeGreaterThanOrEqual(context!.width);
-  expect(context!.y).toBeGreaterThanOrEqual(transcript!.y + transcript!.height - 1);
+  expect(transcript!.y).toBeGreaterThanOrEqual(context!.y + context!.height - 1);
   expect(commands!.x + commands!.width).toBeLessThanOrEqual(1080);
   expect(subtitleTools!.x + subtitleTools!.width).toBeLessThanOrEqual(1080);
   const timelineOverflow = await page.locator(".subtitle-timeline-scroll").evaluate((element) => ({
@@ -345,7 +345,8 @@ test("expands the editing workbench on a maximized 27-inch display", async ({ pa
   expect(workflow).not.toBeNull();
   expect(transcript).not.toBeNull();
   expect(workbench!.width).toBeGreaterThan(2200);
-  expect(video!.width).toBeGreaterThan(1500);
+  expect(video!.width).toBeGreaterThan(1000);
+  expect(workflow!.x).toBeGreaterThan(video!.x + video!.width);
   expect(videoFrame!.height).toBeGreaterThan(500);
   expect(workflow!.width).toBeGreaterThanOrEqual(340);
   expect(workflow!.height).toBeGreaterThan(500);
