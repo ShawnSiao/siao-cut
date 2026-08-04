@@ -733,13 +733,31 @@ mod tests {
     }
 
     #[test]
-    fn incomplete_catalog_is_reported_without_fabricating_whisper_identity() {
+    fn common_v2_catalog_contains_formal_whisper_identities() {
         let catalog = CatalogBundle::common_v2().unwrap();
-        let error = ensure_catalog_is_formal_v2(&catalog)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("component_store_catalog_incomplete"));
+        ensure_catalog_is_formal_v2(&catalog).expect("common v2 must be executable");
         assert_eq!(WHISPER_VERSION, "1.9.1-siao.1");
+        for (backend, runtime_id) in [
+            ("cpu", WHISPER_CPU_RUNTIME_ID),
+            ("vulkan", WHISPER_VULKAN_RUNTIME_ID),
+        ] {
+            let runtime = catalog
+                .components
+                .iter()
+                .find(|component| {
+                    component.component_id == "whisper-runtime"
+                        && component.variant.get("backend").map(String::as_str) == Some(backend)
+                })
+                .expect("formal whisper runtime should be present");
+            assert_eq!(runtime.version, WHISPER_VERSION);
+            assert_eq!(
+                runtime
+                    .metadata
+                    .get("runtimeId")
+                    .and_then(|value| value.as_str()),
+                Some(runtime_id)
+            );
+        }
     }
 
     #[test]
