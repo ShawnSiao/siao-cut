@@ -116,6 +116,16 @@ impl SharedComponent {
         }
     }
 
+    fn version(self) -> &'static str {
+        match self {
+            Self::Ffmpeg => "8.1",
+            Self::YtDlp => "2026.06.09",
+            Self::WhisperCpu | Self::WhisperVulkan => WHISPER_VERSION,
+            Self::Vad => "6.2.0",
+            Self::ModelTiny | Self::ModelBase | Self::ModelSmall => "1",
+        }
+    }
+
     fn required_capabilities(self) -> &'static [&'static str] {
         match self {
             Self::Ffmpeg => &["media_decode", "media_encode", "media_probe"],
@@ -171,6 +181,7 @@ impl SharedComponent {
     pub fn key(self) -> ComponentKey {
         ComponentKey {
             component_id: self.component_id().into(),
+            version: self.version().into(),
             variant: self.variant(),
         }
     }
@@ -180,6 +191,7 @@ impl SharedComponent {
 #[serde(rename_all = "camelCase")]
 pub struct ComponentKey {
     pub component_id: String,
+    pub version: String,
     pub variant: BTreeMap<String, String>,
 }
 
@@ -280,24 +292,21 @@ impl ComponentManager {
 
     pub fn requirement(&self, component: SharedComponent) -> Result<ComponentRequirement> {
         let key = component.key();
-        let version = self
-            .catalog
-            .components
-            .iter()
-            .find(|candidate| {
-                candidate.component_id == key.component_id && candidate.variant == key.variant
-            })
-            .map(|candidate| candidate.version.clone())
-            .ok_or_else(|| {
-                anyhow!(
-                    "component_store_catalog_incomplete: {} {:?} 尚未进入完整 common v2",
-                    key.component_id,
-                    key.variant
-                )
-            })?;
+        if !self.catalog.components.iter().any(|candidate| {
+            candidate.component_id == key.component_id
+                && candidate.version == key.version
+                && candidate.variant == key.variant
+        }) {
+            return Err(anyhow!(
+                "component_store_catalog_incomplete: {} {} {:?} 尚未进入完整 common v2",
+                key.component_id,
+                key.version,
+                key.variant
+            ));
+        }
         Ok(ComponentRequirement {
             component_id: key.component_id,
-            version,
+            version: key.version,
             variant: key.variant,
             capabilities: component
                 .required_capabilities()
@@ -566,10 +575,8 @@ pub fn ensure_catalog_is_formal_v2(catalog: &CatalogDocument) -> Result<()> {
         let key = component.key();
         if !catalog.components.iter().any(|candidate| {
             candidate.component_id == key.component_id
+                && candidate.version == key.version
                 && candidate.variant == key.variant
-                && (component != SharedComponent::WhisperCpu
-                    && component != SharedComponent::WhisperVulkan
-                    || candidate.version == WHISPER_VERSION)
         }) {
             bail!(
                 "component_store_catalog_incomplete: missing {} {:?}",
@@ -673,6 +680,7 @@ pub fn selection_status() -> serde_json::Value {
                         .get("componentId")
                         .and_then(serde_json::Value::as_str)
                         == Some(key.component_id.as_str())
+                        && installation.get("version") == Some(&json!(key.version.clone()))
                         && installation.get("variant") == Some(&variant)
                         && installation
                             .get("verificationStatus")
@@ -715,6 +723,7 @@ pub fn model_statuses() -> serde_json::Value {
                 .get("componentId")
                 .and_then(serde_json::Value::as_str)
                 == Some(key.component_id.as_str())
+                && installation.get("version") == Some(&json!(key.version.clone()))
                 && installation.get("variant") == Some(&json!(key.variant.clone()))
                 && installation
                     .get("verificationStatus")
@@ -739,6 +748,7 @@ mod tests {
     fn component_keys_do_not_contain_distribution_metadata() {
         let key = SharedComponent::ModelBase.key();
         assert_eq!(key.component_id, "whisper-model");
+        assert_eq!(key.version, "1");
         assert_eq!(key.variant.get("model").map(String::as_str), Some("base"));
     }
 
@@ -766,6 +776,31 @@ mod tests {
                     .get("runtimeId")
                     .and_then(|value| value.as_str()),
                 Some(runtime_id)
+            );
+        }
+    }
+
+    #[test]
+    fn component_keys_match_formal_catalog_identity() {
+        let catalog = CatalogBundle::common_v2().unwrap();
+        for component in [
+            SharedComponent::Ffmpeg,
+            SharedComponent::YtDlp,
+            SharedComponent::WhisperCpu,
+            SharedComponent::WhisperVulkan,
+            SharedComponent::Vad,
+            SharedComponent::ModelTiny,
+            SharedComponent::ModelBase,
+            SharedComponent::ModelSmall,
+        ] {
+            let key = component.key();
+            assert!(
+                catalog.components.iter().any(|candidate| {
+                    candidate.component_id == key.component_id
+                        && candidate.version == key.version
+                        && candidate.variant == key.variant
+                }),
+                "component key must identify an exact common v2 entry: {key:?}"
             );
         }
     }

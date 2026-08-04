@@ -92,7 +92,7 @@ export async function runtimeInfo(): Promise<RuntimeInfo> {
       canonicalRevision: "v0.2.1",
       catalogId: "common.verified.windows-x86_64.v2",
       schemaVersion: 2,
-      installations: [{ componentId: "whisper-model", variant: { platform: "windows", architecture: "x86_64", model: "tiny" }, verificationStatus: "verified" }],
+      installations: [{ componentId: "whisper-model", version: "1", variant: { platform: "windows", architecture: "x86_64", model: "tiny" }, verificationStatus: "verified" }],
     },
   };
   return invoke<RuntimeInfo>("runtime_info");

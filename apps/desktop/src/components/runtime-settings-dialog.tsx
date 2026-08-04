@@ -90,8 +90,9 @@ function ComponentStorePanel(props: Pick<RuntimeSettingsDialogProps, "runtime" |
   const isInstalled = (component: ComponentStoreComponent) => {
     const model = ["tiny", "base", "small"].includes(component) ? component : null;
     const id = model ? "whisper-model" : component === "whisper-cpu" || component === "whisper-vulkan" ? "whisper-runtime" : component === "yt-dlp" ? "yt-dlp" : component === "vad" ? "whisper-vad" : "ffmpeg";
+    const version = model ? "1" : component === "whisper-cpu" || component === "whisper-vulkan" ? "1.9.1-siao.1" : component === "yt-dlp" ? "2026.06.09" : component === "vad" ? "6.2.0" : "8.1";
     const backend = component === "whisper-cpu" ? "cpu" : component === "whisper-vulkan" ? "vulkan" : null;
-    return installations.some((entry) => entry.componentId === id && entry.verificationStatus === "verified"
+    return installations.some((entry) => entry.componentId === id && entry.version === version && entry.verificationStatus === "verified"
       && (!model || (entry.variant as { model?: unknown } | undefined)?.model === model)
       && (!backend || (entry.variant as { backend?: unknown } | undefined)?.backend === backend));
   };

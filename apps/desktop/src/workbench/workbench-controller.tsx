@@ -475,8 +475,9 @@ function WorkbenchController() {
             const componentInstallations = (runtimeResult.value.componentStore as { installations?: unknown } | null)?.installations;
             const persistedComponentAvailable = Array.isArray(componentInstallations)
                 && componentInstallations.some((installation) => {
-                    const item = installation as { componentId?: unknown; variant?: { model?: unknown }; verificationStatus?: unknown };
+                    const item = installation as { componentId?: unknown; version?: unknown; variant?: { model?: unknown }; verificationStatus?: unknown };
                     return item.componentId === "whisper-model"
+                        && item.version === "1"
                         && item.variant?.model === persistedComponent
                         && item.verificationStatus === "verified";
                 });
