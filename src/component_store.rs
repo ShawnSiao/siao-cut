@@ -120,7 +120,17 @@ impl SharedComponent {
         match self {
             Self::Ffmpeg => &["media_decode", "media_encode", "media_probe"],
             Self::YtDlp => &["url_import"],
-            Self::WhisperCpu | Self::WhisperVulkan => &["transcription"],
+            Self::WhisperCpu => &[
+                "transcription",
+                "vad_timeline.original_media",
+                "runtime_metadata",
+            ],
+            Self::WhisperVulkan => &[
+                "transcription",
+                "vad_timeline.original_media",
+                "runtime_metadata",
+                "gpu_acceleration",
+            ],
             Self::Vad => &["vad"],
             Self::ModelTiny | Self::ModelBase | Self::ModelSmall => &["transcription_model"],
         }
@@ -758,6 +768,40 @@ mod tests {
                 Some(runtime_id)
             );
         }
+    }
+
+    #[test]
+    fn whisper_requirements_enforce_timeline_metadata_and_vulkan_capabilities() {
+        let catalog = CatalogBundle::common_v2().unwrap();
+        for component in [SharedComponent::WhisperCpu, SharedComponent::WhisperVulkan] {
+            let key = component.key();
+            let catalog_component = catalog
+                .components
+                .iter()
+                .find(|candidate| {
+                    candidate.component_id == key.component_id && candidate.variant == key.variant
+                })
+                .expect("formal whisper catalog entry should be present");
+            for capability in component.required_capabilities() {
+                assert!(
+                    catalog_component
+                        .capabilities
+                        .iter()
+                        .any(|candidate| candidate == capability),
+                    "catalog must expose required capability {capability}"
+                );
+            }
+        }
+        assert!(
+            !SharedComponent::WhisperCpu
+                .required_capabilities()
+                .contains(&"gpu_acceleration")
+        );
+        assert!(
+            SharedComponent::WhisperVulkan
+                .required_capabilities()
+                .contains(&"gpu_acceleration")
+        );
     }
 
     #[test]
