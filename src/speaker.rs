@@ -1,6 +1,6 @@
 use crate::{
     db,
-    media::{hash_file, tool_path},
+    media::{hash_file, resolve_component_tool},
     project,
     util::{hidden_command, new_id, now},
 };
@@ -983,7 +983,8 @@ fn analyze_project(db: &mut Connection, job_id: &str) -> Result<()> {
     fs::create_dir_all(&work_dir)?;
     let wav = work_dir.join("speaker-16k.wav");
     update_job(db, job_id, "准备 16 kHz 音频", Some(0.08), None)?;
-    let ffmpeg = tool_path("SIAOCUT_FFMPEG", "ffmpeg");
+    let (ffmpeg, _ffmpeg_lease) =
+        resolve_component_tool(crate::component_store::SharedComponent::Ffmpeg, "ffmpeg")?;
     let output = hidden_command(ffmpeg)
         .args(["-y", "-v", "error", "-i"])
         .arg(&source)

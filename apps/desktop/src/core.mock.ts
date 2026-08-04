@@ -269,6 +269,38 @@ function ensureOk(envelope: CoreEnvelope): CoreEnvelope {
 export async function mockRun(args: string[]): Promise<CoreEnvelope> {
   const [command, subcommand] = args;
   const valueAfter = (flag: string) => args.includes(flag) ? args[args.indexOf(flag) + 1] : null;
+  if (command === "component-store") {
+    if (subcommand === "health") {
+      return {
+        apiVersion: "0.1",
+        status: "ok",
+        componentStore: {
+          status: "ready",
+          canonicalRevision: "v0.2.0",
+          schemaVersion: 2,
+          catalogId: "common.verified.windows-x86_64.v2",
+          installations: [],
+        },
+      };
+    }
+    if (subcommand === "list-installations") {
+      return { apiVersion: "0.1", status: "ok", canonicalRevision: "v0.2.0", consumerId: "siaocut", installations: [] };
+    }
+    if (subcommand === "install" || subcommand === "verify" || subcommand === "select" || subcommand === "register-external") {
+      return { apiVersion: "0.1", status: "ok", component: args[2] ?? "unknown", operationId: `mock-component-${Date.now()}`, reusedExisting: subcommand === "install", selected: subcommand === "select", verification: { state: "verified" } };
+    }
+    if (subcommand === "operations") {
+      return { apiVersion: "0.1", status: "ok", operations: [] };
+    }
+    if (subcommand === "release") {
+      const model = mockModels.find((item) => item.id === args[2]);
+      if (model) { model.installed = false; model.bytesOnDisk = 0; model.verified = null; model.verificationStatus = "not_installed"; }
+      return { apiVersion: "0.1", status: "ok", released: true };
+    }
+    if (["pause", "resume", "cancel", "migrate"].includes(subcommand)) {
+      return { apiVersion: "0.1", status: "ok", operationId: args[2] ?? `mock-operation-${Date.now()}`, operation: { state: "running" } };
+    }
+  }
   if (command === "import") {
     const imported = structuredClone(sampleProject);
     const sourcePath = args[1] ?? "demo.mp4";

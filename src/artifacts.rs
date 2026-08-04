@@ -1,7 +1,7 @@
 use crate::{
     canvas::{self, CanvasTarget},
     db::home_dir,
-    media::{command_available, hash_file, tool_path},
+    media::{command_available, hash_file, resolve_component_tool},
     model::MediaArtifacts,
     project,
     util::{hidden_command, now},
@@ -75,7 +75,8 @@ pub fn prepare(db: &mut Connection, project_id: &str) -> Result<MediaArtifacts> 
         return Ok(existing);
     }
 
-    let ffmpeg = tool_path("SIAOCUT_FFMPEG", "ffmpeg");
+    let (ffmpeg, _ffmpeg_lease) =
+        resolve_component_tool(crate::component_store::SharedComponent::Ffmpeg, "ffmpeg")?;
     if !command_available(&ffmpeg) {
         bail!("FFmpeg 未配置，无法生成预览资源")
     }
@@ -502,7 +503,8 @@ fn generate(
 }
 
 pub fn has_stream(source: &Path, selector: &str) -> Result<bool> {
-    let ffprobe = tool_path("SIAOCUT_FFPROBE", "ffprobe");
+    let (ffprobe, _ffprobe_lease) =
+        resolve_component_tool(crate::component_store::SharedComponent::Ffmpeg, "ffprobe")?;
     let mut command = hidden_command(&ffprobe);
     let output = command
         .args([

@@ -9,6 +9,7 @@ mod artifacts;
 mod audio_analysis;
 mod auto_workflow;
 mod canvas;
+mod component_store;
 mod contracts;
 mod cuts;
 mod db;
@@ -45,6 +46,24 @@ struct Cli {
     json: bool,
     #[command(subcommand)]
     command: Commands,
+}
+
+#[derive(Subcommand)]
+enum ComponentStoreCommand {
+    Health,
+    ListInstallations,
+    Install { component: String },
+    Select { component: String },
+    RegisterExternal { component: String, path: PathBuf },
+    Verify { component: String },
+    Release { component: String },
+    Operations,
+    Pause { operation_id: String },
+    Resume { operation_id: String },
+    Cancel { operation_id: String },
+    Migrate { target_root: PathBuf },
+    ResumeMigration { operation_id: String },
+    CleanupMigration { operation_id: String },
 }
 
 #[derive(Subcommand)]
@@ -86,6 +105,8 @@ enum Commands {
     Model(ModelCommand),
     #[command(subcommand)]
     Runtime(RuntimeCommand),
+    #[command(name = "component-store", subcommand)]
+    ComponentStore(ComponentStoreCommand),
     #[command(subcommand)]
     Source(SourceCommand),
     #[command(subcommand)]
@@ -746,7 +767,8 @@ enum RuntimeCommand {
 #[derive(Args)]
 struct TranscribeArgs {
     project_id: String,
-    /// Absolute path to a ggml/gguf whisper.cpp model.
+    /// ComponentKey reference such as component:tiny.  Absolute paths are
+    /// accepted only by test fixtures and one-time legacy migration code.
     #[arg(long)]
     model: PathBuf,
     #[arg(long)]
@@ -842,6 +864,135 @@ fn run_desktop_request(database: &mut rusqlite::Connection, input: &PathBuf) -> 
     }
 }
 
+fn run_component_store_command(command: ComponentStoreCommand) -> Result<Value> {
+    if let ComponentStoreCommand::Health = command {
+        return Ok(envelope(component_store::health()));
+    }
+    let manager = component_store::ComponentManager::open_default()?;
+    match command {
+        ComponentStoreCommand::Health => unreachable!(),
+        ComponentStoreCommand::ListInstallations => Ok(envelope(json!({
+            "canonicalRevision": component_store::ComponentManager::catalog_revision(),
+            "consumerId": manager.consumer_id(),
+            "installations": manager.list_installations()?,
+        }))),
+        ComponentStoreCommand::Install { component } => {
+            let component = component_store::parse_component(&component)?;
+            let requirement = manager.requirement(component)?;
+            let result = manager.store().install(
+                siao_component_store_core::InstallRequest::new(requirement.component_ref())
+                    .with_consumer(manager.consumer_id()),
+                None,
+            )?;
+            Ok(envelope(json!({
+                "component": component_store::component_label(component),
+                "operationId": result.operation_id,
+                "identityHash": result.identity_hash,
+                "reusedExisting": result.reused_existing,
+            })))
+        }
+        ComponentStoreCommand::Select { component } => {
+            let component = component_store::parse_component(&component)?;
+            if !matches!(
+                component,
+                component_store::SharedComponent::WhisperCpu
+                    | component_store::SharedComponent::WhisperVulkan
+            ) {
+                anyhow::bail!(
+                    "component_store_invalid_whisper_selection: 只能选择 CPU 或 Vulkan Whisper"
+                )
+            }
+            let mut lease = manager.resolve_and_acquire(component)?;
+            lease.release()?;
+            component_store::select_whisper_component(component)?;
+            Ok(envelope(json!({
+                "component": component_store::component_label(component),
+                "selected": true,
+                "componentKey": component.key(),
+            })))
+        }
+        ComponentStoreCommand::RegisterExternal { component, path } => {
+            let component = component_store::parse_component(&component)?;
+            manager.register_existing_for_consumer(component, path)?;
+            Ok(envelope(json!({
+                "component": component_store::component_label(component),
+                "consumerId": manager.consumer_id(),
+                "registered": true,
+            })))
+        }
+        ComponentStoreCommand::Verify { component } => {
+            let component = component_store::parse_component(&component)?;
+            let requirement = manager.requirement(component)?;
+            Ok(envelope(json!({
+                "component": component_store::component_label(component),
+                "verification": manager.store().verify(&requirement.component_ref())?,
+            })))
+        }
+        ComponentStoreCommand::Release { component } => {
+            let component = component_store::parse_component(&component)?;
+            let requirement = manager.requirement(component)?;
+            let released = manager
+                .store()
+                .release_consumer(manager.consumer_id(), &requirement.component_ref())?;
+            Ok(envelope(json!({
+                "component": component_store::component_label(component),
+                "consumerId": manager.consumer_id(),
+                "released": released,
+            })))
+        }
+        ComponentStoreCommand::Operations => Ok(envelope(json!({
+            "operations": manager.store().list_operations()?,
+        }))),
+        ComponentStoreCommand::Pause { operation_id } => Ok(envelope(json!({
+            "operation": manager.store().pause(&operation_id)?,
+        }))),
+        ComponentStoreCommand::Resume { operation_id } => {
+            let result = manager.store().resume(&operation_id, None)?;
+            Ok(envelope(json!({
+                "operationId": result.operation_id,
+                "component": result.component,
+                "identityHash": result.identity_hash,
+                "reusedExisting": result.reused_existing,
+            })))
+        }
+        ComponentStoreCommand::Cancel { operation_id } => Ok(envelope(json!({
+            "operation": manager.store().cancel(&operation_id)?,
+        }))),
+        ComponentStoreCommand::Migrate { target_root } => {
+            let result = manager.store().migrate_root(
+                siao_component_store_core::MigrationRequest::new(target_root),
+                None,
+            )?;
+            Ok(envelope(json!({
+                "operationId": result.operation_id,
+                "sourceRoot": result.source_root,
+                "targetRoot": result.target_root,
+                "locationConfigPath": result.location_config_path,
+            })))
+        }
+        ComponentStoreCommand::ResumeMigration { operation_id } => {
+            let result = manager.store().resume_migration(&operation_id, None)?;
+            Ok(envelope(json!({
+                "operationId": result.operation_id,
+                "sourceRoot": result.source_root,
+                "targetRoot": result.target_root,
+                "locationConfigPath": result.location_config_path,
+            })))
+        }
+        ComponentStoreCommand::CleanupMigration { operation_id } => {
+            let result = manager.store().cleanup_migration_source(&operation_id)?;
+            Ok(envelope(json!({
+                "cleanup": {
+                    "operationId": result.operation_id,
+                    "sourceRoot": result.source_root,
+                    "targetRoot": result.target_root,
+                    "removed": result.removed,
+                },
+            })))
+        }
+    }
+}
+
 fn run(cli: Cli) -> Result<Value> {
     if matches!(&cli.command, Commands::Contract) {
         return Ok(envelope(contracts::contract()));
@@ -863,12 +1014,13 @@ fn run(cli: Cli) -> Result<Value> {
         Commands::Health => {
             let vad_model_configured = media::whisper_vad_model_path().is_some();
             let vad_timeline = media::whisper_vad_timeline_capability();
+            let component_store = component_store::health();
             Ok(envelope(json!({
                 "home": db::home_dir(),
                 "database": db::database_path(),
                 "engines": {
-                    "asr": if media::command_available(&media::whisper_cli_path()) { "configured" } else { "not_configured" },
-                    "ffmpeg": if media::command_available(&media::tool_path("SIAOCUT_FFMPEG", "ffmpeg")) { "configured" } else { "not_configured" },
+                    "asr": if media::resolve_component_tool(crate::component_store::SharedComponent::WhisperCpu, "whisper").map(|(path, _lease)| media::command_available(&path)).unwrap_or(false) { "configured" } else { "not_configured" },
+                    "ffmpeg": if media::resolve_component_tool(crate::component_store::SharedComponent::Ffmpeg, "ffmpeg").map(|(path, _lease)| media::command_available(&path)).unwrap_or(false) { "configured" } else { "not_configured" },
                     "vad": if !vad_model_configured {
                         "not_configured"
                     } else if vad_timeline.verified {
@@ -881,11 +1033,13 @@ fn run(cli: Cli) -> Result<Value> {
                     "speaker": if speaker::package_status(false)?.installed { "configured" } else { "not_configured" }
                 },
                 "vadTimeline": vad_timeline,
-                "models": models::catalog(false)?,
-                "runtime": runtime::status()?,
+                "componentStore": component_store,
+                "models": component_store::model_statuses(),
+                "runtime": component_store::selection_status(),
                 "message": "Rust + SQLite Core 可用。"
             })))
         }
+        Commands::ComponentStore(command) => run_component_store_command(command),
         Commands::DesktopRequest { input } => run_desktop_request(&mut database, &input),
         Commands::Import { media, title } => {
             let project = project::create(&mut database, &media, title)?;
@@ -1843,12 +1997,10 @@ fn run(cli: Cli) -> Result<Value> {
                 "models": models::catalog(verify)?
             }))),
             ModelCommand::Install { model_id } => {
-                let job = models::create_download(&database, &model_id)?;
-                Ok(envelope(json!({
-                    "jobId": job.id,
-                    "modelJob": job,
-                    "message": "模型下载已开始；只会访问界面显示的模型来源。"
-                })))
+                let _ = model_id;
+                bail!(
+                    "legacy_model_download_removed: 请使用 component-store install，并先完成 Store 校验"
+                )
             }
             ModelCommand::Status { job_id } => {
                 let job = models::load_job(&database, &job_id)?;
@@ -1869,11 +2021,10 @@ fn run(cli: Cli) -> Result<Value> {
                 "model": models::verify(&model_id)?
             }))),
             ModelCommand::Remove { model_id } => {
-                models::remove(&database, &model_id)?;
-                Ok(envelope(json!({
-                    "modelId":model_id,
-                    "message":"模型已从本机移除；项目和原始媒体未受影响。"
-                })))
+                let _ = model_id;
+                bail!(
+                    "legacy_model_download_removed: 共享 Store 组件只能通过 component-store release 管理"
+                )
             }
         },
         Commands::Speaker(command) => match command {
@@ -2029,28 +2180,22 @@ fn run(cli: Cli) -> Result<Value> {
             }
         },
         Commands::Runtime(command) => match command {
-            RuntimeCommand::Status => Ok(envelope(json!({"runtime":runtime::status()?}))),
+            RuntimeCommand::Status => Ok(envelope(json!({
+                "runtime": component_store::selection_status()
+            }))),
             RuntimeCommand::Select {
-                backend,
-                whisper,
-                source,
-                version,
-                archive_sha256,
+                backend: _,
+                whisper: _,
+                source: _,
+                version: _,
+                archive_sha256: _,
             } => {
-                let selection =
-                    runtime::select(&backend, &whisper, source, version, archive_sha256)?;
-                Ok(envelope(json!({
-                    "runtime":runtime::status()?,
-                    "selection":selection,
-                    "message":"已选择本机 whisper.cpp 运行时。"
-                })))
+                bail!(
+                    "legacy_runtime_selection_removed: 请使用 component-store select，并先完成 Store 校验"
+                )
             }
             RuntimeCommand::Reset => {
-                runtime::reset()?;
-                Ok(envelope(json!({
-                    "runtime":runtime::status()?,
-                    "message":"已恢复 CPU 基线运行时。"
-                })))
+                bail!("legacy_runtime_selection_removed: 请使用 component-store select whisper-cpu")
             }
         },
         Commands::Audit { project_id } => {

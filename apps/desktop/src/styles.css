@@ -799,6 +799,16 @@ select:focus-visible { border-color: var(--focus-ring) !important; box-shadow: 0
 .modal-backdrop { z-index: 80; padding: 16px; }
 .runtime-dialog { width: min(720px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
 .runtime-settings-dialog { display: flex; width: min(1040px, calc(100vw - 32px)); height: calc(100dvh - 32px); flex-direction: column; overflow: hidden; padding: 0; }
+.component-store-panel { display: flex; flex-direction: column; gap: 10px; padding: 14px; border: 1px solid var(--border-subtle); border-radius: 12px; background: var(--bg-panel-raised); }
+.component-store-status { display: flex; gap: 12px; align-items: baseline; }
+.component-store-status strong { text-transform: uppercase; }
+.component-store-status small, .component-store-option small, .component-store-operations small { color: var(--muted); }
+.component-store-options, .component-store-operations { display: grid; gap: 8px; }
+.component-store-option, .component-store-operations article { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 0; border-top: 1px solid var(--border-subtle); }
+.component-store-option span, .component-store-operations span { display: grid; gap: 2px; }
+.component-store-option div, .component-store-operations div, .component-store-external div, .component-store-migration div { display: flex; gap: 6px; align-items: center; }
+.component-store-external, .component-store-migration { display: grid; gap: 6px; border-top: 1px solid var(--border-subtle); padding-top: 10px; }
+.component-store-external input, .component-store-migration input { min-width: 0; flex: 1; }
 .runtime-dialog-header { flex: 0 0 auto; display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--border-subtle); background: var(--bg-panel); padding: 22px 24px 16px; }
 .runtime-dialog-header h2 { margin: 6px 0 0; font-size: 23px; letter-spacing: -.04em; }
 .runtime-dialog-header .dialog-close { position: static; flex: 0 0 auto; }

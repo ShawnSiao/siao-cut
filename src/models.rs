@@ -169,11 +169,16 @@ pub fn verify(model_id: &str) -> Result<ModelStatus> {
         .ok_or_else(|| anyhow!("未知转录模型：{model_id}"))
 }
 
+/// Legacy migration reader retained for old databases. New model installation
+/// must use `component-store install`, so this entry point is intentionally not
+/// reachable from the formal CLI.
+#[allow(dead_code)]
 pub fn create_download(db: &Connection, model_id: &str) -> Result<ModelDownloadJob> {
     let spec = spec(model_id)?;
     create_download_in(db, spec, &models_dir(), spawn_worker)
 }
 
+#[allow(dead_code)]
 fn create_download_in(
     db: &Connection,
     spec: ModelSpec,
@@ -253,6 +258,7 @@ fn create_download_in(
     Ok(job)
 }
 
+#[allow(dead_code)]
 fn active_job(db: &Connection, model_id: &str) -> Result<Option<ModelDownloadJob>> {
     let id = db
         .query_row(
@@ -349,11 +355,13 @@ pub fn reconcile_interrupted(db: &Connection) -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 pub fn remove(db: &Connection, model_id: &str) -> Result<()> {
     let spec = spec(model_id)?;
     remove_in(db, spec, &models_dir())
 }
 
+#[allow(dead_code)]
 fn remove_in(db: &Connection, spec: ModelSpec, models_dir: &Path) -> Result<()> {
     if active_job(db, spec.id)?.is_some() {
         bail!("请先取消正在进行的模型下载")
@@ -369,6 +377,7 @@ fn remove_in(db: &Connection, spec: ModelSpec, models_dir: &Path) -> Result<()> 
     Ok(())
 }
 
+#[allow(dead_code)]
 fn spawn_worker(job_id: &str, model_id: &str) -> Result<()> {
     crate::util::spawn_detached_current(&["__model_worker", job_id, model_id])
         .context("无法启动模型下载任务")?;

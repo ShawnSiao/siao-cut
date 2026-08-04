@@ -1,6 +1,6 @@
 use crate::{
     db,
-    media::{hash_file, tool_path},
+    media::{hash_file, resolve_component_tool},
     project,
     util::{hidden_command, new_id, now},
 };
@@ -832,7 +832,8 @@ fn ensure_not_cancelled(db: &Connection, job_id: &str) -> Result<()> {
 }
 
 fn extract_audio(source: &Path, wav: &Path) -> Result<()> {
-    let ffmpeg = tool_path("SIAOCUT_FFMPEG", "ffmpeg");
+    let (ffmpeg, _ffmpeg_lease) =
+        resolve_component_tool(crate::component_store::SharedComponent::Ffmpeg, "ffmpeg")?;
     let output = hidden_command(&ffmpeg)
         .args(["-y", "-i"])
         .arg(source)

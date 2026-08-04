@@ -79,16 +79,87 @@ export async function runtimeInfo(): Promise<RuntimeInfo> {
     asrBackend: "cpu",
     asrDevice: null,
     availableAsrBackends: ["cpu", "vulkan"],
-    ffmpegPath: `${tr("app.runtime.external")}\\ffmpeg.exe`,
-    whisperPath: `${tr("app.runtime.external")}\\whisper-cli.exe`,
-    ytDlpPath: `${tr("app.runtime.external")}\\yt-dlp.exe`,
+    ffmpegPath: null,
+    whisperPath: null,
+    ytDlpPath: null,
     runtimeManifestPath: `${tr("app.runtime.external")}\\runtime-manifest.json`,
-    defaultModelPath: tr("app.runtime.localModelDirectory"),
+    defaultModelPath: "component:tiny",
     defaultModelAvailable: true,
     logDirectory: tr("app.runtime.localDiagnosticsDirectory"),
     diagnosticsAvailable: true,
+    componentStore: {
+      status: "ready",
+      canonicalRevision: "v0.2.0",
+      catalogId: "common.verified.windows-x86_64.v2",
+      schemaVersion: 2,
+      installations: [{ componentId: "whisper-model", variant: { platform: "windows", architecture: "x86_64", model: "tiny" }, verificationStatus: "verified" }],
+    },
   };
   return invoke<RuntimeInfo>("runtime_info");
+}
+
+export type ComponentStoreComponent =
+  | "ffmpeg"
+  | "yt-dlp"
+  | "whisper-cpu"
+  | "whisper-vulkan"
+  | "vad"
+  | "tiny"
+  | "base"
+  | "small";
+
+export type WhisperModelComponent = "tiny" | "base" | "small";
+
+export function whisperModelReference(component: WhisperModelComponent): string {
+  return `component:${component}`;
+}
+
+export async function componentStoreHealth(): Promise<CoreEnvelope> {
+  return runCore(["component-store", "health"]);
+}
+
+export async function componentStoreListInstallations(): Promise<CoreEnvelope> {
+  return runCore(["component-store", "list-installations"]);
+}
+
+export async function componentStoreInstall(component: ComponentStoreComponent): Promise<CoreEnvelope> {
+  return runCore(["component-store", "install", component]);
+}
+
+export async function componentStoreSelect(backend: "cpu" | "vulkan"): Promise<CoreEnvelope> {
+  return runCore(["component-store", "select", backend === "cpu" ? "whisper-cpu" : "whisper-vulkan"]);
+}
+
+export async function componentStoreVerify(component: ComponentStoreComponent): Promise<CoreEnvelope> {
+  return runCore(["component-store", "verify", component]);
+}
+
+export async function componentStoreRelease(component: ComponentStoreComponent): Promise<CoreEnvelope> {
+  return runCore(["component-store", "release", component]);
+}
+
+export async function componentStoreRegisterExternal(component: ComponentStoreComponent, path: string): Promise<CoreEnvelope> {
+  return runCore(["component-store", "register-external", component, path]);
+}
+
+export async function componentStorePause(operationId: string): Promise<CoreEnvelope> {
+  return runCore(["component-store", "pause", operationId]);
+}
+
+export async function componentStoreResume(operationId: string): Promise<CoreEnvelope> {
+  return runCore(["component-store", "resume", operationId]);
+}
+
+export async function componentStoreCancel(operationId: string): Promise<CoreEnvelope> {
+  return runCore(["component-store", "cancel", operationId]);
+}
+
+export async function componentStoreOperations(): Promise<CoreEnvelope> {
+  return runCore(["component-store", "operations"]);
+}
+
+export async function componentStoreMigrate(targetRoot: string): Promise<CoreEnvelope> {
+  return runCore(["component-store", "migrate", targetRoot]);
 }
 
 export async function openLogDirectory(): Promise<void> {

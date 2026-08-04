@@ -74,12 +74,7 @@ fn insert_with_flag(db: &mut Connection, request: StartRequest) -> Result<(AutoW
     if !["zh-CN", "en-US"].contains(&instruction_locale.as_str()) {
         bail!("instruction_locale_invalid: --locale 必须为 zh-CN 或 en-US")
     }
-    if !model.is_file() {
-        bail!(
-            "auto_workflow_model_missing: 模型不存在：{}",
-            model.display()
-        )
-    }
+    let model_reference = model_reference(&model)?;
     if output.extension().and_then(|value| value.to_str()) != Some("mp4") {
         bail!("auto_workflow_output_invalid: 自动工作流输出必须使用 .mp4 扩展名")
     }
@@ -91,7 +86,6 @@ fn insert_with_flag(db: &mut Connection, request: StartRequest) -> Result<(AutoW
     {
         bail!("auto_workflow_translation_required: 译文或双语输出必须指定 --translate")
     }
-    let model = model.canonicalize()?;
     let output = absolute_path(&output)?;
     let (input_kind, input_value, title, confirmed_media_id) = match input {
         WorkflowInput::Local { media, title } => {
@@ -146,7 +140,7 @@ fn insert_with_flag(db: &mut Connection, request: StartRequest) -> Result<(AutoW
             input_value,
             title,
             confirmed_media_id,
-            model.to_string_lossy(),
+            model_reference,
             transcribe_language,
             translation_language,
             output.to_string_lossy(),
@@ -158,6 +152,23 @@ fn insert_with_flag(db: &mut Connection, request: StartRequest) -> Result<(AutoW
     )?;
     append_event(db, &id, "import", "queued", 0.0, "自动工作流已创建")?;
     Ok((load(db, &id)?, true))
+}
+
+fn model_reference(model: &Path) -> Result<String> {
+    let value = model.to_string_lossy().trim().to_owned();
+    if value.is_empty() {
+        bail!("auto_workflow_model_missing: 必须选择 Whisper 模型组件")
+    }
+    if value.starts_with("component:") {
+        crate::component_store::parse_component_reference(&value)?;
+        return Ok(value);
+    }
+    if crate::component_store::legacy_fixture_mode() && model.is_file() {
+        return Ok(model.canonicalize()?.to_string_lossy().into_owned());
+    }
+    bail!(
+        "component_store_model_reference_required: 自动工作流必须使用 component:tiny、component:base 或 component:small"
+    )
 }
 
 fn absolute_path(path: &Path) -> Result<PathBuf> {

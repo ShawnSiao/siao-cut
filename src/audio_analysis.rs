@@ -1,6 +1,6 @@
 use crate::{
     db,
-    media::tool_path,
+    media::resolve_component_tool,
     project,
     util::{hidden_command, new_id, now},
 };
@@ -358,7 +358,8 @@ fn analyze_job(db: &Connection, job_id: &str) -> Result<AudioAnalysisReport> {
     if duration <= 0.0 {
         bail!("audio_duration_unavailable: 无法确定项目媒体时长")
     }
-    let ffmpeg = tool_path("SIAOCUT_FFMPEG", "ffmpeg");
+    let (ffmpeg, _ffmpeg_lease) =
+        resolve_component_tool(crate::component_store::SharedComponent::Ffmpeg, "ffmpeg")?;
     let tool_version = ffmpeg_version(&ffmpeg)?;
     let mut child = hidden_command(&ffmpeg)
         .args(["-hide_banner", "-nostats", "-i"])

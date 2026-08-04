@@ -3,7 +3,7 @@ use crate::{
     canvas::{self, CanvasTarget},
     contracts, db,
     export::{self, ExportOptions},
-    media::{hash_file, tool_path},
+    media::{hash_file, resolve_component_tool},
     model::{ExportJob, SubtitleMode, TimelineMap},
     project, subtitle_style, timeline,
     util::{hidden_command, new_id, now},
@@ -389,7 +389,8 @@ fn run(db: &mut Connection, job_id: &str) -> Result<()> {
     }
     let output = PathBuf::from(&job.output_path);
     let partial = partial_path(&output, job_id);
-    let ffmpeg = tool_path("SIAOCUT_FFMPEG", "ffmpeg");
+    let (ffmpeg, _ffmpeg_lease) =
+        resolve_component_tool(crate::component_store::SharedComponent::Ffmpeg, "ffmpeg")?;
     let encoders = artifacts::available_video_encoders(&ffmpeg)?;
     let has_video = artifacts::has_stream(source, "v:0")?;
     let has_audio = artifacts::has_stream(source, "a:0")?;

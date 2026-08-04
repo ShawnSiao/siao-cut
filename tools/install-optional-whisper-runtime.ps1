@@ -7,6 +7,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+throw 'legacy_runtime_selection_removed: formal SiaoCut packages use component-store register-existing and resolve_and_acquire; old source-built runtime installation is migration evidence only.'
 $root = Split-Path -Parent $PSScriptRoot
 $manifest = [IO.File]::ReadAllText((Join-Path $root 'release\runtime-manifest.json'), [Text.Encoding]::UTF8) | ConvertFrom-Json
 $component = $manifest.components | Where-Object id -eq $Runtime

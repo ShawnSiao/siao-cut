@@ -30,6 +30,10 @@ jobs:
           rustup update stable
           rustup component add rustfmt clippy
 
+      - name: Check canonical component-store provenance
+        shell: pwsh
+        run: ./tools/check-component-store-provenance.ps1
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 
