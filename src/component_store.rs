@@ -191,6 +191,7 @@ impl SharedComponent {
 #[serde(rename_all = "camelCase")]
 pub struct ComponentKey {
     pub component_id: String,
+    #[serde(default)]
     pub version: String,
     pub variant: BTreeMap<String, String>,
 }
@@ -214,7 +215,13 @@ pub fn selected_whisper_component() -> SharedComponent {
     };
     [SharedComponent::WhisperCpu, SharedComponent::WhisperVulkan]
         .into_iter()
-        .find(|candidate| candidate.key() == preferences.whisper)
+        .find(|candidate| {
+            let key = candidate.key();
+            key.component_id == preferences.whisper.component_id
+                && key.variant == preferences.whisper.variant
+                && (preferences.whisper.version.is_empty()
+                    || key.version == preferences.whisper.version)
+        })
         .unwrap_or(SharedComponent::WhisperCpu)
 }
 
@@ -750,6 +757,26 @@ mod tests {
         assert_eq!(key.component_id, "whisper-model");
         assert_eq!(key.version, "1");
         assert_eq!(key.variant.get("model").map(String::as_str), Some("base"));
+    }
+
+    #[test]
+    fn legacy_whisper_preference_without_version_remains_selectable() {
+        let legacy = ComponentPreferences {
+            whisper: ComponentKey {
+                component_id: "whisper-runtime".into(),
+                version: String::new(),
+                variant: SharedComponent::WhisperVulkan.variant(),
+            },
+        };
+        let selected = [SharedComponent::WhisperCpu, SharedComponent::WhisperVulkan]
+            .into_iter()
+            .find(|candidate| {
+                let key = candidate.key();
+                key.component_id == legacy.whisper.component_id
+                    && key.variant == legacy.whisper.variant
+                    && (legacy.whisper.version.is_empty() || key.version == legacy.whisper.version)
+            });
+        assert_eq!(selected, Some(SharedComponent::WhisperVulkan));
     }
 
     #[test]
