@@ -110,6 +110,45 @@ export type ComponentStoreComponent =
 
 export type WhisperModelComponent = "tiny" | "base" | "small";
 
+export const WHISPER_MODEL_COMPONENT_STORAGE_KEY = "siaocut.modelComponent";
+
+export type ComponentKey = {
+  componentId: string;
+  version: string;
+  variant: Record<string, string>;
+};
+
+export function whisperModelComponentKey(component: WhisperModelComponent): ComponentKey {
+  return {
+    componentId: "whisper-model",
+    version: "1",
+    variant: { platform: "windows", architecture: "x86_64", model: component },
+  };
+}
+
+export function serializeWhisperModelComponent(component: WhisperModelComponent): string {
+  return JSON.stringify(whisperModelComponentKey(component));
+}
+
+export function parseWhisperModelComponent(value: string | null): WhisperModelComponent {
+  if (!value) return "tiny";
+  if (["tiny", "base", "small"].includes(value)) return value as WhisperModelComponent;
+  try {
+    const key = JSON.parse(value) as Partial<ComponentKey>;
+    const model = key.variant?.model;
+    if (key.componentId === "whisper-model"
+      && key.version === "1"
+      && key.variant?.platform === "windows"
+      && key.variant?.architecture === "x86_64"
+      && (model === "tiny" || model === "base" || model === "small")) {
+      return model;
+    }
+  } catch {
+    // Invalid or legacy preferences fall back to the safe default.
+  }
+  return "tiny";
+}
+
 export function whisperModelReference(component: WhisperModelComponent): string {
   return `component:${component}`;
 }

@@ -1,7 +1,7 @@
 import { changeUiLocale, getUiLocale, tr, type UiLocale } from "../i18n";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type SyntheticEvent } from "react";
 import { Activity, Bot, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Clock3, Copy, Cpu, Database, Download, FileVideo2, FileText, Film, FolderOpen, FolderPlus, HardDrive, History, Link2, LoaderCircle, Play, RefreshCw, RotateCcw, Search, Scissors, Settings2, ShieldCheck, Sparkles, Trash2, Undo2, Redo2, Headphones, ListChecks, MoreHorizontal, MoveHorizontal, Users, X, } from "lucide-react";
-import { authorizeArtifact, authorizeMedia, componentStoreCancel, componentStoreInstall, componentStoreMigrate, componentStoreOperations, componentStorePause, componentStoreRegisterExternal, componentStoreRelease, componentStoreResume, componentStoreVerify, localFileAvailable, openLogDirectory, pickMedia, pickModel, pickSubtitleFile, pickTranscriptPath, pickVideoPath, runtimeInfo, selectAsrBackend, updaterPolicy, whisperModelReference, type ComponentStoreComponent, type WhisperModelComponent } from "../core";
+import { authorizeArtifact, authorizeMedia, componentStoreCancel, componentStoreInstall, componentStoreMigrate, componentStoreOperations, componentStorePause, componentStoreRegisterExternal, componentStoreRelease, componentStoreResume, componentStoreVerify, localFileAvailable, openLogDirectory, parseWhisperModelComponent, pickMedia, pickModel, pickSubtitleFile, pickTranscriptPath, pickVideoPath, runtimeInfo, selectAsrBackend, serializeWhisperModelComponent, updaterPolicy, whisperModelReference, WHISPER_MODEL_COMPONENT_STORAGE_KEY, type ComponentStoreComponent, type WhisperModelComponent } from "../core";
 import type { AgentRun, AudioAnalysisJob, AudioRisk, AutoWorkflow, CanvasSettings, CodexHealth, CutPreview, ExportJob, ModelDownloadJob, ModelStatus, Project, ProjectDeletionPreflight, RuntimeInfo, Segment, SourceImportJob, SourcePreview, SpeakerIdentity, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SpeechEvidence, SpeechInsights, SpeechPause, SubtitleImportPreview, SubtitleQualityIssue, Task, TranscriptReplacementPreflight, TranscriptionJob, TranscriptionLanguage, TranscriptionProviderConfig, TranscriptionProviderHealth, TranscriptionReviewItem } from "../types";
 import { Button, Dialog, IconButton, StatusBadge } from "../components/ui";
 import { JobFailureDetails } from "../components/job-failure";
@@ -45,8 +45,11 @@ export async function resolveCanvasMedia(
 const MODEL_COMPONENTS: WhisperModelComponent[] = ["tiny", "base", "small"];
 
 function storedModelComponent(): WhisperModelComponent {
-    const value = localStorage.getItem("siaocut.modelComponent");
-    return MODEL_COMPONENTS.includes(value as WhisperModelComponent) ? value as WhisperModelComponent : "tiny";
+    return parseWhisperModelComponent(localStorage.getItem(WHISPER_MODEL_COMPONENT_STORAGE_KEY));
+}
+
+function persistModelComponent(component: WhisperModelComponent): void {
+    localStorage.setItem(WHISPER_MODEL_COMPONENT_STORAGE_KEY, serializeWhisperModelComponent(component));
 }
 
 export async function resolveImportedProjectMedia(
@@ -499,7 +502,7 @@ function WorkbenchController() {
             const selectedModelPath = legacyStoredPath ?? nextModelPath;
             setModelPath(selectedModelPath);
             setModelPathAvailable(Boolean(!legacyStoredPath && nextModelPath?.startsWith("component:") && persistedComponentAvailable));
-            localStorage.setItem("siaocut.modelComponent", persistedComponent);
+            persistModelComponent(persistedComponent);
             // Keep an unmatched legacy path as migration evidence until the
             // user explicitly registers or replaces it.  Initialization may
             // run more than once in development, so removing it here would
@@ -682,7 +685,7 @@ function WorkbenchController() {
                         const component = MODEL_COMPONENTS.find((value) => value === installed.id);
                         if (component) {
                             localStorage.removeItem("siaocut.modelPath");
-                            localStorage.setItem("siaocut.modelComponent", component);
+                            persistModelComponent(component);
                             setModelComponent(component);
                             setModelPath(whisperModelReference(component));
                             setModelPathAvailable(installed.installed && installed.verified === true);
@@ -2243,7 +2246,7 @@ function WorkbenchController() {
             throw new Error("component_store_invalid_model_reference: 无法从模型文件名确定 tiny、base 或 small");
         await componentStoreRegisterExternal(component, path);
         localStorage.removeItem("siaocut.modelPath");
-        localStorage.setItem("siaocut.modelComponent", component);
+        persistModelComponent(component);
         setModelComponent(component);
         setModelPath(whisperModelReference(component));
         setModelPathAvailable(true);
@@ -2259,7 +2262,7 @@ function WorkbenchController() {
             ? { ...model, path: whisperModelReference(component), installed: Boolean(envelope.reusedExisting), verified: envelope.reusedExisting ? true : null, verificationStatus: envelope.reusedExisting ? "verified" : "not_installed" }
             : model));
         setModelComponent(component);
-        localStorage.setItem("siaocut.modelComponent", component);
+        persistModelComponent(component);
         setModelPath(whisperModelReference(component));
         setModelPathAvailable(Boolean(envelope.reusedExisting));
         setNotice(envelope.reusedExisting ? tr("app.s0057") : tr("app.s0218"));
@@ -2275,7 +2278,7 @@ function WorkbenchController() {
                 : item));
             setModelComponent(model);
             localStorage.removeItem("siaocut.modelPath");
-            localStorage.setItem("siaocut.modelComponent", model);
+            persistModelComponent(model);
             setModelPath(whisperModelReference(model));
             setModelPathAvailable(Boolean(envelope.reusedExisting));
         }
@@ -2959,7 +2962,7 @@ function WorkbenchController() {
             ?? MODEL_COMPONENTS.find((value) => path.toLowerCase().includes(value));
           if (component) {
             localStorage.removeItem("siaocut.modelPath");
-            localStorage.setItem("siaocut.modelComponent", component);
+            persistModelComponent(component);
             setModelComponent(component);
             setModelPath(whisperModelReference(component));
             setModelPathAvailable(true);
