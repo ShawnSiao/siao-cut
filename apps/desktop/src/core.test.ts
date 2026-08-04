@@ -39,5 +39,11 @@ describe("desktop Core bridge helpers", () => {
       version: "2",
       variant: { platform: "windows", architecture: "x86_64", model: "small" },
     }))).toBe("tiny");
+    expect(parseWhisperModelComponent(JSON.stringify({
+      componentId: "whisper-model",
+      version: "1",
+      variant: { platform: "windows", architecture: "x86_64", model: "small" },
+      url: "https://example.invalid/should-not-be-persisted",
+    }))).toBe("tiny");
   });
 });

@@ -189,6 +189,7 @@ impl SharedComponent {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
 pub struct ComponentKey {
     pub component_id: String,
     #[serde(default)]

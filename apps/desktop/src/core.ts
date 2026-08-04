@@ -136,7 +136,11 @@ export function parseWhisperModelComponent(value: string | null): WhisperModelCo
   try {
     const key = JSON.parse(value) as Partial<ComponentKey>;
     const model = key.variant?.model;
-    if (key.componentId === "whisper-model"
+    const keyFields = Object.keys(key).sort().join(",");
+    const variantFields = Object.keys(key.variant ?? {}).sort().join(",");
+    if (keyFields === "componentId,variant,version"
+      && variantFields === "architecture,model,platform"
+      && key.componentId === "whisper-model"
       && key.version === "1"
       && key.variant?.platform === "windows"
       && key.variant?.architecture === "x86_64"
