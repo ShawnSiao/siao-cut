@@ -983,15 +983,19 @@ fn analyze_project(db: &mut Connection, job_id: &str) -> Result<()> {
     fs::create_dir_all(&work_dir)?;
     let wav = work_dir.join("speaker-16k.wav");
     update_job(db, job_id, "准备 16 kHz 音频", Some(0.08), None)?;
-    let (ffmpeg, _ffmpeg_lease) =
+    let (ffmpeg, ffmpeg_lease) =
         resolve_component_tool(crate::component_store::SharedComponent::Ffmpeg, "ffmpeg")?;
-    let output = hidden_command(ffmpeg)
+    let mut command = hidden_command(ffmpeg);
+    command
         .args(["-y", "-v", "error", "-i"])
         .arg(&source)
         .args(["-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le"])
-        .arg(&wav)
-        .output()
-        .context("无法启动 FFmpeg 准备说话人音频")?;
+        .arg(&wav);
+    let output = crate::component_store::ComponentLease::output_with_lease(
+        &mut command,
+        ffmpeg_lease.as_ref(),
+    )
+    .context("无法启动 FFmpeg 准备说话人音频")?;
     if !output.status.success() {
         bail!(
             "speaker_audio_prepare_failed: {}",

@@ -348,6 +348,7 @@ pub struct ComponentLease {
     leased: Option<LeasedComponent>,
     heartbeat_signal: Arc<(Mutex<bool>, Condvar)>,
     heartbeat_lost: Arc<AtomicBool>,
+    watched_process: Arc<Mutex<Option<u32>>>,
     heartbeat_thread: Option<JoinHandle<()>>,
 }
 
@@ -357,6 +358,8 @@ impl ComponentLease {
         let signal = Arc::clone(&heartbeat_signal);
         let heartbeat_lost = Arc::new(AtomicBool::new(false));
         let heartbeat_lost_for_thread = Arc::clone(&heartbeat_lost);
+        let watched_process = Arc::new(Mutex::new(None));
+        let watched_process_for_thread = Arc::clone(&watched_process);
         let heartbeat_store = store.clone();
         let lease_id = leased.lease.lease_id.clone();
         let heartbeat_thread = std::thread::Builder::new()
@@ -373,6 +376,11 @@ impl ComponentLease {
                     }
                     drop(guard);
                     if timeout.timed_out() && heartbeat_store.heartbeat(&lease_id).is_err() {
+                        if let Ok(process_id) = watched_process_for_thread.lock()
+                            && let Some(process_id) = *process_id
+                        {
+                            crate::util::terminate_process_tree_by_id(process_id);
+                        }
                         heartbeat_lost_for_thread.store(true, Ordering::Release);
                         return;
                     }
@@ -384,8 +392,60 @@ impl ComponentLease {
             leased: Some(leased),
             heartbeat_signal,
             heartbeat_lost,
+            watched_process,
             heartbeat_thread,
         }
+    }
+
+    /// Register the currently running component child.  If the heartbeat
+    /// thread loses the lease, it terminates this process tree before
+    /// returning the structured `component_lease_lost` error to the worker.
+    pub fn watch_process(&self, child: &std::process::Child) {
+        if let Ok(mut process_id) = self.watched_process.lock() {
+            *process_id = Some(child.id());
+        }
+    }
+
+    /// Stop watching a child after it has exited.  The process ID check keeps
+    /// a late cleanup from clearing a newer child registered on the same
+    /// lease.
+    pub fn unwatch_process(&self, process_id: u32) {
+        if let Ok(mut watched) = self.watched_process.lock()
+            && *watched == Some(process_id)
+        {
+            *watched = None;
+        }
+    }
+
+    pub fn ensure_healthy(&self) -> Result<()> {
+        if self.heartbeat_lost() {
+            bail!("component_lease_lost: heartbeat 已丢失")
+        }
+        Ok(())
+    }
+
+    /// Run a component child while retaining its stdout/stderr output.  The
+    /// heartbeat thread can terminate the process tree if the lease expires;
+    /// the caller then receives the same structured lease-loss error as the
+    /// long-running worker loops.
+    pub fn output_with_lease(
+        command: &mut std::process::Command,
+        lease: Option<&ComponentLease>,
+    ) -> Result<std::process::Output> {
+        command
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let child = command.spawn()?;
+        let process_id = child.id();
+        if let Some(lease) = lease {
+            lease.watch_process(&child);
+        }
+        let output = child.wait_with_output();
+        if let Some(lease) = lease {
+            lease.unwatch_process(process_id);
+            lease.ensure_healthy()?;
+        }
+        Ok(output?)
     }
 
     fn stop_heartbeat(&mut self) {
@@ -422,7 +482,15 @@ impl ComponentLease {
         lease.lease = self
             .store
             .heartbeat(&lease.lease.lease_id)
-            .map_err(map_store_error)?;
+            .map_err(|error| {
+                self.heartbeat_lost.store(true, Ordering::Release);
+                if let Ok(process_id) = self.watched_process.lock()
+                    && let Some(process_id) = *process_id
+                {
+                    crate::util::terminate_process_tree_by_id(process_id);
+                }
+                anyhow!("component_lease_lost: {}", map_store_error(error))
+            })?;
         Ok(())
     }
 

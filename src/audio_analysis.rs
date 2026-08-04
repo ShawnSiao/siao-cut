@@ -358,9 +358,9 @@ fn analyze_job(db: &Connection, job_id: &str) -> Result<AudioAnalysisReport> {
     if duration <= 0.0 {
         bail!("audio_duration_unavailable: 无法确定项目媒体时长")
     }
-    let (ffmpeg, _ffmpeg_lease) =
+    let (ffmpeg, ffmpeg_lease) =
         resolve_component_tool(crate::component_store::SharedComponent::Ffmpeg, "ffmpeg")?;
-    let tool_version = ffmpeg_version(&ffmpeg)?;
+    let tool_version = ffmpeg_version(&ffmpeg, ffmpeg_lease.as_ref())?;
     let mut child = hidden_command(&ffmpeg)
         .args(["-hide_banner", "-nostats", "-i"])
         .arg(&source)
@@ -376,6 +376,10 @@ fn analyze_job(db: &Connection, job_id: &str) -> Result<AudioAnalysisReport> {
         .stderr(Stdio::piped())
         .spawn()
         .context("audio_analysis_unavailable: 无法启动固定 FFmpeg")?;
+    if let Some(lease) = ffmpeg_lease.as_ref() {
+        lease.watch_process(&child);
+    }
+    let process_id = child.id();
     let mut stderr = child.stderr.take().context("无法读取 FFmpeg 分析输出")?;
     let reader = thread::spawn(move || {
         let mut output = String::new();
@@ -388,6 +392,10 @@ fn analyze_job(db: &Connection, job_id: &str) -> Result<AudioAnalysisReport> {
         }
         if cancellation_requested(db, job_id)? {
             crate::util::terminate_process_tree(&mut child);
+            if let Some(lease) = ffmpeg_lease.as_ref() {
+                lease.unwatch_process(process_id);
+                lease.ensure_healthy()?;
+            }
             let _ = reader.join();
             bail!("audio_analysis_cancelled")
         }
@@ -397,7 +405,12 @@ fn analyze_job(db: &Connection, job_id: &str) -> Result<AudioAnalysisReport> {
         )?;
         thread::sleep(Duration::from_millis(100));
     }
-    let status = child.wait()?;
+    let status = child.wait();
+    if let Some(lease) = ffmpeg_lease.as_ref() {
+        lease.unwatch_process(process_id);
+        lease.ensure_healthy()?;
+    }
+    let status = status?;
     let output = reader
         .join()
         .map_err(|_| anyhow!("无法汇总 FFmpeg 分析输出"))?;
@@ -415,8 +428,13 @@ fn cancellation_requested(db: &Connection, job_id: &str) -> Result<bool> {
     )?)
 }
 
-fn ffmpeg_version(ffmpeg: &str) -> Result<String> {
-    let output = hidden_command(ffmpeg).arg("-version").output()?;
+fn ffmpeg_version(
+    ffmpeg: &str,
+    lease: Option<&crate::component_store::ComponentLease>,
+) -> Result<String> {
+    let mut command = hidden_command(ffmpeg);
+    command.arg("-version");
+    let output = crate::component_store::ComponentLease::output_with_lease(&mut command, lease)?;
     if !output.status.success() {
         bail!("audio_analysis_unavailable: FFmpeg 版本检查失败")
     }

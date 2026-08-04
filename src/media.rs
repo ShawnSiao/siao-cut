@@ -141,14 +141,15 @@ pub fn hash_file(path: &Path) -> Result<String> {
 }
 
 pub fn ffprobe_duration(path: &Path) -> Option<f64> {
-    let (ffprobe, _lease) = resolve_component_tool_for_probe(
+    let (ffprobe, lease) = resolve_component_tool_for_probe(
         SharedComponent::Ffmpeg,
         "ffprobe",
         "SIAOCUT_FFPROBE",
         "ffprobe",
     )
     .ok()?;
-    hidden_command(ffprobe)
+    let mut command = hidden_command(ffprobe);
+    command
         .args([
             "-v",
             "error",
@@ -157,8 +158,8 @@ pub fn ffprobe_duration(path: &Path) -> Option<f64> {
             "-of",
             "default=nw=1:nk=1",
         ])
-        .arg(path)
-        .output()
+        .arg(path);
+    ComponentLease::output_with_lease(&mut command, lease.as_ref())
         .ok()
         .and_then(|out| {
             if out.status.success() {
@@ -170,14 +171,15 @@ pub fn ffprobe_duration(path: &Path) -> Option<f64> {
 }
 
 pub fn ffprobe_video_dimensions(path: &Path) -> Option<(u32, u32)> {
-    let (ffprobe, _lease) = resolve_component_tool_for_probe(
+    let (ffprobe, lease) = resolve_component_tool_for_probe(
         SharedComponent::Ffmpeg,
         "ffprobe",
         "SIAOCUT_FFPROBE",
         "ffprobe",
     )
     .ok()?;
-    hidden_command(ffprobe)
+    let mut command = hidden_command(ffprobe);
+    command
         .args([
             "-v",
             "error",
@@ -188,8 +190,8 @@ pub fn ffprobe_video_dimensions(path: &Path) -> Option<(u32, u32)> {
             "-of",
             "csv=p=0:s=x",
         ])
-        .arg(path)
-        .output()
+        .arg(path);
+    ComponentLease::output_with_lease(&mut command, lease.as_ref())
         .ok()
         .and_then(|output| {
             if !output.status.success() {
@@ -310,13 +312,14 @@ fn transcribe_with_model_path(
     let run_directory = audio_dir.join(format!("{}-{}", project.id, new_id("quick")));
     let _run_guard = TemporaryRunDirectory::create(run_directory.clone())?;
     let wav = run_directory.join("audio.wav");
-    let (ffmpeg, _ffmpeg_lease) = resolve_component_tool_for_probe(
+    let (ffmpeg, ffmpeg_lease) = resolve_component_tool_for_probe(
         SharedComponent::Ffmpeg,
         "ffmpeg",
         "SIAOCUT_FFMPEG",
         "ffmpeg",
     )?;
-    let result = hidden_command(&ffmpeg)
+    let mut command = hidden_command(&ffmpeg);
+    command
         .args([
             "-y",
             "-i",
@@ -328,8 +331,8 @@ fn transcribe_with_model_path(
             "-c:a",
             "pcm_s16le",
         ])
-        .arg(&wav)
-        .output()
+        .arg(&wav);
+    let result = ComponentLease::output_with_lease(&mut command, ffmpeg_lease.as_ref())
         .with_context(|| format!("无法启动 FFmpeg：{ffmpeg}"))?;
     if !result.status.success() {
         bail!(
@@ -343,7 +346,7 @@ fn transcribe_with_model_path(
             anyhow!("transcription_timing_invalid: 无法确认标准化音频时长，结果未应用")
         })?;
 
-    let (whisper, backend, _whisper_lease) = resolved_whisper_runtime()?;
+    let (whisper, backend, whisper_lease) = resolved_whisper_runtime()?;
     let vad_capability = crate::runtime::vad_timeline_capability(Path::new(&whisper), &backend);
     let (vad_model, _vad_lease) = if vad_capability.verified {
         match resolve_vad_model() {
@@ -366,6 +369,7 @@ fn transcribe_with_model_path(
         &output_base,
         language,
         vad_model.as_deref(),
+        whisper_lease.as_ref(),
     )?;
     import_whisper_json_at_baseline_with_mode(
         db,
@@ -389,6 +393,7 @@ fn run_whisper(
     output_base: &Path,
     language: Option<&str>,
     vad_model: Option<&str>,
+    lease: Option<&ComponentLease>,
 ) -> Result<()> {
     let mut command = hidden_command(whisper);
     command
@@ -412,8 +417,7 @@ fn run_whisper(
     if let Some(language) = language {
         command.args(["-l", language]);
     }
-    let result = command
-        .output()
+    let result = ComponentLease::output_with_lease(&mut command, lease)
         .with_context(|| format!("无法启动 whisper.cpp：{whisper}"))?;
     if !result.status.success() {
         bail!(
