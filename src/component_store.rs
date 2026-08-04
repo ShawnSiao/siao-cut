@@ -805,6 +805,40 @@ mod tests {
     }
 
     #[test]
+    fn component_manager_requirements_carry_the_formal_whisper_contract() {
+        let temp = tempfile::tempdir().expect("temporary Store root should be created");
+        let store = Store::open(siao_component_store_core::store::StoreConfig::new(
+            temp.path(),
+            CatalogBundle::common_v2().expect("common v2 should parse"),
+        ))
+        .expect("test Store should open");
+        let manager = ComponentManager::from_store(store, CONSUMER_ID);
+
+        let cpu = manager
+            .requirement(SharedComponent::WhisperCpu)
+            .expect("CPU requirement should resolve");
+        assert_eq!(cpu.version, WHISPER_VERSION);
+        assert_eq!(
+            cpu.capabilities,
+            vec![
+                "transcription".to_owned(),
+                "vad_timeline.original_media".to_owned(),
+                "runtime_metadata".to_owned(),
+            ]
+        );
+
+        let vulkan = manager
+            .requirement(SharedComponent::WhisperVulkan)
+            .expect("Vulkan requirement should resolve");
+        assert!(
+            vulkan
+                .capabilities
+                .iter()
+                .any(|capability| capability == "gpu_acceleration")
+        );
+    }
+
+    #[test]
     fn component_references_are_keys_not_paths() {
         assert_eq!(
             component_reference(SharedComponent::ModelBase),
