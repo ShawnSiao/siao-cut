@@ -1223,16 +1223,16 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "siao-component-store-catalogs"
-version = "0.2.4"
-source = "git+https://github.com/ShawnSiao/siao-component-store.git?rev=19c33b32b33ad2122654e2012c47995cff59a40c#19c33b32b33ad2122654e2012c47995cff59a40c"
+version = "0.2.5"
+source = "git+https://github.com/ShawnSiao/siao-component-store.git?rev=3617289ebd553209d8b727808e68f08d0c4d9c4b#3617289ebd553209d8b727808e68f08d0c4d9c4b"
 dependencies = [
  "siao-component-store-core",
 ]
 
 [[package]]
 name = "siao-component-store-core"
-version = "0.2.4"
-source = "git+https://github.com/ShawnSiao/siao-component-store.git?rev=19c33b32b33ad2122654e2012c47995cff59a40c#19c33b32b33ad2122654e2012c47995cff59a40c"
+version = "0.2.5"
+source = "git+https://github.com/ShawnSiao/siao-component-store.git?rev=3617289ebd553209d8b727808e68f08d0c4d9c4b#3617289ebd553209d8b727808e68f08d0c4d9c4b"
 dependencies = [
  "fs2",
  "serde",

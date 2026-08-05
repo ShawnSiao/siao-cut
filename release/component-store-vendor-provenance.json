@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "role": "offline-disaster-recovery-only",
   "canonicalRepository": "https://github.com/ShawnSiao/siao-component-store",
-  "tag": "v0.2.2",
-  "revision": "cbbf935ab46afe67408ddbf5f67c7318423283be",
-  "generatedAt": "2026-08-04T20:07:54.4687624Z",
+  "tag": "v0.2.5",
+  "revision": "3617289ebd553209d8b727808e68f08d0c4d9c4b",
+  "generatedAt": "2026-08-05T16:05:34.3046139Z",
   "defaultBuildPath": "git-pin",
   "files": [
     {
@@ -4169,8 +4169,8 @@
     },
     {
       "path": "config.toml",
-      "sha256": "853f15b7ed1b5ed03b88c9f7019f5f93ab1ed99ce293098f423b4e7b32308355",
-      "sizeBytes": 410
+      "sha256": "17c6278be36123477f37b866f58a1862edc8b7aaa75a99ae0c328b14079dd256",
+      "sizeBytes": 405
     },
     {
       "path": "core-foundation-sys-0.8.7/.cargo_vcs_info.json",
@@ -27863,87 +27863,87 @@
       "sizeBytes": 16777
     },
     {
-      "path": "siao-component-store-catalogs-0.2.2/.cargo-checksum.json",
-      "sha256": "d8430b93e5ff0279fd94acf4a70c6a7085d253fd14aa15cbae7aac2613bc01f8",
+      "path": "siao-component-store-catalogs-0.2.5/.cargo-checksum.json",
+      "sha256": "35c9769e2c1af5249b670e53cfbcbee7ffe0f81c0dcaadc9d2f922490346cd54",
       "sizeBytes": 336
     },
     {
-      "path": "siao-component-store-catalogs-0.2.2/Cargo.toml",
-      "sha256": "a8a6af429d31a1c30743fe4577a3c20042ead9419a1d637d5940f8e452350dd1",
+      "path": "siao-component-store-catalogs-0.2.5/Cargo.toml",
+      "sha256": "36f7d0cecccad3fc9a1f4378dd861de4f840732db3e07525b1263394de8aecfb",
       "sizeBytes": 974
     },
     {
-      "path": "siao-component-store-catalogs-0.2.2/src/lib.rs",
-      "sha256": "6b5f6efff6ac852382de3c6b0d9f1948f7e019a3b95bbf034af38e04d86df76f",
-      "sizeBytes": 2224
+      "path": "siao-component-store-catalogs-0.2.5/src/lib.rs",
+      "sha256": "42b209e374275e7466a41dcdc747a1782ef62382847ee04b12b7a5eeca146dd2",
+      "sizeBytes": 4363
     },
     {
-      "path": "siao-component-store-core-0.2.2/.cargo-checksum.json",
-      "sha256": "1b89ec004b56945b761094340a9f620aa5ec8baca3315516a9186fc99b073383",
+      "path": "siao-component-store-core-0.2.5/.cargo-checksum.json",
+      "sha256": "d3c9ecbf104baaf23f241ea9e634414ee5b552eea7857eefcff23b2c152495a8",
       "sizeBytes": 1259
     },
     {
-      "path": "siao-component-store-core-0.2.2/Cargo.toml",
-      "sha256": "76a76c8182f7b89534559e9fdea447b5a1d1ac3e94332e949684fbe1f62f83ed",
+      "path": "siao-component-store-core-0.2.5/Cargo.toml",
+      "sha256": "8a003ed454a3a76deb7fbba1009d966f0d6729e19cb9dc7aabd8f7d34aeedfda",
       "sizeBytes": 1343
     },
     {
-      "path": "siao-component-store-core-0.2.2/src/catalog.rs",
-      "sha256": "367ad632686a8bb9b02220dfd6b82f72c6f87901e82532f9ffffc439d1a711b8",
-      "sizeBytes": 22274
+      "path": "siao-component-store-core-0.2.5/src/catalog.rs",
+      "sha256": "c5e5ac360898fc418f3c5b902bc41b2394757e545f152b3e615a8142aea88179",
+      "sizeBytes": 23563
     },
     {
-      "path": "siao-component-store-core-0.2.2/src/error.rs",
+      "path": "siao-component-store-core-0.2.5/src/error.rs",
       "sha256": "c17da0b77258acf66815aa5e612c12e0c1bd5eef0257190e35eef5fb70cc58d4",
       "sizeBytes": 1880
     },
     {
-      "path": "siao-component-store-core-0.2.2/src/hash.rs",
+      "path": "siao-component-store-core-0.2.5/src/hash.rs",
       "sha256": "e383682973c2aac5c3ef43c52dbda90c8106e177cb5705ef7358738e781131c8",
       "sizeBytes": 1830
     },
     {
-      "path": "siao-component-store-core-0.2.2/src/install.rs",
-      "sha256": "32bfe3c4ea1503da9f2392d281872bb8e5d84b4ba3ce2232ca7e1a54e2704abb",
-      "sizeBytes": 41880
+      "path": "siao-component-store-core-0.2.5/src/install.rs",
+      "sha256": "6d6dc0671494d91c6fdb5ba70c2d45592681eebf97038c69f3afc6b4a47c61f3",
+      "sizeBytes": 43202
     },
     {
-      "path": "siao-component-store-core-0.2.2/src/lease.rs",
+      "path": "siao-component-store-core-0.2.5/src/lease.rs",
       "sha256": "6f524818c78e018db8d08ef8e5f00bcbdd7f11c45d3ca232aef0804a4f9ebec7",
       "sizeBytes": 7379
     },
     {
-      "path": "siao-component-store-core-0.2.2/src/lib.rs",
-      "sha256": "7051c5636ce9ba7d575791ef8f38540d5050cd11ba1d4dff7f9e5810ecc5ce68",
-      "sizeBytes": 60364
+      "path": "siao-component-store-core-0.2.5/src/lib.rs",
+      "sha256": "f082bf59bf579c7bc7c64cb3442c9cd8b70f2fb30f448d8d148540af23e36301",
+      "sizeBytes": 64224
     },
     {
-      "path": "siao-component-store-core-0.2.2/src/lifecycle.rs",
+      "path": "siao-component-store-core-0.2.5/src/lifecycle.rs",
       "sha256": "8e4b25eee9a938d95323d6f7909416ac9f129b16df606d66f5397f84a336cd3b",
       "sizeBytes": 24344
     },
     {
-      "path": "siao-component-store-core-0.2.2/src/location.rs",
+      "path": "siao-component-store-core-0.2.5/src/location.rs",
       "sha256": "23d14fa4e71de51d92f9e457adbcd5c67cf1272cb572828a588bcae10023da3e",
       "sizeBytes": 5807
     },
     {
-      "path": "siao-component-store-core-0.2.2/src/manifest.rs",
+      "path": "siao-component-store-core-0.2.5/src/manifest.rs",
       "sha256": "922f89857990aaf775c9dab231ff701b2ac582e92dd08399c68c455d1fcf272f",
       "sizeBytes": 7147
     },
     {
-      "path": "siao-component-store-core-0.2.2/src/migration.rs",
-      "sha256": "4741c8548bc0c2d58cc6672f15da220bbaaa50c133f0d2d6143096b62c89bd64",
-      "sizeBytes": 45453
+      "path": "siao-component-store-core-0.2.5/src/migration.rs",
+      "sha256": "3d7bc281e0d799d6673545e1db9ae56af85378fadf88425abd3db8768bca1947",
+      "sizeBytes": 46126
     },
     {
-      "path": "siao-component-store-core-0.2.2/src/operation.rs",
+      "path": "siao-component-store-core-0.2.5/src/operation.rs",
       "sha256": "5ce28db39b288c32c34c1eceebcf48aa284c00d020d76fc0d8d414cc2089a828",
       "sizeBytes": 17620
     },
     {
-      "path": "siao-component-store-core-0.2.2/src/store.rs",
+      "path": "siao-component-store-core-0.2.5/src/store.rs",
       "sha256": "6ca1caad7de7925aae472f73bd198eeaa8e74ce066108e51c9a8dfaf56f2b843",
       "sizeBytes": 45453
     },
