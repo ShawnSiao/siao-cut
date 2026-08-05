@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "canonicalSource": {
     "repository": "https://github.com/ShawnSiao/siao-component-store",
-    "tag": "v0.2.3",
-    "revision": "74b1af723bdd220e63a89c02631d81e98e345a10",
+    "tag": "v0.2.4",
+    "revision": "19c33b32b33ad2122654e2012c47995cff59a40c",
     "packages": [
       "siao-component-store-core",
       "siao-component-store-catalogs"
@@ -18,7 +18,7 @@
   },
   "vendor": {
     "role": "offline-disaster-recovery-only",
-    "expectedCommit": "74b1af723bdd220e63a89c02631d81e98e345a10",
+    "expectedCommit": "19c33b32b33ad2122654e2012c47995cff59a40c",
     "defaultBuildPath": "git-pin"
   }
 }
