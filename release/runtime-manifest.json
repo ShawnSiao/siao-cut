@@ -3,8 +3,8 @@
   "packageProfile": "app-only",
   "canonicalSource": {
     "repository": "https://github.com/ShawnSiao/siao-component-store",
-    "tag": "v0.2.4",
-    "revision": "19c33b32b33ad2122654e2012c47995cff59a40c"
+    "tag": "v0.2.5",
+    "revision": "3617289ebd553209d8b727808e68f08d0c4d9c4b"
   },
   "catalog": {
     "catalogId": "common.verified.windows-x86_64.v2",

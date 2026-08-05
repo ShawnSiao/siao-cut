@@ -15,8 +15,8 @@ bzip2 = "0.6"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.5", features = ["derive"] }
 fs2 = "0.4"
-siao-component-store-core = { git = "https://github.com/ShawnSiao/siao-component-store.git", rev = "19c33b32b33ad2122654e2012c47995cff59a40c" }
-siao-component-store-catalogs = { git = "https://github.com/ShawnSiao/siao-component-store.git", rev = "19c33b32b33ad2122654e2012c47995cff59a40c" }
+siao-component-store-core = { git = "https://github.com/ShawnSiao/siao-component-store.git", rev = "3617289ebd553209d8b727808e68f08d0c4d9c4b" }
+siao-component-store-catalogs = { git = "https://github.com/ShawnSiao/siao-component-store.git", rev = "3617289ebd553209d8b727808e68f08d0c4d9c4b" }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls"] }
 rusqlite = { version = "0.37", features = ["bundled", "backup"] }
 serde = { version = "1.0", features = ["derive"] }

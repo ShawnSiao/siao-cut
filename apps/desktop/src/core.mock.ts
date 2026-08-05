@@ -276,7 +276,7 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
         status: "ok",
         componentStore: {
           status: "ready",
-          canonicalRevision: "v0.2.4",
+          canonicalRevision: "v0.2.5",
           schemaVersion: 2,
           catalogId: "common.verified.windows-x86_64.v2",
           installations: [],
@@ -284,7 +284,7 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
       };
     }
     if (subcommand === "list-installations") {
-      return { apiVersion: "0.1", status: "ok", canonicalRevision: "v0.2.4", consumerId: "siaocut", installations: [] };
+      return { apiVersion: "0.1", status: "ok", canonicalRevision: "v0.2.5", consumerId: "siaocut", installations: [] };
     }
     if (subcommand === "install" || subcommand === "verify" || subcommand === "select" || subcommand === "register-external") {
       return { apiVersion: "0.1", status: "ok", component: args[2] ?? "unknown", operationId: `mock-component-${Date.now()}`, reusedExisting: subcommand === "install", selected: subcommand === "select", verification: { state: "verified" } };
