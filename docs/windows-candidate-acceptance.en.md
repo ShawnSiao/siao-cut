@@ -2,7 +2,7 @@
 
 This document records reproducible acceptance requirements for the SiaoCut Windows app-only package. The candidate is for local release preparation only and is not a formal Release.
 
-The current package profile is `app-only`: the installer contains only the desktop app, `siaocut-core`, frontend assets, icons, and static component metadata. FFmpeg, FFprobe, Whisper CPU/Vulkan, VAD, model weights, and `yt-dlp` are configured externally on demand.
+The current package profile is `app-only`: the installer contains only the desktop app, `siaocut-core`, frontend assets, icons, and static component metadata. FFmpeg, FFprobe, Whisper CPU/Vulkan, VAD, model weights, and `yt-dlp` are managed outside the installer by the shared `Component Store` on demand.
 
 ## Candidate
 
@@ -28,7 +28,7 @@ The previous 0.2.0 candidate record describes a historical package that containe
 | Isolated install and desktop startup | Passed | A separate `SiaoCut Acceptance` product was installed to a temporary directory and started |
 | Core sidecar and app-only package boundary | Passed | `siaocut-core` and static manifests are present; runtime directories, executables, and model weights are absent |
 | Startup without dependencies | Passed | The desktop app starts and Core health reports `not_configured` without treating missing components as an install failure |
-| External runtime acceptance | Passed | Explicit `SIAOCUT_*` paths validate external components and public URL preflight without copying them into the install directory |
+| Shared component boundary | Passed | The installer contains no runtime or model assets; formal execution accepts only verified common v2 components, while legacy `SIAOCUT_*` paths are migration input only |
 | Over-install contract | Passed | The same source was packaged as 0.1.1 and 0.2.0 to test NSIS replacement behavior |
 | Data after over-install | Passed | The isolated retention probe remained under `%LOCALAPPDATA%\SiaoCut\retention-probes` |
 | Data after uninstall | Passed | The isolated retention probe remained after uninstalling the test product |
@@ -52,7 +52,7 @@ Until these gaps are closed, 0.2.0 is a "Windows 10 unsigned candidate," not a f
 
 - The clean build measured 6,634,877 bytes, below the SiaoVPlay reference size of about `30 MB`.
 - The acceptance script records compressed installer and installed-directory sizes; it blocks above `50 MiB` and lists the largest files.
-- `notices/runtime-manifest.json` only exposes source, version, size, SHA-256, and license metadata. It does not mean that the component is installed with the package.
+- `notices/runtime-manifest.json` only exposes canonical catalog, version, and license metadata. It does not mean that the component is installed with the package; runtime archives are published through `ShawnSiao/siao-components`.
 
 ## Reproduction
 

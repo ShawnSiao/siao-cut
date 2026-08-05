@@ -58,7 +58,7 @@ siaocut-core --json transcribe <projectId> `
 
 Core 不信任单独的「VAD 模型已安装」状态。启用 VAD 前会重新检查：
 
-- 运行时来自 [`release/whisper-runtime-source.json`](../release/whisper-runtime-source.json) 固定的源码提交和补丁；
+- common v2 catalog 中的 CPU/Vulkan 运行时来自共享 Release 资产，并绑定源码、补丁和安装后文件清单；`release/whisper-runtime-source.json` 仅保留旧 SiaoCut 身份的迁移证据；
 - `whisper-cli.exe` 的实际 SHA-256 与运行时元数据、文件清单和验收证据一致；
 - 验收证据来自固定的 `speech-silence-speech` 样例，后端与当前选择一致；
 - 证据状态为 `passed`，词级时间属于 `original_media`，且没有词落在所属字幕段之外。

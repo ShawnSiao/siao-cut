@@ -2,7 +2,7 @@ import { runCore, runCoreStructured } from "../core";
 import type { CanvasSettings, Project, TranscriptionLanguage } from "../types";
 
 export const transcriptEditingClient = {
-  quickTranscribe: (projectId: string, modelPath: string, language: TranscriptionLanguage, expectedVersionId: string, confirmReplace = false) => runCore(["transcribe", projectId, "--model", modelPath, "--language", language, "--expected-version", expectedVersionId, ...(confirmReplace ? ["--confirm-replace"] : [])]),
+  quickTranscribe: (projectId: string, modelReference: string, language: TranscriptionLanguage, expectedVersionId: string, confirmReplace = false) => runCore(["transcribe", projectId, "--model", modelReference, "--language", language, "--expected-version", expectedVersionId, ...(confirmReplace ? ["--confirm-replace"] : [])]),
   transcriptReplacementPreflight: (projectId: string) => runCore(["transcript", "replacement-preflight", projectId]),
   getSpeakerTrack: (projectId: string) => runCore(["speaker", "track", projectId]),
   renameSpeaker: (projectId: string, speakerId: string, name: string) => runCore(["speaker", "rename", projectId, speakerId, "--name", name]),

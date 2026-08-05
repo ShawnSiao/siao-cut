@@ -1,7 +1,7 @@
 import { changeUiLocale, getUiLocale, tr, type UiLocale } from "../i18n";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type SyntheticEvent } from "react";
 import { Activity, Bot, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Clock3, Copy, Cpu, Database, Download, FileVideo2, FileText, Film, FolderOpen, FolderPlus, HardDrive, History, Link2, LoaderCircle, Play, RefreshCw, RotateCcw, Search, Scissors, Settings2, ShieldCheck, Sparkles, Trash2, Undo2, Redo2, Headphones, ListChecks, MoreHorizontal, MoveHorizontal, Users, X, } from "lucide-react";
-import { authorizeArtifact, authorizeMedia, localFileAvailable, openLogDirectory, pickMedia, pickModel, pickSubtitleFile, pickTranscriptPath, pickVideoPath, runtimeInfo, selectAsrBackend, updaterPolicy } from "../core";
+import { authorizeArtifact, authorizeMedia, componentStoreCancel, componentStoreInstall, componentStoreMigrate, componentStoreOperations, componentStorePause, componentStoreRegisterExternal, componentStoreRelease, componentStoreResume, componentStoreVerify, localFileAvailable, openLogDirectory, parseWhisperModelComponent, pickMedia, pickModel, pickSubtitleFile, pickTranscriptPath, pickVideoPath, runtimeInfo, selectAsrBackend, serializeWhisperModelComponent, updaterPolicy, whisperModelReference, WHISPER_MODEL_COMPONENT_STORAGE_KEY, type ComponentStoreComponent, type WhisperModelComponent } from "../core";
 import type { AgentRun, AudioAnalysisJob, AudioRisk, AutoWorkflow, CanvasSettings, CodexHealth, CutPreview, ExportJob, ModelDownloadJob, ModelStatus, Project, ProjectDeletionPreflight, RuntimeInfo, Segment, SourceImportJob, SourcePreview, SpeakerIdentity, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SpeechEvidence, SpeechInsights, SpeechPause, SubtitleImportPreview, SubtitleQualityIssue, Task, TranscriptReplacementPreflight, TranscriptionJob, TranscriptionLanguage, TranscriptionProviderConfig, TranscriptionProviderHealth, TranscriptionReviewItem } from "../types";
 import { Button, Dialog, IconButton, StatusBadge } from "../components/ui";
 import { JobFailureDetails } from "../components/job-failure";
@@ -40,6 +40,16 @@ export async function resolveCanvasMedia(
         const sourceWarning = cause instanceof Error ? cause.message : String(cause);
         return { mediaUrl: null, warning: warning ? `${warning}; ${sourceWarning}` : sourceWarning };
     }
+}
+
+const MODEL_COMPONENTS: WhisperModelComponent[] = ["tiny", "base", "small"];
+
+function storedModelComponent(): WhisperModelComponent {
+    return parseWhisperModelComponent(localStorage.getItem(WHISPER_MODEL_COMPONENT_STORAGE_KEY));
+}
+
+function persistModelComponent(component: WhisperModelComponent): void {
+    localStorage.setItem(WHISPER_MODEL_COMPONENT_STORAGE_KEY, serializeWhisperModelComponent(component));
 }
 
 export async function resolveImportedProjectMedia(
@@ -224,8 +234,10 @@ function WorkbenchController() {
     const [autoBusy, setAutoBusy] = useState<string | null>(null);
     const [autoError, setAutoError] = useState<string | null>(null);
     const [autoWorkflowErrors, setAutoWorkflowErrors] = useState<Record<string, string>>({});
-    const [modelPath, setModelPath] = useState<string | null>(() => localStorage.getItem("siaocut.modelPath"));
+    const [modelPath, setModelPath] = useState<string | null>(null);
+    const [modelComponent, setModelComponent] = useState<WhisperModelComponent>(() => storedModelComponent());
     const [modelPathAvailable, setModelPathAvailable] = useState(false);
+    const [componentOperations, setComponentOperations] = useState<Record<string, unknown>[]>([]);
     const [showRuntime, setShowRuntime] = useState(false);
     const [showExportPanel, setShowExportPanel] = useState(false);
     const [drawerTab, setDrawerTab] = useState<"review" | "quality" | "analysis" | "history" | "export">("review");
@@ -422,13 +434,9 @@ function WorkbenchController() {
         else {
             errors.push(tr("app.s0040", { "0": autoWorkflowsResult.reason instanceof Error ? autoWorkflowsResult.reason.message : String(autoWorkflowsResult.reason) }));
         }
-        let managedModelPath: string | null = null;
         if (modelsResult.status === "fulfilled") {
             const available = modelsResult.value.models ?? [];
             setModels(available);
-            managedModelPath = available.find((item) => item.installed && item.verified === true && item.recommended)?.path
-                ?? available.find((item) => item.installed && item.verified === true)?.path
-                ?? null;
         }
         else {
             errors.push(tr("app.s0041", { "0": modelsResult.reason instanceof Error ? modelsResult.reason.message : String(modelsResult.reason) }));
@@ -462,34 +470,53 @@ function WorkbenchController() {
         }
         if (runtimeResult.status === "fulfilled") {
             setRuntime(runtimeResult.value);
+            const persistedComponent = storedModelComponent();
+            setModelComponent(persistedComponent);
             const stored = localStorage.getItem("siaocut.modelPath");
+            const storedComponentReference = stored?.startsWith("component:") ? stored : null;
+            const legacyStoredPath = stored && !stored.startsWith("component:") ? stored : null;
+            const componentInstallations = (runtimeResult.value.componentStore as { installations?: unknown } | null)?.installations;
+            const persistedComponentAvailable = Array.isArray(componentInstallations)
+                && componentInstallations.some((installation) => {
+                    const item = installation as { componentId?: unknown; version?: unknown; variant?: { model?: unknown }; verificationStatus?: unknown };
+                    return item.componentId === "whisper-model"
+                        && item.version === "1"
+                        && item.variant?.model === persistedComponent
+                        && item.verificationStatus === "verified";
+                });
             const candidates = Array.from(new Set([
-                stored,
-                managedModelPath,
+                persistedComponentAvailable ? whisperModelReference(persistedComponent) : null,
+                storedComponentReference,
                 runtimeResult.value.defaultModelAvailable ? runtimeResult.value.defaultModelPath : null,
             ].filter((value): value is string => Boolean(value))));
             let nextModelPath: string | null = null;
             for (const candidate of candidates) {
-                const managedCandidate = modelsResult.status === "fulfilled"
-                    ? (modelsResult.value.models ?? []).find((model) => model.path === candidate)
-                    : undefined;
-                const available = managedCandidate
-                    ? managedCandidate.installed && managedCandidate.verified === true
-                    : await localFileAvailable(candidate);
+                const available = candidate.startsWith("component:")
+                    ? candidate === whisperModelReference(persistedComponent) && persistedComponentAvailable
+                    : false;
                 if (available) {
                     nextModelPath = candidate;
                     break;
                 }
             }
-            setModelPath(nextModelPath);
-            setModelPathAvailable(Boolean(nextModelPath));
-            if (nextModelPath)
-                localStorage.setItem("siaocut.modelPath", nextModelPath);
-            else
-                localStorage.removeItem("siaocut.modelPath");
+            const selectedModelPath = legacyStoredPath ?? nextModelPath;
+            setModelPath(selectedModelPath);
+            setModelPathAvailable(Boolean(!legacyStoredPath && nextModelPath?.startsWith("component:") && persistedComponentAvailable));
+            persistModelComponent(persistedComponent);
+            // Keep an unmatched legacy path as migration evidence until the
+            // user explicitly registers or replaces it.  Initialization may
+            // run more than once in development, so removing it here would
+            // make the second pass hide the migration state.
         }
         else {
             errors.push(tr("app.s0044", { "0": runtimeResult.reason instanceof Error ? runtimeResult.reason.message : String(runtimeResult.reason) }));
+        }
+        try {
+            const operations = await componentStoreOperations();
+            setComponentOperations((operations.operations ?? []) as Record<string, unknown>[]);
+        }
+        catch {
+            setComponentOperations([]);
         }
         if (projectsResult.status === "fulfilled") {
             setProjects(projectsResult.value);
@@ -546,6 +573,10 @@ function WorkbenchController() {
     useEffect(() => {
         let cancelled = false;
         if (!modelPath) {
+            setModelPathAvailable(false);
+            return;
+        }
+        if (!modelPath.startsWith("component:")) {
             setModelPathAvailable(false);
             return;
         }
@@ -651,9 +682,14 @@ function WorkbenchController() {
                     setModels(available);
                     const installed = available.find((item) => item.id === envelope.modelJob?.modelId);
                     if (installed) {
-                        localStorage.setItem("siaocut.modelPath", installed.path);
-                        setModelPath(installed.path);
-                        setModelPathAvailable(installed.installed && installed.verified === true);
+                        const component = MODEL_COMPONENTS.find((value) => value === installed.id);
+                        if (component) {
+                            localStorage.removeItem("siaocut.modelPath");
+                            persistModelComponent(component);
+                            setModelComponent(component);
+                            setModelPath(whisperModelReference(component));
+                            setModelPathAvailable(installed.installed && installed.verified === true);
+                        }
                     }
                     setNotice(tr("app.s0057"));
                 }
@@ -1360,7 +1396,7 @@ function WorkbenchController() {
         setDismissedAutoWorkflowIds((current) => current.includes(target.id) ? current : [...current, target.id]);
     };
     const startAutoWorkflow = () => withAutoBusy(tr("app.s0097"), async () => {
-        if (!modelPath || !modelPathAvailable || !await localFileAvailable(modelPath)) {
+        if (!modelPath || !modelPathAvailable) {
             setModelPathAvailable(false);
             throw new Error(tr("app.s0098"));
         }
@@ -1378,7 +1414,7 @@ function WorkbenchController() {
             : { kind: "url" as const, url: autoSourcePreview!.originalUrl, confirmedMediaId: autoSourcePreview!.siteMediaId };
         const envelope = await backgroundTaskClient.startAutoWorkflow({
             input,
-            modelPath,
+            modelReference: whisperModelReference(modelComponent),
             language: transcriptionLanguage,
             locale: uiLocale,
             output,
@@ -1478,14 +1514,14 @@ function WorkbenchController() {
         }
         if (!runtime?.asrConfigured)
             throw new Error(tr("app.s0122"));
-        if (!modelPath || !modelPathAvailable || !await localFileAvailable(modelPath)) {
+        if (!modelPath || !modelPathAvailable) {
             setModelPathAvailable(false);
             throw new Error(tr("app.s0123"));
         }
         const expectedVersionId = project.history.currentVersionId;
         if (!expectedVersionId)
             throw new Error(tr("app.quickRetranscribe.versionMissing"));
-        const result = await transcriptEditingClient.quickTranscribe(project.id, modelPath, transcriptionLanguage, expectedVersionId);
+        const result = await transcriptEditingClient.quickTranscribe(project.id, whisperModelReference(modelComponent), transcriptionLanguage, expectedVersionId);
         await refreshProject(project.id);
         setNotice(Number(result.segments ?? 0) === 0 ? tr("app.s0124") : tr("app.s0125"));
     });
@@ -1532,13 +1568,13 @@ function WorkbenchController() {
                 throw new Error(tr("app.s0121"));
             if (!runtime.asrConfigured)
                 throw new Error(tr("app.s0122"));
-            if (!modelPath || !modelPathAvailable || !await localFileAvailable(modelPath)) {
+            if (!modelPath || !modelPathAvailable) {
                 setModelPathAvailable(false);
                 throw new Error(tr("app.s0123"));
             }
             const result = await transcriptEditingClient.quickTranscribe(
                 project.id,
-                modelPath,
+                whisperModelReference(modelComponent),
                 transcriptionLanguage,
                 quickRetranscriptionPreflight.currentVersionId,
                 true,
@@ -2202,30 +2238,78 @@ function WorkbenchController() {
             return;
         if (!await localFileAvailable(path))
             throw new Error(tr("app.capability.modelRequired"));
-        localStorage.setItem("siaocut.modelPath", path);
-        setModelPath(path);
+        const selected = models.find((item) => item.path === path)
+            ?? models.find((item) => path.toLowerCase().includes(item.id.toLowerCase()));
+        const component = MODEL_COMPONENTS.find((value) => value === selected?.id)
+            ?? MODEL_COMPONENTS.find((value) => path.toLowerCase().includes(value));
+        if (!component)
+            throw new Error("component_store_invalid_model_reference: 无法从模型文件名确定 tiny、base 或 small");
+        await componentStoreRegisterExternal(component, path);
+        localStorage.removeItem("siaocut.modelPath");
+        persistModelComponent(component);
+        setModelComponent(component);
+        setModelPath(whisperModelReference(component));
         setModelPathAvailable(true);
         setNotice(tr("app.s0215"));
     });
     const installModel = (modelId: string) => withBusy(tr("app.s0216"), async () => {
-        const envelope = await backgroundTaskClient.installModel(modelId);
-        if (!envelope.modelJob)
-            throw new Error(tr("app.s0217"));
-        setModelJob(envelope.modelJob);
-        if (envelope.modelJob.status === "completed") {
-            const catalog = await backgroundTaskClient.listModels();
-            const available = catalog.models ?? [];
-            setModels(available);
-            const installed = available.find((item) => item.id === modelId);
-            if (installed) {
-                localStorage.setItem("siaocut.modelPath", installed.path);
-                setModelPath(installed.path);
-                setModelPathAvailable(installed.installed && installed.verified === true);
-            }
-            setNotice(tr("app.s0057"));
-            return;
+        if (!MODEL_COMPONENTS.includes(modelId as WhisperModelComponent))
+            throw new Error("component_store_invalid_model_reference: 无效的 Whisper 模型组件");
+        const component = modelId as WhisperModelComponent;
+        const envelope = await componentStoreInstall(component);
+        localStorage.removeItem("siaocut.modelPath");
+        setModels((current) => current.map((model) => model.id === component
+            ? { ...model, path: whisperModelReference(component), installed: Boolean(envelope.reusedExisting), verified: envelope.reusedExisting ? true : null, verificationStatus: envelope.reusedExisting ? "verified" : "not_installed" }
+            : model));
+        setModelComponent(component);
+        persistModelComponent(component);
+        setModelPath(whisperModelReference(component));
+        setModelPathAvailable(Boolean(envelope.reusedExisting));
+        setNotice(envelope.reusedExisting ? tr("app.s0057") : tr("app.s0218"));
+    });
+    const installComponent = (component: ComponentStoreComponent) => withBusy("安装共享组件", async () => {
+        const envelope = await componentStoreInstall(component);
+        if (envelope.operationId)
+            setComponentOperations((current) => [{ operationId: envelope.operationId, component, state: envelope.reusedExisting ? "completed" : "downloading" }, ...current.filter((item) => item.operationId !== envelope.operationId)]);
+        if (MODEL_COMPONENTS.includes(component as WhisperModelComponent)) {
+            const model = component as WhisperModelComponent;
+            setModels((current) => current.map((item) => item.id === model
+                ? { ...item, path: whisperModelReference(model), installed: Boolean(envelope.reusedExisting), verified: envelope.reusedExisting ? true : null, verificationStatus: envelope.reusedExisting ? "verified" : "not_installed" }
+                : item));
+            setModelComponent(model);
+            localStorage.removeItem("siaocut.modelPath");
+            persistModelComponent(model);
+            setModelPath(whisperModelReference(model));
+            setModelPathAvailable(Boolean(envelope.reusedExisting));
         }
-        setNotice(tr("app.s0218"));
+        setNotice(envelope.reusedExisting ? "共享组件已复用并完成校验。" : "共享组件安装操作已创建。可在下方暂停、继续或取消。")
+    });
+    const verifyComponent = (component: ComponentStoreComponent) => withBusy("校验共享组件", async () => {
+        await componentStoreVerify(component);
+        await initialize();
+        setNotice("共享组件校验完成。");
+    });
+    const registerExternalComponent = (component: ComponentStoreComponent, path: string) => withBusy("登记 external 组件", async () => {
+        await componentStoreRegisterExternal(component, path);
+        await initialize();
+        setNotice("external 组件已精确校验并登记。")
+    });
+    const pauseComponentOperation = (operationId: string) => withBusy("暂停组件操作", async () => {
+        await componentStorePause(operationId);
+        await initialize();
+    });
+    const resumeComponentOperation = (operationId: string) => withBusy("继续组件操作", async () => {
+        await componentStoreResume(operationId);
+        await initialize();
+    });
+    const cancelComponentOperation = (operationId: string) => withBusy("取消组件操作", async () => {
+        await componentStoreCancel(operationId);
+        await initialize();
+    });
+    const migrateComponentRoot = (targetRoot: string) => withBusy("迁移共享 Store", async () => {
+        await componentStoreMigrate(targetRoot);
+        await initialize();
+        setNotice("共享 Store 迁移操作已创建。")
     });
     const cancelModel = () => modelJob && withBusy(tr("app.s0219"), async () => {
         const envelope = await backgroundTaskClient.cancelModel(modelJob.id);
@@ -2233,12 +2317,16 @@ function WorkbenchController() {
             setModelJob(envelope.modelJob);
     });
     const removeModel = (modelId: string) => withBusy(tr("app.s0220"), async () => {
-        await backgroundTaskClient.removeModel(modelId);
+        if (MODEL_COMPONENTS.includes(modelId as WhisperModelComponent))
+            await componentStoreRelease(modelId as WhisperModelComponent);
+        else
+            await backgroundTaskClient.removeModel(modelId);
         const catalog = await backgroundTaskClient.listModels();
         const available = catalog.models ?? [];
         setModels(available);
-        const selected = models.find((item) => item.id === modelId)?.path;
-        if (selected && selected === modelPath) {
+        const selected = models.find((item) => item.id === modelId)?.id;
+        if (selected && modelPath === whisperModelReference(selected as WhisperModelComponent)) {
+            localStorage.removeItem("siaocut.modelComponent");
             localStorage.removeItem("siaocut.modelPath");
             setModelPath(null);
             setModelPathAvailable(false);
@@ -2846,6 +2934,7 @@ function WorkbenchController() {
       {showRuntime && <Suspense fallback={null}><RuntimeSettingsDialog
         returnFocusRef={runtimeButtonRef}
         runtime={runtime}
+        componentOperations={componentOperations}
         modelPath={modelPath}
         modelAvailable={modelPathAvailable}
 	        transcriptionConfig={transcriptionConfig}
@@ -2868,10 +2957,27 @@ function WorkbenchController() {
 	        onSelectTranscriptionMode={selectTranscriptionMode}
 	        onSelectTranscriptionLanguage={selectTranscriptionLanguage}
         onSelectAsrBackend={changeAsrBackend}
-        onSelectModel={(path) => { localStorage.setItem("siaocut.modelPath", path); setModelPath(path); setModelPathAvailable(true); }}
+        onSelectModel={(path) => {
+          const component = MODEL_COMPONENTS.find((value) => models.find((item) => item.path === path)?.id === value)
+            ?? MODEL_COMPONENTS.find((value) => path.toLowerCase().includes(value));
+          if (component) {
+            localStorage.removeItem("siaocut.modelPath");
+            persistModelComponent(component);
+            setModelComponent(component);
+            setModelPath(whisperModelReference(component));
+            setModelPathAvailable(true);
+          }
+        }}
         onInstallModel={installModel}
         onCancelModel={cancelModel}
         onRemoveModel={removeModel}
+        onInstallComponent={installComponent}
+        onVerifyComponent={verifyComponent}
+        onRegisterExternalComponent={registerExternalComponent}
+        onPauseComponentOperation={pauseComponentOperation}
+        onResumeComponentOperation={resumeComponentOperation}
+        onCancelComponentOperation={cancelComponentOperation}
+        onMigrateComponentRoot={migrateComponentRoot}
         onInstallSpeakerPackage={installSpeakerPackage}
         onCancelSpeakerJob={() => void cancelSpeakerJob(speakerInstallJob)}
         onResumeSpeakerJob={() => void resumeSpeakerJob(speakerInstallJob)}

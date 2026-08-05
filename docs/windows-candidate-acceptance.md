@@ -2,7 +2,7 @@
 
 本文记录 SiaoCut Windows 应用程序包的可复现验收要求。候选包仅用于本地发布准备，不属于正式 Release。
 
-当前包配置为 `app-only`：安装包只包含桌面主程序、`siaocut-core`、前端资源、图标和静态组件元数据。FFmpeg、FFprobe、Whisper CPU/Vulkan、VAD、模型权重和 `yt-dlp` 均在安装包外部按需配置。
+当前包配置为 `app-only`：安装包只包含桌面主程序、`siaocut-core`、前端资源、图标和静态组件元数据。FFmpeg、FFprobe、Whisper CPU/Vulkan、VAD、模型权重和 `yt-dlp` 均由共享 `Component Store` 在安装包外部按需管理。
 
 ## 候选包
 
@@ -28,7 +28,7 @@
 | 隔离安装与桌面启动 | 通过 | 独立的 `SiaoCut Acceptance` 产品安装到临时目录并成功启动 |
 | Core Sidecar 与 app-only 包边界 | 通过 | `siaocut-core` 和静态清单存在；运行时目录、可执行文件和模型权重不存在 |
 | 缺少依赖时启动 | 通过 | 桌面应用可以启动，Core 健康检查返回 `not_configured`，不会把缺失依赖视为安装失败 |
-| 外部运行时验收 | 通过 | 通过显式 `SIAOCUT_*` 路径验证外部组件和公开 URL 预检，不复制到安装目录 |
+| 共享组件边界 | 通过 | 安装包不携带运行时或模型；正式执行只接受 common v2 的已验证组件，旧 `SIAOCUT_*` 路径仅作为迁移输入 |
 | 覆盖安装 | 通过 | 同一源码分别打包为 0.1.1 和 0.2.0，验证 NSIS 覆盖安装契约 |
 | 升级后数据保留 | 通过 | `%LOCALAPPDATA%\SiaoCut\retention-probes` 中的隔离探针仍存在 |
 | 卸载后数据保留 | 通过 | 卸载测试产品后隔离探针仍存在 |
@@ -52,7 +52,7 @@
 
 - 清洁构建后的安装包为 6,634,877 字节，低于 SiaoVPlay 的约 `30 MB` 参考值。
 - 验收脚本记录压缩包和安装目录大小；超过 `50 MiB` 时阻断并列出最大文件。
-- `notices/runtime-manifest.json` 只用于展示来源、版本、体积、SHA-256 和许可证，不表示对应组件已随包安装。
+- `notices/runtime-manifest.json` 只用于展示 canonical catalog、版本和许可信息，不表示对应组件已随包安装；运行时归档统一来自 `ShawnSiao/siao-components`。
 
 ## 复现命令
 

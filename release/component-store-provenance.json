@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "canonicalSource": {
+    "repository": "https://github.com/ShawnSiao/siao-component-store",
+    "tag": "v0.2.3",
+    "revision": "74b1af723bdd220e63a89c02631d81e98e345a10",
+    "packages": [
+      "siao-component-store-core",
+      "siao-component-store-catalogs"
+    ]
+  },
+  "binaryReleaseSource": "https://github.com/ShawnSiao/siao-components",
+  "catalog": {
+    "catalogId": "common.verified.windows-x86_64.v2",
+    "schemaVersion": 2,
+    "protocolVersion": 1,
+    "formalExecutionGate": "passed-common-v2-whisper-cpu-and-vulkan-evidence"
+  },
+  "vendor": {
+    "role": "offline-disaster-recovery-only",
+    "expectedCommit": "74b1af723bdd220e63a89c02631d81e98e345a10",
+    "defaultBuildPath": "git-pin"
+  }
+}

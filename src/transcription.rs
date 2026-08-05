@@ -1,6 +1,6 @@
 use crate::{
     db,
-    media::{hash_file, tool_path},
+    media::{hash_file, resolve_component_tool},
     project,
     util::{hidden_command, new_id, now},
 };
@@ -832,14 +832,19 @@ fn ensure_not_cancelled(db: &Connection, job_id: &str) -> Result<()> {
 }
 
 fn extract_audio(source: &Path, wav: &Path) -> Result<()> {
-    let ffmpeg = tool_path("SIAOCUT_FFMPEG", "ffmpeg");
-    let output = hidden_command(&ffmpeg)
+    let (ffmpeg, ffmpeg_lease) =
+        resolve_component_tool(crate::component_store::SharedComponent::Ffmpeg, "ffmpeg")?;
+    let mut command = hidden_command(&ffmpeg);
+    command
         .args(["-y", "-i"])
         .arg(source)
         .args(["-vn", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le"])
-        .arg(wav)
-        .output()
-        .with_context(|| format!("无法启动 FFmpeg：{ffmpeg}"))?;
+        .arg(wav);
+    let output = crate::component_store::ComponentLease::output_with_lease(
+        &mut command,
+        ffmpeg_lease.as_ref(),
+    )
+    .with_context(|| format!("无法启动 FFmpeg：{ffmpeg}"))?;
     if !output.status.success() {
         bail!(
             "transcription_import_failed: FFmpeg 音频提取失败：{}",

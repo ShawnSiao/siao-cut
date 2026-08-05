@@ -5,6 +5,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+throw 'legacy_runtime_packaging_removed: formal SiaoCut packages are app-only; install and verify components through the shared Component Store.'
 $root = Split-Path -Parent $PSScriptRoot
 $manifestPath = Join-Path $root 'release\runtime-manifest.json'
 $manifest = [IO.File]::ReadAllText($manifestPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
