@@ -89,7 +89,7 @@ export async function runtimeInfo(): Promise<RuntimeInfo> {
     diagnosticsAvailable: true,
     componentStore: {
       status: "ready",
-      canonicalRevision: "v0.2.3",
+      canonicalRevision: "v0.2.4",
       catalogId: "common.verified.windows-x86_64.v2",
       schemaVersion: 2,
       installations: [{ componentId: "whisper-model", version: "1", variant: { platform: "windows", architecture: "x86_64", model: "tiny" }, verificationStatus: "verified" }],
