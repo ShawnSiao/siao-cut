@@ -33,12 +33,11 @@ SiaoCut 是面向 AI 口播创作者的 Windows 本地优先剪辑工作台。�
 
 - 当前只支持 Windows 10 和 Windows 11。
 - 媒体处理在本机完成。模型、运行时和 URL 媒体只在明确操作后从标示来源下载。
-- 应用安装包保持 `app-only`，只包含桌面程序、Rust Core、前端资源和 notices；FFmpeg、Whisper、VAD、模型与 `yt-dlp` 由共享 `Component Store` 按需管理，不随包提供。
-- 共享 core/catalog 源码固定依赖 `ShawnSiao/siao-component-store` 的 canonical revision，大型二进制归档统一来自 `ShawnSiao/siao-components`。common v2 和固定资产未完成验收前，不启用正式 Store 执行路径。
+- 应用安装包只包含桌面程序、Rust Core 和组件元数据；FFmpeg、Whisper、VAD、模型与 `yt-dlp` 不随包提供，缺少时应用仍可启动并显示未配置状态。
 - 桌面应用、CLI 和 Skill 都通过 Rust Core 修改项目，不直接写入 SQLite。
 - 语音分析和 Agent 结果只提供证据或建议；应用文本修改和剪辑前需要人工确认。
 - 真实方言、重叠语音、复杂噪声和更多硬件组合仍需要扩充验证。
-- CPU 与 Vulkan 使用同一套共享组件身份和原媒体时间轴验收证据；本阶段不包含 CUDA。
+- CPU 与 Vulkan 有独立的 VAD 时间轴验收入口；CUDA 必须在本机源码构建并完成真实后端验收后才能选择，不能以驱动存在代替验证。
 - MOSS 只允许本机回环服务，不支持远程地址或 API 密钥；服务不可用时不会静默回退到 Whisper。
 
 ## 从源码开始
@@ -61,13 +60,13 @@ cargo build --release
 npm run desktop:dev
 ```
 
-开发模式可以在本机运行界面。转写与导出前，先检查共享组件 Store 状态：
+开发模式可以在本机运行界面。转写与导出前，先检查 FFmpeg、whisper.cpp 和模型状态：
 
 ```powershell
 .\skills\siaocut\bin\siaocut.ps1 --json health
 ```
 
-默认产品数据目录为 `%LOCALAPPDATA%\SiaoCut`，共享组件根目录为 `%LOCALAPPDATA%\Siao\component-store`。设置页或 CLI 的 `component-store` 命令负责安装、校验、external 登记、租约和 root 迁移；旧 `SIAOCUT_*` 路径只作为一次性迁移输入，不作为正式执行来源。
+默认数据目录为 `%LOCALAPPDATA%\SiaoCut`。开发和测试可以使用 `SIAOCUT_HOME` 覆盖；`SIAOCUT_FFMPEG`、`SIAOCUT_FFPROBE`、`SIAOCUT_WHISPER_CLI`、`SIAOCUT_WHISPER_VAD_MODEL` 和 `SIAOCUT_YTDLP` 可指向经过核验的本机组件。组件目录与校验信息见安装包中的 `notices/runtime-manifest.json`。
 
 完整 CLI 工作流见 [`skills/siaocut/SKILL.md`](skills/siaocut/SKILL.md)。
 

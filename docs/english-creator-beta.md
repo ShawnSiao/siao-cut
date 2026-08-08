@@ -32,25 +32,24 @@ The first launch uses English unless the Windows UI language starts with `zh`. C
 
 SiaoCut stores its local database and managed files under `%LOCALAPPDATA%\SiaoCut` by default. Do not point `SIAOCUT_HOME` at the repository.
 
-## 2. Check the shared component Store and choose a model
+## 2. Check the local runtime and choose a model
 
 Run the health check before importing media:
 
 ```powershell
 .\skills\siaocut\bin\siaocut.ps1 --json health
-.\skills\siaocut\bin\siaocut.ps1 --json component-store health
-.\skills\siaocut\bin\siaocut.ps1 --json component-store list-installations
+.\skills\siaocut\bin\siaocut.ps1 --json model list
 ```
 
-The Base multilingual Whisper profile is the default beta recommendation because one local model can handle English and Chinese projects. The Tiny profile is faster and smaller but trades away recognition accuracy. Installation and verification are performed by the shared Store; product settings retain only the selected `ComponentKey`.
+The Base multilingual Whisper profile is the default beta recommendation because one local model can handle English and Chinese projects. The Tiny profile is faster and smaller but trades away recognition accuracy. Review the reported source, size, license, and SHA-256 before installing a model.
 
 ```powershell
-.\skills\siaocut\bin\siaocut.ps1 --json component-store install base
-.\skills\siaocut\bin\siaocut.ps1 --json component-store operations
-.\skills\siaocut\bin\siaocut.ps1 --json component-store verify base
+.\skills\siaocut\bin\siaocut.ps1 --json model install base
+.\skills\siaocut\bin\siaocut.ps1 --json model status <jobId>
+.\skills\siaocut\bin\siaocut.ps1 --json model verify base
 ```
 
-Do not transcribe until the Store reports the selected model and runtime as `verified`. If common v2 is incomplete or a component is unavailable, follow the structured status in `health` and install or register it through the Store; do not substitute an unverified executable or a legacy path.
+Do not transcribe until `model verify` reports `verified: true`. If FFmpeg or whisper.cpp is not configured, follow the paths reported by `health`; never substitute an unverified executable.
 
 ## 3. Complete the English creator workflow
 

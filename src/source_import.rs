@@ -1,7 +1,6 @@
 use crate::{
-    component_store::ComponentLease,
     db::{self, home_dir},
-    media::{hash_file, resolve_component_tool},
+    media::{hash_file, tool_path},
     project,
     util::{KillOnCloseJob, hidden_command, new_id, now},
 };
@@ -11,7 +10,7 @@ use rusqlite::{Connection, ErrorCode, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
-    fs,
+    env, fs,
     io::{BufRead, BufReader, Read},
     net::{
         IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs,
@@ -29,9 +28,7 @@ use std::{
 
 pub const MAX_DURATION_SECONDS: f64 = 2.0 * 60.0 * 60.0;
 pub const MAX_FILE_SIZE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
-#[cfg(test)]
 pub const PINNED_YTDLP_VERSION: &str = "2026.06.09";
-#[cfg(test)]
 pub const PINNED_YTDLP_SHA256: &str =
     "3a48cb955d55c8821b60ccbdbbc6f61bc958f2f3d3b7ad5eaf3d83a543293a27";
 const MAX_REDIRECTS: usize = 8;
@@ -98,17 +95,15 @@ struct ToolIdentity {
 }
 
 pub fn yt_dlp_path() -> PathBuf {
-    resolve_yt_dlp()
-        .map(|(path, _lease)| path)
-        .unwrap_or_else(|_| PathBuf::from("yt-dlp.exe"))
-}
-
-fn resolve_yt_dlp() -> Result<(PathBuf, Option<ComponentLease>)> {
-    let (path, lease) = crate::media::resolve_component_tool(
-        crate::component_store::SharedComponent::YtDlp,
-        "ytDlp",
-    )?;
-    Ok((PathBuf::from(path), lease))
+    if let Some(path) = env::var_os("SIAOCUT_YTDLP") {
+        return PathBuf::from(path);
+    }
+    let bundled = home_dir().join("bin").join("yt-dlp.exe");
+    if bundled.is_file() {
+        bundled
+    } else {
+        PathBuf::from("yt-dlp.exe")
+    }
 }
 
 pub fn configured() -> bool {
@@ -117,16 +112,11 @@ pub fn configured() -> bool {
 
 pub fn inspect(input: &str) -> Result<SourcePreview> {
     let original = validate_public_https_url(input)?;
-    let (path, yt_dlp_lease) = resolve_yt_dlp()?;
-    let tool = verify_tool_with_lease(&path, yt_dlp_lease.as_ref())?;
-    inspect_with_tool(original, &tool, yt_dlp_lease.as_ref())
+    let tool = verify_tool(&yt_dlp_path())?;
+    inspect_with_tool(original, &tool)
 }
 
-fn inspect_with_tool(
-    original: Url,
-    tool: &ToolIdentity,
-    lease: Option<&ComponentLease>,
-) -> Result<SourcePreview> {
+fn inspect_with_tool(original: Url, tool: &ToolIdentity) -> Result<SourcePreview> {
     preflight_public_url(&original)?;
     let proxy = SafeConnectProxy::start()?;
     let mut arguments = inspection_arguments(&original);
@@ -137,7 +127,6 @@ fn inspect_with_tool(
         command,
         INSPECTION_TIMEOUT,
         "source_inspection_timeout: yt-dlp 检查公开 URL 超时",
-        lease,
     )
     .context("无法启动固定版本的 yt-dlp")?;
     if !output.status.success() {
@@ -525,27 +514,18 @@ fn run_download(db: &mut Connection, job_id: &str) -> Result<()> {
         return Ok(());
     }
     let original_url = validate_public_https_url(&job.original_url)?;
-    let (path, yt_dlp_lease) = resolve_yt_dlp()?;
-    let tool = verify_tool_with_lease(&path, yt_dlp_lease.as_ref())?;
+    let tool = verify_tool(&yt_dlp_path())?;
     if tool.version != job.tool_version || tool.sha256 != job.tool_sha256 {
         bail!("source_tool_changed: URL 导入任务绑定的 yt-dlp 版本或哈希已变化")
     }
-    let refreshed = inspect_with_tool(original_url.clone(), &tool, yt_dlp_lease.as_ref())?;
+    let refreshed = inspect_with_tool(original_url.clone(), &tool)?;
     assert_source_identity(&job.site_media_id, &job.extractor, &refreshed)?;
-    let tool = verify_tool_with_lease(&tool.path, yt_dlp_lease.as_ref())?;
+    let tool = verify_tool(&tool.path)?;
     if tool.version != job.tool_version || tool.sha256 != job.tool_sha256 {
         bail!("source_tool_changed: URL 导入任务绑定的 yt-dlp 版本或哈希已变化")
     }
-    let (ffmpeg, _ffmpeg_lease) =
-        resolve_component_tool(crate::component_store::SharedComponent::Ffmpeg, "ffmpeg")?;
-    run_download_command(
-        db,
-        job_id,
-        &original_url,
-        &tool,
-        &ffmpeg,
-        yt_dlp_lease.as_ref(),
-    )
+    let ffmpeg = tool_path("SIAOCUT_FFMPEG", "ffmpeg");
+    run_download_command(db, job_id, &original_url, &tool, &ffmpeg)
 }
 
 fn assert_source_identity(
@@ -569,18 +549,9 @@ fn run_download_command(
     original_url: &Url,
     tool: &ToolIdentity,
     ffmpeg: &str,
-    lease: Option<&ComponentLease>,
 ) -> Result<()> {
     let proxy = SafeConnectProxy::start()?;
-    run_download_command_with_proxy(
-        db,
-        job_id,
-        original_url,
-        tool,
-        ffmpeg,
-        Some(proxy.url()),
-        lease,
-    )
+    run_download_command_with_proxy(db, job_id, original_url, tool, ffmpeg, Some(proxy.url()))
 }
 
 fn run_download_command_with_proxy(
@@ -590,7 +561,6 @@ fn run_download_command_with_proxy(
     tool: &ToolIdentity,
     ffmpeg: &str,
     proxy_url: Option<String>,
-    lease: Option<&ComponentLease>,
 ) -> Result<()> {
     let job = load(db, job_id)?;
     let output_directory = PathBuf::from(&job.output_directory);
@@ -605,10 +575,6 @@ fn run_download_command_with_proxy(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = command.spawn().context("无法启动 yt-dlp 下载进程")?;
-    if let Some(lease) = lease {
-        lease.watch_process(&child);
-    }
-    let process_id = child.id();
     let mut process_job = Some(assign_source_process_job(
         &mut child,
         "source_process_isolation_failed: 无法隔离 yt-dlp 下载进程",
@@ -643,10 +609,6 @@ fn run_download_command_with_proxy(
     let mut error_lines = Vec::new();
     let status = loop {
         drain_worker_lines(db, job_id, &line_rx, &mut output_path, &mut error_lines)?;
-        if lease.is_some_and(|lease| lease.heartbeat_lost()) {
-            terminate_source_process(&mut child, &mut process_job);
-            break None;
-        }
         let cancel_requested: bool = db.query_row(
             "SELECT cancel_requested_at IS NOT NULL FROM source_imports WHERE id=?1",
             [job_id],
@@ -662,15 +624,9 @@ fn run_download_command_with_proxy(
         thread::sleep(DOWNLOAD_CONTROL_POLL_INTERVAL);
     };
     release_source_process_job(&mut process_job);
-    if let Some(lease) = lease {
-        lease.unwatch_process(process_id);
-    }
     let _ = stdout_reader.join();
     let _ = stderr_reader.join();
     drain_worker_lines(db, job_id, &line_rx, &mut output_path, &mut error_lines)?;
-    if let Some(lease) = lease {
-        lease.ensure_healthy()?;
-    }
     if status.is_none() {
         finish_cancelled(db, job_id)?;
         return Ok(());
@@ -1026,9 +982,8 @@ fn output_with_timeout(
     command: Command,
     timeout: Duration,
     timeout_message: &str,
-    lease: Option<&ComponentLease>,
 ) -> Result<BoundedOutput> {
-    output_with_timeout_after_isolation(command, timeout, timeout_message, || Ok(()), lease)
+    output_with_timeout_after_isolation(command, timeout, timeout_message, || Ok(()))
 }
 
 fn output_with_timeout_after_isolation(
@@ -1036,23 +991,15 @@ fn output_with_timeout_after_isolation(
     timeout: Duration,
     timeout_message: &str,
     after_isolation: impl FnOnce() -> Result<()>,
-    lease: Option<&ComponentLease>,
 ) -> Result<BoundedOutput> {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = command.spawn()?;
-    let process_id = child.id();
-    if let Some(lease) = lease {
-        lease.watch_process(&child);
-    }
     let mut process_job = Some(assign_source_process_job(
         &mut child,
         "source_process_isolation_failed: 无法隔离工具子进程",
     )?);
     if let Err(error) = after_isolation() {
         terminate_source_process(&mut child, &mut process_job);
-        if let Some(lease) = lease {
-            lease.unwatch_process(process_id);
-        }
         return Err(error);
     }
     let mut stdout = child
@@ -1069,16 +1016,6 @@ fn output_with_timeout_after_isolation(
         thread::spawn(move || read_bounded(&mut stderr, MAX_SUBPROCESS_STDERR_BYTES));
     let deadline = Instant::now() + timeout;
     let status = loop {
-        if lease.is_some_and(|lease| lease.heartbeat_lost()) {
-            terminate_source_process(&mut child, &mut process_job);
-            let _ = stdout_reader.join();
-            let _ = stderr_reader.join();
-            if let Some(lease) = lease {
-                lease.unwatch_process(process_id);
-                lease.ensure_healthy()?;
-            }
-            unreachable!("component lease loss must return from ensure_healthy")
-        }
         if let Some(status) = child.try_wait()? {
             break status;
         }
@@ -1091,10 +1028,6 @@ fn output_with_timeout_after_isolation(
         thread::sleep(Duration::from_millis(50));
     };
     release_source_process_job(&mut process_job);
-    if let Some(lease) = lease {
-        lease.unwatch_process(process_id);
-        lease.ensure_healthy()?;
-    }
     Ok(BoundedOutput {
         status,
         stdout: stdout_reader
@@ -1184,50 +1117,22 @@ fn inspection_arguments(url: &Url) -> Vec<String> {
 }
 
 fn verify_tool(path: &Path) -> Result<ToolIdentity> {
-    #[cfg(test)]
-    {
-        verify_tool_with_expectations(
-            path,
-            Some(PINNED_YTDLP_VERSION),
-            Some(PINNED_YTDLP_SHA256),
-            None,
-        )
-    }
-    #[cfg(not(test))]
-    {
-        verify_tool_with_expectations(path, None, None, None)
-    }
-}
-
-fn verify_tool_with_lease(path: &Path, lease: Option<&ComponentLease>) -> Result<ToolIdentity> {
-    let Some(lease) = lease else {
-        return verify_tool(path);
-    };
-    verify_tool_with_expectations(
-        path,
-        Some(&lease.component().version),
-        Some(&lease.lease().artifact_sha256),
-        Some(lease),
-    )
-}
-
-fn verify_tool_with_expectations(
-    path: &Path,
-    expected_version: Option<&str>,
-    expected_sha256: Option<&str>,
-    lease: Option<&ComponentLease>,
-) -> Result<ToolIdentity> {
     if !path.is_file() {
         bail!(
             "source_tool_not_configured: 未找到固定版本的 yt-dlp：{}",
             path.display()
         )
     }
+    let expected_version =
+        env::var("SIAOCUT_YTDLP_VERSION").unwrap_or_else(|_| PINNED_YTDLP_VERSION.to_owned());
+    let expected_sha256 = env::var("SIAOCUT_YTDLP_SHA256")
+        .unwrap_or_else(|_| PINNED_YTDLP_SHA256.to_owned())
+        .to_lowercase();
     let actual_sha256 = hash_file(path)?;
-    if expected_sha256.is_some_and(|expected| !actual_sha256.eq_ignore_ascii_case(expected)) {
+    if actual_sha256 != expected_sha256 {
         bail!(
             "source_tool_hash_mismatch: yt-dlp SHA-256 不匹配；需要 {}，实际为 {}",
-            expected_sha256.unwrap_or("unknown"),
+            expected_sha256,
             actual_sha256
         )
     }
@@ -1237,14 +1142,13 @@ fn verify_tool_with_expectations(
         version_command,
         TOOL_VERSION_TIMEOUT,
         "source_tool_timeout: yt-dlp 版本检查超时",
-        lease,
     )
     .context("无法读取 yt-dlp 版本")?;
     let version = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    if !output.status.success() || expected_version.is_some_and(|expected| version != expected) {
+    if !output.status.success() || version != expected_version {
         bail!(
             "source_tool_version_mismatch: yt-dlp 版本需要 {}，实际为 {}",
-            expected_version.unwrap_or("catalog identity"),
+            expected_version,
             if version.is_empty() {
                 "unknown"
             } else {
@@ -1985,7 +1889,7 @@ mod tests {
             params![job_id, std::process::id(), now()],
         )?;
         let tool = verify_tool(yt_dlp)?;
-        run_download_command_with_proxy(&mut database, job_id, url, &tool, ffmpeg, None, None)
+        run_download_command_with_proxy(&mut database, job_id, url, &tool, ffmpeg, None)
     }
 
     #[test]
@@ -2253,7 +2157,6 @@ mod tests {
             command,
             Duration::from_millis(100),
             "source_inspection_timeout: fixture",
-            None,
         )
         .unwrap_err()
         .to_string();
@@ -2266,7 +2169,7 @@ mod tests {
     #[test]
     #[ignore = "spawned by subprocess_output_closes_job_before_joining_readers"]
     fn subprocess_parent_exits_but_descendant_holds_output_fixture() {
-        let Some(signal) = std::env::var_os(HELD_PIPE_FIXTURE_ENV).map(PathBuf::from) else {
+        let Some(signal) = env::var_os(HELD_PIPE_FIXTURE_ENV).map(PathBuf::from) else {
             return;
         };
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -2291,7 +2194,7 @@ mod tests {
     fn subprocess_output_closes_job_before_joining_readers() {
         let temp = tempdir().unwrap();
         let signal = temp.path().join("isolated");
-        let mut command = Command::new(std::env::current_exe().unwrap());
+        let mut command = Command::new(env::current_exe().unwrap());
         command
             .args([
                 "--exact",
@@ -2310,7 +2213,6 @@ mod tests {
                 fs::write(&signal, b"isolated")?;
                 Ok(())
             },
-            None,
         )
         .unwrap();
 
@@ -2323,16 +2225,8 @@ mod tests {
 
     #[test]
     fn source_import_job_resumes_partial_and_creates_project_only_after_validation() {
-        let Ok((ffmpeg, _ffmpeg_lease)) =
-            resolve_component_tool(crate::component_store::SharedComponent::Ffmpeg, "ffmpeg")
-        else {
-            return;
-        };
-        let Ok((ffprobe, _ffprobe_lease)) =
-            resolve_component_tool(crate::component_store::SharedComponent::Ffmpeg, "ffprobe")
-        else {
-            return;
-        };
+        let ffmpeg = tool_path("SIAOCUT_FFMPEG", "ffmpeg");
+        let ffprobe = tool_path("SIAOCUT_FFPROBE", "ffprobe");
         if !crate::media::command_available(&ffmpeg) || !crate::media::command_available(&ffprobe) {
             return;
         }

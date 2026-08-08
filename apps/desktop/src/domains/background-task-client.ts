@@ -8,7 +8,7 @@ type AutoWorkflowInput =
 
 type StartAutoWorkflowOptions = {
   input: AutoWorkflowInput;
-  modelReference: string;
+  modelPath: string;
   language: TranscriptionLanguage;
   locale: UiLocale;
   output: string;
@@ -46,7 +46,7 @@ export const backgroundTaskClient = {
       : ["--url", options.input.url, "--confirm-media-id", options.input.confirmedMediaId];
     return runCore([
       "auto", "start", ...inputArgs,
-      "--model", options.modelReference,
+      "--model", options.modelPath,
       "--language", options.language,
       "--locale", options.locale,
       "--output", options.output,

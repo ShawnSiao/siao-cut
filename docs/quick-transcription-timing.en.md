@@ -58,7 +58,7 @@ Core rejects the request if the project changes after confirmation. A successful
 
 Core does not treat an installed VAD model as sufficient proof. Before enabling VAD, it rechecks that:
 
-- the common v2 catalog binds the CPU/Vulkan runtime to shared release assets, source, patch, and the installed file manifest; [`release/whisper-runtime-source.json`](../release/whisper-runtime-source.json) is retained only as migration evidence for the old SiaoCut identity;
+- the runtime uses the source commit and patch pinned in [`release/whisper-runtime-source.json`](../release/whisper-runtime-source.json);
 - the actual `whisper-cli.exe` SHA-256 matches runtime metadata, the file manifest, and acceptance evidence;
 - the evidence uses the pinned `speech-silence-speech` fixture and the active backend;
 - the evidence passed, reports `original_media`, and contains no lexical token outside its parent segment.

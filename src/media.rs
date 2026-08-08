@@ -1,5 +1,4 @@
 use crate::{
-    component_store::{ComponentLease, ComponentManager, SharedComponent},
     db::home_dir,
     model::{Project, Segment, Word},
     project,
@@ -11,106 +10,51 @@ use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
-    fs,
+    env, fs,
     path::{Path, PathBuf},
 };
 
-#[cfg(test)]
-fn legacy_tool_path(variable: &str, default: &str) -> String {
-    std::env::var(variable).unwrap_or_else(|_| default.to_owned())
+pub fn tool_path(variable: &str, default: &str) -> String {
+    env::var(variable).unwrap_or_else(|_| default.to_owned())
 }
 
-#[cfg(not(test))]
-fn legacy_tool_path(_variable: &str, default: &str) -> String {
-    default.to_owned()
-}
-
-pub fn resolve_component_tool(
-    component: SharedComponent,
-    entrypoint: &str,
-) -> Result<(String, Option<ComponentLease>)> {
-    match ComponentManager::open_default()
-        .and_then(|manager| manager.resolve_and_acquire(component))
-    {
-        Ok(resolved) => {
-            let path = resolved.entrypoint(entrypoint)?;
-            Ok((path.to_string_lossy().into_owned(), Some(resolved)))
-        }
-        Err(_error) if cfg!(test) => Ok((legacy_component_path(component, entrypoint), None)),
-        Err(error) => Err(error),
+pub fn whisper_cli_path() -> String {
+    if let Some(path) = crate::runtime::selected_whisper_path() {
+        return path.to_string_lossy().to_string();
     }
-}
-
-fn legacy_component_path(component: SharedComponent, entrypoint: &str) -> String {
-    match (component, entrypoint) {
-        (SharedComponent::Ffmpeg, "ffprobe") => legacy_tool_path("SIAOCUT_FFPROBE", "ffprobe"),
-        (SharedComponent::Ffmpeg, _) => legacy_tool_path("SIAOCUT_FFMPEG", "ffmpeg"),
-        (SharedComponent::YtDlp, _) => legacy_tool_path("SIAOCUT_YTDLP", "yt-dlp"),
-        (SharedComponent::WhisperCpu, _) => legacy_tool_path("SIAOCUT_WHISPER_CLI", "whisper-cli"),
-        (SharedComponent::WhisperVulkan, _) => {
-            legacy_tool_path("SIAOCUT_WHISPER_VULKAN_CLI", "whisper-cli")
-        }
-        (SharedComponent::Vad, _) => legacy_tool_path("SIAOCUT_WHISPER_VAD_MODEL", ""),
-        (SharedComponent::ModelTiny, _)
-        | (SharedComponent::ModelBase, _)
-        | (SharedComponent::ModelSmall, _) => legacy_tool_path("SIAOCUT_DEFAULT_MODEL", ""),
+    if let Ok(path) = env::var("SIAOCUT_WHISPER_CLI") {
+        return path;
     }
-}
-
-fn resolve_component_tool_for_probe(
-    component: SharedComponent,
-    entrypoint: &str,
-    legacy_variable: &str,
-    legacy_default: &str,
-) -> Result<(String, Option<ComponentLease>)> {
-    match resolve_component_tool(component, entrypoint) {
-        Ok((path, lease)) => Ok((path, lease)),
-        Err(_error) if cfg!(test) => Ok((legacy_tool_path(legacy_variable, legacy_default), None)),
-        Err(error) => Err(error),
+    let bundled = home_dir().join("bin").join("whisper-cli.exe");
+    if bundled.is_file() {
+        bundled.to_string_lossy().to_string()
+    } else {
+        "whisper-cli".to_owned()
     }
 }
 
 pub fn whisper_vad_model_path() -> Option<String> {
-    resolve_vad_model()
+    env::var("SIAOCUT_WHISPER_VAD_MODEL")
         .ok()
-        .flatten()
-        .map(|(path, _lease)| path)
+        .or_else(|| {
+            let bundled = home_dir().join("bin").join("ggml-silero-v6.2.0.bin");
+            bundled
+                .is_file()
+                .then(|| bundled.to_string_lossy().to_string())
+        })
+        .filter(|path| Path::new(path).is_file())
 }
 
-pub fn resolve_vad_model() -> Result<Option<(String, Option<ComponentLease>)>> {
-    match resolve_component_tool(SharedComponent::Vad, "vadModel") {
-        Ok((path, lease)) => Ok(Some((path, lease))),
-        Err(_error) if cfg!(test) => {
-            let path = legacy_tool_path("SIAOCUT_WHISPER_VAD_MODEL", "");
-            if path.is_empty() || !Path::new(&path).is_file() {
-                Ok(None)
-            } else {
-                Ok(Some((path, None)))
-            }
-        }
-        Err(error) => Err(error),
+fn resolved_whisper_runtime() -> Result<(String, String)> {
+    if let Some(selection) = crate::runtime::verified_selected_runtime()? {
+        return Ok((selection.whisper_path, selection.backend));
     }
-}
-
-fn resolved_whisper_runtime() -> Result<(String, String, Option<ComponentLease>)> {
-    let component = crate::component_store::selected_whisper_component();
-    let (path, lease) = resolve_component_tool_for_probe(
-        component,
-        "whisper",
-        "SIAOCUT_WHISPER_CLI",
-        "whisper-cli",
-    )?;
-    let backend = if component == SharedComponent::WhisperVulkan {
-        "vulkan"
-    } else {
-        "cpu"
-    };
-    Ok((path, backend.into(), lease))
+    Ok((whisper_cli_path(), "cpu".into()))
 }
 
 pub fn whisper_vad_timeline_capability() -> crate::runtime::VadTimelineCapability {
     match resolved_whisper_runtime() {
-        Ok((whisper, backend, _lease)) => {
+        Ok((whisper, backend)) => {
             crate::runtime::vad_timeline_capability(Path::new(&whisper), &backend)
         }
         Err(_) => crate::runtime::vad_timeline_capability(Path::new(""), "cpu"),
@@ -141,15 +85,7 @@ pub fn hash_file(path: &Path) -> Result<String> {
 }
 
 pub fn ffprobe_duration(path: &Path) -> Option<f64> {
-    let (ffprobe, lease) = resolve_component_tool_for_probe(
-        SharedComponent::Ffmpeg,
-        "ffprobe",
-        "SIAOCUT_FFPROBE",
-        "ffprobe",
-    )
-    .ok()?;
-    let mut command = hidden_command(ffprobe);
-    command
+    hidden_command(tool_path("SIAOCUT_FFPROBE", "ffprobe"))
         .args([
             "-v",
             "error",
@@ -158,8 +94,8 @@ pub fn ffprobe_duration(path: &Path) -> Option<f64> {
             "-of",
             "default=nw=1:nk=1",
         ])
-        .arg(path);
-    ComponentLease::output_with_lease(&mut command, lease.as_ref())
+        .arg(path)
+        .output()
         .ok()
         .and_then(|out| {
             if out.status.success() {
@@ -171,15 +107,7 @@ pub fn ffprobe_duration(path: &Path) -> Option<f64> {
 }
 
 pub fn ffprobe_video_dimensions(path: &Path) -> Option<(u32, u32)> {
-    let (ffprobe, lease) = resolve_component_tool_for_probe(
-        SharedComponent::Ffmpeg,
-        "ffprobe",
-        "SIAOCUT_FFPROBE",
-        "ffprobe",
-    )
-    .ok()?;
-    let mut command = hidden_command(ffprobe);
-    command
+    hidden_command(tool_path("SIAOCUT_FFPROBE", "ffprobe"))
         .args([
             "-v",
             "error",
@@ -190,8 +118,8 @@ pub fn ffprobe_video_dimensions(path: &Path) -> Option<(u32, u32)> {
             "-of",
             "csv=p=0:s=x",
         ])
-        .arg(path);
-    ComponentLease::output_with_lease(&mut command, lease.as_ref())
+        .arg(path)
+        .output()
         .ok()
         .and_then(|output| {
             if !output.status.success() {
@@ -231,64 +159,6 @@ pub fn transcribe(
     expected_version_id: &str,
     confirm_replace: bool,
 ) -> Result<TranscriptionResult> {
-    let model_reference = model.to_str().unwrap_or_default();
-    if let Ok(component) = crate::component_store::parse_component_reference(model_reference) {
-        return transcribe_with_component(
-            db,
-            project_id,
-            component,
-            language,
-            expected_version_id,
-            confirm_replace,
-        );
-    }
-    if !crate::component_store::legacy_fixture_mode() {
-        bail!(
-            "component_store_model_reference_required: 转录必须使用 component:tiny、component:base 或 component:small"
-        )
-    }
-    transcribe_with_model_path(
-        db,
-        project_id,
-        model,
-        language,
-        expected_version_id,
-        confirm_replace,
-        None,
-    )
-}
-
-pub fn transcribe_with_component(
-    db: &mut Connection,
-    project_id: &str,
-    component: SharedComponent,
-    language: Option<&str>,
-    expected_version_id: &str,
-    confirm_replace: bool,
-) -> Result<TranscriptionResult> {
-    let manager = ComponentManager::open_default()?;
-    let lease = manager.resolve_model_and_acquire(component)?;
-    let model = lease.entrypoint("model")?;
-    transcribe_with_model_path(
-        db,
-        project_id,
-        &model,
-        language,
-        expected_version_id,
-        confirm_replace,
-        Some(lease),
-    )
-}
-
-fn transcribe_with_model_path(
-    db: &mut Connection,
-    project_id: &str,
-    model: &Path,
-    language: Option<&str>,
-    expected_version_id: &str,
-    confirm_replace: bool,
-    _model_lease: Option<ComponentLease>,
-) -> Result<TranscriptionResult> {
     if !model.is_file() {
         bail!("模型不存在：{}", model.display())
     }
@@ -312,14 +182,8 @@ fn transcribe_with_model_path(
     let run_directory = audio_dir.join(format!("{}-{}", project.id, new_id("quick")));
     let _run_guard = TemporaryRunDirectory::create(run_directory.clone())?;
     let wav = run_directory.join("audio.wav");
-    let (ffmpeg, ffmpeg_lease) = resolve_component_tool_for_probe(
-        SharedComponent::Ffmpeg,
-        "ffmpeg",
-        "SIAOCUT_FFMPEG",
-        "ffmpeg",
-    )?;
-    let mut command = hidden_command(&ffmpeg);
-    command
+    let ffmpeg = tool_path("SIAOCUT_FFMPEG", "ffmpeg");
+    let result = hidden_command(&ffmpeg)
         .args([
             "-y",
             "-i",
@@ -331,8 +195,8 @@ fn transcribe_with_model_path(
             "-c:a",
             "pcm_s16le",
         ])
-        .arg(&wav);
-    let result = ComponentLease::output_with_lease(&mut command, ffmpeg_lease.as_ref())
+        .arg(&wav)
+        .output()
         .with_context(|| format!("无法启动 FFmpeg：{ffmpeg}"))?;
     if !result.status.success() {
         bail!(
@@ -346,16 +210,12 @@ fn transcribe_with_model_path(
             anyhow!("transcription_timing_invalid: 无法确认标准化音频时长，结果未应用")
         })?;
 
-    let (whisper, backend, whisper_lease) = resolved_whisper_runtime()?;
+    let (whisper, backend) = resolved_whisper_runtime()?;
     let vad_capability = crate::runtime::vad_timeline_capability(Path::new(&whisper), &backend);
-    let (vad_model, _vad_lease) = if vad_capability.verified {
-        match resolve_vad_model() {
-            Ok(Some((path, lease))) => (Some(path), lease),
-            Ok(None) | Err(_) => (None, None),
-        }
-    } else {
-        (None, None)
-    };
+    let vad_model = vad_capability
+        .verified
+        .then(whisper_vad_model_path)
+        .flatten();
     let timing_mode = if vad_model.is_some() {
         TranscriptionTimingMode::verified_vad()
     } else {
@@ -369,7 +229,6 @@ fn transcribe_with_model_path(
         &output_base,
         language,
         vad_model.as_deref(),
-        whisper_lease.as_ref(),
     )?;
     import_whisper_json_at_baseline_with_mode(
         db,
@@ -393,7 +252,6 @@ fn run_whisper(
     output_base: &Path,
     language: Option<&str>,
     vad_model: Option<&str>,
-    lease: Option<&ComponentLease>,
 ) -> Result<()> {
     let mut command = hidden_command(whisper);
     command
@@ -417,7 +275,8 @@ fn run_whisper(
     if let Some(language) = language {
         command.args(["-l", language]);
     }
-    let result = ComponentLease::output_with_lease(&mut command, lease)
+    let result = command
+        .output()
         .with_context(|| format!("无法启动 whisper.cpp：{whisper}"))?;
     if !result.status.success() {
         bail!(

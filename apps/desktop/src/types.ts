@@ -803,7 +803,6 @@ export type RuntimeInfo = {
   defaultModelAvailable: boolean;
   logDirectory: string | null;
   diagnosticsAvailable: boolean;
-  componentStore?: Record<string, unknown> | null;
 };
 
 export type UpdatePolicy = {

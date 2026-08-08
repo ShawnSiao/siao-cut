@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { parseWhisperModelComponent, sanitizeWindowsFileName, serializeWhisperModelComponent, structuredCoreErrorMessage, whisperModelComponentKey } from "./core";
+import { sanitizeWindowsFileName, structuredCoreErrorMessage } from "./core";
 import { changeUiLocale } from "./i18n";
 
 afterEach(() => changeUiLocale("zh-CN"));
@@ -26,24 +26,5 @@ describe("desktop Core bridge helpers", () => {
       .toBe("The structured Core request is too large. Reduce the batch size.");
     expect(structuredCoreErrorMessage("structured_core_request_invalid: invalid project"))
       .toBe("The structured Core request parameters are invalid.");
-  });
-
-  it("persists model preferences as exact versioned component keys", () => {
-    const serialized = serializeWhisperModelComponent("base");
-
-    expect(JSON.parse(serialized)).toEqual(whisperModelComponentKey("base"));
-    expect(parseWhisperModelComponent(serialized)).toBe("base");
-    expect(parseWhisperModelComponent("small")).toBe("small");
-    expect(parseWhisperModelComponent(JSON.stringify({
-      componentId: "whisper-model",
-      version: "2",
-      variant: { platform: "windows", architecture: "x86_64", model: "small" },
-    }))).toBe("tiny");
-    expect(parseWhisperModelComponent(JSON.stringify({
-      componentId: "whisper-model",
-      version: "1",
-      variant: { platform: "windows", architecture: "x86_64", model: "small" },
-      url: "https://example.invalid/should-not-be-persisted",
-    }))).toBe("tiny");
   });
 });

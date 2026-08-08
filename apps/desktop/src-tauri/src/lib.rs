@@ -36,13 +36,27 @@ struct RuntimeInfo {
     default_model_available: bool,
     log_directory: Option<String>,
     diagnostics_available: bool,
-    component_store: Value,
 }
 
 #[derive(Clone, Debug)]
 struct RuntimePaths {
     core: PathBuf,
+    ffmpeg: Option<PathBuf>,
+    ffprobe: Option<PathBuf>,
+    whisper: Option<PathBuf>,
+    whisper_vad_model: Option<PathBuf>,
+    whisper_vulkan: Option<PathBuf>,
+    yt_dlp: Option<PathBuf>,
     manifest: Option<PathBuf>,
+    managed_whisper_vulkan: Option<ManagedWhisperRuntime>,
+}
+
+#[derive(Clone, Debug)]
+struct ManagedWhisperRuntime {
+    path: PathBuf,
+    executable_sha256: String,
+    source: String,
+    version: String,
 }
 
 fn repository_root() -> PathBuf {
@@ -94,21 +108,90 @@ fn first_file(candidates: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf> 
     candidates.into_iter().find(|path| path.is_file())
 }
 
+fn managed_whisper_vulkan(
+    manifest: Option<&Path>,
+    whisper_vulkan: Option<&Path>,
+) -> Option<ManagedWhisperRuntime> {
+    let path = whisper_vulkan?.to_path_buf();
+    let manifest: Value = serde_json::from_slice(&fs::read(manifest?).ok()?).ok()?;
+    let component = manifest
+        .get("components")?
+        .as_array()?
+        .iter()
+        .find(|component| component.get("id").and_then(Value::as_str) == Some("whisper-vulkan"))?;
+    let executable_sha256 = component
+        .get("executableSha256")?
+        .as_str()?
+        .to_ascii_lowercase();
+    if executable_sha256.len() != 64
+        || !executable_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    Some(ManagedWhisperRuntime {
+        path,
+        executable_sha256,
+        source: component.get("source")?.as_str()?.to_owned(),
+        version: format!("{}-vulkan", component.get("version")?.as_str()?),
+    })
+}
+
 fn discover_runtime(resource_dir: Option<&Path>) -> Result<RuntimePaths, String> {
+    let ffmpeg = first_file(env::var_os("SIAOCUT_FFMPEG").map(PathBuf::from));
+    let ffprobe = first_file(env::var_os("SIAOCUT_FFPROBE").map(PathBuf::from));
+    let whisper = first_file(env::var_os("SIAOCUT_WHISPER_CLI").map(PathBuf::from));
+    let whisper_vulkan = first_file(env::var_os("SIAOCUT_WHISPER_VULKAN_CLI").map(PathBuf::from));
+    let whisper_vad_model = first_file(env::var_os("SIAOCUT_WHISPER_VAD_MODEL").map(PathBuf::from));
+    let yt_dlp = first_file(env::var_os("SIAOCUT_YTDLP").map(PathBuf::from));
     let manifest = first_file(
         resource_dir
             .into_iter()
             .map(|root| root.join("notices/runtime-manifest.json")),
     );
+    let managed_whisper_vulkan =
+        managed_whisper_vulkan(manifest.as_deref(), whisper_vulkan.as_deref());
     Ok(RuntimePaths {
         core: core_path()?,
+        ffmpeg,
+        ffprobe,
+        whisper,
+        whisper_vad_model,
+        whisper_vulkan,
+        yt_dlp,
         manifest,
+        managed_whisper_vulkan,
     })
 }
 
 fn configure_command(command: &mut tokio::process::Command, runtime: &RuntimePaths) {
-    let _ = runtime;
     command.creation_flags(CREATE_NO_WINDOW);
+    if let Some(path) = &runtime.ffmpeg {
+        command.env("SIAOCUT_FFMPEG", path);
+    }
+    if let Some(path) = &runtime.ffprobe {
+        command.env("SIAOCUT_FFPROBE", path);
+    }
+    if let Some(path) = &runtime.whisper {
+        command.env("SIAOCUT_WHISPER_CLI", path);
+    }
+    if let Some(path) = &runtime.whisper_vad_model {
+        command.env("SIAOCUT_WHISPER_VAD_MODEL", path);
+    }
+    if let Some(path) = &runtime.yt_dlp {
+        command.env("SIAOCUT_YTDLP", path);
+    }
+    if let Some(managed) = &runtime.managed_whisper_vulkan {
+        command
+            .env("SIAOCUT_MANAGED_WHISPER_VULKAN_CLI", &managed.path)
+            .env(
+                "SIAOCUT_MANAGED_WHISPER_VULKAN_SHA256",
+                &managed.executable_sha256,
+            )
+            .env("SIAOCUT_MANAGED_WHISPER_VULKAN_SOURCE", &managed.source)
+            .env("SIAOCUT_MANAGED_WHISPER_VULKAN_VERSION", &managed.version);
+    }
 }
 
 #[cfg(test)]
@@ -116,7 +199,31 @@ fn configure_sync_command(command: &mut Command, runtime: &RuntimePaths) {
     use std::os::windows::process::CommandExt;
 
     command.creation_flags(CREATE_NO_WINDOW);
-    let _ = runtime;
+    if let Some(path) = &runtime.ffmpeg {
+        command.env("SIAOCUT_FFMPEG", path);
+    }
+    if let Some(path) = &runtime.ffprobe {
+        command.env("SIAOCUT_FFPROBE", path);
+    }
+    if let Some(path) = &runtime.whisper {
+        command.env("SIAOCUT_WHISPER_CLI", path);
+    }
+    if let Some(path) = &runtime.whisper_vad_model {
+        command.env("SIAOCUT_WHISPER_VAD_MODEL", path);
+    }
+    if let Some(path) = &runtime.yt_dlp {
+        command.env("SIAOCUT_YTDLP", path);
+    }
+    if let Some(managed) = &runtime.managed_whisper_vulkan {
+        command
+            .env("SIAOCUT_MANAGED_WHISPER_VULKAN_CLI", &managed.path)
+            .env(
+                "SIAOCUT_MANAGED_WHISPER_VULKAN_SHA256",
+                &managed.executable_sha256,
+            )
+            .env("SIAOCUT_MANAGED_WHISPER_VULKAN_SOURCE", &managed.source)
+            .env("SIAOCUT_MANAGED_WHISPER_VULKAN_VERSION", &managed.version);
+    }
 }
 
 fn validate_core_args_with_limit(args: &[String], default_max_args: usize) -> Result<(), String> {
@@ -142,7 +249,6 @@ fn validate_core_args_with_limit(args: &[String], default_max_args: usize) -> Re
         "audit",
         "transcribe",
         "transcription",
-        "component-store",
         "desktop-request",
     ];
     if args.is_empty() || !ALLOWED.contains(&args[0].as_str()) {
@@ -411,12 +517,27 @@ async fn select_asr_backend(
     diagnostics: tauri::State<'_, Diagnostics>,
     backend: String,
 ) -> Result<RuntimeInfo, String> {
-    let component = match backend.as_str() {
-        "cpu" => "whisper-cpu",
-        "vulkan" => "whisper-vulkan",
+    let args = match backend.as_str() {
+        "cpu" => vec!["runtime".into(), "reset".into()],
+        "vulkan" => {
+            let whisper = runtime
+                .whisper_vulkan
+                .as_ref()
+                .ok_or_else(|| "尚未配置 Vulkan 运行时；仍可继续使用 CPU。".to_owned())?;
+            vec![
+                "runtime".into(),
+                "select".into(),
+                "vulkan".into(),
+                "--whisper".into(),
+                whisper.display().to_string(),
+                "--source".into(),
+                "https://github.com/ggml-org/whisper.cpp".into(),
+                "--version".into(),
+                "1.9.1-vulkan".into(),
+            ]
+        }
         _ => return Err("桌面应用仅支持选择 CPU 或 Vulkan 后端。".to_owned()),
     };
-    let args = vec!["component-store".into(), "select".into(), component.into()];
     let response = execute_core_async(args, &runtime).await?;
     if response.get("status").and_then(Value::as_str) != Some("ok") {
         return Err(response
@@ -440,28 +561,16 @@ async fn runtime_info_for(
             .unwrap_or("Core 健康检查未通过。")
             .to_owned());
     }
-    let component_store_status = health
-        .pointer("/componentStore/status")
-        .and_then(Value::as_str)
-        .unwrap_or("unavailable");
-    let component_store_ready = component_store_status == "ready";
-    let default_model_available = component_store_ready
-        && health
-            .pointer("/componentStore/installations")
-            .and_then(Value::as_array)
-            .is_some_and(|installations| {
-                installations.iter().any(|installation| {
-                    installation.get("componentId").and_then(Value::as_str) == Some("whisper-model")
-                        && installation
-                            .pointer("/variant/model")
-                            .and_then(Value::as_str)
-                            == Some("tiny")
-                        && installation
-                            .get("verificationStatus")
-                            .and_then(Value::as_str)
-                            == Some("verified")
-                })
-            });
+    let model = env::var_os("SIAOCUT_DEFAULT_MODEL")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            env::var_os("LOCALAPPDATA")
+                .map(PathBuf::from)
+                .unwrap_or_default()
+                .join("SiaoCut")
+                .join("models")
+                .join("ggml-tiny.en.bin")
+        });
     Ok(RuntimeInfo {
         core_path: runtime.core.display().to_string(),
         core_api_version: health
@@ -488,10 +597,7 @@ async fn runtime_info_for(
             .pointer("/vadTimeline/reasonCode")
             .and_then(Value::as_str)
             .map(str::to_owned),
-        yt_dlp_configured: health
-            .pointer("/engines/sourceImport")
-            .and_then(Value::as_str)
-            == Some("configured"),
+        yt_dlp_configured: runtime.yt_dlp.is_some(),
         asr_backend: health
             .pointer("/runtime/backend")
             .and_then(Value::as_str)
@@ -501,27 +607,35 @@ async fn runtime_info_for(
             .pointer("/runtime/selection/device")
             .and_then(Value::as_str)
             .map(str::to_owned),
-        available_asr_backends: if component_store_ready {
+        available_asr_backends: if runtime.whisper_vulkan.is_some() {
             vec!["cpu".into(), "vulkan".into()]
         } else {
             vec!["cpu".into()]
         },
-        ffmpeg_path: None,
-        whisper_path: None,
-        yt_dlp_path: None,
+        ffmpeg_path: runtime
+            .ffmpeg
+            .as_ref()
+            .map(|path| path.display().to_string()),
+        whisper_path: runtime
+            .whisper
+            .as_ref()
+            .map(|path| path.display().to_string()),
+        yt_dlp_path: runtime
+            .yt_dlp
+            .as_ref()
+            .map(|path| path.display().to_string()),
         runtime_manifest_path: runtime
             .manifest
             .as_ref()
             .map(|path| path.display().to_string()),
-        default_model_available,
-        default_model_path: "component:tiny".to_owned(),
+        default_model_available: model.is_file(),
+        default_model_path: model.display().to_string(),
         log_directory: diagnostics
             .log_directory
             .as_ref()
             .map(|path| path.display().to_string()),
         diagnostics_available: diagnostics.initialization_error.is_none()
             && diagnostics.log_directory.is_some(),
-        component_store: health.get("componentStore").cloned().unwrap_or(Value::Null),
     })
 }
 
@@ -778,6 +892,56 @@ mod tests {
     }
 
     #[test]
+    fn reads_external_vulkan_integrity_from_a_manifest() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest = temp.path().join("runtime-manifest.json");
+        let executable = temp.path().join("whisper-cli.exe");
+        fs::write(&executable, b"runtime").unwrap();
+        fs::write(
+            &manifest,
+            serde_json::json!({
+                "components": [{
+                    "id": "whisper-vulkan",
+                    "version": "1.9.1",
+                    "source": "https://github.com/ggml-org/whisper.cpp",
+                    "executableSha256": "a".repeat(64)
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let managed = managed_whisper_vulkan(Some(&manifest), Some(&executable)).unwrap();
+
+        assert_eq!(managed.path, executable);
+        assert_eq!(managed.executable_sha256, "a".repeat(64));
+        assert_eq!(managed.version, "1.9.1-vulkan");
+    }
+
+    #[test]
+    fn refuses_to_manage_vulkan_without_a_valid_manifest_hash() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest = temp.path().join("runtime-manifest.json");
+        let executable = temp.path().join("whisper-cli.exe");
+        fs::write(&executable, b"runtime").unwrap();
+        fs::write(
+            &manifest,
+            serde_json::json!({
+                "components": [{
+                    "id": "whisper-vulkan",
+                    "version": "1.9.1",
+                    "source": "https://github.com/ggml-org/whisper.cpp",
+                    "executableSha256": "not-a-sha256"
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert!(managed_whisper_vulkan(Some(&manifest), Some(&executable)).is_none());
+    }
+
+    #[test]
     fn ignores_runtime_files_under_resource_dir_for_app_only_packages() {
         let temp = tempfile::tempdir().unwrap();
         let bundled_ffmpeg = temp.path().join("runtime/ffmpeg/ffmpeg.exe");
@@ -793,7 +957,7 @@ mod tests {
 
         let paths = discover_runtime(Some(temp.path())).unwrap();
 
-        assert_eq!(paths.core, core_path().unwrap());
+        assert_ne!(paths.ffmpeg.as_deref(), Some(bundled_ffmpeg.as_path()));
         assert_eq!(paths.manifest.as_deref(), Some(manifest.as_path()));
     }
 
