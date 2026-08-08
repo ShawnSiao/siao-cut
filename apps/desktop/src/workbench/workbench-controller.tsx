@@ -2,7 +2,7 @@ import { changeUiLocale, getUiLocale, tr, type UiLocale } from "../i18n";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type SyntheticEvent } from "react";
 import { Activity, Bot, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Clock3, Copy, Cpu, Database, Download, FileVideo2, FileText, Film, FolderOpen, FolderPlus, HardDrive, History, Link2, LoaderCircle, Play, RefreshCw, RotateCcw, Search, Scissors, Settings2, ShieldCheck, Sparkles, Trash2, Undo2, Redo2, Headphones, ListChecks, MoreHorizontal, MoveHorizontal, Users, X, } from "lucide-react";
 import { authorizeArtifact, authorizeMedia, localFileAvailable, openLogDirectory, pickMedia, pickModel, pickResourceDirectory, pickSubtitleFile, pickTranscriptPath, pickVideoPath, runtimeInfo, selectAsrBackend, updaterPolicy } from "../core";
-import type { AgentRun, AudioAnalysisJob, AudioRisk, AutoWorkflow, CanvasSettings, CodexHealth, CutPreview, ExportJob, LocalCapabilityId, LocalResourceJob, LocalResourcePlan, LocalResourceStatus, ModelDownloadJob, ModelStatus, Project, ProjectDeletionPreflight, RuntimeInfo, Segment, SourceImportJob, SourcePreview, SpeakerIdentity, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SpeechEvidence, SpeechInsights, SpeechPause, SubtitleImportPreview, SubtitleQualityIssue, Task, TranscriptReplacementPreflight, TranscriptionJob, TranscriptionLanguage, TranscriptionProviderConfig, TranscriptionProviderHealth, TranscriptionReviewItem } from "../types";
+import type { AgentRun, AudioAnalysisJob, AudioRisk, AutoWorkflow, CanvasSettings, CodexHealth, CutPreview, ExportJob, LocalCapabilityId, LocalResourceJob, LocalResourcePlan, LocalResourceStatus, LocalTranscriptionProfile, ModelDownloadJob, ModelStatus, Project, ProjectDeletionPreflight, RuntimeInfo, Segment, SourceImportJob, SourcePreview, SpeakerIdentity, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SpeechEvidence, SpeechInsights, SpeechPause, SubtitleImportPreview, SubtitleQualityIssue, Task, TranscriptReplacementPreflight, TranscriptionJob, TranscriptionLanguage, TranscriptionProviderConfig, TranscriptionProviderHealth, TranscriptionReviewItem } from "../types";
 import { Button, Dialog, IconButton, StatusBadge } from "../components/ui";
 import { JobFailureDetails } from "../components/job-failure";
 import { AudioQualityPanel, PatchReviewCard, RuntimeChecklist, SegmentRow, SpeakerTrackPanel, SpeechInsightsPanel, TranscriptionReviewPanel } from "../components/workbench-panels";
@@ -216,13 +216,15 @@ function WorkbenchController() {
     const [resourcePlan, setResourcePlan] = useState<LocalResourcePlan | null>(null);
     const [resourceJob, setResourceJob] = useState<LocalResourceJob | null>(null);
     const [resourceCapability, setResourceCapability] = useState<LocalCapabilityId>("basic_media");
+    const [resourceProfile, setResourceProfile] = useState<LocalTranscriptionProfile>("standard");
     const [resourceSetupReason, setResourceSetupReason] = useState<"first_run" | "on_demand" | "manage">("first_run");
     const [resourceSelectedRoot, setResourceSelectedRoot] = useState("");
     const [resourceBusy, setResourceBusy] = useState(false);
     const [resourceError, setResourceError] = useState<string | null>(null);
     const [showResourceSetup, setShowResourceSetup] = useState(false);
-    const [pendingResourceAction, setPendingResourceAction] = useState<"inspect_url" | null>(null);
+    const [pendingResourceAction, setPendingResourceAction] = useState<"inspect_url" | "transcribe" | null>(null);
     const [resumeSourceInspection, setResumeSourceInspection] = useState(false);
+    const [resumeLocalTranscription, setResumeLocalTranscription] = useState(false);
     const handledResourceJobRef = useRef<string | null>(null);
     const { updatePolicy, setUpdatePolicy, availableUpdate, updateBusy, updateError, checkUpdates, confirmUpdateInstall } = useAppUpdater(setNotice);
     const [models, setModels] = useState<ModelStatus[]>([]);
@@ -496,6 +498,7 @@ function WorkbenchController() {
         if (localResourcesResult.status === "fulfilled" && localResourcesResult.value.localResources) {
             const next = localResourcesResult.value.localResources;
             setLocalResources(next);
+            setResourceProfile(next.transcriptionProfile);
             if (!next.configured && localStorage.getItem(RESOURCE_SETUP_DEFERRED_KEY) !== "1") {
                 setResourceCapability("basic_media");
                 setResourceSetupReason("first_run");
@@ -960,9 +963,10 @@ function WorkbenchController() {
         ? tr("app.capability.mediaRequired")
         : transcriptionMode === "multispeaker"
             ? transcriptionHealth?.state !== "healthy" ? tr("app.moss.health.required") : undefined
-            : !capabilities.hasModel ? tr("app.capability.modelRequired") : undefined;
+            : localResources?.capabilities.find((capability) => capability.id === "local_transcription")?.state !== "ready" || !capabilities.hasModel
+                ? tr("app.resources.transcriptionRequired") : undefined;
     const transcriptionActive = Boolean(transcriptionJob && ["queued", "running", "finalizing"].includes(transcriptionJob.status));
-    const canStartTranscription = capabilities.hasBoundMedia && (transcriptionMode === "multispeaker" ? transcriptionHealth?.state === "healthy" : capabilities.hasModel);
+    const canStartTranscription = capabilities.hasBoundMedia && (transcriptionMode === "multispeaker" ? transcriptionHealth?.state === "healthy" : true);
     const agentCapabilityTitle = !capabilities.hasBoundMedia
         ? tr("app.capability.mediaRequired")
         : !capabilities.hasTranscript
@@ -1319,7 +1323,10 @@ function WorkbenchController() {
         }
     };
     const openResourcePreparation = async (capability: LocalCapabilityId, reason: "first_run" | "on_demand" | "manage") => {
+        const profile = capability === "local_transcription" ? localResources?.transcriptionProfile ?? resourceProfile : undefined;
         setResourceCapability(capability);
+        if (profile)
+            setResourceProfile(profile);
         setResourceSetupReason(reason);
         setResourceSelectedRoot("");
         setResourceError(null);
@@ -1329,11 +1336,26 @@ function WorkbenchController() {
             setShowSourceImport(false);
         setShowResourceSetup(true);
         try {
-            const envelope = await localResourceClient.plan(capability);
+            const envelope = await localResourceClient.plan(capability, profile);
             setResourcePlan(envelope.resourcePlan ?? null);
         }
         catch (cause) {
             setResourceError(localResourceError(cause));
+        }
+    };
+    const changeResourceProfile = async (profile: LocalTranscriptionProfile) => {
+        setResourceProfile(profile);
+        setResourceBusy(true);
+        setResourceError(null);
+        try {
+            const envelope = await localResourceClient.plan("local_transcription", profile);
+            setResourcePlan(envelope.resourcePlan ?? null);
+        }
+        catch (cause) {
+            setResourceError(localResourceError(cause));
+        }
+        finally {
+            setResourceBusy(false);
         }
     };
     const chooseResourceLocation = async () => {
@@ -1371,7 +1393,7 @@ function WorkbenchController() {
         setResourceError(null);
         handledResourceJobRef.current = null;
         try {
-            const envelope = await localResourceClient.install(resourceCapability);
+            const envelope = await localResourceClient.install(resourceCapability, resourceCapability === "local_transcription" ? resourceProfile : undefined);
             if (!envelope.resourceJob)
                 throw new Error("resource_job_not_found");
             setResourceJob(envelope.resourceJob);
@@ -1432,6 +1454,9 @@ function WorkbenchController() {
         if (pendingResourceAction === "inspect_url") {
             setPendingResourceAction(null);
             setShowSourceImport(true);
+        }
+        else if (pendingResourceAction === "transcribe") {
+            setPendingResourceAction(null);
         }
     };
     const removeResourceCapability = async (capability: LocalCapabilityId) => {
@@ -1525,10 +1550,37 @@ function WorkbenchController() {
         if (resourceJob.status !== "completed")
             return;
         handledResourceJobRef.current = resourceJob.id;
-        void Promise.all([localResourceClient.status(), runtimeInfo()]).then(([resourceEnvelope, nextRuntime]) => {
+        void Promise.allSettled([
+            localResourceClient.status(),
+            runtimeInfo(),
+            backgroundTaskClient.listModels(true),
+            backgroundTaskClient.getSpeakerPackage(),
+        ]).then(([resourceResult, runtimeResult, modelsResult, speakerResult]) => {
+            if (resourceResult.status === "rejected")
+                throw resourceResult.reason;
+            if (runtimeResult.status === "rejected")
+                throw runtimeResult.reason;
+            const resourceEnvelope = resourceResult.value;
+            const nextRuntime = runtimeResult.value;
             if (resourceEnvelope.localResources)
                 setLocalResources(resourceEnvelope.localResources);
             setRuntime(nextRuntime);
+            const nextModels = modelsResult.status === "fulfilled"
+                ? modelsResult.value.models ?? []
+                : models;
+            if (modelsResult.status === "fulfilled")
+                setModels(nextModels);
+            if (speakerResult.status === "fulfilled")
+                setSpeakerPackage(speakerResult.value.speakerPackage ?? null);
+            const nextModelPath = nextRuntime.defaultModelAvailable
+                ? nextRuntime.defaultModelPath
+                : nextModels.find((model) => model.installed && model.verified === true)?.path ?? null;
+            setModelPath(nextModelPath);
+            setModelPathAvailable(Boolean(nextModelPath));
+            if (nextModelPath)
+                localStorage.setItem("siaocut.modelPath", nextModelPath);
+            else
+                localStorage.removeItem("siaocut.modelPath");
             setResourceJob(null);
             setShowResourceSetup(false);
             setResourceSelectedRoot("");
@@ -1540,11 +1592,15 @@ function WorkbenchController() {
                 setShowSourceImport(true);
                 setResumeSourceInspection(true);
             }
+            else if (pendingResourceAction === "transcribe") {
+                setPendingResourceAction(null);
+                setResumeLocalTranscription(true);
+            }
             else if (resourceSetupReason === "manage") {
                 setShowRuntime(true);
             }
         }).catch((cause) => setResourceError(localResourceError(cause)));
-    }, [pendingResourceAction, resourceJob, resourceSetupReason, setNotice]);
+    }, [models, pendingResourceAction, resourceJob, resourceSetupReason, setNotice]);
     useEffect(() => {
         if (!resumeSourceInspection || !showSourceImport)
             return;
@@ -1699,9 +1755,9 @@ function WorkbenchController() {
     const transcribe = () => project && withBusy(tr("app.s0120"), async () => {
         if (!capabilities.hasBoundMedia)
             throw new Error(tr("app.capability.mediaRequired"));
-        if (!runtime?.ffmpegConfigured)
-            throw new Error(tr("app.s0121"));
         if (transcriptionMode === "multispeaker") {
+            if (!runtime?.ffmpegConfigured)
+                throw new Error(tr("app.s0121"));
             if (transcriptionHealth?.state !== "healthy")
                 throw new Error(tr("app.moss.health.required"));
             const envelope = await backgroundTaskClient.startTranscription({
@@ -1725,19 +1781,28 @@ function WorkbenchController() {
             }
             return;
         }
-        if (!runtime?.asrConfigured)
-            throw new Error(tr("app.s0122"));
-        if (!modelPath || !modelPathAvailable || !await localFileAvailable(modelPath)) {
+        const localTranscription = localResources?.capabilities.find((capability) => capability.id === "local_transcription");
+        const activeModelPath = modelPath;
+        const modelReady = Boolean(activeModelPath && modelPathAvailable && await localFileAvailable(activeModelPath));
+        if (localTranscription?.state !== "ready" || !runtime?.ffmpegConfigured || !runtime.asrConfigured || !activeModelPath || !modelReady) {
             setModelPathAvailable(false);
-            throw new Error(tr("app.s0123"));
+            setPendingResourceAction("transcribe");
+            await openResourcePreparation("local_transcription", "on_demand");
+            return;
         }
         const expectedVersionId = project.history.currentVersionId;
         if (!expectedVersionId)
             throw new Error(tr("app.quickRetranscribe.versionMissing"));
-        const result = await transcriptEditingClient.quickTranscribe(project.id, modelPath, transcriptionLanguage, expectedVersionId);
+        const result = await transcriptEditingClient.quickTranscribe(project.id, activeModelPath, transcriptionLanguage, expectedVersionId);
         await refreshProject(project.id);
         setNotice(Number(result.segments ?? 0) === 0 ? tr("app.s0124") : tr("app.s0125"));
     });
+    useEffect(() => {
+        if (!resumeLocalTranscription)
+            return;
+        setResumeLocalTranscription(false);
+        void transcribe();
+    }, [resumeLocalTranscription]);
     const openQuickRetranscription = async () => {
         if (!project || quickRetranscriptionChecking)
             return;
@@ -2929,7 +2994,7 @@ function WorkbenchController() {
                   {drawerTab === "analysis" && <div className="inspector-view creator-analysis">
                     <SpeechInsightsPanel insights={project.speechInsights} onLocateEvidence={locateSpeechEvidence} onLocatePause={locateSpeechPause}/>
                     <AudioQualityPanel job={audioAnalysisJob} onStart={startAudioAnalysis} onCancel={cancelAudioAnalysis} onResume={resumeAudioAnalysis} onLocate={locateAudioRisk} disabled={!capabilities.canAnalyzeAudio || Boolean(busy)}/>
-                    <SpeakerTrackPanel packageStatus={speakerPackage} track={speakerTrack} job={projectSpeakerJob} selectedSegmentId={selectedId} disabled={Boolean(busy)} onOpenRuntime={() => setShowRuntime(true)} onAnalyze={startSpeakerAnalysis} onCancel={() => void cancelSpeakerJob(projectSpeakerJob)} onResume={() => void resumeSpeakerJob(projectSpeakerJob)} onRename={renameSpeaker} onMerge={mergeSpeaker} onAssign={assignSpeaker}/>
+                    <SpeakerTrackPanel packageStatus={speakerPackage} track={speakerTrack} job={projectSpeakerJob} selectedSegmentId={selectedId} disabled={Boolean(busy)} onOpenRuntime={() => void openResourcePreparation("speaker_identity", "on_demand")} onAnalyze={startSpeakerAnalysis} onCancel={() => void cancelSpeakerJob(projectSpeakerJob)} onResume={() => void resumeSpeakerJob(projectSpeakerJob)} onRename={renameSpeaker} onMerge={mergeSpeaker} onAssign={assignSpeaker}/>
                     {selectedWords.length > 0 && <section className="word-evidence" aria-label={tr("app.s0376")}>
                       <div className="word-heading"><div><p className="eyebrow">{tr("app.s0376")}</p><small>{tr("app.s0377")}</small></div>{activeWordRange && <button className="clear-range" onClick={() => setWordRange(null)}>{tr("app.s0378")}</button>}</div>
                       <div className="word-tokens">{selectedWords.map((word, index) => <button className={activeWordRange && index >= activeWordRange.start && index <= activeWordRange.end ? "selected" : ""} key={word.id} onClick={() => selectWordForCut(index)} title={`${formatTime(word.start)} — ${formatTime(word.end)}${word.confidence == null ? "" : ` · ${Math.round(word.confidence * 100)}%`}`}>{word.text}</button>)}</div>
@@ -3141,12 +3206,14 @@ function WorkbenchController() {
         status={localResources}
         plan={resourcePlan}
         job={resourceJob}
+        profile={resourceProfile}
         selectedRoot={resourceSelectedRoot}
         busy={resourceBusy}
         error={resourceError}
         onClose={closeResourcePreparation}
         onChooseLocation={() => void chooseResourceLocation()}
         onConfirmLocation={() => void confirmResourceLocation()}
+        onProfileChange={(profile) => void changeResourceProfile(profile)}
         onStart={() => void startResourcePreparation()}
         onCancel={() => void cancelResourcePreparation()}
         onResume={() => void resumeResourcePreparation()}

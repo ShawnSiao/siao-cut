@@ -188,8 +188,76 @@ fn path_for(config: &LocalResourceConfig, key: &str) -> Option<PathBuf> {
         .and_then(|relative| resolve_entrypoint(&config.root, relative))
 }
 
+pub(crate) fn configured_root() -> Result<Option<PathBuf>> {
+    Ok(read_config_at(&config_path())?.map(|config| config.root))
+}
+
+pub(crate) fn managed_entrypoint(key: &str) -> Result<Option<PathBuf>> {
+    Ok(read_config_at(&config_path())?.and_then(|config| path_for(&config, key)))
+}
+
+pub(crate) fn activate_managed_resource(
+    component: &str,
+    version: &str,
+    entrypoints: &[(&str, &Path)],
+    capability: Option<&str>,
+    profile: Option<&str>,
+) -> Result<()> {
+    validate_config_segment(component)?;
+    validate_config_segment(version)?;
+    if let Some(capability) = capability {
+        capability_name(capability)?;
+    }
+    if let Some(profile) = profile {
+        validate_profile(profile)?;
+    }
+    let locator = config_path();
+    let mut config = read_config_at(&locator)?
+        .ok_or_else(|| anyhow!("resource_setup_required: 请先选择并确认本地资源保存位置"))?;
+    for (key, path) in entrypoints {
+        if !path.is_file() {
+            bail!("resource_activation_failed: 本地资源入口不存在")
+        }
+        let relative = path
+            .strip_prefix(&config.root)
+            .map_err(|_| anyhow!("resource_activation_failed: 本地资源入口超出所选保存位置"))?;
+        validate_relative_path(relative)?;
+        config
+            .active_entrypoints
+            .insert((*key).to_owned(), relative.to_string_lossy().into_owned());
+    }
+    config
+        .active_versions
+        .insert(component.to_owned(), version.to_owned());
+    if let Some(capability) = capability
+        && !config
+            .enabled_capabilities
+            .iter()
+            .any(|enabled| enabled == capability)
+    {
+        config.enabled_capabilities.push(capability.to_owned());
+        config.enabled_capabilities.sort();
+    }
+    if let Some(profile) = profile {
+        config.transcription_profile = profile.to_owned();
+    }
+    config.updated_at = util::now();
+    write_config_at(&locator, &config)
+}
+
 fn ready_file(config: &LocalResourceConfig, key: &str) -> bool {
     path_for(config, key).is_some_and(|path| path.is_file())
+}
+
+fn selected_model_ready(config: &LocalResourceConfig) -> bool {
+    let Ok(model_id) = model_id_for_profile(&config.transcription_profile) else {
+        return false;
+    };
+    ready_file(config, "default_model")
+        && config
+            .active_versions
+            .get("transcription-model")
+            .is_some_and(|version| version.starts_with(&format!("{model_id}-")))
 }
 
 fn capability_ready(config: &LocalResourceConfig, capability: &str) -> bool {
@@ -198,10 +266,7 @@ fn capability_ready(config: &LocalResourceConfig, capability: &str) -> bool {
         "basic_media" => basic,
         "url_import" => basic && ready_file(config, "yt_dlp"),
         "local_transcription" => {
-            basic
-                && ready_file(config, "whisper")
-                && ready_file(config, "whisper_vad_model")
-                && ready_file(config, "default_model")
+            basic && ready_file(config, "whisper") && selected_model_ready(config)
         }
         "speaker_identity" => basic && ready_file(config, "speaker"),
         _ => false,
@@ -384,9 +449,10 @@ fn configure_at(config_path: &Path, root: &Path, data_home: &Path) -> Result<Loc
 
 pub fn configure(database: &Connection, root: &Path) -> Result<LocalResourceStatus> {
     let active: bool = database.query_row(
-        "SELECT EXISTS(
-             SELECT 1 FROM resource_jobs WHERE status IN ('queued','running')
-         )",
+        "SELECT
+             EXISTS(SELECT 1 FROM resource_jobs WHERE status IN ('queued','running'))
+             OR EXISTS(SELECT 1 FROM model_downloads WHERE status IN ('queued','running'))
+             OR EXISTS(SELECT 1 FROM speaker_jobs WHERE status IN ('queued','running'))",
         [],
         |row| row.get(0),
     )?;
@@ -396,11 +462,21 @@ pub fn configure(database: &Connection, root: &Path) -> Result<LocalResourceStat
     configure_at(&config_path(), root, &db::home_dir())
 }
 
-fn validate_profile(profile: &str) -> Result<()> {
+pub(crate) fn validate_profile(profile: &str) -> Result<()> {
     if !matches!(profile, "fast" | "standard" | "quality") {
         bail!("resource_profile_invalid: 未知的本地转录方案");
     }
     Ok(())
+}
+
+pub(crate) fn model_id_for_profile(profile: &str) -> Result<&'static str> {
+    validate_profile(profile)?;
+    Ok(match profile {
+        "fast" => "tiny",
+        "standard" => "base",
+        "quality" => "small",
+        _ => unreachable!("profile was validated"),
+    })
 }
 
 fn capability_name(capability: &str) -> Result<&'static str> {
@@ -438,13 +514,8 @@ pub fn plan(capability: &str, profile: Option<&str>) -> Result<ResourcePlan> {
         .map_err(|error| anyhow!("resource_catalog_invalid: 内置资源清单无效：{error}"))?;
     let ffmpeg = component_size(&catalog, "ffmpeg-cpu").unwrap_or(0);
     let yt_dlp = component_size(&catalog, "yt-dlp").unwrap_or(0);
-    let vad = component_size(&catalog, "whisper-vad-silero-6.2").unwrap_or(0);
-    let model_id = match profile {
-        "fast" => "tiny",
-        "standard" => "base",
-        "quality" => "small",
-        _ => unreachable!("profile was validated"),
-    };
+    let whisper = component_size(&catalog, "whisper-cpu-upstream").unwrap_or(0);
+    let model_id = model_id_for_profile(profile)?;
     let model = model_size(&catalog, model_id).unwrap_or(0);
     let speaker = catalog
         .get("speakerPackages")
@@ -453,15 +524,42 @@ pub fn plan(capability: &str, profile: Option<&str>) -> Result<ResourcePlan> {
         .and_then(|package| package.get("downloadSize"))
         .and_then(Value::as_u64)
         .unwrap_or(0);
+    let config = read_config_at(&config_path())?;
+    let needs_basic = config
+        .as_ref()
+        .is_none_or(|config| !capability_ready(config, "basic_media"));
+    let needs_url = config
+        .as_ref()
+        .is_none_or(|config| !ready_file(config, "yt_dlp"));
+    let needs_whisper = config
+        .as_ref()
+        .is_none_or(|config| !ready_file(config, "whisper"));
+    let needs_model = config.as_ref().is_none_or(|config| {
+        config.transcription_profile != profile || !selected_model_ready(config)
+    });
+    let needs_speaker = config
+        .as_ref()
+        .is_none_or(|config| !ready_file(config, "speaker"));
+    let basic_bytes = if needs_basic { ffmpeg } else { 0 };
     let (download_bytes, unknown_size, transcription_profile) = match capability {
-        "basic_media" => (ffmpeg, false, None),
-        "url_import" => (ffmpeg.saturating_add(yt_dlp), false, None),
+        "basic_media" => (basic_bytes, false, None),
+        "url_import" => (
+            basic_bytes.saturating_add(if needs_url { yt_dlp } else { 0 }),
+            false,
+            None,
+        ),
         "local_transcription" => (
-            ffmpeg.saturating_add(vad).saturating_add(model),
-            true,
+            basic_bytes
+                .saturating_add(if needs_whisper { whisper } else { 0 })
+                .saturating_add(if needs_model { model } else { 0 }),
+            false,
             Some(profile.to_owned()),
         ),
-        "speaker_identity" => (ffmpeg.saturating_add(speaker), false, None),
+        "speaker_identity" => (
+            basic_bytes.saturating_add(if needs_speaker { speaker } else { 0 }),
+            false,
+            None,
+        ),
         _ => unreachable!("capability was validated"),
     };
     Ok(ResourcePlan {
@@ -628,10 +726,50 @@ mod tests {
         let url = plan("url_import", None).unwrap();
 
         assert_eq!(fast.capability_name, "本地转录");
-        assert!(fast.unknown_size);
+        assert!(!fast.unknown_size);
+        assert_eq!(fast.transcription_profile.as_deref(), Some("fast"));
         assert!(quality.download_bytes > fast.download_bytes);
         assert_eq!(url.capability_name, "URL 导入");
         assert!(!url.unknown_size);
         assert!(url.download_bytes > 0);
+    }
+
+    #[test]
+    fn transcription_readiness_binds_the_selected_profile_to_its_active_model() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().join("resources");
+        let ffmpeg = root.join("packages/media/ffmpeg.exe");
+        let ffprobe = root.join("packages/media/ffprobe.exe");
+        let whisper = root.join("packages/transcription/whisper-cli.exe");
+        let model = root.join("models/transcription-model/base-test/ggml-base.bin");
+        for path in [&ffmpeg, &ffprobe, &whisper, &model] {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, b"fixture").unwrap();
+        }
+        let mut config = default_config(root.clone());
+        config
+            .enabled_capabilities
+            .push("local_transcription".into());
+        config
+            .active_versions
+            .insert("transcription-model".into(), "base-60ed5bc3dd14".into());
+        for (key, path) in [
+            ("ffmpeg", &ffmpeg),
+            ("ffprobe", &ffprobe),
+            ("whisper", &whisper),
+            ("default_model", &model),
+        ] {
+            config.active_entrypoints.insert(
+                key.into(),
+                path.strip_prefix(&root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+
+        assert!(capability_ready(&config, "local_transcription"));
+        config.transcription_profile = "quality".into();
+        assert!(!capability_ready(&config, "local_transcription"));
     }
 }

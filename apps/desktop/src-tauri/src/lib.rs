@@ -1139,6 +1139,42 @@ mod tests {
     }
 
     #[test]
+    fn discovers_managed_cpu_transcription_without_a_vad_model() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("LocalResources");
+        let ffmpeg = root.join("packages/ffmpeg-cpu/8.1/ffmpeg.exe");
+        let ffprobe = root.join("packages/ffmpeg-cpu/8.1/ffprobe.exe");
+        let whisper = root.join("packages/whisper-cpu-upstream/1.9.1/whisper-cli.exe");
+        let model = root.join("models/transcription-model/base-test/ggml-base.bin");
+        for path in [&ffmpeg, &ffprobe, &whisper, &model] {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, b"fixture").unwrap();
+        }
+        let config_path = temp.path().join("config/local-resources.json");
+        fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        fs::write(
+            &config_path,
+            serde_json::json!({
+                "root": root,
+                "activeEntrypoints": {
+                    "ffmpeg": "packages/ffmpeg-cpu/8.1/ffmpeg.exe",
+                    "ffprobe": "packages/ffmpeg-cpu/8.1/ffprobe.exe",
+                    "whisper": "packages/whisper-cpu-upstream/1.9.1/whisper-cli.exe",
+                    "default_model": "models/transcription-model/base-test/ggml-base.bin"
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let paths = discover_runtime_with_config(None, &config_path).unwrap();
+        assert_eq!(paths.whisper.as_deref(), Some(whisper.as_path()));
+        assert_eq!(paths.default_model.as_deref(), Some(model.as_path()));
+        assert!(paths.whisper_vad_model.is_none());
+        assert!(paths.whisper_vulkan.is_none());
+    }
+
+    #[test]
     fn reaches_core_health_contract_over_named_pipe() {
         let home = tempfile::tempdir().unwrap();
         let response = execute_core_over_named_pipe(&["health".into()], home.path()).unwrap();

@@ -761,6 +761,8 @@ enum ResourceCommand {
     },
     Install {
         capability: String,
+        #[arg(long)]
+        profile: Option<String>,
     },
     Job {
         job_id: String,
@@ -2107,8 +2109,11 @@ fn run(cli: Cli) -> Result<Value> {
                 "localResources": local_resources::configure(&database, &root)?,
                 "message": "本地资源保存位置已设置。"
             }))),
-            ResourceCommand::Install { capability } => Ok(envelope(json!({
-                "resourceJob": resource_jobs::create_install(&database, &capability)?,
+            ResourceCommand::Install {
+                capability,
+                profile,
+            } => Ok(envelope(json!({
+                "resourceJob": resource_jobs::create_install(&database, &capability, profile.as_deref())?,
                 "message": "正在准备所需的本地资源。"
             }))),
             ResourceCommand::Job { job_id } => Ok(envelope(json!({

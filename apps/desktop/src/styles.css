@@ -493,6 +493,17 @@ h2 { margin: 4px 0 0; font-size: 15px; letter-spacing: -.02em; }
 .resource-location strong, .local-resource-location strong { overflow: hidden; color: var(--text-primary); text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .resource-location .button, .local-resource-location .button { flex: 0 0 auto; }
 .resource-confirm-location { margin-top: 8px !important; }
+.resource-profiles { margin: 13px 0 0; border: 0; padding: 0; }
+.resource-profiles legend { color: var(--text-primary); font-size: 13px; font-weight: 650; }
+.resource-profiles > p { margin: 4px 0 9px; color: var(--text-muted); font-size: 12px; line-height: 1.5; }
+.resource-profiles > div { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
+.resource-profiles label { position: relative; display: grid; min-width: 0; cursor: pointer; border: 1px solid var(--border-default); border-radius: var(--radius-control); background: var(--bg-control); padding: 9px; }
+.resource-profiles label.selected { border-color: var(--brand); background: var(--brand-soft); }
+.resource-profiles input { position: absolute; opacity: 0; pointer-events: none; }
+.resource-profiles label span { display: grid; gap: 4px; }
+.resource-profiles label strong { color: var(--text-primary); font-size: 12px; }
+.resource-profiles label small { color: var(--text-muted); font-size: 12px; line-height: 1.45; }
+.resource-profiles label em { justify-self: start; margin-top: 7px; border-radius: 999px; background: var(--brand); padding: 2px 6px; color: var(--text-on-accent); font-size: 12px; font-style: normal; }
 .resource-recommendation { margin-top: 13px; border: 1px solid var(--brand-border); border-radius: var(--radius-panel); background: color-mix(in srgb, var(--brand-soft) 54%, var(--bg-panel)); padding: 13px; }
 .resource-recommendation > header { display: flex; align-items: center; justify-content: space-between; color: var(--brand); }
 .resource-recommendation > header span { display: grid; gap: 3px; }
@@ -539,7 +550,7 @@ h2 { margin: 4px 0 0; font-size: 15px; letter-spacing: -.02em; }
 .resource-diagnostics > summary strong { color: var(--text-primary); font-size: 12px; }
 .resource-diagnostics > summary small { color: var(--text-muted); font-size: 12px; }
 .resource-diagnostics > div { border-top: 1px solid var(--border-subtle); padding: 13px; }
-@media (max-width: 680px) { .local-capability-grid, .resource-recommendation dl { grid-template-columns: 1fr; } .resource-location, .local-resource-location { align-items: stretch; flex-direction: column; } }
+@media (max-width: 680px) { .local-capability-grid, .resource-recommendation dl, .resource-profiles > div { grid-template-columns: 1fr; } .resource-location, .local-resource-location { align-items: stretch; flex-direction: column; } }
 .subtitle-import-dialog { width: min(640px, calc(100vw - 40px)); }
 .subtitle-structure-dialog { width: min(620px, calc(100vw - 40px)); }
 .subtitle-operation-scope { margin-top: 15px; border: 1px solid var(--border-default); border-radius: var(--radius-panel); background: var(--bg-panel-raised); }

@@ -42,6 +42,7 @@ describe("local resource setup", () => {
     const common = {
       reason: "first_run" as const,
       capability: "basic_media" as const,
+      profile: "standard" as const,
       plan,
       job: null,
       busy: false,
@@ -49,6 +50,7 @@ describe("local resource setup", () => {
       onClose: vi.fn(),
       onChooseLocation,
       onConfirmLocation,
+      onProfileChange: vi.fn(),
       onStart,
       onCancel: vi.fn(),
       onResume: vi.fn(),
@@ -75,6 +77,36 @@ describe("local resource setup", () => {
     expect(onStart).toHaveBeenCalledOnce();
   });
 
+  it("offers product-level fast standard and quality transcription profiles", () => {
+    const onProfileChange = vi.fn();
+    render(<LocalResourceSetupDialog
+      reason="manage"
+      capability="local_transcription"
+      profile="standard"
+      status={{ ...unconfiguredStatus, configured: true, root: "E:\\SiaoCut Resources", rootAvailable: true, writable: true, needsSetup: false }}
+      plan={{ ...plan, capabilityId: "local_transcription", transcriptionProfile: "standard", downloadBytes: 226_444_528 }}
+      job={null}
+      selectedRoot=""
+      busy={false}
+      error={null}
+      onClose={vi.fn()}
+      onChooseLocation={vi.fn()}
+      onConfirmLocation={vi.fn()}
+      onProfileChange={onProfileChange}
+      onStart={vi.fn()}
+      onCancel={vi.fn()}
+      onResume={vi.fn()}
+      onDefer={vi.fn()}
+    />);
+
+    expect(screen.getByRole("radio", { name: /快速/ })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /标准/ })).toBeChecked();
+    expect(screen.getByRole("radio", { name: /高质量/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("radio", { name: /高质量/ }));
+    expect(onProfileChange).toHaveBeenCalledWith("quality");
+    expect(document.body).not.toHaveTextContent(/ggml-|whisper\.cpp|CUDA|Vulkan/);
+  });
+
   it("shows product capabilities without raw component identities", () => {
     const ready = {
       ...unconfiguredStatus,
@@ -89,6 +121,8 @@ describe("local resource setup", () => {
 
     expect(screen.getByText("基础媒体处理")).toBeInTheDocument();
     expect(screen.getByText("URL 导入")).toBeInTheDocument();
+    expect(screen.getByText("本地转录")).toBeInTheDocument();
+    expect(screen.getByText("说话人识别")).toBeInTheDocument();
     expect(document.body).not.toHaveTextContent(/FFmpeg|FFprobe|yt-dlp|whisper\.cpp|SIAOCUT_|SHA-?256/);
   });
 });

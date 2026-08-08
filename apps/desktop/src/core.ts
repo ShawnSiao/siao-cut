@@ -201,7 +201,10 @@ export async function pickModel(): Promise<string | null> {
 }
 
 export async function authorizeMedia(projectId: string): Promise<string | null> {
-  if (!isTauri()) return null;
+  if (!isTauri()) {
+    const { mockAuthorizeMedia } = await import("./core.mock");
+    return mockAuthorizeMedia();
+  }
   const path = await invoke<string>("authorize_media", { projectId });
   return convertFileSrc(path);
 }

@@ -1,11 +1,11 @@
 import { runCore } from "../core";
-import type { LocalCapabilityId } from "../types";
+import type { LocalCapabilityId, LocalTranscriptionProfile } from "../types";
 
 export const localResourceClient = {
   status: () => runCore(["resources", "status"]),
-  plan: (capability: LocalCapabilityId) => runCore(["resources", "plan", capability]),
+  plan: (capability: LocalCapabilityId, profile?: LocalTranscriptionProfile) => runCore(["resources", "plan", capability, ...(profile ? ["--profile", profile] : [])]),
   configure: (root: string) => runCore(["resources", "configure", "--root", root]),
-  install: (capability: LocalCapabilityId) => runCore(["resources", "install", capability]),
+  install: (capability: LocalCapabilityId, profile?: LocalTranscriptionProfile) => runCore(["resources", "install", capability, ...(profile ? ["--profile", profile] : [])]),
   getJob: (jobId: string) => runCore(["resources", "job", jobId]),
   listJobs: () => runCore(["resources", "jobs"]),
   cancel: (jobId: string) => runCore(["resources", "cancel", jobId]),

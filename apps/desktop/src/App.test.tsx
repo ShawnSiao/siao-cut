@@ -2,7 +2,7 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App, { AUTO_WORKFLOW_DISMISSED_STORAGE_KEY, PatchReviewCard, TRANSCRIPTION_LANGUAGE_STORAGE_KEY, agentTaskStatusLabel, clearTransientCoreError, getProjectCapabilities, isHttpsSourceUrl, parseDismissedAutoWorkflowIds, parseExportPreferences, parseTranscriptionLanguage, resolveCanvasMedia, resolveCaptionKaraokeStyle, resolveCaptionSegment, resolveImportedProjectMedia, resolvePlaybackDuration, shouldCheckForUpdates, startSerialPolling, taskLabel, upsertAutoWorkflowSnapshot } from "./App";
-import { mockRun, resetMockLocalResourcesForTest, setMockLocalResourcesForTest } from "./core.mock";
+import { mockRun, resetMockLocalResourcesForTest, resetMockProjectForTest, setMockAuthorizedMediaForTest, setMockLocalResourcesForTest, setMockProjectForTest } from "./core.mock";
 import { agentReviewClient } from "./domains/agent-review-client";
 import { projectSessionClient } from "./domains/project-session-client";
 import { transcriptEditingClient } from "./domains/transcript-editing-client";
@@ -19,6 +19,7 @@ afterEach(() => {
   localStorage.removeItem(TIMELINE_PREFERENCES_STORAGE_KEY);
   localStorage.removeItem("siaocut.localResourcesSetupDeferred.v1");
   resetMockLocalResourcesForTest();
+  resetMockProjectForTest();
   vi.useRealTimers();
   vi.restoreAllMocks();
 });
@@ -1208,6 +1209,47 @@ describe("SiaoCut review workbench", () => {
     expect(screen.queryByRole("dialog", { name: "准备 SiaoCut" })).not.toBeInTheDocument();
   });
 
+  it("prepares the selected transcription profile and resumes the original transcription", async () => {
+    const emptyProject = structuredClone(sampleProject);
+    emptyProject.media.sourcePath = "D:\\Media\\local-resource-test.mp4";
+    emptyProject.transcript = { sourceLanguage: "auto", segments: [], words: [] };
+    emptyProject.translations = {};
+    emptyProject.edits = [];
+    emptyProject.tasks = [];
+    emptyProject.patchSets = [];
+    setMockProjectForTest(emptyProject);
+    setMockLocalResourcesForTest({
+      configured: true,
+      root: "E:\\SiaoCut Resources",
+      rootAvailable: true,
+      writable: true,
+      availableBytes: 128 * 1024 * 1024 * 1024,
+      transcriptionProfile: "standard",
+      capabilities: [
+        { id: "basic_media", name: "基础媒体处理", state: "ready", enabled: true },
+        { id: "url_import", name: "URL 导入", state: "ready", enabled: true },
+        { id: "local_transcription", name: "本地转录", state: "not_ready", enabled: false },
+        { id: "speaker_identity", name: "说话人识别", state: "not_ready", enabled: false },
+      ],
+      needsSetup: false,
+    });
+    setMockAuthorizedMediaForTest("mock://local-media");
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: new RegExp(`^${emptyProject.title}`) }));
+    const start = await screen.findByRole("button", { name: "开始转写" });
+    await waitFor(() => expect(start).toBeEnabled());
+    fireEvent.click(start);
+    const setup = await screen.findByRole("dialog", { name: "准备 SiaoCut" });
+    expect(within(setup).getByRole("radio", { name: /标准/ })).toBeChecked();
+    fireEvent.click(within(setup).getByRole("radio", { name: /高质量/ }));
+    await waitFor(() => expect(within(setup).getByRole("radio", { name: /高质量/ })).toBeChecked());
+    fireEvent.click(within(setup).getByRole("button", { name: "准备并继续" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "准备 SiaoCut" })).not.toBeInTheDocument());
+    expect(await screen.findByText(/未检测到清晰人声/)).toBeInTheDocument();
+  });
+
   it("cancels a URL import without a project and only resumes explicitly", async () => {
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "从 URL 导入" }));
@@ -1424,18 +1466,14 @@ describe("SiaoCut review workbench", () => {
     expect(within(speakerPanel).getByText(/可选模型尚未安装/)).toBeInTheDocument();
     expect(screen.getByLabelText("00:12 字幕文本")).toHaveValue("嗯，");
 
-    fireEvent.click(within(speakerPanel).getByRole("button", { name: "查看模型来源与安装" }));
-    const dialog = await screen.findByRole("dialog", { name: "本地资源" });
-    openResourceDiagnostics(dialog);
-    const packagePanel = within(dialog).getByRole("region", { name: "说话人模型包" });
-    expect(within(packagePanel).getByText("sherpa-onnx 1.13.2 · CPU 本地运行")).toBeInTheDocument();
-    expect(within(packagePanel).getByText("Apache-2.0 / MIT")).toBeInTheDocument();
-    expect(within(packagePanel).getByText(/只有点击「明确安装」/)).toBeInTheDocument();
-    fireEvent.click(within(packagePanel).getByRole("button", { name: "明确安装" }));
-    await waitFor(() => expect(within(packagePanel).getByText("可以开始本地说话人分析")).toBeInTheDocument());
-    fireEvent.click(within(dialog).getByRole("button", { name: "关闭本地资源" }));
+    fireEvent.click(within(speakerPanel).getByRole("button", { name: "准备说话人识别" }));
+    const dialog = await screen.findByRole("dialog", { name: "准备 SiaoCut" });
+    expect(within(dialog).getByText("说话人识别")).toBeInTheDocument();
+    expect(dialog).not.toHaveTextContent(/sherpa|onnx|pyannote|SHA-?256/);
+    fireEvent.click(within(dialog).getByRole("button", { name: "准备并继续" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "准备 SiaoCut" })).not.toBeInTheDocument());
 
-    fireEvent.click(within(speakerPanel).getByRole("button", { name: "开始本地分析" }));
+    fireEvent.click(within(await screen.findByRole("region", { name: "说话人轨" })).getByRole("button", { name: "开始本地分析" }));
     await waitFor(() => expect(within(speakerPanel).getByLabelText("当前字幕说话人")).toHaveValue("voice-a"));
     expect(screen.getByLabelText("00:12 字幕文本")).toHaveValue("嗯，");
 

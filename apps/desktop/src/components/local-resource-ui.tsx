@@ -2,7 +2,7 @@ import { CheckCircle2, CircleAlert, Download, FolderOpen, HardDrive, LoaderCircl
 import type { RefObject } from "react";
 import { formatBytes } from "../app-view-model";
 import { tr } from "../i18n";
-import type { LocalCapabilityId, LocalCapabilityStatus, LocalResourceJob, LocalResourcePlan, LocalResourceStatus } from "../types";
+import type { LocalCapabilityId, LocalCapabilityStatus, LocalResourceJob, LocalResourcePlan, LocalResourceStatus, LocalTranscriptionProfile } from "../types";
 import { Dialog } from "./ui";
 
 function capabilityLabel(id: LocalCapabilityId) {
@@ -38,6 +38,8 @@ function jobStageLabel(job: LocalResourceJob) {
   return tr("app.resources.job.downloading");
 }
 
+const transcriptionProfiles: LocalTranscriptionProfile[] = ["fast", "standard", "quality"];
+
 type LocalResourceSetupDialogProps = {
   returnFocusRef?: RefObject<HTMLElement | null>;
   reason: "first_run" | "on_demand" | "manage";
@@ -45,12 +47,14 @@ type LocalResourceSetupDialogProps = {
   status: LocalResourceStatus | null;
   plan: LocalResourcePlan | null;
   job: LocalResourceJob | null;
+  profile: LocalTranscriptionProfile;
   selectedRoot: string;
   busy: boolean;
   error: string | null;
   onClose: () => void;
   onChooseLocation: () => void;
   onConfirmLocation: () => void;
+  onProfileChange: (profile: LocalTranscriptionProfile) => void;
   onStart: () => void;
   onCancel: () => void;
   onResume: () => void;
@@ -78,6 +82,15 @@ export function LocalResourceSetupDialog(props: LocalResourceSetupDialogProps) {
       <button className="button quiet" disabled={props.busy || Boolean(active)} onClick={props.onChooseLocation}><FolderOpen size={14}/>{props.status?.configured ? tr("app.resources.changeLocation") : tr("app.resources.chooseLocation")}</button>
     </section>
     {pendingLocation && <button className="button primary full resource-confirm-location" disabled={props.busy} onClick={props.onConfirmLocation}><CheckCircle2 size={14}/>{tr("app.resources.confirmLocation")}</button>}
+    {props.capability === "local_transcription" && <fieldset className="resource-profiles" disabled={props.busy || Boolean(active)}>
+      <legend>{tr("app.resources.profile.title")}</legend>
+      <p>{tr("app.resources.profile.description")}</p>
+      <div>{transcriptionProfiles.map((profile) => <label key={profile} className={props.profile === profile ? "selected" : ""}>
+        <input type="radio" name="resource-transcription-profile" value={profile} checked={props.profile === profile} onChange={() => props.onProfileChange(profile)}/>
+        <span><strong>{tr(`app.resources.profile.${profile}`)}</strong><small>{tr(`app.resources.profile.${profile}.description`)}</small></span>
+        {profile === "standard" && <em>{tr("app.resources.profile.recommended")}</em>}
+      </label>)}</div>
+    </fieldset>}
     <section className="resource-recommendation" aria-label={tr("app.resources.preparationPlan")}>
       <header><span><small>{tr("app.resources.preparationPlan")}</small><strong>{capabilityLabel(props.capability)}</strong></span><Download size={18}/></header>
       <p>{capabilityDescription(props.capability)}</p>
@@ -110,11 +123,10 @@ export function LocalResourcePanel({ status, job, busy, onPrepare, onChangeLocat
     <header><span><strong>{tr("app.resources.title")}</strong><small>{tr("app.resources.panelDescription")}</small></span><HardDrive size={19}/></header>
     <div className="local-resource-location"><span><small>{tr("app.resources.location")}</small><strong title={status?.root ?? undefined}>{status?.root ?? tr("app.resources.locationMissing")}</strong></span><button className="button quiet" disabled={busy || Boolean(job && ["queued", "running"].includes(job.status))} onClick={onChangeLocation}><FolderOpen size={14}/>{status?.configured ? tr("app.resources.changeLocation") : tr("app.resources.chooseLocation")}</button></div>
     <div className="local-capability-grid">{status?.capabilities.map((capability) => {
-      const supported = capability.id === "basic_media" || capability.id === "url_import";
       const activeJob = job?.capabilityId === capability.id && ["queued", "running"].includes(job.status);
       return <article key={capability.id} className={capability.state}>
         <header><span><strong>{capabilityLabel(capability.id)}</strong><small>{capabilityDescription(capability.id)}</small></span><i>{capability.state === "ready" ? <CheckCircle2 size={16}/> : activeJob ? <LoaderCircle className="spin" size={16}/> : <CircleAlert size={16}/>}</i></header>
-        <footer><span>{activeJob ? tr("app.resources.state.preparing") : stateLabel(capability)}</span><div>{supported && capability.state !== "ready" && <button disabled={busy || Boolean(job)} onClick={() => onPrepare(capability.id)}>{capability.state === "needs_repair" ? tr("app.resources.repair") : tr("app.resources.prepare")}</button>}{supported && capability.state === "ready" && <button className="danger-link" disabled={busy || Boolean(job)} onClick={() => onRemove(capability.id)}><Trash2 size={13}/>{tr("app.resources.remove")}</button>}{!supported && <small>{tr("app.resources.nextPhase")}</small>}</div></footer>
+        <footer><span>{activeJob ? tr("app.resources.state.preparing") : stateLabel(capability)}</span><div>{capability.state !== "ready" && <button disabled={busy || Boolean(job)} onClick={() => onPrepare(capability.id)}>{capability.state === "needs_repair" ? tr("app.resources.repair") : tr("app.resources.prepare")}</button>}{capability.state === "ready" && <button className="danger-link" disabled={busy || Boolean(job)} onClick={() => onRemove(capability.id)}><Trash2 size={13}/>{tr("app.resources.remove")}</button>}</div></footer>
       </article>;
     })}</div>
   </section>;

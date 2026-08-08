@@ -322,6 +322,7 @@ export type ModelDownloadJob = {
 };
 
 export type LocalCapabilityId = "basic_media" | "url_import" | "local_transcription" | "speaker_identity";
+export type LocalTranscriptionProfile = "fast" | "standard" | "quality";
 
 export type LocalCapabilityStatus = {
   id: LocalCapabilityId;
@@ -336,7 +337,7 @@ export type LocalResourceStatus = {
   rootAvailable: boolean;
   writable: boolean;
   availableBytes: number | null;
-  transcriptionProfile: "fast" | "standard" | "quality";
+  transcriptionProfile: LocalTranscriptionProfile;
   capabilities: LocalCapabilityStatus[];
   needsSetup: boolean;
 };
@@ -344,7 +345,7 @@ export type LocalResourceStatus = {
 export type LocalResourcePlan = {
   capabilityId: LocalCapabilityId;
   capabilityName: string;
-  transcriptionProfile: "fast" | "standard" | "quality" | null;
+  transcriptionProfile: LocalTranscriptionProfile | null;
   downloadBytes: number;
   unknownSize: boolean;
 };

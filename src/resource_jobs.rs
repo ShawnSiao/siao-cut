@@ -1,9 +1,11 @@
 use crate::{
     db,
     local_resources::{
-        LocalResourceConfig, config_path, read_config_at, same_path, write_config_at, write_probe,
+        LocalResourceConfig, config_path, model_id_for_profile, read_config_at, same_path,
+        validate_profile, write_config_at, write_probe,
     },
     media::hash_file,
+    speaker,
     util::{new_id, now},
 };
 use anyhow::{Context, Result, anyhow, bail};
@@ -28,6 +30,8 @@ const SPACE_RESERVE: u64 = 128 * 1024 * 1024;
 #[serde(rename_all = "camelCase")]
 struct Catalog {
     components: Vec<CatalogComponent>,
+    models: Vec<CatalogModel>,
+    speaker_packages: Vec<CatalogSpeakerPackage>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -40,13 +44,57 @@ struct CatalogComponent {
     sha256: Option<String>,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CatalogModel {
+    id: String,
+    file_name: String,
+    url: String,
+    size: u64,
+    sha256: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CatalogSpeakerPackage {
+    id: String,
+    version: String,
+    downloads: Vec<CatalogDownload>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CatalogDownload {
+    id: String,
+    url: String,
+    size: u64,
+    sha256: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum SpeakerAssetKind {
+    Runtime,
+    Segmentation,
+    Embedding,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum InstallKind {
+    ZipPackage,
+    Executable,
+    Model { file_name: String },
+    Speaker(SpeakerAssetKind),
+}
+
 #[derive(Clone, Debug)]
 struct InstallSpec {
     id: String,
+    activation_id: String,
     version: String,
     url: String,
     size: u64,
     sha256: String,
+    kind: InstallKind,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -82,41 +130,120 @@ fn parse_catalog() -> Result<Catalog> {
         .map_err(|error| anyhow!("resource_catalog_invalid: 内置资源清单无效：{error}"))
 }
 
-fn specs_for_capability(capability: &str) -> Result<Vec<InstallSpec>> {
-    let wanted = match capability {
-        "basic_media" => &["ffmpeg-cpu"][..],
-        "url_import" => &["ffmpeg-cpu", "yt-dlp"][..],
-        "local_transcription" | "speaker_identity" => {
-            bail!("resource_capability_not_installable: 此能力将在后续阶段接入")
+fn component_spec(catalog: &Catalog, id: &str, kind: InstallKind) -> Result<InstallSpec> {
+    let component = catalog
+        .components
+        .iter()
+        .find(|component| component.id == id)
+        .ok_or_else(|| anyhow!("resource_catalog_invalid: 内置资源清单缺少 {id}"))?;
+    let spec = InstallSpec {
+        id: component.id.clone(),
+        activation_id: component.id.clone(),
+        version: component.version.clone(),
+        url: component
+            .url
+            .clone()
+            .ok_or_else(|| anyhow!("resource_catalog_invalid: 内置资源清单缺少 {id} 下载地址"))?,
+        size: component
+            .size
+            .ok_or_else(|| anyhow!("resource_catalog_invalid: 内置资源清单缺少 {id} 文件大小"))?,
+        sha256: component
+            .sha256
+            .clone()
+            .ok_or_else(|| anyhow!("resource_catalog_invalid: 内置资源清单缺少 {id} 校验值"))?,
+        kind,
+    };
+    validate_install_spec(&spec)?;
+    Ok(spec)
+}
+
+fn specs_for_capability(capability: &str, profile: &str) -> Result<Vec<InstallSpec>> {
+    let catalog = parse_catalog()?;
+    let mut specs = vec![component_spec(
+        &catalog,
+        "ffmpeg-cpu",
+        InstallKind::ZipPackage,
+    )?];
+    match capability {
+        "basic_media" => {}
+        "url_import" => specs.push(component_spec(&catalog, "yt-dlp", InstallKind::Executable)?),
+        "local_transcription" => {
+            validate_profile(profile)?;
+            specs.push(component_spec(
+                &catalog,
+                "whisper-cpu-upstream",
+                InstallKind::ZipPackage,
+            )?);
+            let model_id = model_id_for_profile(profile)?;
+            let model = catalog
+                .models
+                .iter()
+                .find(|model| model.id == model_id)
+                .ok_or_else(|| anyhow!("resource_catalog_invalid: 内置资源清单缺少转录模型"))?;
+            validate_catalog_segment(&model.id)?;
+            validate_catalog_segment(&model.file_name)?;
+            if model.sha256.len() != 64
+                || !model.sha256.chars().all(|value| value.is_ascii_hexdigit())
+            {
+                bail!("resource_catalog_invalid: 内置转录模型包含无效校验值")
+            }
+            let spec = InstallSpec {
+                id: format!("transcription-model-{}", model.id),
+                activation_id: "transcription-model".into(),
+                version: format!("{}-{}", model.id, &model.sha256[..12]),
+                url: model.url.clone(),
+                size: model.size,
+                sha256: model.sha256.clone(),
+                kind: InstallKind::Model {
+                    file_name: model.file_name.clone(),
+                },
+            };
+            validate_install_spec(&spec)?;
+            specs.push(spec);
+        }
+        "speaker_identity" => {
+            let package = catalog
+                .speaker_packages
+                .iter()
+                .find(|package| package.id == speaker::PACKAGE_ID)
+                .ok_or_else(|| anyhow!("resource_catalog_invalid: 内置资源清单缺少说话人资源包"))?;
+            let roles = [
+                ("sherpa-onnx-runtime", SpeakerAssetKind::Runtime),
+                ("pyannote-segmentation-3.0", SpeakerAssetKind::Segmentation),
+                ("3dspeaker-eres2net-base-16k", SpeakerAssetKind::Embedding),
+            ];
+            for (id, role) in roles {
+                let download = package
+                    .downloads
+                    .iter()
+                    .find(|item| item.id == id)
+                    .ok_or_else(|| anyhow!("resource_catalog_invalid: 说话人资源包缺少 {id}"))?;
+                let spec = InstallSpec {
+                    id: format!("speaker-{id}"),
+                    activation_id: "speaker_identity".into(),
+                    version: package.version.clone(),
+                    url: download.url.clone(),
+                    size: download.size,
+                    sha256: download.sha256.clone(),
+                    kind: InstallKind::Speaker(role),
+                };
+                validate_install_spec(&spec)?;
+                specs.push(spec);
+            }
         }
         _ => bail!("resource_capability_invalid: 未知的本地能力"),
-    };
-    let catalog = parse_catalog()?;
-    wanted
-        .iter()
-        .map(|id| {
-            let component = catalog
-                .components
-                .iter()
-                .find(|component| component.id == *id)
-                .ok_or_else(|| anyhow!("resource_catalog_invalid: 内置资源清单缺少 {id}"))?;
-            validate_catalog_segment(&component.id)?;
-            validate_catalog_segment(&component.version)?;
-            Ok(InstallSpec {
-                id: component.id.clone(),
-                version: component.version.clone(),
-                url: component.url.clone().ok_or_else(|| {
-                    anyhow!("resource_catalog_invalid: 内置资源清单缺少 {} 下载地址", id)
-                })?,
-                size: component.size.ok_or_else(|| {
-                    anyhow!("resource_catalog_invalid: 内置资源清单缺少 {} 文件大小", id)
-                })?,
-                sha256: component.sha256.clone().ok_or_else(|| {
-                    anyhow!("resource_catalog_invalid: 内置资源清单缺少 {} 校验值", id)
-                })?,
-            })
-        })
-        .collect()
+    }
+    Ok(specs)
+}
+
+fn validate_install_spec(spec: &InstallSpec) -> Result<()> {
+    validate_catalog_segment(&spec.id)?;
+    validate_catalog_segment(&spec.activation_id)?;
+    validate_catalog_segment(&spec.version)?;
+    if spec.sha256.len() != 64 || !spec.sha256.chars().all(|value| value.is_ascii_hexdigit()) {
+        bail!("resource_catalog_invalid: 内置资源清单包含无效校验值")
+    }
+    Ok(())
 }
 
 fn validate_catalog_segment(value: &str) -> Result<()> {
@@ -133,18 +260,23 @@ fn required_entrypoint_keys(component: &str) -> &'static [&'static str] {
     match component {
         "ffmpeg-cpu" => &["ffmpeg", "ffprobe"],
         "yt-dlp" => &["yt_dlp"],
+        "whisper-cpu-upstream" => &["whisper"],
+        "transcription-model" => &["default_model"],
+        "speaker_identity" => &["speaker"],
         _ => &[],
     }
 }
 
 fn component_is_active(config: &LocalResourceConfig, spec: &InstallSpec) -> bool {
-    config.active_versions.get(&spec.id) == Some(&spec.version)
-        && required_entrypoint_keys(&spec.id).iter().all(|key| {
-            config
-                .active_entrypoints
-                .get(*key)
-                .is_some_and(|relative| config.root.join(relative).is_file())
-        })
+    config.active_versions.get(&spec.activation_id) == Some(&spec.version)
+        && required_entrypoint_keys(&spec.activation_id)
+            .iter()
+            .all(|key| {
+                config
+                    .active_entrypoints
+                    .get(*key)
+                    .is_some_and(|relative| config.root.join(relative).is_file())
+            })
 }
 
 fn require_config_at(path: &Path) -> Result<LocalResourceConfig> {
@@ -157,9 +289,42 @@ fn require_config_at(path: &Path) -> Result<LocalResourceConfig> {
     Ok(config)
 }
 
-pub fn create_install(db: &Connection, capability: &str) -> Result<ResourceJob> {
-    let specs = specs_for_capability(capability)?;
-    create_install_in(db, capability, &config_path(), &specs, spawn_worker)
+pub fn create_install(
+    db: &Connection,
+    capability: &str,
+    profile: Option<&str>,
+) -> Result<ResourceJob> {
+    let locator = config_path();
+    let mut config = require_config_at(&locator)?;
+    if let Some(active) = active_job(db)? {
+        if active.capability_id == capability {
+            return Ok(active);
+        }
+        bail!("resource_job_active: 另一项本地资源正在准备中")
+    }
+    let legacy_job_active: bool = db.query_row(
+        "SELECT
+             EXISTS(SELECT 1 FROM model_downloads WHERE status IN ('queued','running'))
+             OR EXISTS(SELECT 1 FROM speaker_jobs WHERE status IN ('queued','running'))",
+        [],
+        |row| row.get(0),
+    )?;
+    if legacy_job_active {
+        bail!("resource_job_active: 另一项本地资源正在准备中")
+    }
+    if capability != "local_transcription" && profile.is_some() {
+        bail!("resource_profile_not_applicable: 此能力不使用转录方案")
+    }
+    if let Some(profile) = profile {
+        validate_profile(profile)?;
+        if config.transcription_profile != profile {
+            config.transcription_profile = profile.to_owned();
+            config.updated_at = now();
+            write_config_at(&locator, &config)?;
+        }
+    }
+    let specs = specs_for_capability(capability, &config.transcription_profile)?;
+    create_install_in(db, capability, &locator, &specs, spawn_worker)
 }
 
 fn create_install_in(
@@ -189,9 +354,13 @@ fn create_install_in(
     let partial_bytes = specs
         .iter()
         .map(|spec| {
-            fs::metadata(partial_path(&config.root, spec))
-                .map(|metadata| metadata.len().min(spec.size))
-                .unwrap_or(0)
+            if component_is_active(&config, spec) {
+                spec.size
+            } else {
+                fs::metadata(partial_path(&config.root, spec))
+                    .map(|metadata| metadata.len().min(spec.size))
+                    .unwrap_or(0)
+            }
         })
         .sum::<u64>();
     let remaining = total_bytes.saturating_sub(partial_bytes);
@@ -378,7 +547,30 @@ fn resume_in(
 }
 
 pub fn repair(db: &Connection, capability: &str) -> Result<ResourceJob> {
-    create_install(db, capability)
+    create_install(db, capability, None)
+}
+
+fn components_to_remove(
+    config: &LocalResourceConfig,
+    capability: &str,
+) -> Result<&'static [&'static str]> {
+    Ok(match capability {
+        "url_import" => &["yt-dlp"],
+        "basic_media" => {
+            if config.enabled_capabilities.iter().any(|enabled| {
+                matches!(
+                    enabled.as_str(),
+                    "url_import" | "local_transcription" | "speaker_identity"
+                )
+            }) {
+                bail!("resource_dependency_required: 其他本地能力仍需要基础媒体处理")
+            }
+            &["ffmpeg-cpu"]
+        }
+        "local_transcription" => &["whisper-cpu-upstream", "transcription-model"],
+        "speaker_identity" => &["speaker_identity"],
+        _ => bail!("resource_capability_invalid: 未知的本地能力"),
+    })
 }
 
 pub fn remove(db: &Connection, capability: &str) -> Result<()> {
@@ -387,20 +579,17 @@ pub fn remove(db: &Connection, capability: &str) -> Result<()> {
     if active_job(db)?.is_some() {
         bail!("resource_job_active: 请先完成或取消正在进行的本地资源任务")
     }
-    let component_ids = match capability {
-        "url_import" => &["yt-dlp"][..],
-        "basic_media" => {
-            if config
-                .enabled_capabilities
-                .iter()
-                .any(|enabled| enabled == "url_import")
-            {
-                bail!("resource_dependency_required: URL 导入仍需要基础媒体能力")
-            }
-            &["ffmpeg-cpu"][..]
-        }
-        _ => bail!("resource_capability_not_installable: 此能力将在后续阶段接入"),
-    };
+    let legacy_job_active: bool = db.query_row(
+        "SELECT
+             EXISTS(SELECT 1 FROM model_downloads WHERE status IN ('queued','running'))
+             OR EXISTS(SELECT 1 FROM speaker_jobs WHERE status IN ('queued','running'))",
+        [],
+        |row| row.get(0),
+    )?;
+    if legacy_job_active {
+        bail!("resource_job_active: 请先完成或取消正在进行的本地资源任务")
+    }
+    let component_ids = components_to_remove(&config, capability)?;
     let removal_root = config
         .root
         .join("staging")
@@ -411,7 +600,11 @@ pub fn remove(db: &Connection, capability: &str) -> Result<()> {
             if Path::new(&version).components().count() != 1 {
                 bail!("resource_config_invalid: 本地资源版本路径无效")
             }
-            let package = config.root.join("packages").join(component).join(version);
+            let package = if *component == "transcription-model" {
+                config.root.join("models").join(component).join(version)
+            } else {
+                config.root.join("packages").join(component).join(version)
+            };
             if package.is_dir() {
                 fs::create_dir_all(&removal_root)
                     .context("resource_remove_failed: 无法创建资源移除暂存目录")?;
@@ -501,8 +694,10 @@ fn run_worker(job_id: &str, capability: &str) -> Result<()> {
         thread::sleep(Duration::from_millis(delay));
     }
     let db = db::open()?;
-    let specs = specs_for_capability(capability)?;
-    run_install_attempt_in(&db, job_id, capability, &config_path(), &specs)
+    let locator = config_path();
+    let config = require_config_at(&locator)?;
+    let specs = specs_for_capability(capability, &config.transcription_profile)?;
+    run_install_attempt_in(&db, job_id, capability, &locator, &specs)
 }
 
 fn run_install_attempt_in(
@@ -558,6 +753,7 @@ fn install_in(
     let total = specs.iter().map(|spec| spec.size).sum::<u64>();
     let mut completed = 0_u64;
     let mut activations = Vec::new();
+    let mut speaker_assets = BTreeMap::new();
     for spec in specs {
         if cancellation_requested(db, job_id)? {
             finish_cancelled(db, job_id)?;
@@ -576,9 +772,21 @@ fn install_in(
             completed.saturating_add(spec.size),
             total,
         )?;
-        let activation = stage_component(&config.root, job_id, spec, &asset)?;
-        activations.push(activation);
+        if let InstallKind::Speaker(role) = &spec.kind {
+            speaker_assets.insert(*role, asset);
+        } else {
+            let activation = stage_component(&config.root, job_id, spec, &asset)?;
+            activations.push(activation);
+        }
         completed = completed.saturating_add(spec.size);
+    }
+    if !speaker_assets.is_empty() {
+        activations.push(stage_speaker_package(
+            &config.root,
+            job_id,
+            specs,
+            &speaker_assets,
+        )?);
     }
 
     let current = require_config_at(locator)?;
@@ -600,8 +808,11 @@ fn install_in(
         }
     }
     enable_capability(&mut config, "basic_media");
-    if capability == "url_import" {
-        enable_capability(&mut config, "url_import");
+    match capability {
+        "url_import" => enable_capability(&mut config, "url_import"),
+        "local_transcription" => enable_capability(&mut config, "local_transcription"),
+        "speaker_identity" => enable_capability(&mut config, "speaker_identity"),
+        _ => {}
     }
     config.updated_at = now();
     let tx = Transaction::new_unchecked(db, TransactionBehavior::Immediate)
@@ -639,10 +850,14 @@ fn enable_capability(config: &mut LocalResourceConfig, capability: &str) {
 }
 
 fn asset_extension(spec: &InstallSpec) -> &'static str {
-    match spec.id.as_str() {
-        "ffmpeg-cpu" => "zip",
-        "yt-dlp" => "exe",
-        _ => "bin",
+    match &spec.kind {
+        InstallKind::ZipPackage => "zip",
+        InstallKind::Executable => "exe",
+        InstallKind::Model { .. } => "bin",
+        InstallKind::Speaker(SpeakerAssetKind::Runtime | SpeakerAssetKind::Segmentation) => {
+            "tar.bz2"
+        }
+        InstallKind::Speaker(SpeakerAssetKind::Embedding) => "onnx",
     }
 }
 
@@ -803,16 +1018,30 @@ fn stage_component(
             .context("resource_activation_failed: 无法清理未完成的暂存目录")?;
     }
     fs::create_dir_all(&staging).context("resource_activation_failed: 无法创建本地资源暂存目录")?;
-    match spec.id.as_str() {
-        "ffmpeg-cpu" => extract_zip_safely(asset, &staging)?,
-        "yt-dlp" => {
+    match &spec.kind {
+        InstallKind::ZipPackage => extract_zip_safely(asset, &staging)?,
+        InstallKind::Executable => {
             fs::copy(asset, staging.join("yt-dlp.exe"))
                 .context("resource_activation_failed: 无法暂存 URL 导入资源")?;
         }
-        _ => bail!("resource_catalog_invalid: 不支持的本地资源组件"),
+        InstallKind::Model { file_name } => {
+            fs::copy(asset, staging.join(file_name))
+                .context("resource_activation_failed: 无法暂存本地转录模型")?;
+        }
+        InstallKind::Speaker(_) => {
+            bail!("resource_catalog_invalid: 说话人资源必须作为完整资源包启用")
+        }
     }
 
-    let final_dir = root.join("packages").join(&spec.id).join(&spec.version);
+    let final_dir = if matches!(&spec.kind, InstallKind::Model { .. }) {
+        root.join("models")
+            .join(&spec.activation_id)
+            .join(&spec.version)
+    } else {
+        root.join("packages")
+            .join(&spec.activation_id)
+            .join(&spec.version)
+    };
     if final_dir.is_dir() {
         fs::remove_dir_all(&final_dir)
             .context("resource_activation_failed: 无法替换未启用的本地资源版本")?;
@@ -824,7 +1053,7 @@ fn stage_component(
         .context("resource_activation_failed: 无法原子启用本地资源版本")?;
 
     let mut entrypoints = BTreeMap::new();
-    match spec.id.as_str() {
+    match spec.activation_id.as_str() {
         "ffmpeg-cpu" => {
             entrypoints.insert(
                 "ffmpeg".into(),
@@ -844,12 +1073,73 @@ fn stage_component(
             }
             entrypoints.insert("yt_dlp".into(), path);
         }
-        _ => unreachable!("component was validated"),
+        "whisper-cpu-upstream" => {
+            entrypoints.insert(
+                "whisper".into(),
+                find_file(&final_dir, "whisper-cli.exe").ok_or_else(|| {
+                    anyhow!("resource_archive_invalid: 本地转录资源包缺少必要程序")
+                })?,
+            );
+        }
+        "transcription-model" => {
+            let InstallKind::Model { file_name } = &spec.kind else {
+                bail!("resource_catalog_invalid: 本地转录模型类型无效")
+            };
+            let path = final_dir.join(file_name);
+            if !path.is_file() {
+                bail!("resource_activation_failed: 本地转录模型未正确安装")
+            }
+            entrypoints.insert("default_model".into(), path);
+        }
+        _ => bail!("resource_catalog_invalid: 不支持的本地资源组件"),
     }
     Ok(ComponentActivation {
-        id: spec.id.clone(),
+        id: spec.activation_id.clone(),
         version: spec.version.clone(),
         entrypoints,
+    })
+}
+
+fn stage_speaker_package(
+    root: &Path,
+    job_id: &str,
+    specs: &[InstallSpec],
+    assets: &BTreeMap<SpeakerAssetKind, PathBuf>,
+) -> Result<ComponentActivation> {
+    let version = specs
+        .iter()
+        .find(|spec| spec.activation_id == "speaker_identity")
+        .map(|spec| spec.version.clone())
+        .ok_or_else(|| anyhow!("resource_catalog_invalid: 说话人资源版本缺失"))?;
+    let runtime = assets
+        .get(&SpeakerAssetKind::Runtime)
+        .ok_or_else(|| anyhow!("resource_catalog_invalid: 说话人运行资源缺失"))?;
+    let segmentation = assets
+        .get(&SpeakerAssetKind::Segmentation)
+        .ok_or_else(|| anyhow!("resource_catalog_invalid: 说话人分段资源缺失"))?;
+    let embedding = assets
+        .get(&SpeakerAssetKind::Embedding)
+        .ok_or_else(|| anyhow!("resource_catalog_invalid: 说话人特征资源缺失"))?;
+    let staging = root.join("staging").join(job_id).join("speaker_identity");
+    speaker::prepare_package_at(runtime, segmentation, embedding, &staging)?;
+    let final_dir = root
+        .join("packages")
+        .join("speaker_identity")
+        .join(&version);
+    if final_dir.is_dir() {
+        fs::remove_dir_all(&final_dir)
+            .context("resource_activation_failed: 无法替换未启用的说话人资源")?;
+    }
+    if let Some(parent) = final_dir.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::rename(&staging, &final_dir)
+        .context("resource_activation_failed: 无法原子启用说话人资源")?;
+    let executable = speaker::package_executable_at(&final_dir)?;
+    Ok(ComponentActivation {
+        id: "speaker_identity".into(),
+        version,
+        entrypoints: BTreeMap::from([("speaker".into(), executable)]),
     })
 }
 
@@ -1089,6 +1379,22 @@ mod tests {
         writer.finish().unwrap().into_inner()
     }
 
+    fn test_whisper_zip() -> Vec<u8> {
+        use zip::{ZipWriter, write::SimpleFileOptions};
+
+        let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+        for (name, bytes) in [
+            ("whisper-bin-x64/whisper-cli.exe", b"whisper".as_slice()),
+            ("whisper-bin-x64/ggml.dll", b"library".as_slice()),
+        ] {
+            writer
+                .start_file(name, SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(bytes).unwrap();
+        }
+        writer.finish().unwrap().into_inner()
+    }
+
     #[test]
     fn install_requires_an_explicitly_configured_location() {
         let temp = tempdir().unwrap();
@@ -1097,10 +1403,12 @@ mod tests {
         let unused_root = temp.path().join("must-not-exist");
         let specs = vec![InstallSpec {
             id: "yt-dlp".into(),
+            activation_id: "yt-dlp".into(),
             version: "test".into(),
             url: "http://127.0.0.1/unused".into(),
             size: 1,
             sha256: "00".repeat(32),
+            kind: InstallKind::Executable,
         }];
 
         let error = create_install_in(&db, "url_import", &locator, &specs, |_, _| {
@@ -1119,7 +1427,7 @@ mod tests {
 
     #[test]
     fn url_import_includes_the_shared_media_component() {
-        let specs = specs_for_capability("url_import").unwrap();
+        let specs = specs_for_capability("url_import", "standard").unwrap();
         assert_eq!(
             specs
                 .iter()
@@ -1127,6 +1435,157 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["ffmpeg-cpu", "yt-dlp"]
         );
+    }
+
+    #[test]
+    fn transcription_profiles_resolve_to_a_cpu_runtime_and_auditable_model_sizes() {
+        let fast = specs_for_capability("local_transcription", "fast").unwrap();
+        let standard = specs_for_capability("local_transcription", "standard").unwrap();
+        let quality = specs_for_capability("local_transcription", "quality").unwrap();
+
+        for specs in [&fast, &standard, &quality] {
+            assert_eq!(specs[0].id, "ffmpeg-cpu");
+            assert_eq!(specs[1].id, "whisper-cpu-upstream");
+            assert_eq!(specs[2].activation_id, "transcription-model");
+            assert!(matches!(specs[2].kind, InstallKind::Model { .. }));
+        }
+        assert_eq!(fast[2].id, "transcription-model-tiny");
+        assert_eq!(fast[2].size, 77_691_713);
+        assert_eq!(standard[2].id, "transcription-model-base");
+        assert_eq!(standard[2].size, 147_951_465);
+        assert_eq!(quality[2].id, "transcription-model-small");
+        assert_eq!(quality[2].size, 487_601_967);
+        assert!(
+            fast.iter().map(|spec| spec.size).sum::<u64>()
+                < standard.iter().map(|spec| spec.size).sum::<u64>()
+        );
+        assert!(
+            standard.iter().map(|spec| spec.size).sum::<u64>()
+                < quality.iter().map(|spec| spec.size).sum::<u64>()
+        );
+    }
+
+    #[test]
+    fn speaker_preparation_is_independent_but_reuses_basic_media() {
+        let specs = specs_for_capability("speaker_identity", "standard").unwrap();
+        assert_eq!(specs[0].id, "ffmpeg-cpu");
+        assert_eq!(specs.len(), 4);
+        assert!(
+            specs[1..]
+                .iter()
+                .all(|spec| spec.activation_id == "speaker_identity")
+        );
+        assert_eq!(
+            specs[1..].iter().map(|spec| spec.size).sum::<u64>(),
+            64_389_270
+        );
+    }
+
+    #[test]
+    fn shared_media_cannot_be_removed_while_another_capability_needs_it() {
+        let temp = tempdir().unwrap();
+        let mut config = LocalResourceConfig {
+            schema_version: 1,
+            root: temp.path().to_path_buf(),
+            transcription_profile: "standard".into(),
+            enabled_capabilities: vec!["basic_media".into(), "local_transcription".into()],
+            active_entrypoints: BTreeMap::new(),
+            active_versions: BTreeMap::new(),
+            updated_at: now(),
+        };
+
+        assert!(
+            components_to_remove(&config, "basic_media")
+                .unwrap_err()
+                .to_string()
+                .starts_with("resource_dependency_required:")
+        );
+        assert_eq!(
+            components_to_remove(&config, "local_transcription").unwrap(),
+            ["whisper-cpu-upstream", "transcription-model"]
+        );
+        config
+            .enabled_capabilities
+            .retain(|capability| capability == "basic_media");
+        assert_eq!(
+            components_to_remove(&config, "basic_media").unwrap(),
+            ["ffmpeg-cpu"]
+        );
+    }
+
+    #[test]
+    fn local_transcription_activates_cpu_runtime_and_selected_profile_atomically() {
+        let ffmpeg = test_zip();
+        let whisper = test_whisper_zip();
+        let model = b"standard profile model".to_vec();
+        let server = MockResourceServer::start(vec![
+            ResponsePlan {
+                payload: ffmpeg.clone(),
+                max_bytes: None,
+            },
+            ResponsePlan {
+                payload: whisper.clone(),
+                max_bytes: None,
+            },
+            ResponsePlan {
+                payload: model.clone(),
+                max_bytes: None,
+            },
+        ]);
+        let temp = tempdir().unwrap();
+        let db = db::open_at(&temp.path().join("siaocut.db")).unwrap();
+        let locator = temp.path().join("config/local-resources.json");
+        let root = temp.path().join("resources");
+        write_test_config(&locator, &root);
+        let specs = vec![
+            InstallSpec {
+                id: "ffmpeg-cpu".into(),
+                activation_id: "ffmpeg-cpu".into(),
+                version: "test-media".into(),
+                url: format!("{}/ffmpeg.zip", server.base_url),
+                size: ffmpeg.len() as u64,
+                sha256: sha256(&ffmpeg),
+                kind: InstallKind::ZipPackage,
+            },
+            InstallSpec {
+                id: "whisper-cpu-upstream".into(),
+                activation_id: "whisper-cpu-upstream".into(),
+                version: "test-cpu".into(),
+                url: format!("{}/whisper.zip", server.base_url),
+                size: whisper.len() as u64,
+                sha256: sha256(&whisper),
+                kind: InstallKind::ZipPackage,
+            },
+            InstallSpec {
+                id: "transcription-model-base".into(),
+                activation_id: "transcription-model".into(),
+                version: "base-test".into(),
+                url: format!("{}/model.bin", server.base_url),
+                size: model.len() as u64,
+                sha256: sha256(&model),
+                kind: InstallKind::Model {
+                    file_name: "ggml-base.bin".into(),
+                },
+            },
+        ];
+        let job = create_test_job(&db, "local_transcription", &locator, &specs);
+
+        run_install_attempt_in(&db, &job.id, "local_transcription", &locator, &specs).unwrap();
+
+        assert_eq!(server.finish(), vec![0, 0, 0]);
+        let config = read_config_at(&locator).unwrap().unwrap();
+        for key in ["ffmpeg", "ffprobe", "whisper", "default_model"] {
+            let relative = config.active_entrypoints.get(key).unwrap();
+            assert!(config.root.join(relative).is_file(), "missing {key}");
+        }
+        assert!(!config.active_entrypoints.contains_key("whisper_vad_model"));
+        assert_eq!(config.active_versions["transcription-model"], "base-test");
+        assert!(
+            config
+                .enabled_capabilities
+                .contains(&"local_transcription".into())
+        );
+        assert_eq!(load_job(&db, &job.id).unwrap().status, "completed");
     }
 
     #[test]
@@ -1171,10 +1630,12 @@ mod tests {
         write_test_config(&locator, &root);
         let spec = InstallSpec {
             id: "yt-dlp".into(),
+            activation_id: "yt-dlp".into(),
             version: "test".into(),
             url: format!("{}/yt-dlp.exe", server.base_url),
             size: payload.len() as u64,
             sha256: sha256(&payload),
+            kind: InstallKind::Executable,
         };
         let job = create_test_job(&db, "url_import", &locator, std::slice::from_ref(&spec));
 
@@ -1225,10 +1686,12 @@ mod tests {
         write_test_config(&locator, &root);
         let spec = InstallSpec {
             id: "yt-dlp".into(),
+            activation_id: "yt-dlp".into(),
             version: "test".into(),
             url: format!("{}/yt-dlp.exe", server.base_url),
             size: payload.len() as u64,
             sha256: "00".repeat(32),
+            kind: InstallKind::Executable,
         };
         let job = create_test_job(&db, "url_import", &locator, std::slice::from_ref(&spec));
 
@@ -1272,17 +1735,21 @@ mod tests {
         let specs = vec![
             InstallSpec {
                 id: "ffmpeg-cpu".into(),
+                activation_id: "ffmpeg-cpu".into(),
                 version: "test-media".into(),
                 url: format!("{}/ffmpeg.zip", server.base_url),
                 size: ffmpeg.len() as u64,
                 sha256: sha256(&ffmpeg),
+                kind: InstallKind::ZipPackage,
             },
             InstallSpec {
                 id: "yt-dlp".into(),
+                activation_id: "yt-dlp".into(),
                 version: "test-url".into(),
                 url: format!("{}/yt-dlp.exe", server.base_url),
                 size: yt_dlp.len() as u64,
                 sha256: sha256(&yt_dlp),
+                kind: InstallKind::Executable,
             },
         ];
         let job = create_test_job(&db, "url_import", &locator, &specs);
@@ -1311,10 +1778,12 @@ mod tests {
         write_test_config(&locator, &root);
         let spec = InstallSpec {
             id: "yt-dlp".into(),
+            activation_id: "yt-dlp".into(),
             version: "test".into(),
             url: "http://127.0.0.1/unused".into(),
             size: 1,
             sha256: "00".repeat(32),
+            kind: InstallKind::Executable,
         };
         let job = create_test_job(&db, "url_import", &locator, std::slice::from_ref(&spec));
 

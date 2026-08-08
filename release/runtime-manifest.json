@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-07-28",
+  "updatedAt": "2026-08-08",
   "packageProfile": "app-only",
   "components": [
     {
@@ -60,6 +60,20 @@
       "license": "MIT",
       "bundled": false,
       "vadTimelineVerification": "required-before-selection"
+    },
+    {
+      "id": "whisper-cpu-upstream",
+      "name": "whisper.cpp CPU x64",
+      "version": "1.9.1",
+      "kind": "on-demand-runtime",
+      "backend": "cpu",
+      "source": "https://github.com/ggml-org/whisper.cpp",
+      "url": "https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.1/whisper-bin-x64.zip",
+      "size": 7982101,
+      "sha256": "7d8be46ecd31828e1eb7a2ecdd0d6b314feafd82163038ab6092594b0a063539",
+      "license": "MIT",
+      "bundled": false,
+      "vadTimelineVerification": "safe-fallback-only"
     },
     {
       "id": "whisper-vad-silero-6.2",
