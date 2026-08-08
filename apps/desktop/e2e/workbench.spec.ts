@@ -27,11 +27,12 @@ test("switches the application chrome to English without reloading the project",
   await expect(page.getByRole("button", { name: "Review suggestions" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Send to local Codex" })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Export" })).toBeVisible();
-  await page.getByRole("button", { name: "Runtime" }).click();
-  const runtime = page.getByRole("dialog", { name: "Runtime" });
+  await page.getByRole("button", { name: "Local resources" }).click();
+  const runtime = page.getByRole("dialog", { name: "Local resources" });
+  await runtime.getByText("Compatibility and diagnostics").click();
   await runtime.getByRole("combobox", { name: "Source language" }).selectOption("en");
   await expect(runtime.getByRole("combobox", { name: "Source language" })).toHaveValue("en");
-  await runtime.getByRole("button", { name: "Close the running environment" }).click();
+  await runtime.getByRole("button", { name: "Close local resources" }).click();
   await page.getByRole("combobox", { name: "Agent workflow" }).selectOption("edit");
   await page.getByRole("button", { name: "Manual handoff" }).click();
   await page.getByRole("checkbox", { name: "I will continue in an external Agent tool that can access this computer's SiaoCut Core." }).check();
@@ -540,12 +541,14 @@ test("reviews and edits a transcript from the workbench", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "发布口播 · 草稿" })).toBeVisible();
   await bindMockMedia(page);
-  await page.getByRole("button", { name: "运行环境" }).click();
-  await expect(page.getByRole("dialog", { name: "运行环境" })).toBeVisible();
+  await page.getByRole("button", { name: "本地资源" }).click();
+  const localResources = page.getByRole("dialog", { name: "本地资源" });
+  await expect(localResources).toBeVisible();
+  await localResources.getByText("兼容与诊断").click();
   await expect(page.getByText("API 0.1")).toBeVisible();
   await expect(page.getByText("平衡 · 推荐")).toBeVisible();
   await expect(page.getByText("下载前显示来源、体积与许可证")).toBeVisible();
-  await page.getByRole("button", { name: "关闭运行环境" }).click();
+  await localResources.getByRole("button", { name: "关闭本地资源" }).click();
   await expect(page.getByText("删除不影响含义的口语冗余")).toBeVisible();
   await expect(page.getByText("任务原文")).toBeVisible();
   await expect(page.getByText("Agent 建议")).toBeVisible();
@@ -685,10 +688,11 @@ test("dismisses a cancelled one-click status while keeping an explicit recovery 
 test("uses MOSS as an explicit multispeaker mode with loopback settings and review", async ({ page }) => {
   await page.goto("/");
   await bindMockMedia(page);
-  await page.getByRole("button", { name: "运行环境" }).click();
-  const runtime = page.getByRole("dialog", { name: "运行环境" });
+  await page.getByRole("button", { name: "本地资源" }).click();
+  const runtime = page.getByRole("dialog", { name: "本地资源" });
+  await runtime.getByText("兼容与诊断").click();
   await runtime.getByRole("combobox", { name: "转写模式" }).selectOption("multispeaker");
-  await runtime.getByRole("button", { name: "关闭运行环境" }).click();
+  await runtime.getByRole("button", { name: "关闭本地资源" }).click();
   const start = page.getByRole("button", { name: "开始多人转写" });
   await expect(start).toBeEnabled();
   await start.click();
@@ -709,8 +713,9 @@ test("uses MOSS as an explicit multispeaker mode with loopback settings and revi
   await expect(transcriptExport).toBeEnabled();
   await exportPanel.getByRole("button", { name: "关闭导出设置" }).click();
 
-  await page.getByRole("button", { name: "运行环境" }).click();
-  const settings = page.getByRole("dialog", { name: "运行环境" });
+  await page.getByRole("button", { name: "本地资源" }).click();
+  const settings = page.getByRole("dialog", { name: "本地资源" });
+  await settings.getByText("兼容与诊断").click();
   const provider = settings.getByRole("region", { name: "MOSS 多人长音频服务" });
   await expect(provider.locator("input").first()).toHaveValue("http://127.0.0.1:8000");
   const endpointInput = await provider.locator("input").nth(0).boundingBox();
@@ -724,10 +729,11 @@ test("uses MOSS as an explicit multispeaker mode with loopback settings and revi
 test("keeps a conflicting MOSS candidate isolated until explicit replacement", async ({ page }) => {
   await page.goto("/");
   await bindMockMedia(page);
-  await page.getByRole("button", { name: "运行环境" }).click();
-  const runtime = page.getByRole("dialog", { name: "运行环境" });
+  await page.getByRole("button", { name: "本地资源" }).click();
+  const runtime = page.getByRole("dialog", { name: "本地资源" });
+  await runtime.getByText("兼容与诊断").click();
   await runtime.getByRole("combobox", { name: "转写模式" }).selectOption("multispeaker");
-  await runtime.getByRole("button", { name: "关闭运行环境" }).click();
+  await runtime.getByRole("button", { name: "关闭本地资源" }).click();
   await page.getByText("高级实验项：Prompt 与热词").click();
   await page.getByRole("textbox", { name: "自定义 Prompt" }).fill("simulate-conflict");
   await page.getByRole("button", { name: "开始多人转写" }).click();

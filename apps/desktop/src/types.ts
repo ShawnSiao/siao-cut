@@ -1,5 +1,5 @@
-import type { AgentRunStatus, AutoWorkflowStage, AutoWorkflowStatus, BackgroundJobStatus, CoreErrorCode, TaskStatus, TranscriptionJobStatus, WorkflowStatus } from "./generated/core-contract";
-export type { AgentRunStatus, AutoWorkflowStage, AutoWorkflowStatus, BackgroundJobStatus, CoreErrorCode, KnownCoreErrorCode, TaskStatus, TranscriptionJobStatus, WorkflowStatus } from "./generated/core-contract";
+import type { AgentRunStatus, AutoWorkflowStage, AutoWorkflowStatus, BackgroundJobStatus, CoreErrorCode, LocalResourceState, TaskStatus, TranscriptionJobStatus, WorkflowStatus } from "./generated/core-contract";
+export type { AgentRunStatus, AutoWorkflowStage, AutoWorkflowStatus, BackgroundJobStatus, CoreErrorCode, KnownCoreErrorCode, LocalResourceState, TaskStatus, TranscriptionJobStatus, WorkflowStatus } from "./generated/core-contract";
 
 export type Segment = {
   id: string;
@@ -319,6 +319,53 @@ export type ModelDownloadJob = {
   updatedAt: string;
   completedAt: string | null;
   workerPid?: number | null;
+};
+
+export type LocalCapabilityId = "basic_media" | "url_import" | "local_transcription" | "speaker_identity";
+
+export type LocalCapabilityStatus = {
+  id: LocalCapabilityId;
+  name: string;
+  state: LocalResourceState;
+  enabled: boolean;
+};
+
+export type LocalResourceStatus = {
+  configured: boolean;
+  root: string | null;
+  rootAvailable: boolean;
+  writable: boolean;
+  availableBytes: number | null;
+  transcriptionProfile: "fast" | "standard" | "quality";
+  capabilities: LocalCapabilityStatus[];
+  needsSetup: boolean;
+};
+
+export type LocalResourcePlan = {
+  capabilityId: LocalCapabilityId;
+  capabilityName: string;
+  transcriptionProfile: "fast" | "standard" | "quality" | null;
+  downloadBytes: number;
+  unknownSize: boolean;
+};
+
+export type LocalResourceJob = {
+  id: string;
+  capabilityId: LocalCapabilityId;
+  status: BackgroundJobStatus;
+  stage: string;
+  progress: number;
+  bytesDownloaded: number;
+  totalBytes: number;
+  targetRoot: string;
+  cancelRequestedAt: string | null;
+  errorMessage: string | null;
+  errorCode?: CoreErrorCode | null;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+  workerPid?: number | null;
+  attemptCount: number;
 };
 
 export type SourcePreview = {
@@ -743,6 +790,10 @@ export type CoreEnvelope = {
   model?: ModelStatus;
   modelJob?: ModelDownloadJob;
   modelJobs?: ModelDownloadJob[];
+  localResources?: LocalResourceStatus;
+  resourcePlan?: LocalResourcePlan;
+  resourceJob?: LocalResourceJob;
+  resourceJobs?: LocalResourceJob[];
   source?: SourcePreview;
   sourceJob?: SourceImportJob;
   sourceJobs?: SourceImportJob[];

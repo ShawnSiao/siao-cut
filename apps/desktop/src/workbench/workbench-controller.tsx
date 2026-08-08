@@ -1,8 +1,8 @@
 import { changeUiLocale, getUiLocale, tr, type UiLocale } from "../i18n";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type SyntheticEvent } from "react";
 import { Activity, Bot, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Clock3, Copy, Cpu, Database, Download, FileVideo2, FileText, Film, FolderOpen, FolderPlus, HardDrive, History, Link2, LoaderCircle, Play, RefreshCw, RotateCcw, Search, Scissors, Settings2, ShieldCheck, Sparkles, Trash2, Undo2, Redo2, Headphones, ListChecks, MoreHorizontal, MoveHorizontal, Users, X, } from "lucide-react";
-import { authorizeArtifact, authorizeMedia, localFileAvailable, openLogDirectory, pickMedia, pickModel, pickSubtitleFile, pickTranscriptPath, pickVideoPath, runtimeInfo, selectAsrBackend, updaterPolicy } from "../core";
-import type { AgentRun, AudioAnalysisJob, AudioRisk, AutoWorkflow, CanvasSettings, CodexHealth, CutPreview, ExportJob, ModelDownloadJob, ModelStatus, Project, ProjectDeletionPreflight, RuntimeInfo, Segment, SourceImportJob, SourcePreview, SpeakerIdentity, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SpeechEvidence, SpeechInsights, SpeechPause, SubtitleImportPreview, SubtitleQualityIssue, Task, TranscriptReplacementPreflight, TranscriptionJob, TranscriptionLanguage, TranscriptionProviderConfig, TranscriptionProviderHealth, TranscriptionReviewItem } from "../types";
+import { authorizeArtifact, authorizeMedia, localFileAvailable, openLogDirectory, pickMedia, pickModel, pickResourceDirectory, pickSubtitleFile, pickTranscriptPath, pickVideoPath, runtimeInfo, selectAsrBackend, updaterPolicy } from "../core";
+import type { AgentRun, AudioAnalysisJob, AudioRisk, AutoWorkflow, CanvasSettings, CodexHealth, CutPreview, ExportJob, LocalCapabilityId, LocalResourceJob, LocalResourcePlan, LocalResourceStatus, ModelDownloadJob, ModelStatus, Project, ProjectDeletionPreflight, RuntimeInfo, Segment, SourceImportJob, SourcePreview, SpeakerIdentity, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SpeechEvidence, SpeechInsights, SpeechPause, SubtitleImportPreview, SubtitleQualityIssue, Task, TranscriptReplacementPreflight, TranscriptionJob, TranscriptionLanguage, TranscriptionProviderConfig, TranscriptionProviderHealth, TranscriptionReviewItem } from "../types";
 import { Button, Dialog, IconButton, StatusBadge } from "../components/ui";
 import { JobFailureDetails } from "../components/job-failure";
 import { AudioQualityPanel, PatchReviewCard, RuntimeChecklist, SegmentRow, SpeakerTrackPanel, SpeechInsightsPanel, TranscriptionReviewPanel } from "../components/workbench-panels";
@@ -15,9 +15,33 @@ import { exportRuntimeClient } from "../domains/export-runtime-client";
 import { projectSessionClient } from "../domains/project-session-client";
 import { transcriptEditingClient } from "../domains/transcript-editing-client";
 import { translationClient } from "../domains/translation-client";
+import { localResourceClient } from "../domains/local-resource-client";
 import { useBackgroundTaskRegistry } from "../hooks/use-background-task-registry";
 import { useWorkbenchFeedback } from "../hooks/use-workbench-feedback";
 import { SubtitleTimelinePanel, type TimelineReviewMarker } from "./subtitle-timeline-panel";
+
+const RESOURCE_SETUP_DEFERRED_KEY = "siaocut.localResourcesSetupDeferred.v1";
+
+function localCapabilityLabel(capability: LocalCapabilityId) {
+    return {
+        basic_media: tr("app.resources.capability.basic_media"),
+        url_import: tr("app.resources.capability.url_import"),
+        local_transcription: tr("app.resources.capability.local_transcription"),
+        speaker_identity: tr("app.resources.capability.speaker_identity"),
+    }[capability];
+}
+
+function localResourceError(error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    const code = message.split(":", 1)[0];
+    return ({
+        resource_setup_required: tr("app.resources.error.locationRequired"),
+        resource_root_unavailable: tr("app.resources.error.locationUnavailable"),
+        resource_root_not_writable: tr("app.resources.error.locationUnavailable"),
+        resource_root_low_space: tr("app.resources.error.lowSpace"),
+        resource_job_active: tr("app.resources.error.active"),
+    } as Record<string, string>)[code] ?? tr("app.resources.error.generic");
+}
 
 export async function resolveCanvasMedia(
     projectId: string,
@@ -101,6 +125,7 @@ const ProjectDeleteDialog = lazy(() => import("../components/project-delete-dial
 const AppCommandMenu = lazy(() => import("../components/app-command-menu"));
 const RuntimeSettingsDialog = lazy(() => import("../components/runtime-settings-dialog"));
 const SourceImportDialog = lazy(() => import("../components/source-import-dialog"));
+const LocalResourceSetupDialog = lazy(() => import("../components/local-resource-ui").then((module) => ({ default: module.LocalResourceSetupDialog })));
 const AgentHandoffDialog = lazy(() => import("../components/agent-handoff-dialog"));
 const SubtitleImportDialog = lazy(() => import("../components/subtitle-import-dialog"));
 const QuickRetranscriptionDialog = lazy(() => import("../components/quick-retranscription-dialog"));
@@ -187,6 +212,18 @@ function WorkbenchController() {
     const [transcriptionHotwords, setTranscriptionHotwords] = useState("");
     const { busy, notice, error, setBusy, setNotice, setError } = useWorkbenchFeedback(tr("app.s0038"));
     const [runtime, setRuntime] = useState<RuntimeInfo | null>(null);
+    const [localResources, setLocalResources] = useState<LocalResourceStatus | null>(null);
+    const [resourcePlan, setResourcePlan] = useState<LocalResourcePlan | null>(null);
+    const [resourceJob, setResourceJob] = useState<LocalResourceJob | null>(null);
+    const [resourceCapability, setResourceCapability] = useState<LocalCapabilityId>("basic_media");
+    const [resourceSetupReason, setResourceSetupReason] = useState<"first_run" | "on_demand" | "manage">("first_run");
+    const [resourceSelectedRoot, setResourceSelectedRoot] = useState("");
+    const [resourceBusy, setResourceBusy] = useState(false);
+    const [resourceError, setResourceError] = useState<string | null>(null);
+    const [showResourceSetup, setShowResourceSetup] = useState(false);
+    const [pendingResourceAction, setPendingResourceAction] = useState<"inspect_url" | null>(null);
+    const [resumeSourceInspection, setResumeSourceInspection] = useState(false);
+    const handledResourceJobRef = useRef<string | null>(null);
     const { updatePolicy, setUpdatePolicy, availableUpdate, updateBusy, updateError, checkUpdates, confirmUpdateInstall } = useAppUpdater(setNotice);
     const [models, setModels] = useState<ModelStatus[]>([]);
     const [modelJob, setModelJob] = useState<ModelDownloadJob | null>(null);
@@ -387,7 +424,7 @@ function WorkbenchController() {
     const initialize = useCallback(async () => {
         setBusy(tr("app.s0039"));
         setError(null);
-        const [projectsResult, runtimeResult, modelsResult, modelJobsResult, sourceJobsResult, autoWorkflowsResult, updatePolicyResult, speakerPackageResult, speakerJobsResult, transcriptionHealthResult, codexHealthResult] = await Promise.allSettled([
+        const [projectsResult, runtimeResult, modelsResult, modelJobsResult, sourceJobsResult, autoWorkflowsResult, updatePolicyResult, speakerPackageResult, speakerJobsResult, transcriptionHealthResult, codexHealthResult, localResourcesResult, resourceJobsResult, recommendedPlanResult] = await Promise.allSettled([
             projectSessionClient.listProjects(),
             runtimeInfo(),
             backgroundTaskClient.listModels(true),
@@ -399,6 +436,9 @@ function WorkbenchController() {
             backgroundTaskClient.listSpeakerJobs(),
             backgroundTaskClient.getTranscriptionHealth(),
             agentReviewClient.getCodexHealth(),
+            localResourceClient.status(),
+            localResourceClient.listJobs(),
+            localResourceClient.plan("basic_media"),
         ]);
         const errors: string[] = [];
         let activeAutoWorkflow: AutoWorkflow | null = null;
@@ -453,6 +493,23 @@ function WorkbenchController() {
             setTranscriptionConfig({ providerId: next.providerId, endpoint: next.endpoint, modelId: next.modelId, updatedAt: next.checkedAt });
         }
         setCodexHealth(codexHealthResult.status === "fulfilled" ? codexHealthResult.value.codex ?? null : null);
+        if (localResourcesResult.status === "fulfilled" && localResourcesResult.value.localResources) {
+            const next = localResourcesResult.value.localResources;
+            setLocalResources(next);
+            if (!next.configured && localStorage.getItem(RESOURCE_SETUP_DEFERRED_KEY) !== "1") {
+                setResourceCapability("basic_media");
+                setResourceSetupReason("first_run");
+                setResourcePlan(recommendedPlanResult.status === "fulfilled" ? recommendedPlanResult.value.resourcePlan ?? null : null);
+                setShowResourceSetup(true);
+            }
+        }
+        else {
+            errors.push(tr("app.resources.error.generic"));
+        }
+        if (resourceJobsResult.status === "fulfilled") {
+            const jobs = resourceJobsResult.value.resourceJobs ?? [];
+            setResourceJob(jobs.find((item) => ["queued", "running"].includes(item.status)) ?? null);
+        }
         if (sourceJobsResult.status === "fulfilled") {
             const jobs = (sourceJobsResult.value.sourceJobs ?? []).filter((item) => !autoWorkflowSourceIds.has(item.id));
             setSourceJob(jobs.find((item) => ["queued", "running", "finalizing"].includes(item.status)) ?? jobs[0] ?? null);
@@ -560,6 +617,24 @@ function WorkbenchController() {
             cancelled = true;
         };
     }, [modelPath]);
+    useEffect(() => {
+        if (!resourceJob || !["queued", "running"].includes(resourceJob.status))
+            return;
+        let cancelled = false;
+        const poll = () => localResourceClient.getJob(resourceJob.id).then((envelope) => {
+            if (!cancelled && envelope.resourceJob)
+                setResourceJob(envelope.resourceJob);
+        }).catch((cause) => {
+            if (!cancelled)
+                setResourceError(localResourceError(cause));
+        });
+        void poll();
+        const timer = window.setInterval(() => void poll(), 800);
+        return () => {
+            cancelled = true;
+            window.clearInterval(timer);
+        };
+    }, [resourceJob?.id, resourceJob?.status]);
     useBackgroundTaskRegistry([
         agentRun && ["queued", "running", "submitting"].includes(agentRun.status) ? {
             key: `codex-agent:${agentRun.id}`,
@@ -1243,6 +1318,140 @@ function WorkbenchController() {
             setDeleteBusy(false);
         }
     };
+    const openResourcePreparation = async (capability: LocalCapabilityId, reason: "first_run" | "on_demand" | "manage") => {
+        setResourceCapability(capability);
+        setResourceSetupReason(reason);
+        setResourceSelectedRoot("");
+        setResourceError(null);
+        if (reason === "manage")
+            setShowRuntime(false);
+        if (reason === "on_demand")
+            setShowSourceImport(false);
+        setShowResourceSetup(true);
+        try {
+            const envelope = await localResourceClient.plan(capability);
+            setResourcePlan(envelope.resourcePlan ?? null);
+        }
+        catch (cause) {
+            setResourceError(localResourceError(cause));
+        }
+    };
+    const chooseResourceLocation = async () => {
+        const path = await pickResourceDirectory();
+        if (path) {
+            setResourceSelectedRoot(path);
+            setResourceError(null);
+        }
+    };
+    const confirmResourceLocation = async () => {
+        if (!resourceSelectedRoot)
+            return;
+        setResourceBusy(true);
+        setResourceError(null);
+        try {
+            const envelope = await localResourceClient.configure(resourceSelectedRoot);
+            if (!envelope.localResources)
+                throw new Error("resource_setup_required");
+            setLocalResources(envelope.localResources);
+            setResourceSelectedRoot("");
+            localStorage.removeItem(RESOURCE_SETUP_DEFERRED_KEY);
+            setNotice(tr("app.resources.locationConfirmed"));
+        }
+        catch (cause) {
+            setResourceError(localResourceError(cause));
+        }
+        finally {
+            setResourceBusy(false);
+        }
+    };
+    const startResourcePreparation = async () => {
+        if (!localResources?.configured || resourceSelectedRoot)
+            return;
+        setResourceBusy(true);
+        setResourceError(null);
+        handledResourceJobRef.current = null;
+        try {
+            const envelope = await localResourceClient.install(resourceCapability);
+            if (!envelope.resourceJob)
+                throw new Error("resource_job_not_found");
+            setResourceJob(envelope.resourceJob);
+            setNotice(tr("app.resources.preparingNotice", { capability: localCapabilityLabel(resourceCapability) }));
+        }
+        catch (cause) {
+            setResourceError(localResourceError(cause));
+        }
+        finally {
+            setResourceBusy(false);
+        }
+    };
+    const cancelResourcePreparation = async () => {
+        if (!resourceJob)
+            return;
+        setResourceBusy(true);
+        try {
+            const envelope = await localResourceClient.cancel(resourceJob.id);
+            if (envelope.resourceJob)
+                setResourceJob(envelope.resourceJob);
+        }
+        catch (cause) {
+            setResourceError(localResourceError(cause));
+        }
+        finally {
+            setResourceBusy(false);
+        }
+    };
+    const resumeResourcePreparation = async () => {
+        if (!resourceJob)
+            return;
+        setResourceBusy(true);
+        setResourceError(null);
+        handledResourceJobRef.current = null;
+        try {
+            const envelope = await localResourceClient.resume(resourceJob.id);
+            if (!envelope.resourceJob)
+                throw new Error("resource_job_not_found");
+            setResourceJob(envelope.resourceJob);
+        }
+        catch (cause) {
+            setResourceError(localResourceError(cause));
+        }
+        finally {
+            setResourceBusy(false);
+        }
+    };
+    const closeResourcePreparation = () => {
+        if (resourceJob && ["queued", "running"].includes(resourceJob.status))
+            return;
+        setShowResourceSetup(false);
+        setResourceSelectedRoot("");
+        setResourceError(null);
+        if (resourceSetupReason === "first_run")
+            localStorage.setItem(RESOURCE_SETUP_DEFERRED_KEY, "1");
+        if (resourceSetupReason === "manage")
+            setShowRuntime(true);
+        if (pendingResourceAction === "inspect_url") {
+            setPendingResourceAction(null);
+            setShowSourceImport(true);
+        }
+    };
+    const removeResourceCapability = async (capability: LocalCapabilityId) => {
+        if (!window.confirm(tr("app.resources.removeConfirm", { capability: localCapabilityLabel(capability) })))
+            return;
+        setResourceBusy(true);
+        try {
+            const envelope = await localResourceClient.remove(capability);
+            if (envelope.localResources)
+                setLocalResources(envelope.localResources);
+            setRuntime(await runtimeInfo());
+            setNotice(tr("app.resources.removedNotice", { capability: localCapabilityLabel(capability) }));
+        }
+        catch (cause) {
+            setError(localResourceError(cause));
+        }
+        finally {
+            setResourceBusy(false);
+        }
+    };
     const withSourceBusy = async (label: string, action: () => Promise<void>) => {
         setSourceBusy(label);
         setSourceError(null);
@@ -1258,10 +1467,14 @@ function WorkbenchController() {
     };
     const inspectSource = () => withSourceBusy(tr("app.s0083"), async () => {
         const url = sourceUrl.trim();
-        if (!runtime?.ytDlpConfigured)
-            throw new Error(tr("app.s0084"));
         if (!isHttpsSourceUrl(url))
             throw new Error(tr("app.s0085"));
+        const urlCapability = localResources?.capabilities.find((capability) => capability.id === "url_import");
+        if (urlCapability?.state !== "ready" || !runtime?.ytDlpConfigured) {
+            setPendingResourceAction("inspect_url");
+            await openResourcePreparation("url_import", "on_demand");
+            return;
+        }
         const envelope = await backgroundTaskClient.inspectSource(url);
         if (!envelope.source)
             throw new Error(tr("app.s0086"));
@@ -1302,6 +1515,42 @@ function WorkbenchController() {
         setSourceAuthorized(false);
         setSourceError(null);
     };
+    useEffect(() => {
+        if (!resourceJob || handledResourceJobRef.current === resourceJob.id)
+            return;
+        if (["failed", "interrupted"].includes(resourceJob.status)) {
+            setResourceError(localResourceError(new Error(`${resourceJob.errorCode ?? "resource_job_state_changed"}: resource preparation failed`)));
+            return;
+        }
+        if (resourceJob.status !== "completed")
+            return;
+        handledResourceJobRef.current = resourceJob.id;
+        void Promise.all([localResourceClient.status(), runtimeInfo()]).then(([resourceEnvelope, nextRuntime]) => {
+            if (resourceEnvelope.localResources)
+                setLocalResources(resourceEnvelope.localResources);
+            setRuntime(nextRuntime);
+            setResourceJob(null);
+            setShowResourceSetup(false);
+            setResourceSelectedRoot("");
+            setResourceError(null);
+            localStorage.removeItem(RESOURCE_SETUP_DEFERRED_KEY);
+            setNotice(tr("app.resources.readyNotice", { capability: localCapabilityLabel(resourceJob.capabilityId) }));
+            if (pendingResourceAction === "inspect_url") {
+                setPendingResourceAction(null);
+                setShowSourceImport(true);
+                setResumeSourceInspection(true);
+            }
+            else if (resourceSetupReason === "manage") {
+                setShowRuntime(true);
+            }
+        }).catch((cause) => setResourceError(localResourceError(cause)));
+    }, [pendingResourceAction, resourceJob, resourceSetupReason, setNotice]);
+    useEffect(() => {
+        if (!resumeSourceInspection || !showSourceImport)
+            return;
+        setResumeSourceInspection(false);
+        void inspectSource();
+    }, [resumeSourceInspection, showSourceImport]);
     const withAutoBusy = async (
         label: string,
         action: () => Promise<void>,
@@ -2117,7 +2366,7 @@ function WorkbenchController() {
             const target = event.target;
             const modifier = event.ctrlKey || event.metaKey;
             const key = event.key.toLowerCase();
-            const dialogOpen = showRuntime || showSourceImport || showAutoWorkflow || showSubtitleImport || showAgentHandoff || showTranscriptionCandidate || Boolean(structureEditMode) || Boolean(currentDeleteCandidate);
+            const dialogOpen = showRuntime || showResourceSetup || showSourceImport || showAutoWorkflow || showSubtitleImport || showAgentHandoff || showTranscriptionCandidate || Boolean(structureEditMode) || Boolean(currentDeleteCandidate);
             const editingTarget = target instanceof HTMLElement && (target.isContentEditable || target.matches("input, textarea, select"));
             if (event.key === "Escape" && showMoreMenu) {
                 event.preventDefault();
@@ -2195,7 +2444,7 @@ function WorkbenchController() {
         };
         window.addEventListener("keydown", handleShortcut);
         return () => window.removeEventListener("keydown", handleShortcut);
-    }, [busy, currentDeleteCandidate, mergeCandidatesAdjacent, project, selectedSegmentIds, showAgentHandoff, showAutoWorkflow, showMoreMenu, showRuntime, showSourceImport, showSubtitleImport, showTranscriptionCandidate, structureEditMode]);
+    }, [busy, currentDeleteCandidate, mergeCandidatesAdjacent, project, selectedSegmentIds, showAgentHandoff, showAutoWorkflow, showMoreMenu, showResourceSetup, showRuntime, showSourceImport, showSubtitleImport, showTranscriptionCandidate, structureEditMode]);
     const chooseModel = () => withBusy(tr("app.s0214"), async () => {
         const path = await pickModel();
         if (!path)
@@ -2558,7 +2807,7 @@ function WorkbenchController() {
           <span className={runtime?.asrBackend === "vulkan" ? "ready" : "default"}><i/>{runtime?.asrBackend === "vulkan" ? tr("app.creator.readiness.vulkan") : tr("app.creator.readiness.cpu")}</span>
           <span className={codexHealth?.available && codexHealth.authenticated ? "ready" : "optional"}><i/>{codexHealth?.available && codexHealth.authenticated ? tr("app.creator.readiness.codexReady") : tr("app.creator.readiness.codexOptional")}</span>
         </section>
-        <button ref={runtimeButtonRef} className="runtime-link" aria-label={tr("app.s0245")} onClick={() => setShowRuntime(true)}><Settings2 size={15}/><span>{tr("app.creator.advancedSettings")}</span></button>
+        <button ref={runtimeButtonRef} className="runtime-link" aria-label={tr("app.resources.title")} onClick={() => setShowRuntime(true)}><Settings2 size={15}/><span>{tr("app.resources.title")}</span></button>
         <label className="locale-switch"><span>{tr("app.locale.label")}</span><select aria-label={tr("app.locale.label")} value={uiLocale} onChange={(event) => selectUiLocale(event.target.value as UiLocale)}><option value="zh-CN">{tr("app.locale.zhCN")}</option><option value="en-US">{tr("app.locale.enUS")}</option></select></label>
         <div className="privacy"><ShieldCheck size={15}/><span>{tr("app.s0246")}</span></div>
       </aside>
@@ -2846,6 +3095,9 @@ function WorkbenchController() {
       {showRuntime && <Suspense fallback={null}><RuntimeSettingsDialog
         returnFocusRef={runtimeButtonRef}
         runtime={runtime}
+        localResources={localResources}
+        resourceJob={resourceJob}
+        resourceBusy={resourceBusy}
         modelPath={modelPath}
         modelAvailable={modelPathAvailable}
 	        transcriptionConfig={transcriptionConfig}
@@ -2879,6 +3131,26 @@ function WorkbenchController() {
         onCheckUpdates={() => void checkUpdates()}
         onInstallUpdate={() => void confirmUpdateInstall()}
         onRefresh={() => void initialize()}
+        onPrepareResource={(capability) => void openResourcePreparation(capability, "manage")}
+        onChangeResourceLocation={() => void openResourcePreparation("basic_media", "manage")}
+        onRemoveResource={(capability) => void removeResourceCapability(capability)}
+      /></Suspense>}
+      {showResourceSetup && <Suspense fallback={null}><LocalResourceSetupDialog
+        reason={resourceSetupReason}
+        capability={resourceCapability}
+        status={localResources}
+        plan={resourcePlan}
+        job={resourceJob}
+        selectedRoot={resourceSelectedRoot}
+        busy={resourceBusy}
+        error={resourceError}
+        onClose={closeResourcePreparation}
+        onChooseLocation={() => void chooseResourceLocation()}
+        onConfirmLocation={() => void confirmResourceLocation()}
+        onStart={() => void startResourcePreparation()}
+        onCancel={() => void cancelResourcePreparation()}
+        onResume={() => void resumeResourcePreparation()}
+        onDefer={closeResourcePreparation}
       /></Suspense>}
       {showTranscriptionCandidate && transcriptionJob?.status === "awaiting_apply" && <Suspense fallback={null}><TranscriptionCandidateDialog job={transcriptionJob} busy={Boolean(busy)} confirmed={transcriptionApplyConfirmed} onConfirmedChange={setTranscriptionApplyConfirmed} onApply={applyTranscriptionCandidate} onDiscard={discardTranscriptionCandidate} onClose={() => { if (!busy) { setShowTranscriptionCandidate(false); setTranscriptionApplyConfirmed(false); } }}/></Suspense>}
       {showQuickRetranscription && <Suspense fallback={null}><QuickRetranscriptionDialog preflight={quickRetranscriptionPreflight} checking={quickRetranscriptionChecking} busy={Boolean(busy)} confirmed={quickRetranscriptionConfirmed} blockerMessage={quickRetranscriptionBlockMessage} error={quickRetranscriptionError} onConfirmedChange={setQuickRetranscriptionConfirmed} onConfirm={() => void confirmQuickRetranscription()} onClose={closeQuickRetranscription}/></Suspense>}
