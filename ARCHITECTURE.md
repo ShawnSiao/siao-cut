@@ -15,7 +15,7 @@ SiaoCut Skill ─ siaocut.ps1 ─ CLI client
                    ├─ transcript / translation / edit
                    └─ Agent task leases
                                   │
-                  Component Store → FFmpeg → 16 kHz PCM WAV → whisper.cpp
+                  FFmpeg → 16 kHz PCM WAV → whisper.cpp
 ```
 
 ## Storage and recovery
@@ -26,12 +26,11 @@ SiaoCut Skill ─ siaocut.ps1 ─ CLI client
 
 ## Runtime adapters
 
-- FFmpeg、FFprobe、`yt-dlp`、Whisper CPU/Vulkan、VAD 和模型统一由共享 `Component Store` 解析；产品只保存 `ComponentKey`，不保存下载 URL、大小、哈希或 Store 内部路径。
-- 默认共享根目录为 `%LOCALAPPDATA%\Siao\component-store`。安装、校验、external 登记、租约和迁移均通过 `component-store` 命令完成；旧 `SIAOCUT_*` 路径只作为一次性迁移输入，不作为正式执行来源。
-- Whisper 正式身份为版本 `1.9.1-siao.1`，运行时 ID 为 `siao-whisper-cpu` 和 `siao-whisper-vulkan`；旧 SiaoCut 身份不能满足 common v2 requirements。
-- 模型通过 `transcribe <projectId> --model component:tiny|component:base|component:small --expected-version <currentVersionId>` 选择。缺少或未验证组件时返回结构化状态，不临时回退到环境变量或祖先目录。
-- 每个实际执行子进程持有 `LeasedComponent`，默认租约 TTL 为 30 秒，每 10 秒发送 heartbeat；成功、失败、取消、窗口退出和异常清理均释放租约。
-- `transcribe` 使用 FFmpeg 生成标准化的 16 kHz 单声道 WAV，调用已解析的 Whisper 运行时，并在原媒体时间轴上校验完整的字幕段和词级时间后原子写入。替换已有转写仍需只读预检和 `--confirm-replace`，已有译文变为 `stale`。
+- FFmpeg comes from `SIAOCUT_FFMPEG` or `PATH`; FFprobe is used opportunistically during import.
+- `whisper-cli.exe` comes from `SIAOCUT_WHISPER_CLI`, otherwise `%LOCALAPPDATA%\SiaoCut\bin\whisper-cli.exe`.
+- Models are explicitly selected with `transcribe <projectId> --model <path> --expected-version <currentVersionId>`; Core does not silently download a model or send media over the network.
+- Curated Tiny / Base / Small downloads are background jobs with fixed size and SHA-256. A cancelled `.part` file is retained for an explicit later resume.
+- `transcribe` uses FFmpeg to normalize audio, invokes whisper.cpp without internal VAD, and validates the complete segment and word timeline before an atomic write. Replacing an existing transcript also requires a read-only preflight and `--confirm-replace`. Existing translations become `stale`.
 
 ## Stable CLI contract
 
@@ -59,8 +58,6 @@ React 仅调用已注册的 Tauri 命令。Tauri Rust 层以参数数组调用 `
 
 ## Windows release boundary
 
-SiaoCut 安装包保持 `app-only`，只包含桌面程序、Rust Core、前端资源和 notices，不携带 FFmpeg、Whisper、VAD、模型、`yt-dlp` 或 Store 数据。共享 core/catalog 源码固定依赖 `ShawnSiao/siao-component-store` 的 canonical commit；大型归档、SBOM、构建来源、许可材料和安装后文件清单统一发布到 `ShawnSiao/siao-components`。
-
-common v2 必须同时包含 8 个公共组件，并通过 CPU/Vulkan 固定归档与原媒体时间轴验收后，才允许进入正式 Store 执行路径。产品卸载只释放 `siaocut` consumer，不删除共享 Store、external 来源或未匹配的 legacy 文件。代码签名和二进制发布仍是独立门槛：未签名候选包不能作为公开正式安装包。
+NSIS 将 Release Core 作为 sidecar，并携带固定哈希的 LGPL FFmpeg，以及从同一锁定提交和补丁构建的 whisper.cpp CPU、Vulkan 运行时。发布准备分别执行真实后端时间轴验收，并把可执行文件、源码、补丁和证据哈希写入相邻元数据。Core 只有在这些身份重新核验通过时才启用 VAD；否则使用无 VAD 安全路径。切换 Vulkan 时还会执行硬件探测，不可用时保留 CPU 基线。CUDA 运行时必须在本机完成同源构建和真实验收后才能选择。模型位于 `%LOCALAPPDATA%\SiaoCut\models`，必须由用户明确选择后下载。安装、升级与卸载不应删除该数据目录。
 
 代码签名与二进制打包是两个独立门槛：本地可以生成完整但未签名的候选包；只有配置受信任证书并通过 `Get-AuthenticodeSignature` 后，才是可公开分发的正式安装包。

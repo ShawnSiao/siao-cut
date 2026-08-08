@@ -1,8 +1,7 @@
 use crate::{
     canvas::{self, CanvasTarget},
-    component_store::ComponentLease,
     db::home_dir,
-    media::{command_available, hash_file, resolve_component_tool},
+    media::{command_available, hash_file, tool_path},
     model::MediaArtifacts,
     project,
     util::{hidden_command, now},
@@ -76,8 +75,7 @@ pub fn prepare(db: &mut Connection, project_id: &str) -> Result<MediaArtifacts> 
         return Ok(existing);
     }
 
-    let (ffmpeg, ffmpeg_lease) =
-        resolve_component_tool(crate::component_store::SharedComponent::Ffmpeg, "ffmpeg")?;
+    let ffmpeg = tool_path("SIAOCUT_FFMPEG", "ffmpeg");
     if !command_available(&ffmpeg) {
         bail!("FFmpeg 未配置，无法生成预览资源")
     }
@@ -96,7 +94,6 @@ pub fn prepare(db: &mut Connection, project_id: &str) -> Result<MediaArtifacts> 
         project.media.duration_seconds.unwrap_or(0.0),
         &staging_dir,
         project.canvas_settings,
-        ffmpeg_lease.as_ref(),
     );
     match result {
         Ok((proxy, waveform, thumbnails)) => {
@@ -387,7 +384,6 @@ fn generate(
     duration: f64,
     artifact_dir: &Path,
     canvas_settings: crate::model::CanvasSettings,
-    lease: Option<&ComponentLease>,
 ) -> Result<(
     std::path::PathBuf,
     Option<std::path::PathBuf>,
@@ -401,7 +397,7 @@ fn generate(
 
     let proxy = artifact_dir.join("proxy.mp4");
     let proxy_partial = artifact_dir.join("proxy.part.mp4");
-    let encoder = preferred_video_encoder_with_lease(ffmpeg, lease)?;
+    let encoder = preferred_video_encoder(ffmpeg)?;
     let mut command = hidden_command(ffmpeg);
     command
         .arg("-y")
@@ -441,7 +437,7 @@ fn generate(
     command
         .args(["-movflags", "+faststart"])
         .arg(&proxy_partial);
-    run(&mut command, "代理视频生成失败", lease)?;
+    run(&mut command, "代理视频生成失败")?;
     if proxy.is_file() {
         fs::remove_file(&proxy)?;
     }
@@ -462,7 +458,7 @@ fn generate(
                 "1",
             ])
             .arg(&path);
-        run(&mut waveform_command, "波形生成失败", lease)?;
+        run(&mut waveform_command, "波形生成失败")?;
         Some(path)
     } else {
         None
@@ -487,10 +483,9 @@ fn generate(
                 "4",
             ])
             .arg(&pattern);
-        if let Err(first_error) = run(&mut thumbnail_command, "关键帧缩略图生成失败", lease)
-        {
+        if let Err(first_error) = run(&mut thumbnail_command, "关键帧缩略图生成失败") {
             thread::sleep(Duration::from_millis(150));
-            run(&mut thumbnail_command, "关键帧缩略图重试失败", lease)
+            run(&mut thumbnail_command, "关键帧缩略图重试失败")
                 .with_context(|| format!("首次关键帧生成失败：{first_error}"))?;
         }
         thumbnails = fs::read_dir(artifact_dir)?
@@ -507,10 +502,9 @@ fn generate(
 }
 
 pub fn has_stream(source: &Path, selector: &str) -> Result<bool> {
-    let (ffprobe, ffprobe_lease) =
-        resolve_component_tool(crate::component_store::SharedComponent::Ffmpeg, "ffprobe")?;
+    let ffprobe = tool_path("SIAOCUT_FFPROBE", "ffprobe");
     let mut command = hidden_command(&ffprobe);
-    command
+    let output = command
         .args([
             "-v",
             "error",
@@ -521,24 +515,17 @@ pub fn has_stream(source: &Path, selector: &str) -> Result<bool> {
             "-of",
             "csv=p=0",
         ])
-        .arg(source);
-    let output = ComponentLease::output_with_lease(&mut command, ffprobe_lease.as_ref())
+        .arg(source)
+        .output()
         .with_context(|| format!("无法启动 FFprobe：{ffprobe}"))?;
     Ok(output.status.success() && !output.stdout.is_empty())
 }
 
-#[allow(dead_code)]
 pub fn available_video_encoders(ffmpeg: &str) -> Result<Vec<String>> {
-    available_video_encoders_with_lease(ffmpeg, None)
-}
-
-pub fn available_video_encoders_with_lease(
-    ffmpeg: &str,
-    lease: Option<&ComponentLease>,
-) -> Result<Vec<String>> {
     let mut command = hidden_command(ffmpeg);
-    command.args(["-hide_banner", "-encoders"]);
-    let output = ComponentLease::output_with_lease(&mut command, lease)
+    let output = command
+        .args(["-hide_banner", "-encoders"])
+        .output()
         .with_context(|| format!("无法读取 FFmpeg 编码器：{ffmpeg}"))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -559,16 +546,8 @@ pub fn available_video_encoders_with_lease(
     Ok(encoders)
 }
 
-#[allow(dead_code)]
 pub fn preferred_video_encoder(ffmpeg: &str) -> Result<String> {
-    preferred_video_encoder_with_lease(ffmpeg, None)
-}
-
-fn preferred_video_encoder_with_lease(
-    ffmpeg: &str,
-    lease: Option<&ComponentLease>,
-) -> Result<String> {
-    available_video_encoders_with_lease(ffmpeg, lease)?
+    available_video_encoders(ffmpeg)?
         .into_iter()
         .next()
         .ok_or_else(|| anyhow!("FFmpeg 缺少可用的视频编码器"))
@@ -649,9 +628,8 @@ pub fn export_video_encoding_manifest(encoder: &str) -> Value {
     }
 }
 
-fn run(command: &mut Command, label: &str, lease: Option<&ComponentLease>) -> Result<()> {
-    let output =
-        ComponentLease::output_with_lease(command, lease).with_context(|| label.to_owned())?;
+fn run(command: &mut Command, label: &str) -> Result<()> {
+    let output = command.output().with_context(|| label.to_owned())?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let detail = if stderr.trim().is_empty() {

@@ -16,7 +16,6 @@ const MANAGED_VULKAN_SOURCE_ENV: &str = "SIAOCUT_MANAGED_WHISPER_VULKAN_SOURCE";
 const MANAGED_VULKAN_VERSION_ENV: &str = "SIAOCUT_MANAGED_WHISPER_VULKAN_VERSION";
 const WHISPER_RUNTIME_SOURCE_CONTRACT: &str =
     include_str!("../release/whisper-runtime-source.json");
-const FORMAL_WHISPER_VERSION: &str = "1.9.1-siao.1";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -70,7 +69,6 @@ pub fn load() -> Result<Option<RuntimeSelection>> {
     Ok(Some(selection))
 }
 
-#[allow(dead_code)]
 pub fn selected_whisper_path() -> Option<PathBuf> {
     verified_selected_whisper_path().ok().flatten()
 }
@@ -161,7 +159,6 @@ fn reconcile_selection(selection: &RuntimeSelection) -> Result<Option<RuntimeSel
     reconcile_managed_selection(selection, &managed)
 }
 
-#[allow(dead_code)]
 pub fn verified_selected_runtime() -> Result<Option<RuntimeSelection>> {
     let Some(selection) = load()? else {
         return Ok(None);
@@ -179,7 +176,6 @@ pub fn verified_selected_runtime() -> Result<Option<RuntimeSelection>> {
     }
 }
 
-#[allow(dead_code)]
 pub fn verified_selected_whisper_path() -> Result<Option<PathBuf>> {
     verified_selected_runtime()?
         .map(|selection| verify_selection(&selection))
@@ -242,12 +238,8 @@ fn verify_vad_timeline_capability(
         bail!("vad_executable_hash_mismatch: 运行时文件与能力元数据不一致")
     }
 
-    let metadata_version = required_string(&metadata, "/version", "version")?;
-    let contract_version = required_string(&contract, "/version", "version")?;
-    if metadata_version != contract_version && metadata_version != FORMAL_WHISPER_VERSION {
-        bail!("vad_source_contract_mismatch: 运行时 version 与正式 Whisper 身份不一致")
-    }
     for (metadata_pointer, contract_pointer, label) in [
+        ("/version", "/version", "version"),
         ("/source", "/source", "source"),
         ("/sourceCommit", "/sourceCommit", "sourceCommit"),
         (
@@ -426,7 +418,6 @@ pub fn vad_timeline_capability(whisper: &Path, expected_backend: &str) -> VadTim
     }
 }
 
-#[allow(dead_code)]
 pub fn status() -> Result<serde_json::Value> {
     let selection = load()?;
     Ok(match selection {
@@ -478,7 +469,6 @@ fn status_for_selection(selection: RuntimeSelection) -> serde_json::Value {
     }
 }
 
-#[allow(dead_code)]
 pub fn select(
     backend: &str,
     whisper: &Path,
@@ -538,7 +528,6 @@ pub fn select(
     Ok(selection)
 }
 
-#[allow(dead_code)]
 pub fn reset() -> Result<()> {
     let path = selection_path();
     if path.is_file() {

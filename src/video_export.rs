@@ -3,7 +3,7 @@ use crate::{
     canvas::{self, CanvasTarget},
     contracts, db,
     export::{self, ExportOptions},
-    media::{hash_file, resolve_component_tool},
+    media::{hash_file, tool_path},
     model::{ExportJob, SubtitleMode, TimelineMap},
     project, subtitle_style, timeline,
     util::{hidden_command, new_id, now},
@@ -389,9 +389,8 @@ fn run(db: &mut Connection, job_id: &str) -> Result<()> {
     }
     let output = PathBuf::from(&job.output_path);
     let partial = partial_path(&output, job_id);
-    let (ffmpeg, ffmpeg_lease) =
-        resolve_component_tool(crate::component_store::SharedComponent::Ffmpeg, "ffmpeg")?;
-    let encoders = artifacts::available_video_encoders_with_lease(&ffmpeg, ffmpeg_lease.as_ref())?;
+    let ffmpeg = tool_path("SIAOCUT_FFMPEG", "ffmpeg");
+    let encoders = artifacts::available_video_encoders(&ffmpeg)?;
     let has_video = artifacts::has_stream(source, "v:0")?;
     let has_audio = artifacts::has_stream(source, "a:0")?;
     let subtitle_path = if job.burn_subtitles {
@@ -430,7 +429,7 @@ fn run(db: &mut Connection, job_id: &str) -> Result<()> {
             encoder,
             canvas_settings: job.canvas_settings,
         })?;
-        run_encode_attempt(db, job_id, &map, command, ffmpeg_lease.as_ref())
+        run_encode_attempt(db, job_id, &map, command)
     })?;
     let Some(encoder) = encoder else {
         finish_cancelled(db, job_id)?;
@@ -682,7 +681,6 @@ fn run_encode_attempt(
     job_id: &str,
     map: &TimelineMap,
     mut command: Command,
-    lease: Option<&crate::component_store::ComponentLease>,
 ) -> Result<EncodeAttemptOutcome> {
     let cancel_requested: bool = db.query_row(
         "SELECT cancel_requested_at IS NOT NULL FROM export_jobs WHERE id=?1",
@@ -695,10 +693,6 @@ fn run_encode_attempt(
 
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = command.spawn().context("无法启动 FFmpeg 视频导出")?;
-    if let Some(lease) = lease {
-        lease.watch_process(&child);
-    }
-    let process_id = child.id();
     let stdout = child
         .stdout
         .take()
@@ -727,10 +721,6 @@ fn run_encode_attempt(
         )?
         .clamp(0.01, 0.99);
     let status: Result<Option<_>> = 'monitor: loop {
-        if lease.is_some_and(|lease| lease.heartbeat_lost()) {
-            crate::util::terminate_process_tree(&mut child);
-            break 'monitor Err(anyhow!("component_lease_lost: heartbeat 已丢失"));
-        }
         while let Ok(line) = progress_rx.try_recv() {
             if let Some(value) = line.strip_prefix("out_time_us=")
                 && let Ok(microseconds) = value.parse::<f64>()
@@ -778,14 +768,8 @@ fn run_encode_attempt(
         }
         thread::sleep(Duration::from_millis(200));
     };
-    if let Some(lease) = lease {
-        lease.unwatch_process(process_id);
-    }
     let _ = progress_reader.join();
     let stderr = error_reader.join().unwrap_or_default();
-    if let Some(lease) = lease {
-        lease.ensure_healthy()?;
-    }
     let Some(status) = status? else {
         return Ok(EncodeAttemptOutcome::Cancelled);
     };
