@@ -903,12 +903,8 @@ mod tests {
         assert!(validate_core_args(&["glossary".into(), "show".into(), "p1".into()]).is_ok());
         assert!(validate_core_args(&["resources".into(), "status".into()]).is_ok());
         assert!(
-            validate_core_args(&[
-                "resources".into(),
-                "install".into(),
-                "url_import".into()
-            ])
-            .is_ok()
+            validate_core_args(&["resources".into(), "install".into(), "url_import".into()])
+                .is_ok()
         );
     }
 
@@ -1134,7 +1130,10 @@ mod tests {
             )
             .unwrap();
             let config = managed_resource_config(&config_path).unwrap();
-            assert_eq!(managed_entrypoint(&config, "ffmpeg").as_ref(), Some(expected));
+            assert_eq!(
+                managed_entrypoint(&config, "ffmpeg").as_ref(),
+                Some(expected)
+            );
         }
     }
 
