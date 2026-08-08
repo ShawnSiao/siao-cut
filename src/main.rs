@@ -14,6 +14,7 @@ mod cuts;
 mod db;
 mod export;
 mod ipc;
+mod local_resources;
 mod media;
 mod model;
 mod models;
@@ -86,6 +87,8 @@ enum Commands {
     Model(ModelCommand),
     #[command(subcommand)]
     Runtime(RuntimeCommand),
+    #[command(subcommand)]
+    Resources(ResourceCommand),
     #[command(subcommand)]
     Source(SourceCommand),
     #[command(subcommand)]
@@ -743,6 +746,21 @@ enum RuntimeCommand {
     Reset,
 }
 
+#[derive(Subcommand)]
+enum ResourceCommand {
+    Status,
+    Plan {
+        capability: String,
+        #[arg(long)]
+        profile: Option<String>,
+    },
+    Configure {
+        #[arg(long)]
+        root: PathBuf,
+    },
+    Health,
+}
+
 #[derive(Args)]
 struct TranscribeArgs {
     project_id: String,
@@ -883,6 +901,7 @@ fn run(cli: Cli) -> Result<Value> {
                 "vadTimeline": vad_timeline,
                 "models": models::catalog(false)?,
                 "runtime": runtime::status()?,
+                "localResources": local_resources::status()?,
                 "message": "Rust + SQLite Core 可用。"
             })))
         }
@@ -2052,6 +2071,24 @@ fn run(cli: Cli) -> Result<Value> {
                     "message":"已恢复 CPU 基线运行时。"
                 })))
             }
+        },
+        Commands::Resources(command) => match command {
+            ResourceCommand::Status => Ok(envelope(json!({
+                "localResources": local_resources::status()?
+            }))),
+            ResourceCommand::Plan {
+                capability,
+                profile,
+            } => Ok(envelope(json!({
+                "resourcePlan": local_resources::plan(&capability, profile.as_deref())?
+            }))),
+            ResourceCommand::Configure { root } => Ok(envelope(json!({
+                "localResources": local_resources::configure(&root)?,
+                "message": "本地资源保存位置已设置。"
+            }))),
+            ResourceCommand::Health => Ok(envelope(json!({
+                "resourceHealth": local_resources::health()?
+            }))),
         },
         Commands::Audit { project_id } => {
             let project = project::load(&database, &project_id)?;

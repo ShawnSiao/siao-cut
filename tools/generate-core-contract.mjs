@@ -5,7 +5,10 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const corePath = path.join(repositoryRoot, "target", "debug", process.platform === "win32" ? "siaocut-core.exe" : "siaocut-core");
+const cargoTargetDirectory = process.env.CARGO_TARGET_DIR
+  ? path.resolve(process.env.CARGO_TARGET_DIR)
+  : path.join(repositoryRoot, "target");
+const corePath = path.join(cargoTargetDirectory, "debug", process.platform === "win32" ? "siaocut-core.exe" : "siaocut-core");
 const outputPath = path.join(repositoryRoot, "apps", "desktop", "src", "generated", "core-contract.ts");
 const result = spawnSync(corePath, ["--json", "contract"], {
   cwd: repositoryRoot,
@@ -15,13 +18,15 @@ const result = spawnSync(corePath, ["--json", "contract"], {
 });
 
 if (result.status !== 0) {
-  throw new Error(`Unable to export the Rust Core contract. Run cargo build first.\n${result.stderr}`);
+  const detail = result.error?.message ?? result.stderr ?? "Core process did not start.";
+  throw new Error(`Unable to export the Rust Core contract. Run cargo build first.\n${detail}`);
 }
 
 const contract = JSON.parse(result.stdout);
 const declarations = [
   ["backgroundJobStatuses", "BackgroundJobStatus", contract.statusSets.backgroundJob],
   ["agentRunStatuses", "AgentRunStatus", contract.statusSets.agentRun],
+  ["localResourceStates", "LocalResourceState", contract.statusSets.localResource],
   ["transcriptionJobStatuses", "TranscriptionJobStatus", contract.statusSets.transcriptionJob],
   ["taskStatuses", "TaskStatus", contract.statusSets.task],
   ["workflowStatuses", "WorkflowStatus", contract.statusSets.workflow],

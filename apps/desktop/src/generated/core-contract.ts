@@ -23,6 +23,15 @@ export const agentRunStatuses = [
 ] as const;
 export type AgentRunStatus = typeof agentRunStatuses[number];
 
+export const localResourceStates = [
+  "not_ready",
+  "preparing",
+  "ready",
+  "needs_repair",
+  "update_available"
+] as const;
+export type LocalResourceState = typeof localResourceStates[number];
+
 export const transcriptionJobStatuses = [
   "queued",
   "running",
@@ -279,6 +288,19 @@ export const coreErrorCodes = [
   "runtime_executable_missing",
   "runtime_hash_mismatch",
   "runtime_verification_failed",
+  "resource_setup_required",
+  "resource_root_invalid",
+  "resource_root_not_writable",
+  "resource_root_unavailable",
+  "resource_root_contains_user_data",
+  "resource_root_low_space",
+  "resource_config_invalid",
+  "resource_config_write_failed",
+  "resource_config_version_unsupported",
+  "resource_catalog_invalid",
+  "resource_capability_invalid",
+  "resource_profile_invalid",
+  "resource_move_required",
   "preview_project_version_missing",
   "preview_project_changed",
   "preview_generation_superseded",
