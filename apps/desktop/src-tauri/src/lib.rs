@@ -902,6 +902,14 @@ mod tests {
         assert!(validate_core_args(&["agent".into(), "health".into()]).is_ok());
         assert!(validate_core_args(&["glossary".into(), "show".into(), "p1".into()]).is_ok());
         assert!(validate_core_args(&["resources".into(), "status".into()]).is_ok());
+        assert!(
+            validate_core_args(&[
+                "resources".into(),
+                "install".into(),
+                "url_import".into()
+            ])
+            .is_ok()
+        );
     }
 
     #[test]
@@ -1097,6 +1105,37 @@ mod tests {
 
         assert_eq!(managed_entrypoint(&config, "ffmpeg"), Some(executable));
         assert_eq!(managed_entrypoint(&config, "ffprobe"), None);
+    }
+
+    #[test]
+    fn reloads_product_managed_entrypoints_after_activation() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("LocalResources");
+        let first = root.join("packages/media/1/ffmpeg.exe");
+        let second = root.join("packages/media/2/ffmpeg.exe");
+        fs::create_dir_all(first.parent().unwrap()).unwrap();
+        fs::create_dir_all(second.parent().unwrap()).unwrap();
+        fs::write(&first, b"first").unwrap();
+        fs::write(&second, b"second").unwrap();
+        let config_path = temp.path().join("config/local-resources.json");
+        fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+
+        for (relative, expected) in [
+            ("packages/media/1/ffmpeg.exe", &first),
+            ("packages/media/2/ffmpeg.exe", &second),
+        ] {
+            fs::write(
+                &config_path,
+                serde_json::json!({
+                    "root": root,
+                    "activeEntrypoints": { "ffmpeg": relative }
+                })
+                .to_string(),
+            )
+            .unwrap();
+            let config = managed_resource_config(&config_path).unwrap();
+            assert_eq!(managed_entrypoint(&config, "ffmpeg").as_ref(), Some(expected));
+        }
     }
 
     #[test]

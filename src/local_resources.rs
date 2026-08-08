@@ -1,5 +1,6 @@
 use crate::{db, util};
 use anyhow::{Result, anyhow, bail};
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -104,7 +105,7 @@ fn backup_path(path: &Path) -> PathBuf {
     path.with_extension("json.bak")
 }
 
-fn read_config_at(path: &Path) -> Result<Option<LocalResourceConfig>> {
+pub(crate) fn read_config_at(path: &Path) -> Result<Option<LocalResourceConfig>> {
     let source = if path.is_file() {
         Some(path.to_path_buf())
     } else {
@@ -136,6 +137,18 @@ fn validate_config(config: &LocalResourceConfig) -> Result<()> {
     }
     for relative in config.active_entrypoints.values() {
         validate_relative_path(Path::new(relative))?;
+    }
+    for (component, version) in &config.active_versions {
+        validate_config_segment(component)?;
+        validate_config_segment(version)?;
+    }
+    Ok(())
+}
+
+fn validate_config_segment(value: &str) -> Result<()> {
+    let mut components = Path::new(value).components();
+    if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
+        bail!("resource_config_invalid: 本地资源版本路径无效")
     }
     Ok(())
 }
@@ -229,18 +242,23 @@ fn status_at(config_path: &Path) -> Result<LocalResourceStatus> {
         nearest_existing(&config.root).and_then(|path| util::available_space(path).ok());
     let capabilities = CAPABILITIES
         .iter()
-        .map(|(id, name)| CapabilityStatus {
-            id,
-            name,
-            state: if capability_ready(&config, id) {
-                "ready"
-            } else {
-                "not_ready"
-            },
-            enabled: config
+        .map(|(id, name)| {
+            let enabled = config
                 .enabled_capabilities
                 .iter()
-                .any(|enabled| enabled == id),
+                .any(|enabled| enabled == id);
+            CapabilityStatus {
+                id,
+                name,
+                state: if capability_ready(&config, id) {
+                    "ready"
+                } else if enabled {
+                    "needs_repair"
+                } else {
+                    "not_ready"
+                },
+                enabled,
+            }
         })
         .collect::<Vec<_>>();
     let needs_setup = !root_available;
@@ -260,7 +278,7 @@ pub fn status() -> Result<LocalResourceStatus> {
     status_at(&config_path())
 }
 
-fn write_probe(root: &Path) -> Result<()> {
+pub(crate) fn write_probe(root: &Path) -> Result<()> {
     let staging = root.join("staging");
     let probe = staging.join(format!(".write-probe-{}", std::process::id()));
     let mut file = OpenOptions::new()
@@ -293,7 +311,7 @@ fn prepare_root(root: &Path) -> Result<PathBuf> {
         .map_err(|error| anyhow!("resource_root_invalid: 无法解析本地资源目录：{error}"))
 }
 
-fn same_path(first: &Path, second: &Path) -> bool {
+pub(crate) fn same_path(first: &Path, second: &Path) -> bool {
     let first = first.canonicalize().unwrap_or_else(|_| first.to_path_buf());
     let second = second
         .canonicalize()
@@ -301,7 +319,7 @@ fn same_path(first: &Path, second: &Path) -> bool {
     first == second
 }
 
-fn write_config_at(path: &Path, config: &LocalResourceConfig) -> Result<()> {
+pub(crate) fn write_config_at(path: &Path, config: &LocalResourceConfig) -> Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| anyhow!("resource_config_write_failed: 本地资源配置目录无效"))?;
@@ -364,7 +382,17 @@ fn configure_at(config_path: &Path, root: &Path, data_home: &Path) -> Result<Loc
     status_at(config_path)
 }
 
-pub fn configure(root: &Path) -> Result<LocalResourceStatus> {
+pub fn configure(database: &Connection, root: &Path) -> Result<LocalResourceStatus> {
+    let active: bool = database.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM resource_jobs WHERE status IN ('queued','running')
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if active {
+        bail!("resource_job_active: 本地资源准备期间不能更改保存位置")
+    }
     configure_at(&config_path(), root, &db::home_dir())
 }
 
@@ -555,6 +583,31 @@ mod tests {
         let error = configure_at(&config_path, &second, &data).unwrap_err();
 
         assert!(error.to_string().starts_with("resource_move_required:"));
+    }
+
+    #[test]
+    fn active_download_prevents_changing_the_confirmed_root() {
+        let temp = tempdir().unwrap();
+        let database = db::open_at(&temp.path().join("siaocut.db")).unwrap();
+        let locator = temp.path().join("config/local-resources.json");
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        let data = temp.path().join("data");
+        fs::create_dir_all(&data).unwrap();
+        configure_at(&locator, &first, &data).unwrap();
+        database
+            .execute(
+                "INSERT INTO resource_jobs(
+                     id,capability_id,status,stage,total_bytes,target_root,created_at,updated_at
+                 ) VALUES('resource-active','basic_media','queued','queued',1,?1,'now','now')",
+                [first.to_string_lossy().as_ref()],
+            )
+            .unwrap();
+
+        let error = configure(&database, &second).unwrap_err();
+
+        assert!(error.to_string().starts_with("resource_job_active:"));
+        assert!(!second.exists());
     }
 
     #[test]

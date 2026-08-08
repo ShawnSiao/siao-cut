@@ -20,6 +20,7 @@ mod model;
 mod models;
 mod patches;
 mod project;
+mod resource_jobs;
 mod runtime;
 mod source_import;
 mod speaker;
@@ -758,6 +759,25 @@ enum ResourceCommand {
         #[arg(long)]
         root: PathBuf,
     },
+    Install {
+        capability: String,
+    },
+    Job {
+        job_id: String,
+    },
+    Jobs,
+    Cancel {
+        job_id: String,
+    },
+    Resume {
+        job_id: String,
+    },
+    Repair {
+        capability: String,
+    },
+    Remove {
+        capability: String,
+    },
     Health,
 }
 
@@ -867,6 +887,7 @@ fn run(cli: Cli) -> Result<Value> {
     let mut database = db::open()?;
     tasks::reconcile_expired(&mut database)?;
     models::reconcile_interrupted(&database)?;
+    resource_jobs::reconcile_interrupted(&database)?;
     video_export::reconcile_interrupted(&database)?;
     source_import::reconcile_interrupted(&database)?;
     auto_workflow::reconcile_interrupted(&database)?;
@@ -2083,9 +2104,38 @@ fn run(cli: Cli) -> Result<Value> {
                 "resourcePlan": local_resources::plan(&capability, profile.as_deref())?
             }))),
             ResourceCommand::Configure { root } => Ok(envelope(json!({
-                "localResources": local_resources::configure(&root)?,
+                "localResources": local_resources::configure(&database, &root)?,
                 "message": "本地资源保存位置已设置。"
             }))),
+            ResourceCommand::Install { capability } => Ok(envelope(json!({
+                "resourceJob": resource_jobs::create_install(&database, &capability)?,
+                "message": "正在准备所需的本地资源。"
+            }))),
+            ResourceCommand::Job { job_id } => Ok(envelope(json!({
+                "resourceJob": resource_jobs::load_job(&database, &job_id)?
+            }))),
+            ResourceCommand::Jobs => Ok(envelope(json!({
+                "resourceJobs": resource_jobs::list_jobs(&database)?
+            }))),
+            ResourceCommand::Cancel { job_id } => Ok(envelope(json!({
+                "resourceJob": resource_jobs::cancel(&database, &job_id)?,
+                "message": "正在取消本地资源准备。"
+            }))),
+            ResourceCommand::Resume { job_id } => Ok(envelope(json!({
+                "resourceJob": resource_jobs::resume(&database, &job_id)?,
+                "message": "已继续准备本地资源。"
+            }))),
+            ResourceCommand::Repair { capability } => Ok(envelope(json!({
+                "resourceJob": resource_jobs::repair(&database, &capability)?,
+                "message": "正在修复本地资源。"
+            }))),
+            ResourceCommand::Remove { capability } => {
+                resource_jobs::remove(&database, &capability)?;
+                Ok(envelope(json!({
+                    "localResources": local_resources::status()?,
+                    "message": "已移除所选本地能力。"
+                })))
+            }
             ResourceCommand::Health => Ok(envelope(json!({
                 "resourceHealth": local_resources::health()?
             }))),
@@ -2220,6 +2270,17 @@ async fn main() {
         };
         if let Err(error) = models::run_worker_isolated(job_id, model_id) {
             eprintln!("SiaoCut model worker: {error}");
+            std::process::exit(1)
+        }
+        return;
+    }
+    if arguments.first().map(String::as_str) == Some("__resource_worker") {
+        let (Some(job_id), Some(capability)) = (arguments.get(1), arguments.get(2)) else {
+            eprintln!("SiaoCut resource worker: missing job or capability id");
+            std::process::exit(2)
+        };
+        if let Err(error) = resource_jobs::run_worker_isolated(job_id, capability) {
+            eprintln!("SiaoCut resource worker: {error}");
             std::process::exit(1)
         }
         return;
