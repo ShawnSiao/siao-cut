@@ -160,6 +160,27 @@ fn local_resources_can_be_configured_planned_and_checked() {
     let health = run_direct(temp.path(), &["resources", "health"]);
     assert_eq!(health["resourceHealth"]["healthy"], true);
     assert_eq!(health["resourceHealth"]["reasonCode"], Value::Null);
+
+    fs::write(root.join("downloads/completed.bin"), b"completed").unwrap();
+    fs::write(root.join("downloads/resumable.bin.part"), b"partial").unwrap();
+    let moved_root = temp.path().join("moved-resources");
+    let moved = run_direct(
+        temp.path(),
+        &[
+            "resources",
+            "migrate",
+            "--root",
+            moved_root.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(moved["resourceMigration"]["sourceAvailable"], true);
+    assert_eq!(moved["resourceMigration"]["filesCopied"], 2);
+    assert!(moved_root.join("downloads/completed.bin").is_file());
+
+    let cleaned = run_direct(temp.path(), &["resources", "cleanup"]);
+    assert_eq!(cleaned["resourceCleanup"]["filesRemoved"], 1);
+    assert!(!moved_root.join("downloads/completed.bin").exists());
+    assert!(moved_root.join("downloads/resumable.bin.part").is_file());
 }
 
 #[test]

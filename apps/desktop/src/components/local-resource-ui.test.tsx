@@ -108,6 +108,7 @@ describe("local resource setup", () => {
   });
 
   it("shows product capabilities without raw component identities", () => {
+    const onCleanup = vi.fn();
     const ready = {
       ...unconfiguredStatus,
       configured: true,
@@ -117,12 +118,14 @@ describe("local resource setup", () => {
       needsSetup: false,
       capabilities: unconfiguredStatus.capabilities.map((capability) => ({ ...capability, state: "ready" as const, enabled: true })),
     };
-    render(<LocalResourcePanel status={ready} job={null} busy={false} onPrepare={vi.fn()} onChangeLocation={vi.fn()} onRemove={vi.fn()}/>);
+    render(<LocalResourcePanel status={ready} job={null} busy={false} onPrepare={vi.fn()} onChangeLocation={vi.fn()} onRemove={vi.fn()} onCleanup={onCleanup}/>);
 
     expect(screen.getByText("基础媒体处理")).toBeInTheDocument();
     expect(screen.getByText("URL 导入")).toBeInTheDocument();
     expect(screen.getByText("本地转录")).toBeInTheDocument();
     expect(screen.getByText("说话人识别")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "释放无用空间" }));
+    expect(onCleanup).toHaveBeenCalledOnce();
     expect(document.body).not.toHaveTextContent(/FFmpeg|FFprobe|yt-dlp|whisper\.cpp|SIAOCUT_|SHA-?256/);
   });
 });

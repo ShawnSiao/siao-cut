@@ -1178,6 +1178,42 @@ describe("SiaoCut review workbench", () => {
     expect(localStorage.getItem("siaocut.localResourcesSetupDeferred.v1")).toBe("1");
   });
 
+  it("moves local resources after explicit location confirmation and cleans only on confirmation", async () => {
+    setMockLocalResourcesForTest({
+      configured: true,
+      root: "E:\\SiaoCut Resources",
+      rootAvailable: true,
+      writable: true,
+      availableBytes: 128 * 1024 * 1024 * 1024,
+      transcriptionProfile: "standard",
+      capabilities: [
+        { id: "basic_media", name: "基础媒体处理", state: "ready", enabled: true },
+        { id: "url_import", name: "URL 导入", state: "ready", enabled: true },
+        { id: "local_transcription", name: "本地转录", state: "ready", enabled: true },
+        { id: "speaker_identity", name: "说话人识别", state: "ready", enabled: true },
+      ],
+      needsSetup: false,
+    });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "本地资源" }));
+    const settings = await screen.findByRole("dialog", { name: "本地资源" });
+    fireEvent.click(within(settings).getByRole("button", { name: "更改位置" }));
+    const setup = await screen.findByRole("dialog", { name: "准备 SiaoCut" });
+    fireEvent.click(within(setup).getByRole("button", { name: "更改位置" }));
+    expect(await within(setup).findByText("D:\\SiaoCut Resources")).toBeInTheDocument();
+    fireEvent.click(within(setup).getByRole("button", { name: "确认此位置" }));
+
+    expect(await screen.findByText("本地资源已安全移到新的保存位置。")).toBeInTheDocument();
+    const reopened = await screen.findByRole("dialog", { name: "本地资源" });
+    expect(within(reopened).getByText("D:\\SiaoCut Resources")).toBeInTheDocument();
+    fireEvent.click(within(reopened).getByRole("button", { name: "释放无用空间" }));
+
+    expect(confirm).toHaveBeenCalledWith(expect.stringMatching(/当前资源与可续传下载会保留/));
+    expect(await screen.findByText("无用的本地资源文件已清理。")).toBeInTheDocument();
+  });
+
   it("prepares a missing URL-import capability and resumes the original inspection", async () => {
     setMockLocalResourcesForTest({
       configured: true,

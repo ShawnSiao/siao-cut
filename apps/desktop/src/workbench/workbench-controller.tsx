@@ -39,7 +39,10 @@ function localResourceError(error: unknown) {
         resource_root_unavailable: tr("app.resources.error.locationUnavailable"),
         resource_root_not_writable: tr("app.resources.error.locationUnavailable"),
         resource_root_low_space: tr("app.resources.error.lowSpace"),
+        resource_insufficient_space: tr("app.resources.error.lowSpace"),
         resource_job_active: tr("app.resources.error.active"),
+        resource_move_target_not_empty: tr("app.resources.error.locationNotEmpty"),
+        resource_move_target_invalid: tr("app.resources.error.locationNested"),
     } as Record<string, string>)[code] ?? tr("app.resources.error.generic");
 }
 
@@ -1371,13 +1374,21 @@ function WorkbenchController() {
         setResourceBusy(true);
         setResourceError(null);
         try {
-            const envelope = await localResourceClient.configure(resourceSelectedRoot);
+            const changingLocation = Boolean(localResources?.configured);
+            const envelope = changingLocation
+                ? await localResourceClient.migrate(resourceSelectedRoot)
+                : await localResourceClient.configure(resourceSelectedRoot);
             if (!envelope.localResources)
                 throw new Error("resource_setup_required");
             setLocalResources(envelope.localResources);
             setResourceSelectedRoot("");
+            setRuntime(await runtimeInfo());
             localStorage.removeItem(RESOURCE_SETUP_DEFERRED_KEY);
-            setNotice(tr("app.resources.locationConfirmed"));
+            setNotice(tr(changingLocation ? "app.resources.locationMoved" : "app.resources.locationConfirmed"));
+            if (changingLocation && resourceSetupReason === "manage") {
+                setShowResourceSetup(false);
+                setShowRuntime(true);
+            }
         }
         catch (cause) {
             setResourceError(localResourceError(cause));
@@ -1469,6 +1480,23 @@ function WorkbenchController() {
                 setLocalResources(envelope.localResources);
             setRuntime(await runtimeInfo());
             setNotice(tr("app.resources.removedNotice", { capability: localCapabilityLabel(capability) }));
+        }
+        catch (cause) {
+            setError(localResourceError(cause));
+        }
+        finally {
+            setResourceBusy(false);
+        }
+    };
+    const cleanupLocalResources = async () => {
+        if (!window.confirm(tr("app.resources.cleanupConfirm")))
+            return;
+        setResourceBusy(true);
+        try {
+            const envelope = await localResourceClient.cleanup();
+            if (envelope.localResources)
+                setLocalResources(envelope.localResources);
+            setNotice(tr("app.resources.cleanupNotice"));
         }
         catch (cause) {
             setError(localResourceError(cause));
@@ -3199,6 +3227,7 @@ function WorkbenchController() {
         onPrepareResource={(capability) => void openResourcePreparation(capability, "manage")}
         onChangeResourceLocation={() => void openResourcePreparation("basic_media", "manage")}
         onRemoveResource={(capability) => void removeResourceCapability(capability)}
+        onCleanupResources={() => void cleanupLocalResources()}
       /></Suspense>}
       {showResourceSetup && <Suspense fallback={null}><LocalResourceSetupDialog
         reason={resourceSetupReason}

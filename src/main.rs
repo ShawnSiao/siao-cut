@@ -759,6 +759,10 @@ enum ResourceCommand {
         #[arg(long)]
         root: PathBuf,
     },
+    Migrate {
+        #[arg(long)]
+        root: PathBuf,
+    },
     Install {
         capability: String,
         #[arg(long)]
@@ -780,6 +784,7 @@ enum ResourceCommand {
     Remove {
         capability: String,
     },
+    Cleanup,
     Health,
 }
 
@@ -2109,6 +2114,14 @@ fn run(cli: Cli) -> Result<Value> {
                 "localResources": local_resources::configure(&database, &root)?,
                 "message": "本地资源保存位置已设置。"
             }))),
+            ResourceCommand::Migrate { root } => {
+                let migration = local_resources::migrate(&database, &root)?;
+                Ok(envelope(json!({
+                    "localResources": migration.status.clone(),
+                    "resourceMigration": migration,
+                    "message": "本地资源保存位置已更改。"
+                })))
+            }
             ResourceCommand::Install {
                 capability,
                 profile,
@@ -2141,6 +2154,11 @@ fn run(cli: Cli) -> Result<Value> {
                     "message": "已移除所选本地能力。"
                 })))
             }
+            ResourceCommand::Cleanup => Ok(envelope(json!({
+                "resourceCleanup": local_resources::cleanup(&database)?,
+                "localResources": local_resources::status()?,
+                "message": "已清理不再使用的本地资源文件。"
+            }))),
             ResourceCommand::Health => Ok(envelope(json!({
                 "resourceHealth": local_resources::health()?
             }))),

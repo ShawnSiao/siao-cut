@@ -116,9 +116,10 @@ type LocalResourcePanelProps = {
   onPrepare: (capability: LocalCapabilityId) => void;
   onChangeLocation: () => void;
   onRemove: (capability: LocalCapabilityId) => void;
+  onCleanup: () => void;
 };
 
-export function LocalResourcePanel({ status, job, busy, onPrepare, onChangeLocation, onRemove }: LocalResourcePanelProps) {
+export function LocalResourcePanel({ status, job, busy, onPrepare, onChangeLocation, onRemove, onCleanup }: LocalResourcePanelProps) {
   return <section className="local-resource-panel" aria-label={tr("app.resources.title")}>
     <header><span><strong>{tr("app.resources.title")}</strong><small>{tr("app.resources.panelDescription")}</small></span><HardDrive size={19}/></header>
     <div className="local-resource-location"><span><small>{tr("app.resources.location")}</small><strong title={status?.root ?? undefined}>{status?.root ?? tr("app.resources.locationMissing")}</strong></span><button className="button quiet" disabled={busy || Boolean(job && ["queued", "running"].includes(job.status))} onClick={onChangeLocation}><FolderOpen size={14}/>{status?.configured ? tr("app.resources.changeLocation") : tr("app.resources.chooseLocation")}</button></div>
@@ -129,5 +130,6 @@ export function LocalResourcePanel({ status, job, busy, onPrepare, onChangeLocat
         <footer><span>{activeJob ? tr("app.resources.state.preparing") : stateLabel(capability)}</span><div>{capability.state !== "ready" && <button disabled={busy || Boolean(job)} onClick={() => onPrepare(capability.id)}>{capability.state === "needs_repair" ? tr("app.resources.repair") : tr("app.resources.prepare")}</button>}{capability.state === "ready" && <button className="danger-link" disabled={busy || Boolean(job)} onClick={() => onRemove(capability.id)}><Trash2 size={13}/>{tr("app.resources.remove")}</button>}</div></footer>
       </article>;
     })}</div>
+    {status?.configured && <button className="button quiet full" disabled={busy || Boolean(job && ["queued", "running"].includes(job.status))} onClick={onCleanup}><Trash2 size={14}/>{tr("app.resources.cleanup")}</button>}
   </section>;
 }

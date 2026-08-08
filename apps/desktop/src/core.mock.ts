@@ -339,6 +339,12 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
     mockLocalResources = { ...mockLocalResources, configured: true, root, rootAvailable: true, writable: true, needsSetup: false };
     return { apiVersion: "0.1", status: "ok", localResources: structuredClone(mockLocalResources) };
   }
+  if (command === "resources" && subcommand === "migrate") {
+    const root = valueAfter("--root");
+    if (!root) throw new Error("resource_setup_required: 请先选择本地资源保存位置");
+    mockLocalResources = { ...mockLocalResources, configured: true, root, rootAvailable: true, writable: true, needsSetup: false };
+    return { apiVersion: "0.1", status: "ok", localResources: structuredClone(mockLocalResources), resourceMigration: { targetRoot: root } };
+  }
   if (command === "resources" && ["install", "repair"].includes(subcommand)) {
     const capabilityId = args[2] as LocalCapabilityId;
     const profile = (valueAfter("--profile") ?? mockLocalResources.transcriptionProfile) as LocalTranscriptionProfile;
@@ -382,6 +388,8 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
     mockLocalResources = { ...mockLocalResources, capabilities: mockLocalResources.capabilities.map((capability) => capability.id === capabilityId ? { ...capability, state: "not_ready", enabled: false } : capability) };
     return { apiVersion: "0.1", status: "ok", localResources: structuredClone(mockLocalResources) };
   }
+  if (command === "resources" && subcommand === "cleanup")
+    return { apiVersion: "0.1", status: "ok", localResources: structuredClone(mockLocalResources), resourceCleanup: { filesRemoved: 0, directoriesRemoved: 0, bytesReclaimed: 0 } };
   if (command === "import") {
     const imported = structuredClone(sampleProject);
     const sourcePath = args[1] ?? "demo.mp4";

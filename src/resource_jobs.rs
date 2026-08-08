@@ -324,6 +324,8 @@ pub fn create_install(
         }
     }
     let specs = specs_for_capability(capability, &config.transcription_profile)?;
+    let candidates = legacy_candidate_files(&config.root);
+    adopt_verified_assets(&config.root, &specs, &candidates)?;
     create_install_in(db, capability, &locator, &specs, spawn_worker)
 }
 
@@ -357,9 +359,7 @@ fn create_install_in(
             if component_is_active(&config, spec) {
                 spec.size
             } else {
-                fs::metadata(partial_path(&config.root, spec))
-                    .map(|metadata| metadata.len().min(spec.size))
-                    .unwrap_or(0)
+                verified_download_bytes(&config.root, spec)
             }
         })
         .sum::<u64>();
@@ -377,7 +377,11 @@ fn create_install_in(
         id: new_id("resource"),
         capability_id: capability.to_owned(),
         status: "queued".into(),
-        stage: "queued".into(),
+        stage: if total_bytes > 0 && partial_bytes == total_bytes {
+            "verified".into()
+        } else {
+            "queued".into()
+        },
         progress: if total_bytes == 0 {
             0.0
         } else {
@@ -410,10 +414,11 @@ fn create_install_in(
         "INSERT INTO resource_jobs(
              id,capability_id,status,stage,progress,bytes_downloaded,total_bytes,target_root,
              created_at,updated_at,attempt_count
-         ) VALUES(?1,?2,'queued','queued',?3,?4,?5,?6,?7,?7,1)",
+         ) VALUES(?1,?2,'queued',?3,?4,?5,?6,?7,?8,?8,1)",
         params![
             job.id,
             job.capability_id,
+            job.stage,
             job.progress,
             job.bytes_downloaded,
             job.total_bytes,
@@ -879,6 +884,140 @@ fn asset_path(root: &Path, spec: &InstallSpec) -> PathBuf {
     ))
 }
 
+fn collect_candidate_files(directory: &Path, max_depth: usize, output: &mut Vec<PathBuf>) {
+    if max_depth == 0 || output.len() >= 4096 {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if output.len() >= 4096 {
+            break;
+        }
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_file() {
+            output.push(entry.path());
+        } else if file_type.is_dir() {
+            collect_candidate_files(&entry.path(), max_depth - 1, output);
+        }
+    }
+}
+
+fn legacy_candidate_files(managed_root: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let mut roots = vec![
+        db::home_dir().join("bin"),
+        db::home_dir().join("models"),
+        db::home_dir().join("downloads"),
+        db::home_dir().join("speaker"),
+    ];
+    if let Some(local_app_data) = env::var_os("LOCALAPPDATA").map(PathBuf::from) {
+        let legacy = local_app_data.join("SiaoCut");
+        roots.extend([
+            legacy.join("bin"),
+            legacy.join("models"),
+            legacy.join("downloads"),
+            legacy.join("speaker"),
+        ]);
+    }
+    for root in roots {
+        if !same_path(&root, managed_root) && !root.starts_with(managed_root) {
+            collect_candidate_files(&root, 5, &mut files);
+        }
+    }
+    for variable in [
+        "SIAOCUT_FFMPEG",
+        "SIAOCUT_FFPROBE",
+        "SIAOCUT_WHISPER_CLI",
+        "SIAOCUT_YTDLP",
+        "SIAOCUT_WHISPER_MODEL",
+        "SIAOCUT_SPEAKER_PACKAGE_DIR",
+    ] {
+        let Some(path) = env::var_os(variable).map(PathBuf::from) else {
+            continue;
+        };
+        if path.is_file() {
+            files.push(path);
+        } else if path.is_dir() && !path.starts_with(managed_root) {
+            collect_candidate_files(&path, 4, &mut files);
+        }
+    }
+    files.sort();
+    files.dedup();
+    files
+}
+
+fn adopt_verified_assets(
+    root: &Path,
+    specs: &[InstallSpec],
+    candidates: &[PathBuf],
+) -> Result<(u64, u64)> {
+    fs::create_dir_all(root.join("downloads"))?;
+    let mut adopted_files = 0_u64;
+    let mut adopted_bytes = 0_u64;
+    for spec in specs {
+        let target = asset_path(root, spec);
+        if target.is_file()
+            && fs::metadata(&target)?.len() == spec.size
+            && hash_file(&target)? == spec.sha256
+        {
+            continue;
+        }
+        let Some(candidate) = candidates.iter().find(|candidate| {
+            fs::metadata(candidate)
+                .map(|metadata| metadata.is_file() && metadata.len() == spec.size)
+                .unwrap_or(false)
+                && hash_file(candidate)
+                    .map(|hash| hash.eq_ignore_ascii_case(&spec.sha256))
+                    .unwrap_or(false)
+        }) else {
+            continue;
+        };
+        let partial = target.with_extension(format!("{}.adopting", asset_extension(spec)));
+        if partial.exists() {
+            fs::remove_file(&partial)?;
+        }
+        fs::copy(candidate, &partial).context("resource_adoption_failed: 无法复用已有本地资源")?;
+        if fs::metadata(&partial)?.len() != spec.size
+            || !hash_file(&partial)?.eq_ignore_ascii_case(&spec.sha256)
+        {
+            let _ = fs::remove_file(&partial);
+            bail!("resource_adoption_failed: 已有本地资源复制后校验失败")
+        }
+        if target.exists() {
+            fs::remove_file(&target)?;
+        }
+        fs::rename(&partial, &target)
+            .context("resource_adoption_failed: 无法启用已复用的本地资源")?;
+        adopted_files += 1;
+        adopted_bytes = adopted_bytes.saturating_add(spec.size);
+    }
+    Ok((adopted_files, adopted_bytes))
+}
+
+fn verified_download_bytes(root: &Path, spec: &InstallSpec) -> u64 {
+    let target = asset_path(root, spec);
+    if fs::metadata(&target)
+        .map(|metadata| metadata.len() == spec.size)
+        .unwrap_or(false)
+        && hash_file(&target)
+            .map(|hash| hash.eq_ignore_ascii_case(&spec.sha256))
+            .unwrap_or(false)
+    {
+        spec.size
+    } else {
+        fs::metadata(partial_path(root, spec))
+            .map(|metadata| metadata.len().min(spec.size))
+            .unwrap_or(0)
+    }
+}
+
 fn download_component(
     db: &Connection,
     job_id: &str,
@@ -1208,7 +1347,8 @@ fn update_progress(
     };
     let changed = db.execute(
         "UPDATE resource_jobs
-         SET stage=?2,bytes_downloaded=?3,progress=?4,updated_at=?5
+         SET stage=?2,bytes_downloaded=MAX(bytes_downloaded,?3),
+             progress=MAX(progress,?4),updated_at=?5
          WHERE id=?1 AND status='running' AND cancel_requested_at IS NULL",
         params![job_id, stage, bytes.min(total), progress, now()],
     )?;
@@ -1767,6 +1907,56 @@ mod tests {
         assert!(config.enabled_capabilities.contains(&"basic_media".into()));
         assert!(config.enabled_capabilities.contains(&"url_import".into()));
         assert_eq!(load_job(&db, &job.id).unwrap().status, "completed");
+    }
+
+    #[test]
+    fn adopts_a_verified_legacy_asset_without_removing_the_original() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().join("resources");
+        let legacy = temp.path().join("legacy");
+        fs::create_dir_all(&legacy).unwrap();
+        let payload = b"verified legacy model";
+        let valid = legacy.join("ggml-base.bin");
+        let corrupt = legacy.join("corrupt.bin");
+        fs::write(&valid, payload).unwrap();
+        fs::write(&corrupt, vec![b'x'; payload.len()]).unwrap();
+        let spec = InstallSpec {
+            id: "transcription-model-base".into(),
+            activation_id: "transcription-model".into(),
+            version: "base-test".into(),
+            url: "http://127.0.0.1/unused".into(),
+            size: payload.len() as u64,
+            sha256: sha256(payload),
+            kind: InstallKind::Model {
+                file_name: "ggml-base.bin".into(),
+            },
+        };
+
+        let adopted = adopt_verified_assets(
+            &root,
+            std::slice::from_ref(&spec),
+            &[corrupt, valid.clone()],
+        )
+        .unwrap();
+
+        assert_eq!(adopted, (1, payload.len() as u64));
+        assert!(valid.is_file());
+        assert_eq!(
+            hash_file(&asset_path(&root, &spec)).unwrap(),
+            sha256(payload)
+        );
+        assert_eq!(verified_download_bytes(&root, &spec), spec.size);
+        let locator = temp.path().join("config/local-resources.json");
+        let database = db::open_at(&temp.path().join("siaocut.db")).unwrap();
+        write_test_config(&locator, &root);
+        let job = create_test_job(
+            &database,
+            "local_transcription",
+            &locator,
+            std::slice::from_ref(&spec),
+        );
+        assert_eq!(job.bytes_downloaded, job.total_bytes);
+        assert_eq!(job.stage, "verified");
     }
 
     #[test]
