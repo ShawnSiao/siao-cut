@@ -1,8 +1,9 @@
 use crate::{
     db,
     local_resources::{
-        LocalResourceConfig, config_path, model_id_for_profile, read_config_at, same_path,
-        validate_profile, write_config_at, write_probe,
+        LocalResourceConfig, activation_snapshot, config_path, model_id_for_profile,
+        push_activation_snapshot, read_config_at, same_path, validate_profile, write_config_at,
+        write_probe,
     },
     media::hash_file,
     speaker,
@@ -25,6 +26,7 @@ use zip::ZipArchive;
 
 const CATALOG: &str = include_str!("../release/runtime-manifest.json");
 const SPACE_RESERVE: u64 = 128 * 1024 * 1024;
+const MAX_DOWNLOAD_ATTEMPTS: usize = 3;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -102,6 +104,7 @@ struct InstallSpec {
 pub struct ResourceJob {
     pub id: String,
     pub capability_id: String,
+    pub transcription_profile: Option<String>,
     pub status: String,
     pub stage: String,
     pub progress: f64,
@@ -295,7 +298,7 @@ pub fn create_install(
     profile: Option<&str>,
 ) -> Result<ResourceJob> {
     let locator = config_path();
-    let mut config = require_config_at(&locator)?;
+    let config = require_config_at(&locator)?;
     if let Some(active) = active_job(db)? {
         if active.capability_id == capability {
             return Ok(active);
@@ -315,23 +318,35 @@ pub fn create_install(
     if capability != "local_transcription" && profile.is_some() {
         bail!("resource_profile_not_applicable: 此能力不使用转录方案")
     }
-    if let Some(profile) = profile {
+    let selected_profile = if capability == "local_transcription" {
+        let profile = profile.unwrap_or(&config.transcription_profile);
         validate_profile(profile)?;
-        if config.transcription_profile != profile {
-            config.transcription_profile = profile.to_owned();
-            config.updated_at = now();
-            write_config_at(&locator, &config)?;
-        }
-    }
-    let specs = specs_for_capability(capability, &config.transcription_profile)?;
+        Some(profile.to_owned())
+    } else {
+        None
+    };
+    let specs = specs_for_capability(
+        capability,
+        selected_profile
+            .as_deref()
+            .unwrap_or(&config.transcription_profile),
+    )?;
     let candidates = legacy_candidate_files(&config.root);
     adopt_verified_assets(&config.root, &specs, &candidates)?;
-    create_install_in(db, capability, &locator, &specs, spawn_worker)
+    create_install_in(
+        db,
+        capability,
+        selected_profile.as_deref(),
+        &locator,
+        &specs,
+        spawn_worker,
+    )
 }
 
 fn create_install_in(
     db: &Connection,
     capability: &str,
+    transcription_profile: Option<&str>,
     locator: &Path,
     specs: &[InstallSpec],
     spawn: impl FnOnce(&str, &str) -> Result<()>,
@@ -376,6 +391,7 @@ fn create_install_in(
     let job = ResourceJob {
         id: new_id("resource"),
         capability_id: capability.to_owned(),
+        transcription_profile: transcription_profile.map(str::to_owned),
         status: "queued".into(),
         stage: if total_bytes > 0 && partial_bytes == total_bytes {
             "verified".into()
@@ -412,12 +428,13 @@ fn create_install_in(
     }
     tx.execute(
         "INSERT INTO resource_jobs(
-             id,capability_id,status,stage,progress,bytes_downloaded,total_bytes,target_root,
-             created_at,updated_at,attempt_count
-         ) VALUES(?1,?2,'queued',?3,?4,?5,?6,?7,?8,?8,1)",
+             id,capability_id,transcription_profile,status,stage,progress,bytes_downloaded,
+             total_bytes,target_root,created_at,updated_at,attempt_count
+         ) VALUES(?1,?2,?3,'queued',?4,?5,?6,?7,?8,?9,?9,1)",
         params![
             job.id,
             job.capability_id,
+            job.transcription_profile,
             job.stage,
             job.progress,
             job.bytes_downloaded,
@@ -455,31 +472,32 @@ fn active_job(db: &Connection) -> Result<Option<ResourceJob>> {
 
 pub fn load_job(db: &Connection, job_id: &str) -> Result<ResourceJob> {
     db.query_row(
-        "SELECT id,capability_id,status,stage,progress,bytes_downloaded,total_bytes,target_root,
-                cancel_requested_at,error_message,created_at,updated_at,completed_at,worker_pid,
-                attempt_count
+        "SELECT id,capability_id,transcription_profile,status,stage,progress,bytes_downloaded,
+                total_bytes,target_root,cancel_requested_at,error_message,created_at,updated_at,
+                completed_at,worker_pid,attempt_count
          FROM resource_jobs WHERE id=?1",
         [job_id],
         |row| {
-            let status = row.get::<_, String>(2)?;
-            let error_message = row.get::<_, Option<String>>(9)?;
+            let status = row.get::<_, String>(3)?;
+            let error_message = row.get::<_, Option<String>>(10)?;
             Ok(ResourceJob {
                 id: row.get(0)?,
                 capability_id: row.get(1)?,
+                transcription_profile: row.get(2)?,
                 status: status.clone(),
-                stage: row.get(3)?,
-                progress: row.get(4)?,
-                bytes_downloaded: row.get(5)?,
-                total_bytes: row.get(6)?,
-                target_root: row.get(7)?,
-                cancel_requested_at: row.get(8)?,
+                stage: row.get(4)?,
+                progress: row.get(5)?,
+                bytes_downloaded: row.get(6)?,
+                total_bytes: row.get(7)?,
+                target_root: row.get(8)?,
+                cancel_requested_at: row.get(9)?,
                 error_code: crate::model::background_error_code(&status, error_message.as_deref()),
                 error_message,
-                created_at: row.get(10)?,
-                updated_at: row.get(11)?,
-                completed_at: row.get(12)?,
-                worker_pid: row.get(13)?,
-                attempt_count: row.get(14)?,
+                created_at: row.get(11)?,
+                updated_at: row.get(12)?,
+                completed_at: row.get(13)?,
+                worker_pid: row.get(14)?,
+                attempt_count: row.get(15)?,
             })
         },
     )
@@ -627,6 +645,9 @@ pub fn remove(db: &Connection, capability: &str) -> Result<()> {
     config
         .enabled_capabilities
         .retain(|enabled| enabled != capability);
+    config
+        .activation_history
+        .retain(|snapshot| snapshot.capability_id != capability);
     config.updated_at = now();
     if let Err(error) = write_config_at(&locator, &config) {
         for (package, quarantine) in moved_packages.iter().rev() {
@@ -701,7 +722,12 @@ fn run_worker(job_id: &str, capability: &str) -> Result<()> {
     let db = db::open()?;
     let locator = config_path();
     let config = require_config_at(&locator)?;
-    let specs = specs_for_capability(capability, &config.transcription_profile)?;
+    let job = load_job(&db, job_id)?;
+    let profile = job
+        .transcription_profile
+        .as_deref()
+        .unwrap_or(&config.transcription_profile);
+    let specs = specs_for_capability(capability, profile)?;
     run_install_attempt_in(&db, job_id, capability, &locator, &specs)
 }
 
@@ -799,6 +825,11 @@ fn install_in(
         bail!("resource_root_changed: 本地资源保存位置已变化，任务未启用")
     }
     config = current;
+    let previous = activation_snapshot(&config, capability)?;
+    if let Some(profile) = &job.transcription_profile {
+        validate_profile(profile)?;
+        config.transcription_profile = profile.clone();
+    }
     for activation in activations {
         config
             .active_versions
@@ -819,6 +850,8 @@ fn install_in(
         "speaker_identity" => enable_capability(&mut config, "speaker_identity"),
         _ => {}
     }
+    verify_candidate_health(&config, specs)?;
+    push_activation_snapshot(&mut config, previous);
     config.updated_at = now();
     let tx = Transaction::new_unchecked(db, TransactionBehavior::Immediate)
         .context("resource_job_state_changed: 无法锁定本地资源启用步骤")?;
@@ -840,6 +873,25 @@ fn install_in(
         bail!("resource_job_state_changed: 本地资源任务在启用前已变化")
     }
     tx.commit()?;
+    Ok(())
+}
+
+fn verify_candidate_health(config: &LocalResourceConfig, specs: &[InstallSpec]) -> Result<()> {
+    for spec in specs {
+        if config.active_versions.get(&spec.activation_id) != Some(&spec.version) {
+            bail!("resource_health_check_failed: 新版本没有完整启用")
+        }
+        for key in required_entrypoint_keys(&spec.activation_id) {
+            let path = config
+                .active_entrypoints
+                .get(*key)
+                .map(|relative| config.root.join(relative))
+                .ok_or_else(|| anyhow!("resource_health_check_failed: 新版本缺少必要入口"))?;
+            if !path.is_file() || fs::metadata(&path)?.len() == 0 {
+                bail!("resource_health_check_failed: 新版本未通过本地可用性检查")
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1058,91 +1110,142 @@ fn download_component(
         bail!("resource_hash_mismatch: 下载文件校验失败，已删除无效文件")
     }
 
+    // Reqwest's default system proxy resolver honors HTTP(S)_PROXY and NO_PROXY.
+    // Credentials and proxy addresses are deliberately never copied into job errors or logs.
     let client = Client::builder()
         .timeout(Duration::from_secs(60))
         .build()
         .context("resource_download_failed: 无法初始化下载连接")?;
-    let mut request = client.get(&spec.url);
-    if existing > 0 {
-        request = request.header(RANGE, format!("bytes={existing}-"));
-    }
-    let mut response = request
-        .send()
-        .context("resource_download_failed: 无法连接资源下载服务")?;
-    if !response.status().is_success() {
-        bail!(
-            "resource_download_failed: 资源下载失败：HTTP {}",
-            response.status()
-        )
-    }
-    let append = existing > 0 && response.status() == StatusCode::PARTIAL_CONTENT;
-    if existing > 0 && !append {
-        existing = 0;
-    }
-    let mut file = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .append(append)
-        .truncate(!append)
-        .open(&partial)
-        .context("resource_root_not_writable: 无法写入本地资源下载文件")?;
-    let mut downloaded = existing;
-    let mut buffer = vec![0_u8; 1024 * 1024];
-    let mut last_update = Instant::now() - Duration::from_secs(1);
     let chunk_delay = env::var("SIAOCUT_RESOURCE_CHUNK_DELAY_MS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok());
-    loop {
-        let count = response
-            .read(&mut buffer)
-            .context("resource_download_failed: 下载连接意外中断")?;
-        if count == 0 {
+    let mut last_failure = None;
+    for attempt in 0..MAX_DOWNLOAD_ATTEMPTS {
+        existing = fs::metadata(&partial)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        let mut request = client.get(&spec.url);
+        if existing > 0 {
+            request = request.header(RANGE, format!("bytes={existing}-"));
+        }
+        let mut response = match request.send() {
+            Ok(response) => response,
+            Err(_) => {
+                last_failure = Some("无法连接资源下载服务，可稍后继续".into());
+                if attempt + 1 < MAX_DOWNLOAD_ATTEMPTS {
+                    retry_backoff(attempt);
+                    continue;
+                }
+                break;
+            }
+        };
+        if !response.status().is_success() {
+            let status = response.status();
+            last_failure = Some(format!("资源下载失败：HTTP {status}"));
+            if retryable_status(status) && attempt + 1 < MAX_DOWNLOAD_ATTEMPTS {
+                retry_backoff(attempt);
+                continue;
+            }
             break;
         }
-        file.write_all(&buffer[..count])?;
-        downloaded = downloaded.saturating_add(count as u64);
-        if let Some(delay) = chunk_delay {
-            thread::sleep(Duration::from_millis(delay));
+        let append = existing > 0 && response.status() == StatusCode::PARTIAL_CONTENT;
+        if existing > 0 && !append {
+            existing = 0;
         }
-        if last_update.elapsed() >= Duration::from_millis(400) {
-            if cancellation_requested(db, job_id)? {
-                file.flush()?;
-                finish_cancelled(db, job_id)?;
-                return Err(anyhow!("resource_cancelled: 本地资源任务已取消"));
+        let mut file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .append(append)
+            .truncate(!append)
+            .open(&partial)
+            .context("resource_root_not_writable: 无法写入本地资源下载文件")?;
+        let mut downloaded = existing;
+        let mut buffer = vec![0_u8; 1024 * 1024];
+        let mut last_update = Instant::now() - Duration::from_secs(1);
+        let mut interrupted = false;
+        loop {
+            let count = match response.read(&mut buffer) {
+                Ok(count) => count,
+                Err(_) => {
+                    interrupted = true;
+                    break;
+                }
+            };
+            if count == 0 {
+                break;
             }
-            update_progress(
-                db,
-                job_id,
-                "downloading",
-                completed_before.saturating_add(downloaded),
-                total,
-            )?;
-            last_update = Instant::now();
+            file.write_all(&buffer[..count])?;
+            downloaded = downloaded.saturating_add(count as u64);
+            if let Some(delay) = chunk_delay {
+                thread::sleep(Duration::from_millis(delay));
+            }
+            if last_update.elapsed() >= Duration::from_millis(400) {
+                if cancellation_requested(db, job_id)? {
+                    file.flush()?;
+                    finish_cancelled(db, job_id)?;
+                    return Err(anyhow!("resource_cancelled: 本地资源任务已取消"));
+                }
+                update_progress(
+                    db,
+                    job_id,
+                    "downloading",
+                    completed_before.saturating_add(downloaded),
+                    total,
+                )?;
+                last_update = Instant::now();
+            }
         }
+        file.flush()?;
+        drop(file);
+        let actual_size = fs::metadata(&partial)?.len();
+        if interrupted {
+            last_failure = Some("下载连接意外中断，可稍后继续".into());
+            if attempt + 1 < MAX_DOWNLOAD_ATTEMPTS {
+                retry_backoff(attempt);
+                continue;
+            }
+            break;
+        }
+        if actual_size != spec.size {
+            last_failure = Some(format!(
+                "下载不完整；应为 {} 字节，实际为 {} 字节，可继续下载",
+                spec.size, actual_size
+            ));
+            if actual_size < spec.size && attempt + 1 < MAX_DOWNLOAD_ATTEMPTS {
+                retry_backoff(attempt);
+                continue;
+            }
+            break;
+        }
+        if hash_file(&partial)? != spec.sha256 {
+            fs::remove_file(&partial)?;
+            bail!("resource_hash_mismatch: 下载文件校验失败，已删除无效文件")
+        }
+        fs::rename(&partial, &target)?;
+        update_progress(
+            db,
+            job_id,
+            "verified",
+            completed_before.saturating_add(spec.size),
+            total,
+        )?;
+        return Ok(target);
     }
-    file.flush()?;
-    drop(file);
-    let actual_size = fs::metadata(&partial)?.len();
-    if actual_size != spec.size {
-        bail!(
-            "resource_download_failed: 下载不完整；应为 {} 字节，实际为 {} 字节，可继续下载",
-            spec.size,
-            actual_size
-        )
-    }
-    if hash_file(&partial)? != spec.sha256 {
-        fs::remove_file(&partial)?;
-        bail!("resource_hash_mismatch: 下载文件校验失败，已删除无效文件")
-    }
-    fs::rename(&partial, &target)?;
-    update_progress(
-        db,
-        job_id,
-        "verified",
-        completed_before.saturating_add(spec.size),
-        total,
-    )?;
-    Ok(target)
+    bail!(
+        "resource_download_failed: {}",
+        last_failure.unwrap_or_else(|| "本地资源下载失败，可稍后继续".into())
+    )
+}
+
+fn retryable_status(status: StatusCode) -> bool {
+    matches!(
+        status,
+        StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_MANY_REQUESTS
+    ) || status.is_server_error()
+}
+
+fn retry_backoff(attempt: usize) {
+    thread::sleep(Duration::from_millis(250 * (attempt as u64 + 1)));
 }
 
 fn stage_component(
@@ -1172,6 +1275,8 @@ fn stage_component(
         }
     }
 
+    let staged_entrypoints = component_entrypoints_at(&staging, spec)?;
+
     let final_dir = if matches!(&spec.kind, InstallKind::Model { .. }) {
         root.join("models")
             .join(&spec.activation_id)
@@ -1181,32 +1286,43 @@ fn stage_component(
             .join(&spec.activation_id)
             .join(&spec.version)
     };
-    if final_dir.is_dir() {
-        fs::remove_dir_all(&final_dir)
-            .context("resource_activation_failed: 无法替换未启用的本地资源版本")?;
-    }
-    if let Some(parent) = final_dir.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::rename(&staging, &final_dir)
-        .context("resource_activation_failed: 无法原子启用本地资源版本")?;
+    replace_staged_directory(&staging, &final_dir, job_id)?;
+    let entrypoints = staged_entrypoints
+        .into_iter()
+        .map(|(key, path)| {
+            let relative = path
+                .strip_prefix(&staging)
+                .expect("staged entrypoint is inside the staging directory");
+            (key, final_dir.join(relative))
+        })
+        .collect();
+    Ok(ComponentActivation {
+        id: spec.activation_id.clone(),
+        version: spec.version.clone(),
+        entrypoints,
+    })
+}
 
+fn component_entrypoints_at(
+    directory: &Path,
+    spec: &InstallSpec,
+) -> Result<BTreeMap<String, PathBuf>> {
     let mut entrypoints = BTreeMap::new();
     match spec.activation_id.as_str() {
         "ffmpeg-cpu" => {
             entrypoints.insert(
                 "ffmpeg".into(),
-                find_file(&final_dir, "ffmpeg.exe")
+                find_file(directory, "ffmpeg.exe")
                     .ok_or_else(|| anyhow!("resource_archive_invalid: 媒体资源包缺少必要程序"))?,
             );
             entrypoints.insert(
                 "ffprobe".into(),
-                find_file(&final_dir, "ffprobe.exe")
+                find_file(directory, "ffprobe.exe")
                     .ok_or_else(|| anyhow!("resource_archive_invalid: 媒体资源包缺少必要程序"))?,
             );
         }
         "yt-dlp" => {
-            let path = final_dir.join("yt-dlp.exe");
+            let path = directory.join("yt-dlp.exe");
             if !path.is_file() {
                 bail!("resource_activation_failed: URL 导入资源未正确安装")
             }
@@ -1215,7 +1331,7 @@ fn stage_component(
         "whisper-cpu-upstream" => {
             entrypoints.insert(
                 "whisper".into(),
-                find_file(&final_dir, "whisper-cli.exe").ok_or_else(|| {
+                find_file(directory, "whisper-cli.exe").ok_or_else(|| {
                     anyhow!("resource_archive_invalid: 本地转录资源包缺少必要程序")
                 })?,
             );
@@ -1224,7 +1340,7 @@ fn stage_component(
             let InstallKind::Model { file_name } = &spec.kind else {
                 bail!("resource_catalog_invalid: 本地转录模型类型无效")
             };
-            let path = final_dir.join(file_name);
+            let path = directory.join(file_name);
             if !path.is_file() {
                 bail!("resource_activation_failed: 本地转录模型未正确安装")
             }
@@ -1232,11 +1348,51 @@ fn stage_component(
         }
         _ => bail!("resource_catalog_invalid: 不支持的本地资源组件"),
     }
-    Ok(ComponentActivation {
-        id: spec.activation_id.clone(),
-        version: spec.version.clone(),
-        entrypoints,
-    })
+    if entrypoints.values().any(|path| {
+        fs::metadata(path)
+            .map(|metadata| metadata.len() == 0)
+            .unwrap_or(true)
+    }) {
+        bail!("resource_health_check_failed: 新版本未通过本地可用性检查")
+    }
+    Ok(entrypoints)
+}
+
+fn replace_staged_directory(staging: &Path, destination: &Path, token: &str) -> Result<()> {
+    let parent = destination
+        .parent()
+        .ok_or_else(|| anyhow!("resource_activation_failed: 本地资源目标目录无效"))?;
+    fs::create_dir_all(parent)?;
+    let name = destination
+        .file_name()
+        .ok_or_else(|| anyhow!("resource_activation_failed: 本地资源版本目录无效"))?
+        .to_string_lossy();
+    let displaced = parent.join(format!(".{name}.{token}.rollback"));
+    if displaced.exists() {
+        fs::remove_dir_all(&displaced)
+            .context("resource_activation_failed: 无法清理上次未完成的版本替换")?;
+    }
+    let had_destination = destination.exists();
+    if had_destination {
+        if !destination.is_dir() {
+            bail!("resource_activation_failed: 本地资源版本路径不是文件夹")
+        }
+        fs::rename(destination, &displaced)
+            .context("resource_activation_failed: 无法暂存上一资源版本")?;
+    }
+    if let Err(error) = fs::rename(staging, destination) {
+        if had_destination && displaced.is_dir() && !destination.exists() {
+            let _ = fs::rename(&displaced, destination);
+        }
+        return Err(anyhow!(
+            "resource_activation_failed: 无法原子启用本地资源版本：{error}"
+        ));
+    }
+    if displaced.is_dir() {
+        fs::remove_dir_all(displaced)
+            .context("resource_activation_failed: 无法清理已替换的无效版本")?;
+    }
+    Ok(())
 }
 
 fn stage_speaker_package(
@@ -1261,20 +1417,20 @@ fn stage_speaker_package(
         .ok_or_else(|| anyhow!("resource_catalog_invalid: 说话人特征资源缺失"))?;
     let staging = root.join("staging").join(job_id).join("speaker_identity");
     speaker::prepare_package_at(runtime, segmentation, embedding, &staging)?;
+    let staged_executable = speaker::package_executable_at(&staging)?;
+    if fs::metadata(&staged_executable)?.len() == 0 {
+        bail!("resource_health_check_failed: 说话人资源未通过本地可用性检查")
+    }
     let final_dir = root
         .join("packages")
         .join("speaker_identity")
         .join(&version);
-    if final_dir.is_dir() {
-        fs::remove_dir_all(&final_dir)
-            .context("resource_activation_failed: 无法替换未启用的说话人资源")?;
-    }
-    if let Some(parent) = final_dir.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::rename(&staging, &final_dir)
-        .context("resource_activation_failed: 无法原子启用说话人资源")?;
-    let executable = speaker::package_executable_at(&final_dir)?;
+    let executable_relative = staged_executable
+        .strip_prefix(&staging)
+        .map_err(|_| anyhow!("resource_activation_failed: 说话人资源入口路径无效"))?
+        .to_path_buf();
+    replace_staged_directory(&staging, &final_dir, job_id)?;
+    let executable = final_dir.join(executable_relative);
     Ok(ComponentActivation {
         id: "speaker_identity".into(),
         version,
@@ -1487,6 +1643,7 @@ mod tests {
                 enabled_capabilities: Vec::new(),
                 active_entrypoints: BTreeMap::new(),
                 active_versions: BTreeMap::new(),
+                activation_history: Vec::new(),
                 updated_at: now(),
             },
         )
@@ -1499,7 +1656,8 @@ mod tests {
         locator: &Path,
         specs: &[InstallSpec],
     ) -> ResourceJob {
-        create_install_in(db, capability, locator, specs, |_, _| Ok(())).unwrap()
+        let profile = (capability == "local_transcription").then_some("standard");
+        create_install_in(db, capability, profile, locator, specs, |_, _| Ok(())).unwrap()
     }
 
     fn test_zip() -> Vec<u8> {
@@ -1551,7 +1709,7 @@ mod tests {
             kind: InstallKind::Executable,
         }];
 
-        let error = create_install_in(&db, "url_import", &locator, &specs, |_, _| {
+        let error = create_install_in(&db, "url_import", None, &locator, &specs, |_, _| {
             panic!("worker must not start without a confirmed directory")
         })
         .unwrap_err();
@@ -1631,6 +1789,7 @@ mod tests {
             enabled_capabilities: vec!["basic_media".into(), "local_transcription".into()],
             active_entrypoints: BTreeMap::new(),
             active_versions: BTreeMap::new(),
+            activation_history: Vec::new(),
             updated_at: now(),
         };
 
@@ -1751,7 +1910,7 @@ mod tests {
     }
 
     #[test]
-    fn interrupted_download_resumes_with_an_http_range() {
+    fn interrupted_download_retries_with_an_http_range() {
         let payload = vec![42_u8; 512 * 1024];
         let server = MockResourceServer::start(vec![
             ResponsePlan {
@@ -1779,21 +1938,6 @@ mod tests {
         };
         let job = create_test_job(&db, "url_import", &locator, std::slice::from_ref(&spec));
 
-        assert!(
-            run_install_attempt_in(
-                &db,
-                &job.id,
-                "url_import",
-                &locator,
-                std::slice::from_ref(&spec)
-            )
-            .is_err()
-        );
-        assert_eq!(load_job(&db, &job.id).unwrap().status, "failed");
-        let partial_bytes = fs::metadata(partial_path(&root, &spec)).unwrap().len();
-        assert!(partial_bytes > 0 && partial_bytes < spec.size);
-
-        resume_in(&db, &job.id, &locator, |_, _| Ok(())).unwrap();
         run_install_attempt_in(
             &db,
             &job.id,
@@ -1805,7 +1949,7 @@ mod tests {
 
         let ranges = server.finish();
         assert_eq!(ranges[0], 0);
-        assert_eq!(ranges[1], partial_bytes);
+        assert!(ranges[1] > 0 && ranges[1] < spec.size);
         assert_eq!(load_job(&db, &job.id).unwrap().status, "completed");
         let config = read_config_at(&locator).unwrap().unwrap();
         assert!(config.active_entrypoints.contains_key("yt_dlp"));
@@ -1851,6 +1995,132 @@ mod tests {
         let config = read_config_at(&locator).unwrap().unwrap();
         assert!(config.active_entrypoints.is_empty());
         assert!(config.active_versions.is_empty());
+    }
+
+    #[test]
+    fn invalid_update_keeps_the_last_working_version_active() {
+        use zip::{ZipWriter, write::SimpleFileOptions};
+
+        let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+        writer
+            .start_file("broken/ffmpeg.exe", SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(b"new ffmpeg only").unwrap();
+        let broken_update = writer.finish().unwrap().into_inner();
+        let server = MockResourceServer::start(vec![ResponsePlan {
+            payload: broken_update.clone(),
+            max_bytes: None,
+        }]);
+        let temp = tempdir().unwrap();
+        let db = db::open_at(&temp.path().join("siaocut.db")).unwrap();
+        let locator = temp.path().join("config/local-resources.json");
+        let root = temp.path().join("resources");
+        write_test_config(&locator, &root);
+        let old_dir = root.join("packages/ffmpeg-cpu/v1");
+        fs::create_dir_all(&old_dir).unwrap();
+        fs::write(old_dir.join("ffmpeg.exe"), b"old ffmpeg").unwrap();
+        fs::write(old_dir.join("ffprobe.exe"), b"old ffprobe").unwrap();
+        let mut config = read_config_at(&locator).unwrap().unwrap();
+        config.enabled_capabilities.push("basic_media".into());
+        config
+            .active_versions
+            .insert("ffmpeg-cpu".into(), "v1".into());
+        config.active_entrypoints.extend(BTreeMap::from([
+            ("ffmpeg".into(), "packages/ffmpeg-cpu/v1/ffmpeg.exe".into()),
+            (
+                "ffprobe".into(),
+                "packages/ffmpeg-cpu/v1/ffprobe.exe".into(),
+            ),
+        ]));
+        write_config_at(&locator, &config).unwrap();
+        let spec = InstallSpec {
+            id: "ffmpeg-cpu".into(),
+            activation_id: "ffmpeg-cpu".into(),
+            version: "v2".into(),
+            url: format!("{}/ffmpeg.zip", server.base_url),
+            size: broken_update.len() as u64,
+            sha256: sha256(&broken_update),
+            kind: InstallKind::ZipPackage,
+        };
+        let job = create_test_job(&db, "basic_media", &locator, std::slice::from_ref(&spec));
+
+        let error = run_install_attempt_in(
+            &db,
+            &job.id,
+            "basic_media",
+            &locator,
+            std::slice::from_ref(&spec),
+        )
+        .unwrap_err();
+
+        server.finish();
+        assert!(error.to_string().starts_with("resource_archive_invalid:"));
+        let preserved = read_config_at(&locator).unwrap().unwrap();
+        assert_eq!(preserved.active_versions["ffmpeg-cpu"], "v1");
+        assert!(old_dir.join("ffmpeg.exe").is_file());
+        assert!(old_dir.join("ffprobe.exe").is_file());
+        assert!(preserved.activation_history.is_empty());
+    }
+
+    #[test]
+    fn verified_update_records_a_restorable_version() {
+        let update = test_zip();
+        let server = MockResourceServer::start(vec![ResponsePlan {
+            payload: update.clone(),
+            max_bytes: None,
+        }]);
+        let temp = tempdir().unwrap();
+        let db = db::open_at(&temp.path().join("siaocut.db")).unwrap();
+        let locator = temp.path().join("config/local-resources.json");
+        let root = temp.path().join("resources");
+        write_test_config(&locator, &root);
+        let old_dir = root.join("packages/ffmpeg-cpu/v1");
+        fs::create_dir_all(&old_dir).unwrap();
+        fs::write(old_dir.join("ffmpeg.exe"), b"old ffmpeg").unwrap();
+        fs::write(old_dir.join("ffprobe.exe"), b"old ffprobe").unwrap();
+        let mut config = read_config_at(&locator).unwrap().unwrap();
+        config.enabled_capabilities.push("basic_media".into());
+        config
+            .active_versions
+            .insert("ffmpeg-cpu".into(), "v1".into());
+        config.active_entrypoints.extend(BTreeMap::from([
+            ("ffmpeg".into(), "packages/ffmpeg-cpu/v1/ffmpeg.exe".into()),
+            (
+                "ffprobe".into(),
+                "packages/ffmpeg-cpu/v1/ffprobe.exe".into(),
+            ),
+        ]));
+        write_config_at(&locator, &config).unwrap();
+        let spec = InstallSpec {
+            id: "ffmpeg-cpu".into(),
+            activation_id: "ffmpeg-cpu".into(),
+            version: "v2".into(),
+            url: format!("{}/ffmpeg.zip", server.base_url),
+            size: update.len() as u64,
+            sha256: sha256(&update),
+            kind: InstallKind::ZipPackage,
+        };
+        let job = create_test_job(&db, "basic_media", &locator, std::slice::from_ref(&spec));
+
+        run_install_attempt_in(
+            &db,
+            &job.id,
+            "basic_media",
+            &locator,
+            std::slice::from_ref(&spec),
+        )
+        .unwrap();
+
+        server.finish();
+        let activated = read_config_at(&locator).unwrap().unwrap();
+        assert_eq!(activated.active_versions["ffmpeg-cpu"], "v2");
+        assert_eq!(activated.activation_history.len(), 1);
+        assert_eq!(
+            activated.activation_history[0].active_versions["ffmpeg-cpu"],
+            "v1"
+        );
+        assert!(old_dir.join("ffmpeg.exe").is_file());
+        assert!(root.join(&activated.active_entrypoints["ffmpeg"]).is_file());
     }
 
     #[test]

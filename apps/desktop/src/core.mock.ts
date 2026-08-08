@@ -345,7 +345,7 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
     mockLocalResources = { ...mockLocalResources, configured: true, root, rootAvailable: true, writable: true, needsSetup: false };
     return { apiVersion: "0.1", status: "ok", localResources: structuredClone(mockLocalResources), resourceMigration: { targetRoot: root } };
   }
-  if (command === "resources" && ["install", "repair"].includes(subcommand)) {
+  if (command === "resources" && ["install", "update", "repair"].includes(subcommand)) {
     const capabilityId = args[2] as LocalCapabilityId;
     const profile = (valueAfter("--profile") ?? mockLocalResources.transcriptionProfile) as LocalTranscriptionProfile;
     const now = new Date().toISOString();
@@ -387,6 +387,11 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
     const capabilityId = args[2] as LocalCapabilityId;
     mockLocalResources = { ...mockLocalResources, capabilities: mockLocalResources.capabilities.map((capability) => capability.id === capabilityId ? { ...capability, state: "not_ready", enabled: false } : capability) };
     return { apiVersion: "0.1", status: "ok", localResources: structuredClone(mockLocalResources) };
+  }
+  if (command === "resources" && subcommand === "rollback") {
+    const capabilityId = args[2] as LocalCapabilityId;
+    mockLocalResources = { ...mockLocalResources, capabilities: mockLocalResources.capabilities.map((capability) => capability.id === capabilityId ? { ...capability, state: "ready", enabled: true, canRollback: true } : capability) };
+    return { apiVersion: "0.1", status: "ok", localResources: structuredClone(mockLocalResources), resourceRollback: { capabilityId } };
   }
   if (command === "resources" && subcommand === "cleanup")
     return { apiVersion: "0.1", status: "ok", localResources: structuredClone(mockLocalResources), resourceCleanup: { filesRemoved: 0, directoriesRemoved: 0, bytesReclaimed: 0 } };

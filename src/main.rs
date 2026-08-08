@@ -768,6 +768,11 @@ enum ResourceCommand {
         #[arg(long)]
         profile: Option<String>,
     },
+    Update {
+        capability: String,
+        #[arg(long)]
+        profile: Option<String>,
+    },
     Job {
         job_id: String,
     },
@@ -779,6 +784,9 @@ enum ResourceCommand {
         job_id: String,
     },
     Repair {
+        capability: String,
+    },
+    Rollback {
         capability: String,
     },
     Remove {
@@ -2129,6 +2137,13 @@ fn run(cli: Cli) -> Result<Value> {
                 "resourceJob": resource_jobs::create_install(&database, &capability, profile.as_deref())?,
                 "message": "正在准备所需的本地资源。"
             }))),
+            ResourceCommand::Update {
+                capability,
+                profile,
+            } => Ok(envelope(json!({
+                "resourceJob": resource_jobs::create_install(&database, &capability, profile.as_deref())?,
+                "message": "正在更新所需的本地资源。"
+            }))),
             ResourceCommand::Job { job_id } => Ok(envelope(json!({
                 "resourceJob": resource_jobs::load_job(&database, &job_id)?
             }))),
@@ -2147,6 +2162,14 @@ fn run(cli: Cli) -> Result<Value> {
                 "resourceJob": resource_jobs::repair(&database, &capability)?,
                 "message": "正在修复本地资源。"
             }))),
+            ResourceCommand::Rollback { capability } => {
+                let rollback = local_resources::rollback(&database, &capability)?;
+                Ok(envelope(json!({
+                    "localResources": rollback.status.clone(),
+                    "resourceRollback": rollback,
+                    "message": "已恢复上一可用版本。"
+                })))
+            }
             ResourceCommand::Remove { capability } => {
                 resource_jobs::remove(&database, &capability)?;
                 Ok(envelope(json!({

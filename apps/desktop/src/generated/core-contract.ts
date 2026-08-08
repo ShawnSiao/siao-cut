@@ -315,6 +315,8 @@ export const coreErrorCodes = [
   "resource_hash_mismatch",
   "resource_archive_invalid",
   "resource_activation_failed",
+  "resource_health_check_failed",
+  "resource_rollback_unavailable",
   "resource_dependency_required",
   "resource_remove_failed",
   "resource_cancelled",

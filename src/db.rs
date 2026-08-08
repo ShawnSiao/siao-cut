@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 28;
+pub const CURRENT_SCHEMA_VERSION: i64 = 29;
 
 struct Migration {
     version: i64,
@@ -126,6 +126,10 @@ const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 28,
         apply: migration_28_local_resource_jobs,
+    },
+    Migration {
+        version: 29,
+        apply: migration_29_local_resource_profiles,
     },
 ];
 
@@ -1303,6 +1307,11 @@ fn migration_28_local_resource_jobs(tx: &Transaction<'_>) -> Result<()> {
              ON resource_jobs((1))
              WHERE status IN ('queued','running');",
     )?;
+    Ok(())
+}
+
+fn migration_29_local_resource_profiles(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute_batch("ALTER TABLE resource_jobs ADD COLUMN transcription_profile TEXT;")?;
     Ok(())
 }
 

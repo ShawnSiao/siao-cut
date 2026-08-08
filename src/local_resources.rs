@@ -33,7 +33,19 @@ pub struct LocalResourceConfig {
     pub active_entrypoints: BTreeMap<String, String>,
     #[serde(default)]
     pub active_versions: BTreeMap<String, String>,
+    #[serde(default)]
+    pub activation_history: Vec<ResourceActivationSnapshot>,
     pub updated_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ResourceActivationSnapshot {
+    pub capability_id: String,
+    pub transcription_profile: Option<String>,
+    pub active_entrypoints: BTreeMap<String, String>,
+    pub active_versions: BTreeMap<String, String>,
+    pub created_at: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -43,6 +55,7 @@ pub struct CapabilityStatus {
     pub name: &'static str,
     pub state: &'static str,
     pub enabled: bool,
+    pub can_rollback: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -96,6 +109,14 @@ pub struct ResourceCleanup {
     pub bytes_reclaimed: u64,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResourceRollback {
+    pub capability_id: String,
+    pub restored_at: String,
+    pub status: LocalResourceStatus,
+}
+
 fn local_app_data() -> PathBuf {
     env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
@@ -117,6 +138,7 @@ fn default_config(root: PathBuf) -> LocalResourceConfig {
         enabled_capabilities: Vec::new(),
         active_entrypoints: BTreeMap::new(),
         active_versions: BTreeMap::new(),
+        activation_history: Vec::new(),
         updated_at: util::now(),
     }
 }
@@ -161,6 +183,43 @@ fn validate_config(config: &LocalResourceConfig) -> Result<()> {
     for (component, version) in &config.active_versions {
         validate_config_segment(component)?;
         validate_config_segment(version)?;
+    }
+    if config.activation_history.len() > 10 {
+        bail!("resource_config_invalid: 本地资源回退记录数量异常")
+    }
+    for snapshot in &config.activation_history {
+        capability_name(&snapshot.capability_id)?;
+        let components = capability_components(&snapshot.capability_id)?;
+        if snapshot.active_versions.len() != components.len()
+            || components
+                .iter()
+                .any(|component| !snapshot.active_versions.contains_key(*component))
+        {
+            bail!("resource_config_invalid: 本地资源回退版本不完整")
+        }
+        let entrypoint_count = components
+            .iter()
+            .map(|component| component_entrypoint_keys(component).len())
+            .sum::<usize>();
+        if snapshot.active_entrypoints.len() != entrypoint_count
+            || components.iter().any(|component| {
+                component_entrypoint_keys(component)
+                    .iter()
+                    .any(|key| !snapshot.active_entrypoints.contains_key(*key))
+            })
+        {
+            bail!("resource_config_invalid: 本地资源回退入口不完整")
+        }
+        if let Some(profile) = &snapshot.transcription_profile {
+            validate_profile(profile)?;
+        }
+        for relative in snapshot.active_entrypoints.values() {
+            validate_relative_path(Path::new(relative))?;
+        }
+        for (component, version) in &snapshot.active_versions {
+            validate_config_segment(component)?;
+            validate_config_segment(version)?;
+        }
     }
     Ok(())
 }
@@ -234,6 +293,19 @@ pub(crate) fn activate_managed_resource(
     let locator = config_path();
     let mut config = read_config_at(&locator)?
         .ok_or_else(|| anyhow!("resource_setup_required: 请先选择并确认本地资源保存位置"))?;
+    let activation_changes = config
+        .active_versions
+        .get(component)
+        .is_some_and(|active| active != version)
+        || profile.is_some_and(|profile| config.transcription_profile != profile);
+    let previous = if activation_changes {
+        capability
+            .map(|capability| activation_snapshot(&config, capability))
+            .transpose()?
+            .flatten()
+    } else {
+        None
+    };
     for (key, path) in entrypoints {
         if !path.is_file() {
             bail!("resource_activation_failed: 本地资源入口不存在")
@@ -261,6 +333,7 @@ pub(crate) fn activate_managed_resource(
     if let Some(profile) = profile {
         config.transcription_profile = profile.to_owned();
     }
+    push_activation_snapshot(&mut config, previous);
     config.updated_at = util::now();
     write_config_at(&locator, &config)
 }
@@ -293,6 +366,124 @@ fn capability_ready(config: &LocalResourceConfig, capability: &str) -> bool {
     }
 }
 
+fn capability_components(capability: &str) -> Result<&'static [&'static str]> {
+    Ok(match capability {
+        "basic_media" => &["ffmpeg-cpu"],
+        "url_import" => &["ffmpeg-cpu", "yt-dlp"],
+        "local_transcription" => &["ffmpeg-cpu", "whisper-cpu-upstream", "transcription-model"],
+        "speaker_identity" => &["ffmpeg-cpu", "speaker_identity"],
+        _ => bail!("resource_capability_invalid: 未知的本地能力"),
+    })
+}
+
+fn component_entrypoint_keys(component: &str) -> &'static [&'static str] {
+    match component {
+        "ffmpeg-cpu" => &["ffmpeg", "ffprobe"],
+        "yt-dlp" => &["yt_dlp"],
+        "whisper-cpu-upstream" => &["whisper"],
+        "transcription-model" => &["default_model"],
+        "speaker_identity" => &["speaker"],
+        _ => &[],
+    }
+}
+
+pub(crate) fn activation_snapshot(
+    config: &LocalResourceConfig,
+    capability: &str,
+) -> Result<Option<ResourceActivationSnapshot>> {
+    if !capability_ready(config, capability) {
+        return Ok(None);
+    }
+    let mut active_entrypoints = BTreeMap::new();
+    let mut active_versions = BTreeMap::new();
+    for component in capability_components(capability)? {
+        let Some(version) = config.active_versions.get(*component) else {
+            return Ok(None);
+        };
+        active_versions.insert((*component).to_owned(), version.clone());
+        for key in component_entrypoint_keys(component) {
+            let Some(relative) = config.active_entrypoints.get(*key) else {
+                return Ok(None);
+            };
+            active_entrypoints.insert((*key).to_owned(), relative.clone());
+        }
+    }
+    Ok(Some(ResourceActivationSnapshot {
+        capability_id: capability.to_owned(),
+        transcription_profile: (capability == "local_transcription")
+            .then(|| config.transcription_profile.clone()),
+        active_entrypoints,
+        active_versions,
+        created_at: util::now(),
+    }))
+}
+
+pub(crate) fn push_activation_snapshot(
+    config: &mut LocalResourceConfig,
+    snapshot: Option<ResourceActivationSnapshot>,
+) {
+    let Some(snapshot) = snapshot else {
+        return;
+    };
+    let is_duplicate = config.activation_history.last().is_some_and(|previous| {
+        previous.capability_id == snapshot.capability_id
+            && previous.transcription_profile == snapshot.transcription_profile
+            && previous.active_entrypoints == snapshot.active_entrypoints
+            && previous.active_versions == snapshot.active_versions
+    });
+    if !is_duplicate {
+        config.activation_history.push(snapshot);
+    }
+    if config.activation_history.len() > 10 {
+        let overflow = config.activation_history.len() - 10;
+        config.activation_history.drain(..overflow);
+    }
+}
+
+fn apply_snapshot(
+    config: &mut LocalResourceConfig,
+    snapshot: &ResourceActivationSnapshot,
+) -> Result<()> {
+    for component in capability_components(&snapshot.capability_id)? {
+        config.active_versions.remove(*component);
+        for key in component_entrypoint_keys(component) {
+            config.active_entrypoints.remove(*key);
+        }
+    }
+    config
+        .active_versions
+        .extend(snapshot.active_versions.clone());
+    config
+        .active_entrypoints
+        .extend(snapshot.active_entrypoints.clone());
+    if let Some(profile) = &snapshot.transcription_profile {
+        config.transcription_profile = profile.clone();
+    }
+    Ok(())
+}
+
+fn snapshot_is_healthy(
+    config: &LocalResourceConfig,
+    snapshot: &ResourceActivationSnapshot,
+) -> bool {
+    let mut candidate = config.clone();
+    apply_snapshot(&mut candidate, snapshot).is_ok()
+        && snapshot.active_entrypoints.values().all(|relative| {
+            resolve_entrypoint(&candidate.root, relative).is_some_and(|path| {
+                fs::metadata(path)
+                    .map(|metadata| metadata.is_file() && metadata.len() > 0)
+                    .unwrap_or(false)
+            })
+        })
+        && capability_ready(&candidate, &snapshot.capability_id)
+}
+
+fn rollback_available(config: &LocalResourceConfig, capability: &str) -> bool {
+    config.activation_history.iter().rev().any(|snapshot| {
+        snapshot.capability_id == capability && snapshot_is_healthy(config, snapshot)
+    })
+}
+
 fn nearest_existing(path: &Path) -> Option<&Path> {
     path.ancestors().find(|candidate| candidate.exists())
 }
@@ -313,6 +504,7 @@ fn status_at(config_path: &Path) -> Result<LocalResourceStatus> {
                     name,
                     state: "not_ready",
                     enabled: false,
+                    can_rollback: false,
                 })
                 .collect(),
             needs_setup: true,
@@ -336,13 +528,18 @@ fn status_at(config_path: &Path) -> Result<LocalResourceStatus> {
                 id,
                 name,
                 state: if capability_ready(&config, id) {
-                    "ready"
+                    if capability_up_to_date(&config, id).unwrap_or(false) {
+                        "ready"
+                    } else {
+                        "update_available"
+                    }
                 } else if enabled {
                     "needs_repair"
                 } else {
                     "not_ready"
                 },
                 enabled,
+                can_rollback: rollback_available(&config, id),
             }
         })
         .collect::<Vec<_>>();
@@ -720,6 +917,50 @@ pub fn migrate(database: &Connection, target: &Path) -> Result<ResourceMigration
     migrate_at(&config_path(), target, &db::home_dir(), None)
 }
 
+fn rollback_at(
+    database: &Connection,
+    locator: &Path,
+    capability: &str,
+) -> Result<ResourceRollback> {
+    capability_name(capability)?;
+    ensure_no_active_jobs(database)?;
+    let mut config = read_config_at(locator)?
+        .ok_or_else(|| anyhow!("resource_setup_required: 请先选择并确认本地资源保存位置"))?;
+    if !config.root.is_dir() {
+        bail!("resource_root_unavailable: 已选择的本地资源保存位置当前不可用")
+    }
+    write_probe(&config.root)?;
+    let position = config
+        .activation_history
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(index, snapshot)| {
+            (snapshot.capability_id == capability && snapshot_is_healthy(&config, snapshot))
+                .then_some(index)
+        })
+        .ok_or_else(|| anyhow!("resource_rollback_unavailable: 没有可恢复的上一版本"))?;
+    let previous = config.activation_history.remove(position);
+    let current = activation_snapshot(&config, capability)?;
+    apply_snapshot(&mut config, &previous)?;
+    if !capability_ready(&config, capability) {
+        bail!("resource_health_check_failed: 上一版本未通过可用性检查")
+    }
+    push_activation_snapshot(&mut config, current);
+    let restored_at = util::now();
+    config.updated_at = restored_at.clone();
+    write_config_at(locator, &config)?;
+    Ok(ResourceRollback {
+        capability_id: capability.to_owned(),
+        restored_at,
+        status: status_at(locator)?,
+    })
+}
+
+pub fn rollback(database: &Connection, capability: &str) -> Result<ResourceRollback> {
+    rollback_at(database, &config_path(), capability)
+}
+
 fn path_size(path: &Path) -> Result<(u64, u64)> {
     let files = directory_files(path)?;
     Ok((
@@ -754,8 +995,15 @@ fn cleanup_at(database: &Connection, locator: &Path) -> Result<ResourceCleanup> 
             let active = config.active_versions.get(&component_id);
             for version in fs::read_dir(component.path())? {
                 let version = version?;
+                let rollback_version = config.activation_history.iter().any(|snapshot| {
+                    snapshot
+                        .active_versions
+                        .get(&component_id)
+                        .is_some_and(|protected| version.file_name() == protected.as_str())
+                });
                 if !version.file_type()?.is_dir()
                     || active.is_some_and(|active| version.file_name() == active.as_str())
+                    || rollback_version
                 {
                     continue;
                 }
@@ -854,6 +1102,82 @@ fn model_size(catalog: &Value, id: &str) -> Option<u64> {
         .as_u64()
 }
 
+fn component_version(catalog: &Value, id: &str) -> Option<String> {
+    catalog
+        .get("components")?
+        .as_array()?
+        .iter()
+        .find(|component| component.get("id").and_then(Value::as_str) == Some(id))?
+        .get("version")?
+        .as_str()
+        .map(str::to_owned)
+}
+
+fn expected_versions(capability: &str, profile: &str) -> Result<BTreeMap<String, String>> {
+    capability_name(capability)?;
+    validate_profile(profile)?;
+    let catalog: Value = serde_json::from_str(CATALOG)
+        .map_err(|error| anyhow!("resource_catalog_invalid: 内置资源清单无效：{error}"))?;
+    let mut versions = BTreeMap::new();
+    let ffmpeg = component_version(&catalog, "ffmpeg-cpu")
+        .ok_or_else(|| anyhow!("resource_catalog_invalid: 内置资源清单缺少基础媒体版本"))?;
+    versions.insert("ffmpeg-cpu".into(), ffmpeg);
+    match capability {
+        "basic_media" => {}
+        "url_import" => {
+            let version = component_version(&catalog, "yt-dlp").ok_or_else(|| {
+                anyhow!("resource_catalog_invalid: 内置资源清单缺少 URL 导入版本")
+            })?;
+            versions.insert("yt-dlp".into(), version);
+        }
+        "local_transcription" => {
+            let whisper = component_version(&catalog, "whisper-cpu-upstream")
+                .ok_or_else(|| anyhow!("resource_catalog_invalid: 内置资源清单缺少本地转录版本"))?;
+            versions.insert("whisper-cpu-upstream".into(), whisper);
+            let model_id = model_id_for_profile(profile)?;
+            let model = catalog
+                .get("models")
+                .and_then(Value::as_array)
+                .and_then(|models| {
+                    models
+                        .iter()
+                        .find(|model| model.get("id").and_then(Value::as_str) == Some(model_id))
+                })
+                .ok_or_else(|| anyhow!("resource_catalog_invalid: 内置资源清单缺少转录模型"))?;
+            let sha256 = model
+                .get("sha256")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("resource_catalog_invalid: 内置转录模型缺少校验值"))?;
+            if sha256.len() < 12 {
+                bail!("resource_catalog_invalid: 内置转录模型校验值无效")
+            }
+            versions.insert(
+                "transcription-model".into(),
+                format!("{model_id}-{}", &sha256[..12]),
+            );
+        }
+        "speaker_identity" => {
+            let version = catalog
+                .get("speakerPackages")
+                .and_then(Value::as_array)
+                .and_then(|packages| packages.first())
+                .and_then(|package| package.get("version"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("resource_catalog_invalid: 内置资源清单缺少说话人版本"))?;
+            versions.insert("speaker_identity".into(), version.to_owned());
+        }
+        _ => unreachable!("capability was validated"),
+    }
+    Ok(versions)
+}
+
+fn capability_up_to_date(config: &LocalResourceConfig, capability: &str) -> Result<bool> {
+    let expected = expected_versions(capability, &config.transcription_profile)?;
+    Ok(expected
+        .iter()
+        .all(|(component, version)| config.active_versions.get(component) == Some(version)))
+}
+
 pub fn plan(capability: &str, profile: Option<&str>) -> Result<ResourcePlan> {
     let capability_name = capability_name(capability)?;
     let profile = profile.unwrap_or(DEFAULT_PROFILE);
@@ -873,21 +1197,30 @@ pub fn plan(capability: &str, profile: Option<&str>) -> Result<ResourcePlan> {
         .and_then(Value::as_u64)
         .unwrap_or(0);
     let config = read_config_at(&config_path())?;
-    let needs_basic = config
-        .as_ref()
-        .is_none_or(|config| !capability_ready(config, "basic_media"));
-    let needs_url = config
-        .as_ref()
-        .is_none_or(|config| !ready_file(config, "yt_dlp"));
-    let needs_whisper = config
-        .as_ref()
-        .is_none_or(|config| !ready_file(config, "whisper"));
-    let needs_model = config.as_ref().is_none_or(|config| {
-        config.transcription_profile != profile || !selected_model_ready(config)
+    let expected = expected_versions(capability, profile)?;
+    let needs_basic = config.as_ref().is_none_or(|config| {
+        !capability_ready(config, "basic_media")
+            || config.active_versions.get("ffmpeg-cpu") != expected.get("ffmpeg-cpu")
     });
-    let needs_speaker = config
-        .as_ref()
-        .is_none_or(|config| !ready_file(config, "speaker"));
+    let needs_url = config.as_ref().is_none_or(|config| {
+        !ready_file(config, "yt_dlp")
+            || config.active_versions.get("yt-dlp") != expected.get("yt-dlp")
+    });
+    let needs_whisper = config.as_ref().is_none_or(|config| {
+        !ready_file(config, "whisper")
+            || config.active_versions.get("whisper-cpu-upstream")
+                != expected.get("whisper-cpu-upstream")
+    });
+    let needs_model = config.as_ref().is_none_or(|config| {
+        config.transcription_profile != profile
+            || !selected_model_ready(config)
+            || config.active_versions.get("transcription-model")
+                != expected.get("transcription-model")
+    });
+    let needs_speaker = config.as_ref().is_none_or(|config| {
+        !ready_file(config, "speaker")
+            || config.active_versions.get("speaker_identity") != expected.get("speaker_identity")
+    });
     let basic_bytes = if needs_basic { ffmpeg } else { 0 };
     let (download_bytes, unknown_size, transcription_profile) = match capability {
         "basic_media" => (basic_bytes, false, None),
@@ -1101,7 +1434,7 @@ mod tests {
         assert!(migration.source_removed);
         assert_eq!(migration.files_copied, 2);
         assert!(migration.status.capabilities[0].enabled);
-        assert_eq!(migration.status.capabilities[0].state, "ready");
+        assert_eq!(migration.status.capabilities[0].state, "update_available");
         assert!(!first.exists());
         let stored = read_config_at(&locator).unwrap().unwrap();
         assert!(same_path(&stored.root, &second));
@@ -1238,12 +1571,14 @@ mod tests {
         let root = configured.root.unwrap();
         let active = root.join("packages/ffmpeg-cpu/current/ffmpeg.exe");
         let old = root.join("packages/ffmpeg-cpu/old/ffmpeg.exe");
+        let obsolete = root.join("packages/ffmpeg-cpu/obsolete/ffmpeg.exe");
         let completed = root.join("downloads/completed.zip");
         let partial = root.join("downloads/resumable.zip.part");
         let orphan = root.join("staging/orphan/file.bin");
         for (path, bytes) in [
             (&active, b"active".as_slice()),
             (&old, b"old".as_slice()),
+            (&obsolete, b"obsolete".as_slice()),
             (&completed, b"complete".as_slice()),
             (&partial, b"partial".as_slice()),
             (&orphan, b"orphan".as_slice()),
@@ -1255,6 +1590,19 @@ mod tests {
         config
             .active_versions
             .insert("ffmpeg-cpu".into(), "current".into());
+        config.activation_history.push(ResourceActivationSnapshot {
+            capability_id: "basic_media".into(),
+            transcription_profile: None,
+            active_entrypoints: BTreeMap::from([
+                ("ffmpeg".into(), "packages/ffmpeg-cpu/old/ffmpeg.exe".into()),
+                (
+                    "ffprobe".into(),
+                    "packages/ffmpeg-cpu/old/ffprobe.exe".into(),
+                ),
+            ]),
+            active_versions: BTreeMap::from([("ffmpeg-cpu".into(), "old".into())]),
+            created_at: util::now(),
+        });
         write_config_at(&locator, &config).unwrap();
 
         let report = cleanup_at(&database, &locator).unwrap();
@@ -1262,10 +1610,76 @@ mod tests {
         assert!(report.files_removed >= 3);
         assert!(report.bytes_reclaimed > 0);
         assert!(active.is_file());
-        assert!(!old.exists());
+        assert!(old.is_file());
+        assert!(!obsolete.exists());
         assert!(!completed.exists());
         assert!(partial.is_file());
         assert!(!orphan.exists());
+    }
+
+    #[test]
+    fn rollback_restores_the_previous_healthy_version_and_keeps_the_current_one() {
+        let temp = tempdir().unwrap();
+        let database = db::open_at(&temp.path().join("siaocut.db")).unwrap();
+        let locator = temp.path().join("config/local-resources.json");
+        let root = temp.path().join("resources");
+        let data = temp.path().join("data");
+        fs::create_dir_all(&data).unwrap();
+        let configured = configure_at(&locator, &root, &data).unwrap();
+        let root = configured.root.unwrap();
+        for version in ["old", "current"] {
+            for name in ["ffmpeg.exe", "ffprobe.exe"] {
+                let path = root.join("packages/ffmpeg-cpu").join(version).join(name);
+                fs::create_dir_all(path.parent().unwrap()).unwrap();
+                fs::write(path, version.as_bytes()).unwrap();
+            }
+        }
+        let mut config = read_config_at(&locator).unwrap().unwrap();
+        config.enabled_capabilities.push("basic_media".into());
+        config
+            .active_versions
+            .insert("ffmpeg-cpu".into(), "current".into());
+        config.active_entrypoints.extend(BTreeMap::from([
+            (
+                "ffmpeg".into(),
+                "packages/ffmpeg-cpu/current/ffmpeg.exe".into(),
+            ),
+            (
+                "ffprobe".into(),
+                "packages/ffmpeg-cpu/current/ffprobe.exe".into(),
+            ),
+        ]));
+        config.activation_history.push(ResourceActivationSnapshot {
+            capability_id: "basic_media".into(),
+            transcription_profile: None,
+            active_entrypoints: BTreeMap::from([
+                ("ffmpeg".into(), "packages/ffmpeg-cpu/old/ffmpeg.exe".into()),
+                (
+                    "ffprobe".into(),
+                    "packages/ffmpeg-cpu/old/ffprobe.exe".into(),
+                ),
+            ]),
+            active_versions: BTreeMap::from([("ffmpeg-cpu".into(), "old".into())]),
+            created_at: util::now(),
+        });
+        write_config_at(&locator, &config).unwrap();
+
+        let result = rollback_at(&database, &locator, "basic_media").unwrap();
+        let restored = read_config_at(&locator).unwrap().unwrap();
+
+        assert_eq!(result.capability_id, "basic_media");
+        assert_eq!(restored.active_versions["ffmpeg-cpu"], "old");
+        assert!(
+            restored
+                .root
+                .join(&restored.active_entrypoints["ffmpeg"])
+                .is_file()
+        );
+        assert!(
+            root.join("packages/ffmpeg-cpu/current/ffmpeg.exe")
+                .is_file()
+        );
+        assert!(rollback_available(&restored, "basic_media"));
     }
 
     #[test]
@@ -1292,6 +1706,57 @@ mod tests {
         assert_eq!(url.capability_name, "URL 导入");
         assert!(!url.unknown_size);
         assert!(url.download_bytes > 0);
+    }
+
+    #[test]
+    fn on_demand_catalog_is_app_only_and_keeps_license_metadata() {
+        let catalog: Value = serde_json::from_str(CATALOG).unwrap();
+        assert_eq!(catalog["packageProfile"], "app-only");
+        for component in catalog["components"].as_array().unwrap() {
+            assert_eq!(component["bundled"], false);
+            assert!(
+                component["source"]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty())
+            );
+            assert!(
+                component["license"]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty())
+            );
+        }
+        for model in catalog["models"].as_array().unwrap() {
+            assert!(
+                model["source"]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty())
+            );
+            assert!(
+                model["license"]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty())
+            );
+        }
+        for package in catalog["speakerPackages"].as_array().unwrap() {
+            assert_eq!(package["bundled"], false);
+            assert!(
+                package["source"]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty())
+            );
+            assert!(
+                package["license"]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty())
+            );
+            for download in package["downloads"].as_array().unwrap() {
+                assert!(
+                    download["license"]
+                        .as_str()
+                        .is_some_and(|value| !value.is_empty())
+                );
+            }
+        }
     }
 
     #[test]

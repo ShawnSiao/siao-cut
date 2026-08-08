@@ -160,6 +160,8 @@ fn local_resources_can_be_configured_planned_and_checked() {
     let health = run_direct(temp.path(), &["resources", "health"]);
     assert_eq!(health["resourceHealth"]["healthy"], true);
     assert_eq!(health["resourceHealth"]["reasonCode"], Value::Null);
+    let rollback = run_direct_error(temp.path(), &["resources", "rollback", "basic_media"]);
+    assert_eq!(rollback["error"]["code"], "resource_rollback_unavailable");
 
     fs::write(root.join("downloads/completed.bin"), b"completed").unwrap();
     fs::write(root.join("downloads/resumable.bin.part"), b"partial").unwrap();

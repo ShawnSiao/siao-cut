@@ -118,7 +118,7 @@ describe("local resource setup", () => {
       needsSetup: false,
       capabilities: unconfiguredStatus.capabilities.map((capability) => ({ ...capability, state: "ready" as const, enabled: true })),
     };
-    render(<LocalResourcePanel status={ready} job={null} busy={false} onPrepare={vi.fn()} onChangeLocation={vi.fn()} onRemove={vi.fn()} onCleanup={onCleanup}/>);
+    render(<LocalResourcePanel status={ready} job={null} busy={false} onPrepare={vi.fn()} onChangeLocation={vi.fn()} onRemove={vi.fn()} onRollback={vi.fn()} onCleanup={onCleanup}/>);
 
     expect(screen.getByText("基础媒体处理")).toBeInTheDocument();
     expect(screen.getByText("URL 导入")).toBeInTheDocument();
@@ -127,5 +127,29 @@ describe("local resource setup", () => {
     fireEvent.click(screen.getByRole("button", { name: "释放无用空间" }));
     expect(onCleanup).toHaveBeenCalledOnce();
     expect(document.body).not.toHaveTextContent(/FFmpeg|FFprobe|yt-dlp|whisper\.cpp|SIAOCUT_|SHA-?256/);
+  });
+
+  it("offers product-level update and previous-version recovery actions", () => {
+    const onPrepare = vi.fn();
+    const onRollback = vi.fn();
+    const status: LocalResourceStatus = {
+      ...unconfiguredStatus,
+      configured: true,
+      root: "D:\\SiaoCut Resources",
+      rootAvailable: true,
+      writable: true,
+      needsSetup: false,
+      capabilities: unconfiguredStatus.capabilities.map((capability) => capability.id === "basic_media"
+        ? { ...capability, state: "update_available", enabled: true, canRollback: true }
+        : capability),
+    };
+
+    render(<LocalResourcePanel status={status} job={null} busy={false} onPrepare={onPrepare} onChangeLocation={vi.fn()} onRemove={vi.fn()} onRollback={onRollback} onCleanup={vi.fn()}/>);
+
+    fireEvent.click(screen.getByRole("button", { name: "更新" }));
+    fireEvent.click(screen.getByRole("button", { name: "恢复上一版本" }));
+    expect(onPrepare).toHaveBeenCalledWith("basic_media");
+    expect(onRollback).toHaveBeenCalledWith("basic_media");
+    expect(document.body).not.toHaveTextContent(/FFmpeg|SHA-?256|v\d/);
   });
 });

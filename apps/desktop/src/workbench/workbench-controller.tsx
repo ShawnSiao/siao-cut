@@ -966,7 +966,7 @@ function WorkbenchController() {
         ? tr("app.capability.mediaRequired")
         : transcriptionMode === "multispeaker"
             ? transcriptionHealth?.state !== "healthy" ? tr("app.moss.health.required") : undefined
-            : localResources?.capabilities.find((capability) => capability.id === "local_transcription")?.state !== "ready" || !capabilities.hasModel
+            : !["ready", "update_available"].includes(localResources?.capabilities.find((capability) => capability.id === "local_transcription")?.state ?? "not_ready") || !capabilities.hasModel
                 ? tr("app.resources.transcriptionRequired") : undefined;
     const transcriptionActive = Boolean(transcriptionJob && ["queued", "running", "finalizing"].includes(transcriptionJob.status));
     const canStartTranscription = capabilities.hasBoundMedia && (transcriptionMode === "multispeaker" ? transcriptionHealth?.state === "healthy" : true);
@@ -1404,7 +1404,10 @@ function WorkbenchController() {
         setResourceError(null);
         handledResourceJobRef.current = null;
         try {
-            const envelope = await localResourceClient.install(resourceCapability, resourceCapability === "local_transcription" ? resourceProfile : undefined);
+            const isUpdate = localResources.capabilities.some((capability) => capability.id === resourceCapability && capability.state === "update_available");
+            const envelope = isUpdate
+                ? await localResourceClient.update(resourceCapability, resourceCapability === "local_transcription" ? resourceProfile : undefined)
+                : await localResourceClient.install(resourceCapability, resourceCapability === "local_transcription" ? resourceProfile : undefined);
             if (!envelope.resourceJob)
                 throw new Error("resource_job_not_found");
             setResourceJob(envelope.resourceJob);
@@ -1505,6 +1508,24 @@ function WorkbenchController() {
             setResourceBusy(false);
         }
     };
+    const rollbackResourceCapability = async (capability: LocalCapabilityId) => {
+        if (!window.confirm(tr("app.resources.rollbackConfirm", { capability: localCapabilityLabel(capability) })))
+            return;
+        setResourceBusy(true);
+        try {
+            const envelope = await localResourceClient.rollback(capability);
+            if (envelope.localResources)
+                setLocalResources(envelope.localResources);
+            setRuntime(await runtimeInfo());
+            setNotice(tr("app.resources.rollbackNotice", { capability: localCapabilityLabel(capability) }));
+        }
+        catch (cause) {
+            setError(localResourceError(cause));
+        }
+        finally {
+            setResourceBusy(false);
+        }
+    };
     const withSourceBusy = async (label: string, action: () => Promise<void>) => {
         setSourceBusy(label);
         setSourceError(null);
@@ -1523,7 +1544,7 @@ function WorkbenchController() {
         if (!isHttpsSourceUrl(url))
             throw new Error(tr("app.s0085"));
         const urlCapability = localResources?.capabilities.find((capability) => capability.id === "url_import");
-        if (urlCapability?.state !== "ready" || !runtime?.ytDlpConfigured) {
+        if (!["ready", "update_available"].includes(urlCapability?.state ?? "not_ready") || !runtime?.ytDlpConfigured) {
             setPendingResourceAction("inspect_url");
             await openResourcePreparation("url_import", "on_demand");
             return;
@@ -1812,7 +1833,7 @@ function WorkbenchController() {
         const localTranscription = localResources?.capabilities.find((capability) => capability.id === "local_transcription");
         const activeModelPath = modelPath;
         const modelReady = Boolean(activeModelPath && modelPathAvailable && await localFileAvailable(activeModelPath));
-        if (localTranscription?.state !== "ready" || !runtime?.ffmpegConfigured || !runtime.asrConfigured || !activeModelPath || !modelReady) {
+        if (!["ready", "update_available"].includes(localTranscription?.state ?? "not_ready") || !runtime?.ffmpegConfigured || !runtime.asrConfigured || !activeModelPath || !modelReady) {
             setModelPathAvailable(false);
             setPendingResourceAction("transcribe");
             await openResourcePreparation("local_transcription", "on_demand");
@@ -3227,6 +3248,7 @@ function WorkbenchController() {
         onPrepareResource={(capability) => void openResourcePreparation(capability, "manage")}
         onChangeResourceLocation={() => void openResourcePreparation("basic_media", "manage")}
         onRemoveResource={(capability) => void removeResourceCapability(capability)}
+        onRollbackResource={(capability) => void rollbackResourceCapability(capability)}
         onCleanupResources={() => void cleanupLocalResources()}
       /></Suspense>}
       {showResourceSetup && <Suspense fallback={null}><LocalResourceSetupDialog

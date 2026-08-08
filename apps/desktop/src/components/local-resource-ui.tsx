@@ -116,10 +116,11 @@ type LocalResourcePanelProps = {
   onPrepare: (capability: LocalCapabilityId) => void;
   onChangeLocation: () => void;
   onRemove: (capability: LocalCapabilityId) => void;
+  onRollback: (capability: LocalCapabilityId) => void;
   onCleanup: () => void;
 };
 
-export function LocalResourcePanel({ status, job, busy, onPrepare, onChangeLocation, onRemove, onCleanup }: LocalResourcePanelProps) {
+export function LocalResourcePanel({ status, job, busy, onPrepare, onChangeLocation, onRemove, onRollback, onCleanup }: LocalResourcePanelProps) {
   return <section className="local-resource-panel" aria-label={tr("app.resources.title")}>
     <header><span><strong>{tr("app.resources.title")}</strong><small>{tr("app.resources.panelDescription")}</small></span><HardDrive size={19}/></header>
     <div className="local-resource-location"><span><small>{tr("app.resources.location")}</small><strong title={status?.root ?? undefined}>{status?.root ?? tr("app.resources.locationMissing")}</strong></span><button className="button quiet" disabled={busy || Boolean(job && ["queued", "running"].includes(job.status))} onClick={onChangeLocation}><FolderOpen size={14}/>{status?.configured ? tr("app.resources.changeLocation") : tr("app.resources.chooseLocation")}</button></div>
@@ -127,7 +128,7 @@ export function LocalResourcePanel({ status, job, busy, onPrepare, onChangeLocat
       const activeJob = job?.capabilityId === capability.id && ["queued", "running"].includes(job.status);
       return <article key={capability.id} className={capability.state}>
         <header><span><strong>{capabilityLabel(capability.id)}</strong><small>{capabilityDescription(capability.id)}</small></span><i>{capability.state === "ready" ? <CheckCircle2 size={16}/> : activeJob ? <LoaderCircle className="spin" size={16}/> : <CircleAlert size={16}/>}</i></header>
-        <footer><span>{activeJob ? tr("app.resources.state.preparing") : stateLabel(capability)}</span><div>{capability.state !== "ready" && <button disabled={busy || Boolean(job)} onClick={() => onPrepare(capability.id)}>{capability.state === "needs_repair" ? tr("app.resources.repair") : tr("app.resources.prepare")}</button>}{capability.state === "ready" && <button className="danger-link" disabled={busy || Boolean(job)} onClick={() => onRemove(capability.id)}><Trash2 size={13}/>{tr("app.resources.remove")}</button>}</div></footer>
+        <footer><span>{activeJob ? tr("app.resources.state.preparing") : stateLabel(capability)}</span><div>{capability.state !== "ready" && <button disabled={busy || Boolean(job)} onClick={() => onPrepare(capability.id)}>{capability.state === "needs_repair" ? tr("app.resources.repair") : capability.state === "update_available" ? tr("app.resources.update") : tr("app.resources.prepare")}</button>}{capability.canRollback && <button className="quiet" disabled={busy || Boolean(job)} onClick={() => onRollback(capability.id)}><RefreshCw size={13}/>{tr("app.resources.rollback")}</button>}{capability.state === "ready" && <button className="danger-link" disabled={busy || Boolean(job)} onClick={() => onRemove(capability.id)}><Trash2 size={13}/>{tr("app.resources.remove")}</button>}</div></footer>
       </article>;
     })}</div>
     {status?.configured && <button className="button quiet full" disabled={busy || Boolean(job && ["queued", "running"].includes(job.status))} onClick={onCleanup}><Trash2 size={14}/>{tr("app.resources.cleanup")}</button>}

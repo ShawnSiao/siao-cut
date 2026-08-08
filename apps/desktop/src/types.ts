@@ -329,6 +329,7 @@ export type LocalCapabilityStatus = {
   name: string;
   state: LocalResourceState;
   enabled: boolean;
+  canRollback?: boolean;
 };
 
 export type LocalResourceStatus = {
@@ -353,6 +354,7 @@ export type LocalResourcePlan = {
 export type LocalResourceJob = {
   id: string;
   capabilityId: LocalCapabilityId;
+  transcriptionProfile?: LocalTranscriptionProfile | null;
   status: BackgroundJobStatus;
   stage: string;
   progress: number;

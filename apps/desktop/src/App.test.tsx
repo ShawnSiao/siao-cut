@@ -1210,7 +1210,7 @@ describe("SiaoCut review workbench", () => {
     expect(within(reopened).getByText("D:\\SiaoCut Resources")).toBeInTheDocument();
     fireEvent.click(within(reopened).getByRole("button", { name: "释放无用空间" }));
 
-    expect(confirm).toHaveBeenCalledWith(expect.stringMatching(/当前资源与可续传下载会保留/));
+    expect(confirm).toHaveBeenCalledWith(expect.stringMatching(/当前版本、可恢复版本与可续传下载会保留/));
     expect(await screen.findByText("无用的本地资源文件已清理。")).toBeInTheDocument();
   });
 
