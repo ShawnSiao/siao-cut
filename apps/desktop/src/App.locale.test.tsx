@@ -35,8 +35,8 @@ describe("App locale switching", () => {
     expect(projectHeading).toHaveTextContent("发布口播 · 草稿");
     expect(document.documentElement.lang).toBe("en-US");
 
-    fireEvent.click(screen.getByRole("button", { name: "Runtime" }));
-    expect(await screen.findByRole("dialog", { name: "Runtime" })).toHaveTextContent("Browser preview is not connected to an update source.");
+    fireEvent.click(screen.getByRole("button", { name: "Local resources" }));
+    expect(await screen.findByRole("dialog", { name: "Local resources" })).toHaveTextContent("Browser preview is not connected to an update source.");
   });
 
   it("localizes Core-authored version reasons and speaker stages in English chrome", () => {

@@ -3,7 +3,8 @@ param(
     [string]$FromVersion = '0.1.1',
     [string]$ToVersion = '0.2.0',
     [string]$FromInstallerPath = '',
-    [string]$ExternalRuntimeRoot = ''
+    [string]$ExternalRuntimeRoot = '',
+    [string]$ValidationRoot = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -19,9 +20,29 @@ function Get-CargoTargetDirectory {
 }
 
 $tauriTargetDirectory = Get-CargoTargetDirectory -ManifestPath (Join-Path $root 'apps\desktop\src-tauri\Cargo.toml')
-$tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+$systemTempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+if ([string]::IsNullOrWhiteSpace($ValidationRoot)) {
+    $tempRoot = $systemTempRoot
+} else {
+    New-Item -ItemType Directory -Force -Path $ValidationRoot | Out-Null
+    $tempRoot = (Resolve-Path -LiteralPath $ValidationRoot -ErrorAction Stop).Path
+}
+
+function Get-NormalizedWindowsPath([string]$Path) {
+    $full = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+    if ($full.StartsWith('\\?\UNC\', [StringComparison]::OrdinalIgnoreCase)) {
+        return '\\' + $full.Substring(8)
+    }
+    if ($full.StartsWith('\\?\', [StringComparison]::OrdinalIgnoreCase)) {
+        return $full.Substring(4)
+    }
+    return $full
+}
 $token = [guid]::NewGuid().ToString('N')
 $installDir = Join-Path $tempRoot "SiaoCut-Acceptance-$token"
+$managedResourceRoot = Join-Path $tempRoot "SiaoCut-Resources-$token"
+$resourceConfigHome = Join-Path $tempRoot "SiaoCut-Resource-Config-$token"
+$resourceSentinel = Join-Path $managedResourceRoot 'retention-sentinel.txt'
 $probeDir = Join-Path $env:LOCALAPPDATA 'SiaoCut\retention-probes'
 $probe = Join-Path $probeDir "$token.txt"
 $configPath = Join-Path $tempRoot "siaocut-installer-test-$token.json"
@@ -50,6 +71,7 @@ if (-not [string]::IsNullOrWhiteSpace($ExternalRuntimeRoot)) {
 
 $testEnvironmentNames = @(
     'SIAOCUT_HOME',
+    'SIAOCUT_RESOURCE_CONFIG_HOME',
     'SIAOCUT_DIRECT',
     'SIAOCUT_FFMPEG',
     'SIAOCUT_FFPROBE',
@@ -176,6 +198,7 @@ try {
     $v1Package = if ($usesHistoricalInstaller) { $null } else { Assert-AppOnlyPackage -InstallerPath $v1 }
     Assert-DesktopStarts
     $env:SIAOCUT_HOME = Join-Path $installDir 'acceptance-home'
+    $env:SIAOCUT_RESOURCE_CONFIG_HOME = $resourceConfigHome
     $env:SIAOCUT_DIRECT = '1'
     $env:SIAOCUT_SERVICE_IDLE_MS = '100'
     if ($null -ne $externalRuntime) {
@@ -202,6 +225,15 @@ try {
     if ($health.status -ne 'ok') {
         throw 'Installed Core health did not return status=ok.'
     }
+    $resourceSetup = & (Join-Path $installDir 'siaocut-core.exe') --json resources configure --root $managedResourceRoot | Out-String | ConvertFrom-Json
+    if ($resourceSetup.status -ne 'ok' -or -not $resourceSetup.localResources.configured) {
+        throw 'Installed Core could not configure an explicitly selected resource location.'
+    }
+    $configuredRoot = Get-NormalizedWindowsPath ([string]$resourceSetup.localResources.root)
+    if (-not $configuredRoot.Equals((Get-NormalizedWindowsPath $managedResourceRoot), [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Installed Core changed the selected resource location: $configuredRoot"
+    }
+    [IO.File]::WriteAllText($resourceSentinel, 'must survive install, upgrade, and uninstall', [Text.UTF8Encoding]::new($false))
     $sourceInspectionStatus = 'not_run_without_external_runtime'
     if ($null -eq $externalRuntime) {
         if ($health.engines.ffmpeg -ne 'not_configured' -or $health.engines.asr -ne 'not_configured' -or $health.engines.sourceImport -ne 'not_configured') {
@@ -227,11 +259,29 @@ try {
     $v2Package = if ($usesHistoricalInstaller) { $null } else { Assert-AppOnlyPackage -InstallerPath $v2 }
     Assert-DesktopStarts
     if (-not (Test-Path -LiteralPath $probe)) { throw 'User data probe was deleted during upgrade.' }
+    $resourcesAfterUpgrade = & (Join-Path $installDir 'siaocut-core.exe') --json resources status | Out-String | ConvertFrom-Json
+    if ($resourcesAfterUpgrade.status -ne 'ok' -or -not $resourcesAfterUpgrade.localResources.configured) {
+        throw 'Resource configuration did not survive the application upgrade.'
+    }
+    if (-not (Test-Path -LiteralPath $resourceSentinel -PathType Leaf)) { throw 'Selected resource directory was deleted during upgrade.' }
     $uninstaller = Join-Path $installDir 'uninstall.exe'
     if (-not (Test-Path -LiteralPath $uninstaller)) { throw 'Uninstaller is missing after upgrade.' }
     $uninstall = Start-Process -FilePath $uninstaller -ArgumentList '/S' -Wait -PassThru
     if ($uninstall.ExitCode -ne 0) { throw "Uninstaller failed with exit code $($uninstall.ExitCode)." }
     if (-not (Test-Path -LiteralPath $probe)) { throw 'User data probe was deleted during uninstall.' }
+    if (-not (Test-Path -LiteralPath (Join-Path $resourceConfigHome 'local-resources.json') -PathType Leaf)) { throw 'Resource configuration was deleted during uninstall.' }
+    if (-not (Test-Path -LiteralPath $resourceSentinel -PathType Leaf)) { throw 'Selected resource directory was deleted during uninstall.' }
+    Install-Silent $v2
+    Assert-DesktopStarts
+    $resourcesAfterReinstall = & (Join-Path $installDir 'siaocut-core.exe') --json resources status | Out-String | ConvertFrom-Json
+    if ($resourcesAfterReinstall.status -ne 'ok' -or -not $resourcesAfterReinstall.localResources.configured) {
+        throw 'Resource configuration was not restored after reinstall.'
+    }
+    if (-not (Test-Path -LiteralPath $resourceSentinel -PathType Leaf)) { throw 'Selected resource directory was not retained after reinstall.' }
+    $reinstalledUninstaller = Join-Path $installDir 'uninstall.exe'
+    $reinstalledUninstall = Start-Process -FilePath $reinstalledUninstaller -ArgumentList '/S' -Wait -PassThru
+    if ($reinstalledUninstall.ExitCode -ne 0) { throw "Reinstalled application uninstall failed with exit code $($reinstalledUninstall.ExitCode)." }
+    if (-not (Test-Path -LiteralPath $resourceSentinel -PathType Leaf)) { throw 'Selected resource directory was deleted after reinstall.' }
 
     [pscustomobject]@{
         installed = $FromVersion
@@ -239,6 +289,13 @@ try {
         sidecarPresent = $true
         userDataAfterUpgrade = $true
         userDataAfterUninstall = $true
+        resourceConfigAfterUpgrade = $true
+        resourceConfigAfterUninstall = $true
+        selectedResourceDirectoryAfterUninstall = $true
+        resourceConfigAfterReinstall = $true
+        selectedResourceDirectoryAfterReinstall = $true
+        reinstallCompleted = $true
+        selectedResourceRoot = $managedResourceRoot
         installedCoreHealth = 'ok'
         packageProfile = 'app-only'
         externalRuntimeConfigured = $null -ne $externalRuntime
@@ -265,6 +322,13 @@ try {
     if (Test-Path -LiteralPath $configPath) { Remove-Item -LiteralPath $configPath -Force }
     if (Test-Path -LiteralPath $probe) { Remove-Item -LiteralPath $probe -Force }
     if ((Test-Path -LiteralPath $probeDir) -and -not (Get-ChildItem -LiteralPath $probeDir -Force | Select-Object -First 1)) { Remove-Item -LiteralPath $probeDir -Force }
+    foreach ($generated in @($managedResourceRoot, $resourceConfigHome)) {
+        $resolvedGenerated = [IO.Path]::GetFullPath($generated)
+        $tempPrefix = $tempRoot.TrimEnd('\') + '\'
+        if ($resolvedGenerated.StartsWith($tempPrefix, [StringComparison]::OrdinalIgnoreCase) -and (Split-Path -Leaf $resolvedGenerated) -match '^SiaoCut-(Resources|Resource-Config)-[0-9a-f]{32}$' -and (Test-Path -LiteralPath $resolvedGenerated)) {
+            Remove-Item -LiteralPath $resolvedGenerated -Recurse -Force
+        }
+    }
     $resolved = [IO.Path]::GetFullPath($installDir)
     if ($resolved.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase) -and (Test-Path -LiteralPath $resolved)) {
         Stop-InstalledProcesses -Root $resolved

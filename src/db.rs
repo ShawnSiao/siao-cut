@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 27;
+pub const CURRENT_SCHEMA_VERSION: i64 = 29;
 
 struct Migration {
     version: i64,
@@ -122,6 +122,14 @@ const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 27,
         apply: migration_27_task_claim_payloads,
+    },
+    Migration {
+        version: 28,
+        apply: migration_28_local_resource_jobs,
+    },
+    Migration {
+        version: 29,
+        apply: migration_29_local_resource_profiles,
     },
 ];
 
@@ -1274,6 +1282,39 @@ fn migration_27_task_claim_payloads(tx: &Transaction<'_>) -> Result<()> {
     Ok(())
 }
 
+fn migration_28_local_resource_jobs(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE resource_jobs (
+             id TEXT PRIMARY KEY,
+             capability_id TEXT NOT NULL,
+             status TEXT NOT NULL,
+             stage TEXT NOT NULL,
+             progress REAL NOT NULL DEFAULT 0,
+             bytes_downloaded INTEGER NOT NULL DEFAULT 0,
+             total_bytes INTEGER NOT NULL,
+             target_root TEXT NOT NULL,
+             cancel_requested_at TEXT,
+             error_message TEXT,
+             created_at TEXT NOT NULL,
+             updated_at TEXT NOT NULL,
+             completed_at TEXT,
+             worker_pid INTEGER,
+             attempt_count INTEGER NOT NULL DEFAULT 1
+         );
+         CREATE INDEX idx_resource_jobs_created
+             ON resource_jobs(created_at DESC);
+         CREATE UNIQUE INDEX idx_resource_jobs_one_active
+             ON resource_jobs((1))
+             WHERE status IN ('queued','running');",
+    )?;
+    Ok(())
+}
+
+fn migration_29_local_resource_profiles(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute_batch("ALTER TABLE resource_jobs ADD COLUMN transcription_profile TEXT;")?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1816,6 +1857,40 @@ mod tests {
             )
             .unwrap();
         assert!(exists);
+    }
+
+    #[test]
+    fn migrates_resource_jobs_and_prevents_parallel_activation() {
+        let temp = tempdir().unwrap();
+        let db = open_at(&temp.path().join("resource-jobs.db")).unwrap();
+        db.execute(
+            "INSERT INTO resource_jobs(
+                 id,capability_id,status,stage,total_bytes,target_root,created_at,updated_at
+             ) VALUES('resource-one','basic_media','queued','queued',1,'D:\\Resources','now','now')",
+            [],
+        )
+        .unwrap();
+        assert!(
+            db.execute(
+                "INSERT INTO resource_jobs(
+                     id,capability_id,status,stage,total_bytes,target_root,created_at,updated_at
+                 ) VALUES('resource-two','url_import','running','downloading',1,'D:\\Resources','now','now')",
+                [],
+            )
+            .is_err()
+        );
+        db.execute(
+            "UPDATE resource_jobs SET status='completed' WHERE id='resource-one'",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO resource_jobs(
+                 id,capability_id,status,stage,total_bytes,target_root,created_at,updated_at
+             ) VALUES('resource-two','url_import','queued','queued',1,'D:\\Resources','now','now')",
+            [],
+        )
+        .unwrap();
     }
 
     #[test]

@@ -6,6 +6,7 @@ use tempfile::tempdir;
 fn run(home: &Path, arguments: &[&str]) -> Value {
     let output = Command::new(env!("CARGO_BIN_EXE_siaocut-core"))
         .env("SIAOCUT_HOME", home)
+        .env("SIAOCUT_RESOURCE_CONFIG_HOME", home.join("resource-config"))
         .env("SIAOCUT_SERVICE_IDLE_MS", "100")
         .args(["--json"])
         .args(arguments)
@@ -22,6 +23,7 @@ fn run(home: &Path, arguments: &[&str]) -> Value {
 fn run_error(home: &Path, arguments: &[&str]) -> Value {
     let output = Command::new(env!("CARGO_BIN_EXE_siaocut-core"))
         .env("SIAOCUT_HOME", home)
+        .env("SIAOCUT_RESOURCE_CONFIG_HOME", home.join("resource-config"))
         .env("SIAOCUT_SERVICE_IDLE_MS", "100")
         .args(["--json"])
         .args(arguments)
@@ -34,6 +36,7 @@ fn run_error(home: &Path, arguments: &[&str]) -> Value {
 fn run_direct(home: &Path, arguments: &[&str]) -> Value {
     let output = Command::new(env!("CARGO_BIN_EXE_siaocut-core"))
         .env("SIAOCUT_HOME", home)
+        .env("SIAOCUT_RESOURCE_CONFIG_HOME", home.join("resource-config"))
         .env("SIAOCUT_DIRECT", "1")
         .args(["--json"])
         .args(arguments)
@@ -50,6 +53,7 @@ fn run_direct(home: &Path, arguments: &[&str]) -> Value {
 fn run_direct_error(home: &Path, arguments: &[&str]) -> Value {
     let output = Command::new(env!("CARGO_BIN_EXE_siaocut-core"))
         .env("SIAOCUT_HOME", home)
+        .env("SIAOCUT_RESOURCE_CONFIG_HOME", home.join("resource-config"))
         .env("SIAOCUT_DIRECT", "1")
         .args(["--json"])
         .args(arguments)
@@ -62,6 +66,7 @@ fn run_direct_error(home: &Path, arguments: &[&str]) -> Value {
 fn run_direct_with_codex(home: &Path, codex: &Path, arguments: &[&str]) -> Value {
     let output = Command::new(env!("CARGO_BIN_EXE_siaocut-core"))
         .env("SIAOCUT_HOME", home)
+        .env("SIAOCUT_RESOURCE_CONFIG_HOME", home.join("resource-config"))
         .env("SIAOCUT_DIRECT", "1")
         .env("SIAOCUT_CODEX_CLI", codex)
         .args(["--json"])
@@ -88,6 +93,10 @@ fn help_is_successful_for_direct_and_service_cli_paths() {
             let mut command = Command::new(env!("CARGO_BIN_EXE_siaocut-core"));
             command
                 .env("SIAOCUT_HOME", temp.path())
+                .env(
+                    "SIAOCUT_RESOURCE_CONFIG_HOME",
+                    temp.path().join("resource-config"),
+                )
                 .env("SIAOCUT_SERVICE_IDLE_MS", "100")
                 .args(&arguments);
             if direct {
@@ -110,6 +119,10 @@ fn invalid_arguments_still_return_usage_error() {
     let temp = tempdir().unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_siaocut-core"))
         .env("SIAOCUT_HOME", temp.path())
+        .env(
+            "SIAOCUT_RESOURCE_CONFIG_HOME",
+            temp.path().join("resource-config"),
+        )
         .env("SIAOCUT_DIRECT", "1")
         .arg("not-a-command")
         .output()
@@ -117,6 +130,59 @@ fn invalid_arguments_still_return_usage_error() {
     assert_eq!(output.status.code(), Some(2));
     assert!(output.stdout.is_empty());
     assert!(String::from_utf8_lossy(&output.stderr).contains("unrecognized subcommand"));
+}
+
+#[test]
+fn local_resources_can_be_configured_planned_and_checked() {
+    let temp = tempdir().unwrap();
+    let root = temp.path().join("managed-resources");
+    let initial = run_direct(temp.path(), &["resources", "status"]);
+    assert_eq!(initial["localResources"]["configured"], false);
+    assert_eq!(initial["localResources"]["needsSetup"], true);
+    assert_eq!(initial["localResources"]["root"], Value::Null);
+
+    let blocked = run_direct_error(temp.path(), &["resources", "install", "url_import"]);
+    assert_eq!(blocked["error"]["code"], "resource_setup_required");
+    assert!(!root.exists());
+
+    let plan = run_direct(temp.path(), &["resources", "plan", "url_import"]);
+    assert_eq!(plan["resourcePlan"]["capabilityId"], "url_import");
+    assert!(plan["resourcePlan"]["downloadBytes"].as_u64().unwrap() > 0);
+
+    let configured = run_direct(
+        temp.path(),
+        &["resources", "configure", "--root", root.to_str().unwrap()],
+    );
+    assert_eq!(configured["localResources"]["configured"], true);
+    assert_eq!(configured["localResources"]["rootAvailable"], true);
+    assert_eq!(configured["localResources"]["writable"], true);
+
+    let health = run_direct(temp.path(), &["resources", "health"]);
+    assert_eq!(health["resourceHealth"]["healthy"], true);
+    assert_eq!(health["resourceHealth"]["reasonCode"], Value::Null);
+    let rollback = run_direct_error(temp.path(), &["resources", "rollback", "basic_media"]);
+    assert_eq!(rollback["error"]["code"], "resource_rollback_unavailable");
+
+    fs::write(root.join("downloads/completed.bin"), b"completed").unwrap();
+    fs::write(root.join("downloads/resumable.bin.part"), b"partial").unwrap();
+    let moved_root = temp.path().join("moved-resources");
+    let moved = run_direct(
+        temp.path(),
+        &[
+            "resources",
+            "migrate",
+            "--root",
+            moved_root.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(moved["resourceMigration"]["sourceAvailable"], true);
+    assert_eq!(moved["resourceMigration"]["filesCopied"], 2);
+    assert!(moved_root.join("downloads/completed.bin").is_file());
+
+    let cleaned = run_direct(temp.path(), &["resources", "cleanup"]);
+    assert_eq!(cleaned["resourceCleanup"]["filesRemoved"], 1);
+    assert!(!moved_root.join("downloads/completed.bin").exists());
+    assert!(moved_root.join("downloads/resumable.bin.part").is_file());
 }
 
 #[test]

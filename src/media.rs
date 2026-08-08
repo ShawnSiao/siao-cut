@@ -460,7 +460,7 @@ fn whisper_item_segments(item: &Value, audio_duration: f64) -> Result<Vec<Import
     let mut tokens: Vec<TimedToken> = Vec::new();
     let mut previous_word_start = None;
     let mut previous_word_end = None;
-    for token in token_values {
+    for (token_index, token) in token_values.iter().enumerate() {
         let raw_text = token.get("text").and_then(Value::as_str).unwrap_or("");
         let word_text = raw_text.trim();
         if is_special_token(word_text) {
@@ -486,12 +486,36 @@ fn whisper_item_segments(item: &Value, audio_duration: f64) -> Result<Vec<Import
             timestamps.get("from").and_then(Value::as_str),
             "词级内容缺少有效开始时间，结果未应用",
         )?;
-        let word_end = parse_timing_field(
+        let mut word_end = parse_timing_field(
             timestamps.get("to").and_then(Value::as_str),
             "词级内容缺少有效结束时间，结果未应用",
         )?;
-        if word_end <= word_start {
+        if word_end < word_start {
             return Err(timing_error("词级内容结束时间不晚于开始时间，结果未应用"));
+        }
+        if word_end == word_start {
+            word_end = token_values[token_index + 1..]
+                .iter()
+                .find_map(|candidate| {
+                    let candidate_text = candidate
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .trim();
+                    (!candidate_text.is_empty()
+                        && !is_special_token(candidate_text)
+                        && !is_punctuation_only(candidate_text))
+                    .then(|| {
+                        candidate
+                            .pointer("/timestamps/from")
+                            .and_then(Value::as_str)
+                            .and_then(|value| parse_whisper_timestamp(value).ok())
+                    })
+                    .flatten()
+                    .filter(|next_start| *next_start > word_start)
+                })
+                .or_else(|| (item_end > word_start).then_some(item_end))
+                .ok_or_else(|| timing_error("词级内容结束时间不晚于开始时间，结果未应用"))?;
         }
         if word_end - word_start > MAX_CAPTION_DURATION_SECONDS {
             return Err(timing_error("单个词级时间范围异常，结果未应用"));
@@ -868,6 +892,27 @@ mod tests {
         assert_eq!(segments[0].text, "你好。");
         assert_eq!(segments[0].words.len(), 1);
         assert_eq!(segments[0].words[0].text, "你好。");
+    }
+
+    #[test]
+    fn bounds_a_zero_duration_content_word_by_the_next_word() {
+        let item = serde_json::json!({
+            "timestamps":{"from":"00:00:04,400","to":"00:00:08,000"},
+            "text":" The result.",
+            "tokens":[
+                {"text":" The","timestamps":{"from":"00:00:04,400","to":"00:00:04,400"}},
+                {"text":" result","timestamps":{"from":"00:00:04,510","to":"00:00:07,900"}},
+                {"text":".","timestamps":{"from":"00:00:08,000","to":"00:00:08,000"}}
+            ]
+        });
+
+        let segments = whisper_item_segments(&item, 9.0).unwrap();
+
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].text, "The result.");
+        assert_eq!(segments[0].words.len(), 2);
+        assert_eq!(segments[0].words[0].start, 4.4);
+        assert_eq!(segments[0].words[0].end, 4.51);
     }
 
     #[test]

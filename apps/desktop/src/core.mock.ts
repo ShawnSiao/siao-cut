@@ -1,5 +1,5 @@
 import { sampleProject } from "./mock";
-import type { AgentRun, AudioAnalysisJob, AutoWorkflow, CoreEnvelope, ExportJob, ModelDownloadJob, ModelStatus, Project, RuntimeInfo, SourceImportJob, SourcePreview, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SubtitleImportPreview, SubtitleStructureEdit, TranscriptionJob, TranscriptionProviderConfig, TranscriptionProviderHealth, TranscriptionReviewItem, UpdateDownloadEvent, UpdateMetadata, UpdatePolicy } from "./types";
+import type { AgentRun, AudioAnalysisJob, AutoWorkflow, CoreEnvelope, ExportJob, LocalCapabilityId, LocalResourceJob, LocalResourceStatus, LocalTranscriptionProfile, ModelDownloadJob, ModelStatus, Project, RuntimeInfo, SourceImportJob, SourcePreview, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SubtitleImportPreview, SubtitleStructureEdit, TranscriptionJob, TranscriptionProviderConfig, TranscriptionProviderHealth, TranscriptionReviewItem, UpdateDownloadEvent, UpdateMetadata, UpdatePolicy } from "./types";
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
 const mockSubtitleStylePresets = [
@@ -26,6 +26,8 @@ const resolveMockSubtitleStyle = (preset: Project["subtitleStyle"]["preset"], po
   };
 };
 let mockProject = structuredClone(sampleProject);
+let mockProjectListOverride: Project | null = null;
+let mockAuthorizedMediaUrl: string | null = null;
 let mockProjects: Project[] = [];
 let mockUndoStack: Project[] = [];
 let mockRedoStack: Project[] = [];
@@ -45,6 +47,57 @@ const mockAgentPolls = new Map<string, number>();
 let mockTranscriptionConfig: TranscriptionProviderConfig = { providerId: "moss_openai", endpoint: "http://127.0.0.1:8000", modelId: "OpenMOSS-Team/MOSS-Transcribe-Diarize", updatedAt: new Date().toISOString() };
 let mockTranscriptionHealth: TranscriptionProviderHealth = { ...mockTranscriptionConfig, state: "healthy", detail: "本机 MOSS 服务可用。", checkedAt: new Date().toISOString() };
 let mockTranscriptionReviews: TranscriptionReviewItem[] = [];
+const mockResourceJobs = new Map<string, LocalResourceJob>();
+const defaultMockLocalResources = (): LocalResourceStatus => ({
+  configured: true,
+  root: "D:\\SiaoCut Resources",
+  rootAvailable: true,
+  writable: true,
+  availableBytes: 256 * 1024 * 1024 * 1024,
+  transcriptionProfile: "standard",
+  capabilities: [
+    { id: "basic_media", name: "基础媒体处理", state: "ready", enabled: true },
+    { id: "url_import", name: "URL 导入", state: "ready", enabled: true },
+    { id: "local_transcription", name: "本地转录", state: "not_ready", enabled: false },
+    { id: "speaker_identity", name: "说话人识别", state: "not_ready", enabled: false },
+  ],
+  needsSetup: false,
+});
+let mockLocalResources = defaultMockLocalResources();
+
+export function setMockLocalResourcesForTest(status: LocalResourceStatus) {
+  mockLocalResources = structuredClone(status);
+  mockResourceJobs.clear();
+}
+
+export function resetMockLocalResourcesForTest() {
+  mockLocalResources = defaultMockLocalResources();
+  mockResourceJobs.clear();
+  mockModels.forEach((model) => {
+    const installed = model.id === "tiny";
+    model.installed = installed;
+    model.bytesOnDisk = installed ? model.size : 0;
+    model.verified = installed ? true : null;
+    model.verificationStatus = installed ? "verified" : "not_installed";
+  });
+}
+
+export function setMockProjectForTest(project: Project) {
+  mockProjectListOverride = structuredClone(project);
+}
+
+export function setMockAuthorizedMediaForTest(url: string) {
+  mockAuthorizedMediaUrl = url;
+}
+
+export function mockAuthorizeMedia(): string | null {
+  return mockAuthorizedMediaUrl;
+}
+
+export function resetMockProjectForTest() {
+  mockProjectListOverride = null;
+  mockAuthorizedMediaUrl = null;
+}
 
 function syncMockProject(next: Project): Project {
   mockProject = structuredClone(next);
@@ -269,6 +322,79 @@ function ensureOk(envelope: CoreEnvelope): CoreEnvelope {
 export async function mockRun(args: string[]): Promise<CoreEnvelope> {
   const [command, subcommand] = args;
   const valueAfter = (flag: string) => args.includes(flag) ? args[args.indexOf(flag) + 1] : null;
+  if (command === "resources" && subcommand === "status") return { apiVersion: "0.1", status: "ok", localResources: structuredClone(mockLocalResources) };
+  if (command === "resources" && subcommand === "plan") {
+    const capabilityId = args[2] as LocalCapabilityId;
+    const profile = (valueAfter("--profile") ?? mockLocalResources.transcriptionProfile) as LocalTranscriptionProfile;
+    const profileBytes = { fast: 77_691_713, standard: 147_951_465, quality: 487_601_967 }[profile];
+    const downloadBytes = capabilityId === "url_import" ? 88_713_154
+      : capabilityId === "local_transcription" ? 70_510_962 + 7_982_101 + profileBytes
+        : capabilityId === "speaker_identity" ? 70_510_962 + 64_389_270
+          : 70_510_962;
+    return { apiVersion: "0.1", status: "ok", resourcePlan: { capabilityId, capabilityName: capabilityId, transcriptionProfile: capabilityId === "local_transcription" ? profile : null, downloadBytes, unknownSize: false } };
+  }
+  if (command === "resources" && subcommand === "configure") {
+    const root = valueAfter("--root");
+    if (!root) throw new Error("resource_setup_required: 请先选择本地资源保存位置");
+    mockLocalResources = { ...mockLocalResources, configured: true, root, rootAvailable: true, writable: true, needsSetup: false };
+    return { apiVersion: "0.1", status: "ok", localResources: structuredClone(mockLocalResources) };
+  }
+  if (command === "resources" && subcommand === "migrate") {
+    const root = valueAfter("--root");
+    if (!root) throw new Error("resource_setup_required: 请先选择本地资源保存位置");
+    mockLocalResources = { ...mockLocalResources, configured: true, root, rootAvailable: true, writable: true, needsSetup: false };
+    return { apiVersion: "0.1", status: "ok", localResources: structuredClone(mockLocalResources), resourceMigration: { targetRoot: root } };
+  }
+  if (command === "resources" && ["install", "update", "repair"].includes(subcommand)) {
+    const capabilityId = args[2] as LocalCapabilityId;
+    const profile = (valueAfter("--profile") ?? mockLocalResources.transcriptionProfile) as LocalTranscriptionProfile;
+    const now = new Date().toISOString();
+    const profileBytes = { fast: 77_691_713, standard: 147_951_465, quality: 487_601_967 }[profile];
+    const totalBytes = capabilityId === "url_import" ? 88_713_154
+      : capabilityId === "local_transcription" ? 70_510_962 + 7_982_101 + profileBytes
+        : capabilityId === "speaker_identity" ? 70_510_962 + 64_389_270
+          : 70_510_962;
+    const job: LocalResourceJob = { id: `resource-${Date.now()}`, capabilityId, status: "completed", stage: "completed", progress: 1, bytesDownloaded: totalBytes, totalBytes, targetRoot: mockLocalResources.root ?? "D:\\SiaoCut Resources", cancelRequestedAt: null, errorMessage: null, errorCode: null, createdAt: now, updatedAt: now, completedAt: now, workerPid: null, attemptCount: 1 };
+    mockResourceJobs.set(job.id, job);
+    mockLocalResources = { ...mockLocalResources, transcriptionProfile: capabilityId === "local_transcription" ? profile : mockLocalResources.transcriptionProfile, capabilities: mockLocalResources.capabilities.map((capability) => capability.id === capabilityId || (["url_import", "local_transcription", "speaker_identity"].includes(capabilityId) && capability.id === "basic_media") ? { ...capability, state: "ready", enabled: true } : capability) };
+    if (capabilityId === "local_transcription") {
+      const modelId = { fast: "tiny", standard: "base", quality: "small" }[profile];
+      mockModels.forEach((model) => {
+        const active = model.id === modelId;
+        model.installed = active;
+        model.bytesOnDisk = active ? model.size : 0;
+        model.verified = active ? true : null;
+        model.verificationStatus = active ? "verified" : "not_installed";
+      });
+    }
+    if (capabilityId === "speaker_identity")
+      mockSpeakerPackage = { ...mockSpeakerPackage, installed: true, verified: true, verificationStatus: "verified", assets: mockSpeakerPackage.assets.map((asset) => ({ ...asset, installed: true, verified: true, verificationStatus: "verified" })) };
+    return { apiVersion: "0.1", status: "ok", resourceJob: structuredClone(job) };
+  }
+  if (command === "resources" && subcommand === "jobs") return { apiVersion: "0.1", status: "ok", resourceJobs: Array.from(mockResourceJobs.values()).reverse() };
+  if (command === "resources" && subcommand === "job") return { apiVersion: "0.1", status: "ok", resourceJob: structuredClone(mockResourceJobs.get(args[2])) };
+  if (command === "resources" && subcommand === "cancel") {
+    const job = mockResourceJobs.get(args[2]);
+    if (job) { job.status = "cancelled"; job.stage = "cancelled"; job.cancelRequestedAt = new Date().toISOString(); }
+    return { apiVersion: "0.1", status: "ok", resourceJob: job ? structuredClone(job) : undefined };
+  }
+  if (command === "resources" && subcommand === "resume") {
+    const job = mockResourceJobs.get(args[2]);
+    if (job) { job.status = "completed"; job.stage = "completed"; job.progress = 1; job.cancelRequestedAt = null; job.attemptCount += 1; }
+    return { apiVersion: "0.1", status: "ok", resourceJob: job ? structuredClone(job) : undefined };
+  }
+  if (command === "resources" && subcommand === "remove") {
+    const capabilityId = args[2] as LocalCapabilityId;
+    mockLocalResources = { ...mockLocalResources, capabilities: mockLocalResources.capabilities.map((capability) => capability.id === capabilityId ? { ...capability, state: "not_ready", enabled: false } : capability) };
+    return { apiVersion: "0.1", status: "ok", localResources: structuredClone(mockLocalResources) };
+  }
+  if (command === "resources" && subcommand === "rollback") {
+    const capabilityId = args[2] as LocalCapabilityId;
+    mockLocalResources = { ...mockLocalResources, capabilities: mockLocalResources.capabilities.map((capability) => capability.id === capabilityId ? { ...capability, state: "ready", enabled: true, canRollback: true } : capability) };
+    return { apiVersion: "0.1", status: "ok", localResources: structuredClone(mockLocalResources), resourceRollback: { capabilityId } };
+  }
+  if (command === "resources" && subcommand === "cleanup")
+    return { apiVersion: "0.1", status: "ok", localResources: structuredClone(mockLocalResources), resourceCleanup: { filesRemoved: 0, directoriesRemoved: 0, bytesReclaimed: 0 } };
   if (command === "import") {
     const imported = structuredClone(sampleProject);
     const sourcePath = args[1] ?? "demo.mp4";
@@ -282,7 +408,7 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
     return { apiVersion: "0.1", status: "ok", project: structuredClone(imported), message: "本地媒体已导入。" };
   }
   if (command === "project" && subcommand === "list") {
-    mockProject = structuredClone(sampleProject);
+    mockProject = structuredClone(mockProjectListOverride ?? sampleProject);
     const secondary = structuredClone(sampleProject);
     secondary.id = "p_secondary";
     secondary.title = "第二个本地项目";

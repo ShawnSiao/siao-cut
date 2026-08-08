@@ -2,7 +2,7 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App, { AUTO_WORKFLOW_DISMISSED_STORAGE_KEY, PatchReviewCard, TRANSCRIPTION_LANGUAGE_STORAGE_KEY, agentTaskStatusLabel, clearTransientCoreError, getProjectCapabilities, isHttpsSourceUrl, parseDismissedAutoWorkflowIds, parseExportPreferences, parseTranscriptionLanguage, resolveCanvasMedia, resolveCaptionKaraokeStyle, resolveCaptionSegment, resolveImportedProjectMedia, resolvePlaybackDuration, shouldCheckForUpdates, startSerialPolling, taskLabel, upsertAutoWorkflowSnapshot } from "./App";
-import { mockRun } from "./core.mock";
+import { mockRun, resetMockLocalResourcesForTest, resetMockProjectForTest, setMockAuthorizedMediaForTest, setMockLocalResourcesForTest, setMockProjectForTest } from "./core.mock";
 import { agentReviewClient } from "./domains/agent-review-client";
 import { projectSessionClient } from "./domains/project-session-client";
 import { transcriptEditingClient } from "./domains/transcript-editing-client";
@@ -17,6 +17,9 @@ afterEach(() => {
   localStorage.removeItem("siaocut.transcriptionMode");
   localStorage.removeItem(AUTO_WORKFLOW_DISMISSED_STORAGE_KEY);
   localStorage.removeItem(TIMELINE_PREFERENCES_STORAGE_KEY);
+  localStorage.removeItem("siaocut.localResourcesSetupDeferred.v1");
+  resetMockLocalResourcesForTest();
+  resetMockProjectForTest();
   vi.useRealTimers();
   vi.restoreAllMocks();
 });
@@ -28,10 +31,17 @@ async function openDrawerTab(name: "审阅" | "质量" | "分析" | "历史" | "
 }
 
 async function selectAdvancedTranscriptionMode(mode: "quick" | "multispeaker") {
-  fireEvent.click(await screen.findByRole("button", { name: "运行环境" }));
-  const dialog = await screen.findByRole("dialog", { name: "运行环境" });
+  fireEvent.click(await screen.findByRole("button", { name: "本地资源" }));
+  const dialog = await screen.findByRole("dialog", { name: "本地资源" });
+  openResourceDiagnostics(dialog);
   fireEvent.change(within(dialog).getByRole("combobox", { name: "转写模式" }), { target: { value: mode } });
   return dialog;
+}
+
+function openResourceDiagnostics(dialog: HTMLElement) {
+  const summary = within(dialog).getByText("兼容与诊断").closest("summary");
+  if (!summary) throw new Error("local resource diagnostics summary is missing");
+  fireEvent.click(summary);
 }
 
 function autoWorkflowFixture(overrides: Partial<AutoWorkflow> = {}): AutoWorkflow {
@@ -129,7 +139,7 @@ describe("SiaoCut review workbench", () => {
     fireEvent.change(within(runtime).getByRole("combobox", { name: "素材语言" }), { target: { value: "en" } });
     expect(localStorage.getItem(TRANSCRIPTION_LANGUAGE_STORAGE_KEY)).toBe("en");
     expect(parseTranscriptionLanguage("unsupported")).toBe("auto");
-    fireEvent.click(within(runtime).getByRole("button", { name: "关闭运行环境" }));
+    fireEvent.click(within(runtime).getByRole("button", { name: "关闭本地资源" }));
 
     fireEvent.change(screen.getByRole("combobox", { name: "Agent 工作流" }), { target: { value: "edit" } });
     fireEvent.click(screen.getByRole("button", { name: "手工交接" }));
@@ -569,7 +579,7 @@ describe("SiaoCut review workbench", () => {
 
   it("shows why preview builds cannot install updates", async () => {
     render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: "运行环境" }));
+    fireEvent.click(await screen.findByRole("button", { name: "本地资源" }));
     const updates = await screen.findByRole("region", { name: "应用更新" });
     expect(within(updates).getByText("当前版本 0.2.0-preview · 每 24 小时检查")).toBeInTheDocument();
     expect(within(updates).getByText("浏览器预览不连接更新源。")).toBeInTheDocument();
@@ -1134,11 +1144,146 @@ describe("SiaoCut review workbench", () => {
     expect(within(preview).getByText("Sintel Trailer, Durian Open Movie Project")).toBeInTheDocument();
     expect(within(preview).getByText("00:52")).toBeInTheDocument();
     expect(within(preview).getByText("HOfdboHvshg")).toBeInTheDocument();
-    expect(within(preview).getByText("yt-dlp 2026.06.09")).toBeInTheDocument();
+    expect(within(preview).getByText("URL 导入能力")).toBeInTheDocument();
     const start = within(preview).getByRole("button", { name: "确认信息并开始下载" });
     expect(start).toBeDisabled();
     fireEvent.click(within(preview).getByRole("checkbox"));
     expect(start).toBeEnabled();
+  });
+
+  it("opens first-run preparation without a default root and supports deferral", async () => {
+    setMockLocalResourcesForTest({
+      configured: false,
+      root: null,
+      rootAvailable: false,
+      writable: false,
+      availableBytes: null,
+      transcriptionProfile: "standard",
+      capabilities: [
+        { id: "basic_media", name: "基础媒体处理", state: "not_ready", enabled: false },
+        { id: "url_import", name: "URL 导入", state: "not_ready", enabled: false },
+        { id: "local_transcription", name: "本地转录", state: "not_ready", enabled: false },
+        { id: "speaker_identity", name: "说话人识别", state: "not_ready", enabled: false },
+      ],
+      needsSetup: true,
+    });
+    render(<App />);
+
+    const setup = await screen.findByRole("dialog", { name: "准备 SiaoCut" });
+    expect(within(setup).getByText("尚未选择")).toBeInTheDocument();
+    expect(within(setup).getByRole("button", { name: "准备推荐资源" })).toBeDisabled();
+    fireEvent.click(within(setup).getByRole("button", { name: "稍后设置" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "准备 SiaoCut" })).not.toBeInTheDocument());
+    expect(localStorage.getItem("siaocut.localResourcesSetupDeferred.v1")).toBe("1");
+  });
+
+  it("moves local resources after explicit location confirmation and cleans only on confirmation", async () => {
+    setMockLocalResourcesForTest({
+      configured: true,
+      root: "E:\\SiaoCut Resources",
+      rootAvailable: true,
+      writable: true,
+      availableBytes: 128 * 1024 * 1024 * 1024,
+      transcriptionProfile: "standard",
+      capabilities: [
+        { id: "basic_media", name: "基础媒体处理", state: "ready", enabled: true },
+        { id: "url_import", name: "URL 导入", state: "ready", enabled: true },
+        { id: "local_transcription", name: "本地转录", state: "ready", enabled: true },
+        { id: "speaker_identity", name: "说话人识别", state: "ready", enabled: true },
+      ],
+      needsSetup: false,
+    });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "本地资源" }));
+    const settings = await screen.findByRole("dialog", { name: "本地资源" });
+    fireEvent.click(within(settings).getByRole("button", { name: "更改位置" }));
+    const setup = await screen.findByRole("dialog", { name: "准备 SiaoCut" });
+    fireEvent.click(within(setup).getByRole("button", { name: "更改位置" }));
+    expect(await within(setup).findByText("D:\\SiaoCut Resources")).toBeInTheDocument();
+    fireEvent.click(within(setup).getByRole("button", { name: "确认此位置" }));
+
+    expect(await screen.findByText("本地资源已安全移到新的保存位置。")).toBeInTheDocument();
+    const reopened = await screen.findByRole("dialog", { name: "本地资源" });
+    expect(within(reopened).getByText("D:\\SiaoCut Resources")).toBeInTheDocument();
+    fireEvent.click(within(reopened).getByRole("button", { name: "释放无用空间" }));
+
+    expect(confirm).toHaveBeenCalledWith(expect.stringMatching(/当前版本、可恢复版本与可续传下载会保留/));
+    expect(await screen.findByText("无用的本地资源文件已清理。")).toBeInTheDocument();
+  });
+
+  it("prepares a missing URL-import capability and resumes the original inspection", async () => {
+    setMockLocalResourcesForTest({
+      configured: true,
+      root: "E:\\SiaoCut Resources",
+      rootAvailable: true,
+      writable: true,
+      availableBytes: 128 * 1024 * 1024 * 1024,
+      transcriptionProfile: "standard",
+      capabilities: [
+        { id: "basic_media", name: "基础媒体处理", state: "ready", enabled: true },
+        { id: "url_import", name: "URL 导入", state: "not_ready", enabled: false },
+        { id: "local_transcription", name: "本地转录", state: "not_ready", enabled: false },
+        { id: "speaker_identity", name: "说话人识别", state: "not_ready", enabled: false },
+      ],
+      needsSetup: false,
+    });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "从 URL 导入" }));
+    fireEvent.change(await screen.findByLabelText("公开视频 URL"), { target: { value: "https://www.youtube.com/watch?v=HOfdboHvshg" } });
+    fireEvent.click(screen.getByRole("button", { name: "读取视频信息" }));
+
+    const setup = await screen.findByRole("dialog", { name: "准备 SiaoCut" });
+    expect(within(setup).getByText(/产品安装包不包含第三方运行时或模型/)).toBeInTheDocument();
+    expect(within(setup).getByText("E:\\SiaoCut Resources")).toBeInTheDocument();
+    fireEvent.click(within(setup).getByRole("button", { name: "准备并继续" }));
+
+    const preview = await screen.findByRole("region", { name: "待确认视频信息" });
+    expect(within(preview).getByText("Sintel Trailer, Durian Open Movie Project")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "准备 SiaoCut" })).not.toBeInTheDocument();
+  });
+
+  it("prepares the selected transcription profile and resumes the original transcription", async () => {
+    const emptyProject = structuredClone(sampleProject);
+    emptyProject.media.sourcePath = "D:\\Media\\local-resource-test.mp4";
+    emptyProject.transcript = { sourceLanguage: "auto", segments: [], words: [] };
+    emptyProject.translations = {};
+    emptyProject.edits = [];
+    emptyProject.tasks = [];
+    emptyProject.patchSets = [];
+    setMockProjectForTest(emptyProject);
+    setMockLocalResourcesForTest({
+      configured: true,
+      root: "E:\\SiaoCut Resources",
+      rootAvailable: true,
+      writable: true,
+      availableBytes: 128 * 1024 * 1024 * 1024,
+      transcriptionProfile: "standard",
+      capabilities: [
+        { id: "basic_media", name: "基础媒体处理", state: "ready", enabled: true },
+        { id: "url_import", name: "URL 导入", state: "ready", enabled: true },
+        { id: "local_transcription", name: "本地转录", state: "not_ready", enabled: false },
+        { id: "speaker_identity", name: "说话人识别", state: "not_ready", enabled: false },
+      ],
+      needsSetup: false,
+    });
+    setMockAuthorizedMediaForTest("mock://local-media");
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: new RegExp(`^${emptyProject.title}`) }));
+    const start = await screen.findByRole("button", { name: "开始转写" });
+    await waitFor(() => expect(start).toBeEnabled());
+    fireEvent.click(start);
+    const setup = await screen.findByRole("dialog", { name: "准备 SiaoCut" });
+    expect(within(setup).getByRole("radio", { name: /标准/ })).toBeChecked();
+    fireEvent.click(within(setup).getByRole("radio", { name: /高质量/ }));
+    await waitFor(() => expect(within(setup).getByRole("radio", { name: /高质量/ })).toBeChecked());
+    fireEvent.click(within(setup).getByRole("button", { name: "准备并继续" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "准备 SiaoCut" })).not.toBeInTheDocument());
+    expect(await screen.findByText(/未检测到清晰人声/)).toBeInTheDocument();
   });
 
   it("cancels a URL import without a project and only resumes explicitly", async () => {
@@ -1303,9 +1448,11 @@ describe("SiaoCut review workbench", () => {
 
   it("shows local runtime status without exposing filesystem scope", async () => {
     render(<App />);
-    const settings = await screen.findByRole("button", { name: "运行环境" });
+    const settings = await screen.findByRole("button", { name: "本地资源" });
     fireEvent.click(settings);
-    expect(await screen.findByRole("dialog", { name: "运行环境" })).toBeInTheDocument();
+    const dialog = await screen.findByRole("dialog", { name: "本地资源" });
+    expect(within(dialog).getByText("whisper.cpp")).not.toBeVisible();
+    openResourceDiagnostics(dialog);
     expect(screen.getByText("whisper.cpp")).toBeInTheDocument();
     expect(screen.getByText("API 0.1")).toBeInTheDocument();
     expect(screen.getByLabelText("Core: 可用")).toBeInTheDocument();
@@ -1318,17 +1465,18 @@ describe("SiaoCut review workbench", () => {
 
   it("closes the runtime dialog with Escape and restores keyboard focus", async () => {
     render(<App />);
-    const settings = await screen.findByRole("button", { name: "运行环境" });
+    const settings = await screen.findByRole("button", { name: "本地资源" });
     fireEvent.click(settings);
-    expect(await screen.findByRole("button", { name: "关闭运行环境" })).toHaveFocus();
+    expect(await screen.findByRole("button", { name: "关闭本地资源" })).toHaveFocus();
     fireEvent.keyDown(window, { key: "Escape" });
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "运行环境" })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "本地资源" })).not.toBeInTheDocument());
     expect(settings).toHaveFocus();
   });
 
   it("requires explicit download verification and confirmation before removing a model", async () => {
     render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: "运行环境" }));
+    fireEvent.click(await screen.findByRole("button", { name: "本地资源" }));
+    openResourceDiagnostics(await screen.findByRole("dialog", { name: "本地资源" }));
     const option = (await screen.findByText("平衡 · 推荐")).closest("article");
     expect(option).not.toBeNull();
     fireEvent.click(within(option!).getByRole("button", { name: "下载" }));
@@ -1354,17 +1502,14 @@ describe("SiaoCut review workbench", () => {
     expect(within(speakerPanel).getByText(/可选模型尚未安装/)).toBeInTheDocument();
     expect(screen.getByLabelText("00:12 字幕文本")).toHaveValue("嗯，");
 
-    fireEvent.click(within(speakerPanel).getByRole("button", { name: "查看模型来源与安装" }));
-    const dialog = await screen.findByRole("dialog", { name: "运行环境" });
-    const packagePanel = within(dialog).getByRole("region", { name: "说话人模型包" });
-    expect(within(packagePanel).getByText("sherpa-onnx 1.13.2 · CPU 本地运行")).toBeInTheDocument();
-    expect(within(packagePanel).getByText("Apache-2.0 / MIT")).toBeInTheDocument();
-    expect(within(packagePanel).getByText(/只有点击「明确安装」/)).toBeInTheDocument();
-    fireEvent.click(within(packagePanel).getByRole("button", { name: "明确安装" }));
-    await waitFor(() => expect(within(packagePanel).getByText("可以开始本地说话人分析")).toBeInTheDocument());
-    fireEvent.click(within(dialog).getByRole("button", { name: "关闭运行环境" }));
+    fireEvent.click(within(speakerPanel).getByRole("button", { name: "准备说话人识别" }));
+    const dialog = await screen.findByRole("dialog", { name: "准备 SiaoCut" });
+    expect(within(dialog).getByText("说话人识别")).toBeInTheDocument();
+    expect(dialog).not.toHaveTextContent(/sherpa|onnx|pyannote|SHA-?256/);
+    fireEvent.click(within(dialog).getByRole("button", { name: "准备并继续" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "准备 SiaoCut" })).not.toBeInTheDocument());
 
-    fireEvent.click(within(speakerPanel).getByRole("button", { name: "开始本地分析" }));
+    fireEvent.click(within(await screen.findByRole("region", { name: "说话人轨" })).getByRole("button", { name: "开始本地分析" }));
     await waitFor(() => expect(within(speakerPanel).getByLabelText("当前字幕说话人")).toHaveValue("voice-a"));
     expect(screen.getByLabelText("00:12 字幕文本")).toHaveValue("嗯，");
 
@@ -1400,7 +1545,7 @@ describe("SiaoCut review workbench", () => {
     fireEvent.click(await screen.findByRole("button", { name: "新建项目" }));
     const runtime = await selectAdvancedTranscriptionMode("multispeaker");
     expect(localStorage.getItem("siaocut.transcriptionMode")).toBe("multispeaker");
-    fireEvent.click(within(runtime).getByRole("button", { name: "关闭运行环境" }));
+    fireEvent.click(within(runtime).getByRole("button", { name: "关闭本地资源" }));
     const start = screen.getByRole("button", { name: "开始多人转写" });
     await waitFor(() => expect(start).toBeEnabled());
     fireEvent.click(start);
@@ -1424,7 +1569,7 @@ describe("SiaoCut review workbench", () => {
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "新建项目" }));
     const runtime = await selectAdvancedTranscriptionMode("multispeaker");
-    fireEvent.click(within(runtime).getByRole("button", { name: "关闭运行环境" }));
+    fireEvent.click(within(runtime).getByRole("button", { name: "关闭本地资源" }));
     fireEvent.click(screen.getByText("高级实验项：Prompt 与热词"));
     fireEvent.change(screen.getByRole("textbox", { name: "自定义 Prompt" }), { target: { value: "simulate-conflict" } });
 

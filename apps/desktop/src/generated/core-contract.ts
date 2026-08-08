@@ -23,6 +23,15 @@ export const agentRunStatuses = [
 ] as const;
 export type AgentRunStatus = typeof agentRunStatuses[number];
 
+export const localResourceStates = [
+  "not_ready",
+  "preparing",
+  "ready",
+  "needs_repair",
+  "update_available"
+] as const;
+export type LocalResourceState = typeof localResourceStates[number];
+
 export const transcriptionJobStatuses = [
   "queued",
   "running",
@@ -279,6 +288,38 @@ export const coreErrorCodes = [
   "runtime_executable_missing",
   "runtime_hash_mismatch",
   "runtime_verification_failed",
+  "resource_setup_required",
+  "resource_root_invalid",
+  "resource_root_not_writable",
+  "resource_root_unavailable",
+  "resource_root_contains_user_data",
+  "resource_root_low_space",
+  "resource_config_invalid",
+  "resource_config_write_failed",
+  "resource_config_version_unsupported",
+  "resource_catalog_invalid",
+  "resource_capability_invalid",
+  "resource_capability_not_installable",
+  "resource_profile_invalid",
+  "resource_move_required",
+  "resource_root_changed",
+  "resource_already_ready",
+  "resource_job_not_found",
+  "resource_job_not_cancellable",
+  "resource_job_not_resumable",
+  "resource_job_active",
+  "resource_job_state_changed",
+  "resource_worker_start_failed",
+  "resource_worker_interrupted",
+  "resource_download_failed",
+  "resource_hash_mismatch",
+  "resource_archive_invalid",
+  "resource_activation_failed",
+  "resource_health_check_failed",
+  "resource_rollback_unavailable",
+  "resource_dependency_required",
+  "resource_remove_failed",
+  "resource_cancelled",
   "preview_project_version_missing",
   "preview_project_changed",
   "preview_generation_superseded",

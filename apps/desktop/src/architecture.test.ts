@@ -28,12 +28,26 @@ describe("desktop architecture boundaries", () => {
       join(sourceRoot, "domains/agent-review-client.ts"),
       join(sourceRoot, "domains/export-runtime-client.ts"),
       join(sourceRoot, "domains/translation-client.ts"),
+      join(sourceRoot, "domains/local-resource-client.ts"),
     ].map((path) => path.replaceAll("\\", "/")));
     const violations = sourceFiles(sourceRoot)
       .map((path) => path.replaceAll("\\", "/"))
       .filter((path) => !allowed.has(path))
       .filter((path) => /\brunCore\s*\(/.test(readFileSync(path, "utf8")))
       .map((path) => path.slice(sourceRoot.replaceAll("\\", "/").length + 1));
+
+    expect(violations).toEqual([]);
+  });
+
+  it("keeps technical resource identifiers out of normal resource and URL-import surfaces", () => {
+    const normalSurfaces = [
+      join(sourceRoot, "components/local-resource-ui.tsx"),
+      join(sourceRoot, "components/source-import-dialog.tsx"),
+    ];
+    const forbidden = /FFmpeg|FFprobe|yt-dlp|whisper\.cpp|SIAOCUT_[A-Z_]+|SHA-?256/;
+    const violations = normalSurfaces
+      .filter((path) => forbidden.test(readFileSync(path, "utf8")))
+      .map((path) => path.slice(sourceRoot.length + 1));
 
     expect(violations).toEqual([]);
   });

@@ -22,6 +22,7 @@ use std::{
 use tar::Archive;
 
 pub const PACKAGE_ID: &str = "sherpa-onnx-speaker-zh-en-v1";
+pub const PACKAGE_VERSION: &str = "1.13.2";
 pub const RUNTIME_VERSION: &str = "sherpa-onnx 1.13.2";
 pub const SEGMENTATION_MODEL: &str = "pyannote segmentation 3.0 int8";
 pub const EMBEDDING_MODEL: &str = "3D-Speaker ERes2Net Base 16 kHz";
@@ -253,15 +254,39 @@ pub struct SpeakerJob {
 }
 
 fn package_dir() -> PathBuf {
-    db::home_dir().join("speaker")
+    crate::local_resources::configured_root()
+        .ok()
+        .flatten()
+        .map(|root| {
+            root.join("packages")
+                .join("speaker_identity")
+                .join(PACKAGE_VERSION)
+        })
+        .unwrap_or_else(|| db::home_dir().join("speaker"))
 }
 
 fn installed_path(spec: InstalledAssetSpec) -> PathBuf {
-    package_dir().join(spec.relative_path)
+    installed_path_at(&package_dir(), spec)
+}
+
+fn installed_path_at(directory: &Path, spec: InstalledAssetSpec) -> PathBuf {
+    directory.join(spec.relative_path)
 }
 
 fn download_dir() -> PathBuf {
-    package_dir().join("downloads")
+    crate::local_resources::configured_root()
+        .ok()
+        .flatten()
+        .map(|root| root.join("downloads").join("speaker_identity"))
+        .unwrap_or_else(|| package_dir().join("downloads"))
+}
+
+fn staging_dir(job_id: &str) -> PathBuf {
+    crate::local_resources::configured_root()
+        .ok()
+        .flatten()
+        .map(|root| root.join("staging").join(job_id).join("speaker_identity"))
+        .unwrap_or_else(|| package_dir().join(format!("staging-{job_id}")))
 }
 
 pub fn package_status(verify: bool) -> Result<SpeakerPackageStatus> {
@@ -334,6 +359,19 @@ pub fn package_status(verify: bool) -> Result<SpeakerPackageStatus> {
 }
 
 pub fn create_install(db: &Connection) -> Result<SpeakerJob> {
+    if crate::local_resources::configured_root()?.is_none() {
+        bail!("resource_setup_required: 请先选择并确认本地资源保存位置")
+    }
+    let another_resource_job: bool = db.query_row(
+        "SELECT
+             EXISTS(SELECT 1 FROM resource_jobs WHERE status IN ('queued','running'))
+             OR EXISTS(SELECT 1 FROM model_downloads WHERE status IN ('queued','running'))",
+        [],
+        |row| row.get(0),
+    )?;
+    if another_resource_job {
+        bail!("resource_job_active: 另一项本地资源正在准备中")
+    }
     let status = package_status(true)?;
     if status.installed && status.verified == Some(true) {
         bail!("speaker_package_installed: 说话人模型包已经安装并通过校验")
@@ -735,16 +773,54 @@ fn install_package(db: &Connection, job_id: &str) -> Result<()> {
         download_asset(db, job_id, *asset)?;
     }
     update_job(db, job_id, "解包并校验", Some(0.94), Some(DOWNLOAD_SIZE))?;
-    let staging = package_dir().join(format!("staging-{job_id}"));
+    let staging = staging_dir(job_id);
     if staging.exists() {
         fs::remove_dir_all(&staging)?;
+    }
+    prepare_package_at(
+        &download_dir().join(DOWNLOADS[0].file_name),
+        &download_dir().join(DOWNLOADS[1].file_name),
+        &download_dir().join(DOWNLOADS[2].file_name),
+        &staging,
+    )?;
+    let destination = package_dir();
+    if destination.is_dir() {
+        fs::remove_dir_all(&destination)?;
+    }
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::rename(&staging, &destination)?;
+    let status = package_status(true)?;
+    if !status.installed || status.verified != Some(true) {
+        bail!("speaker_package_hash_mismatch: 说话人模型包安装后校验失败")
+    }
+    let executable = installed_path_at(&destination, INSTALLED_ASSETS[0]);
+    crate::local_resources::activate_managed_resource(
+        "speaker_identity",
+        PACKAGE_VERSION,
+        &[("speaker", executable.as_path())],
+        Some("speaker_identity"),
+        None,
+    )?;
+    Ok(())
+}
+
+pub(crate) fn prepare_package_at(
+    runtime_archive: &Path,
+    segmentation_archive: &Path,
+    embedding_model: &Path,
+    staging: &Path,
+) -> Result<()> {
+    if staging.exists() {
+        fs::remove_dir_all(staging)?;
     }
     fs::create_dir_all(staging.join("runtime"))?;
     fs::create_dir_all(staging.join("models"))?;
     fs::create_dir_all(staging.join("licenses"))?;
     extract_selected(
-        &download_dir().join(DOWNLOADS[0].file_name),
-        &staging,
+        runtime_archive,
+        staging,
         &[
             (
                 "/bin/sherpa-onnx-offline-speaker-diarization.exe",
@@ -758,8 +834,8 @@ fn install_package(db: &Connection, job_id: &str) -> Result<()> {
         ],
     )?;
     extract_selected(
-        &download_dir().join(DOWNLOADS[1].file_name),
-        &staging,
+        segmentation_archive,
+        staging,
         &[
             (
                 "/model.int8.onnx",
@@ -769,7 +845,7 @@ fn install_package(db: &Connection, job_id: &str) -> Result<()> {
         ],
     )?;
     fs::copy(
-        download_dir().join(DOWNLOADS[2].file_name),
+        embedding_model,
         staging.join("models/3dspeaker-eres2net-base-16k.onnx"),
     )?;
     fs::write(
@@ -788,33 +864,20 @@ fn install_package(db: &Connection, job_id: &str) -> Result<()> {
             )
         }
     }
-    for spec in INSTALLED_ASSETS {
-        let source = staging.join(spec.relative_path);
-        let target = installed_path(*spec);
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        if target.is_file() {
-            fs::remove_file(&target)?;
-        }
-        fs::rename(source, target)?;
-    }
-    let notice_target = package_dir().join("licenses/NOTICE.txt");
-    fs::create_dir_all(notice_target.parent().expect("license directory"))?;
-    fs::copy(staging.join("licenses/NOTICE.txt"), notice_target)?;
-    let pyannote_license = staging.join("licenses/pyannote-segmentation-MIT.txt");
-    if pyannote_license.is_file() {
-        fs::copy(
-            pyannote_license,
-            package_dir().join("licenses/pyannote-segmentation-MIT.txt"),
-        )?;
-    }
-    fs::remove_dir_all(staging)?;
-    let status = package_status(true)?;
-    if !status.installed || status.verified != Some(true) {
-        bail!("speaker_package_hash_mismatch: 说话人模型包安装后校验失败")
-    }
     Ok(())
+}
+
+pub(crate) fn package_executable_at(directory: &Path) -> Result<PathBuf> {
+    for spec in INSTALLED_ASSETS {
+        let path = installed_path_at(directory, *spec);
+        if !path.is_file()
+            || fs::metadata(&path)?.len() != spec.size
+            || hash_file(&path)? != spec.sha256
+        {
+            bail!("speaker_package_hash_mismatch: 说话人模型包安装后校验失败")
+        }
+    }
+    Ok(installed_path_at(directory, INSTALLED_ASSETS[0]))
 }
 
 fn update_job(
@@ -1016,7 +1079,9 @@ fn analyze_project(db: &mut Connection, job_id: &str) -> Result<()> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
-        .context("无法启动本地说话人分离运行时")?;
+        .map_err(|error| {
+            anyhow!("speaker_runtime_start_failed: 无法启动本地说话人分离运行时：{error}")
+        })?;
     if !output.status.success() {
         bail!(
             "speaker_runtime_failed: {}",

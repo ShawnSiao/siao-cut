@@ -110,8 +110,23 @@ fn spec(model_id: &str) -> Result<ModelSpec> {
         .ok_or_else(|| anyhow!("未知转录模型：{model_id}"))
 }
 
-fn models_dir() -> PathBuf {
-    db::home_dir().join("models")
+fn managed_models_dir() -> Result<PathBuf> {
+    crate::local_resources::configured_root()?
+        .map(|root| root.join("models").join("catalog"))
+        .ok_or_else(|| anyhow!("resource_setup_required: 请先选择并确认本地资源保存位置"))
+}
+
+fn model_profile(model_id: &str) -> Result<&'static str> {
+    Ok(match model_id {
+        "tiny" => "fast",
+        "base" => "standard",
+        "small" => "quality",
+        _ => bail!("未知转录模型：{model_id}"),
+    })
+}
+
+fn model_version(spec: ModelSpec) -> String {
+    format!("{}-{}", spec.id, &spec.sha256[..12])
 }
 
 fn target_path_in(models_dir: &Path, spec: ModelSpec) -> PathBuf {
@@ -153,11 +168,21 @@ fn model_status(spec: ModelSpec, models_dir: &Path, verify: bool) -> Result<Mode
 }
 
 pub fn catalog(verify: bool) -> Result<Vec<ModelStatus>> {
-    let models_dir = models_dir();
+    let models_dir =
+        crate::local_resources::configured_root()?.map(|root| root.join("models").join("catalog"));
+    let active = crate::local_resources::managed_entrypoint("default_model")?;
     MODEL_SPECS
         .iter()
         .copied()
-        .map(|item| model_status(item, &models_dir, verify))
+        .map(|item| {
+            let directory = active
+                .as_ref()
+                .filter(|path| path.file_name().is_some_and(|name| name == item.file_name))
+                .and_then(|path| path.parent().map(Path::to_path_buf))
+                .or_else(|| models_dir.as_ref().map(|root| root.join(item.id)))
+                .unwrap_or_default();
+            model_status(item, &directory, verify)
+        })
         .collect()
 }
 
@@ -171,7 +196,15 @@ pub fn verify(model_id: &str) -> Result<ModelStatus> {
 
 pub fn create_download(db: &Connection, model_id: &str) -> Result<ModelDownloadJob> {
     let spec = spec(model_id)?;
-    create_download_in(db, spec, &models_dir(), spawn_worker)
+    let active_resource_job: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM resource_jobs WHERE status IN ('queued','running'))",
+        [],
+        |row| row.get(0),
+    )?;
+    if active_resource_job {
+        bail!("resource_job_active: 另一项本地资源正在准备中")
+    }
+    create_download_in(db, spec, &managed_models_dir()?.join(spec.id), spawn_worker)
 }
 
 fn create_download_in(
@@ -351,7 +384,11 @@ pub fn reconcile_interrupted(db: &Connection) -> Result<()> {
 
 pub fn remove(db: &Connection, model_id: &str) -> Result<()> {
     let spec = spec(model_id)?;
-    remove_in(db, spec, &models_dir())
+    let directory = crate::local_resources::managed_entrypoint("default_model")?
+        .filter(|path| path.file_name().is_some_and(|name| name == spec.file_name))
+        .and_then(|path| path.parent().map(Path::to_path_buf))
+        .unwrap_or(managed_models_dir()?.join(spec.id));
+    remove_in(db, spec, &directory)
 }
 
 fn remove_in(db: &Connection, spec: ModelSpec, models_dir: &Path) -> Result<()> {
@@ -383,7 +420,11 @@ fn run_worker(job_id: &str, model_id: &str) -> Result<()> {
         thread::sleep(Duration::from_millis(delay));
     }
     let db = db::open()?;
-    run_download_attempt(&db, job_id, spec(model_id)?, &models_dir())
+    let job = load_job(&db, job_id)?;
+    let directory = Path::new(&job.target_path)
+        .parent()
+        .ok_or_else(|| anyhow!("model_target_invalid: 模型下载目标无效"))?;
+    run_download_attempt(&db, job_id, spec(model_id)?, directory)
 }
 
 /// Run the synchronous reqwest worker on a thread that has never entered Tokio.
@@ -518,6 +559,15 @@ fn download_in(db: &Connection, job_id: &str, spec: ModelSpec, models_dir: &Path
         fs::remove_file(&target)?;
     }
     fs::rename(&partial, &target)?;
+    if crate::local_resources::configured_root()?.is_some_and(|root| target.starts_with(root)) {
+        crate::local_resources::activate_managed_resource(
+            "transcription-model",
+            &model_version(spec),
+            &[("default_model", target.as_path())],
+            Some("local_transcription"),
+            Some(model_profile(spec.id)?),
+        )?;
+    }
     let timestamp = now();
     db.execute(
         "UPDATE model_downloads SET status='completed',progress=1,bytes_downloaded=?2,worker_pid=NULL,updated_at=?3,completed_at=?3 WHERE id=?1",

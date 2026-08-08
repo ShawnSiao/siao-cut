@@ -5,8 +5,9 @@ use diagnostics::Diagnostics;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
+    collections::BTreeMap,
     env, fs,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     process::{Command, Stdio},
     time::Instant,
 };
@@ -47,8 +48,28 @@ struct RuntimePaths {
     whisper_vad_model: Option<PathBuf>,
     whisper_vulkan: Option<PathBuf>,
     yt_dlp: Option<PathBuf>,
+    default_model: Option<PathBuf>,
     manifest: Option<PathBuf>,
     managed_whisper_vulkan: Option<ManagedWhisperRuntime>,
+}
+
+#[derive(Clone, Debug)]
+struct RuntimeState {
+    resource_dir: Option<PathBuf>,
+}
+
+impl RuntimeState {
+    fn paths(&self) -> Result<RuntimePaths, String> {
+        discover_runtime(self.resource_dir.as_deref())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ManagedResourceConfig {
+    root: PathBuf,
+    #[serde(default)]
+    active_entrypoints: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug)]
@@ -108,6 +129,39 @@ fn first_file(candidates: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf> 
     candidates.into_iter().find(|path| path.is_file())
 }
 
+fn local_resource_config_path() -> PathBuf {
+    env::var_os("SIAOCUT_RESOURCE_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            env::var_os("LOCALAPPDATA")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| env::current_dir().unwrap_or_default())
+                .join("SiaoCut")
+                .join("config")
+        })
+        .join("local-resources.json")
+}
+
+fn managed_entrypoint(config: &ManagedResourceConfig, key: &str) -> Option<PathBuf> {
+    let relative = Path::new(config.active_entrypoints.get(key)?);
+    if relative.as_os_str().is_empty()
+        || relative.is_absolute()
+        || relative.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return None;
+    }
+    Some(config.root.join(relative))
+}
+
+fn managed_resource_config(path: &Path) -> Option<ManagedResourceConfig> {
+    serde_json::from_slice(&fs::read(path).ok()?).ok()
+}
+
 fn managed_whisper_vulkan(
     manifest: Option<&Path>,
     whisper_vulkan: Option<&Path>,
@@ -138,13 +192,58 @@ fn managed_whisper_vulkan(
     })
 }
 
-fn discover_runtime(resource_dir: Option<&Path>) -> Result<RuntimePaths, String> {
-    let ffmpeg = first_file(env::var_os("SIAOCUT_FFMPEG").map(PathBuf::from));
-    let ffprobe = first_file(env::var_os("SIAOCUT_FFPROBE").map(PathBuf::from));
-    let whisper = first_file(env::var_os("SIAOCUT_WHISPER_CLI").map(PathBuf::from));
-    let whisper_vulkan = first_file(env::var_os("SIAOCUT_WHISPER_VULKAN_CLI").map(PathBuf::from));
-    let whisper_vad_model = first_file(env::var_os("SIAOCUT_WHISPER_VAD_MODEL").map(PathBuf::from));
-    let yt_dlp = first_file(env::var_os("SIAOCUT_YTDLP").map(PathBuf::from));
+fn discover_runtime_with_config(
+    resource_dir: Option<&Path>,
+    config_path: &Path,
+) -> Result<RuntimePaths, String> {
+    let managed = managed_resource_config(config_path);
+    let managed_path = |key: &str| {
+        managed
+            .as_ref()
+            .and_then(|config| managed_entrypoint(config, key))
+    };
+    let ffmpeg = first_file(
+        env::var_os("SIAOCUT_FFMPEG")
+            .map(PathBuf::from)
+            .into_iter()
+            .chain(managed_path("ffmpeg")),
+    );
+    let ffprobe = first_file(
+        env::var_os("SIAOCUT_FFPROBE")
+            .map(PathBuf::from)
+            .into_iter()
+            .chain(managed_path("ffprobe")),
+    );
+    let whisper = first_file(
+        env::var_os("SIAOCUT_WHISPER_CLI")
+            .map(PathBuf::from)
+            .into_iter()
+            .chain(managed_path("whisper")),
+    );
+    let whisper_vulkan = first_file(
+        env::var_os("SIAOCUT_WHISPER_VULKAN_CLI")
+            .map(PathBuf::from)
+            .into_iter()
+            .chain(managed_path("whisper_vulkan")),
+    );
+    let whisper_vad_model = first_file(
+        env::var_os("SIAOCUT_WHISPER_VAD_MODEL")
+            .map(PathBuf::from)
+            .into_iter()
+            .chain(managed_path("whisper_vad_model")),
+    );
+    let yt_dlp = first_file(
+        env::var_os("SIAOCUT_YTDLP")
+            .map(PathBuf::from)
+            .into_iter()
+            .chain(managed_path("yt_dlp")),
+    );
+    let default_model = first_file(
+        env::var_os("SIAOCUT_DEFAULT_MODEL")
+            .map(PathBuf::from)
+            .into_iter()
+            .chain(managed_path("default_model")),
+    );
     let manifest = first_file(
         resource_dir
             .into_iter()
@@ -160,9 +259,14 @@ fn discover_runtime(resource_dir: Option<&Path>) -> Result<RuntimePaths, String>
         whisper_vad_model,
         whisper_vulkan,
         yt_dlp,
+        default_model,
         manifest,
         managed_whisper_vulkan,
     })
+}
+
+fn discover_runtime(resource_dir: Option<&Path>) -> Result<RuntimePaths, String> {
+    discover_runtime_with_config(resource_dir, &local_resource_config_path())
 }
 
 fn configure_command(command: &mut tokio::process::Command, runtime: &RuntimePaths) {
@@ -244,6 +348,7 @@ fn validate_core_args_with_limit(args: &[String], default_max_args: usize) -> Re
         "video",
         "model",
         "runtime",
+        "resources",
         "source",
         "auto",
         "audit",
@@ -468,15 +573,16 @@ fn diagnostic_command_name(args: &[String]) -> &str {
 
 #[tauri::command]
 async fn run_core(
-    runtime: tauri::State<'_, RuntimePaths>,
+    runtime: tauri::State<'_, RuntimeState>,
     args: Vec<String>,
 ) -> Result<Value, String> {
-    execute_core_async(args, &runtime).await
+    let paths = runtime.paths()?;
+    execute_core_async(args, &paths).await
 }
 
 #[tauri::command]
 async fn run_core_structured(
-    runtime: tauri::State<'_, RuntimePaths>,
+    runtime: tauri::State<'_, RuntimeState>,
     payload: String,
 ) -> Result<Value, String> {
     validate_structured_core_request(&payload)?;
@@ -488,12 +594,13 @@ async fn run_core_structured(
         .into_temp_path();
     fs::write(&request_file, payload.as_bytes())
         .map_err(|error| format!("structured_core_request_file_failed: {error}"))?;
+    let paths = runtime.paths()?;
     execute_core_async(
         vec![
             "desktop-request".to_owned(),
             request_file.to_string_lossy().into_owned(),
         ],
-        &runtime,
+        &paths,
     )
     .await
 }
@@ -505,22 +612,24 @@ fn local_file_available(path: String) -> bool {
 
 #[tauri::command]
 async fn runtime_info(
-    runtime: tauri::State<'_, RuntimePaths>,
+    runtime: tauri::State<'_, RuntimeState>,
     diagnostics: tauri::State<'_, Diagnostics>,
 ) -> Result<RuntimeInfo, String> {
-    runtime_info_for(&runtime, &diagnostics).await
+    let paths = runtime.paths()?;
+    runtime_info_for(&paths, &diagnostics).await
 }
 
 #[tauri::command]
 async fn select_asr_backend(
-    runtime: tauri::State<'_, RuntimePaths>,
+    runtime: tauri::State<'_, RuntimeState>,
     diagnostics: tauri::State<'_, Diagnostics>,
     backend: String,
 ) -> Result<RuntimeInfo, String> {
+    let paths = runtime.paths()?;
     let args = match backend.as_str() {
         "cpu" => vec!["runtime".into(), "reset".into()],
         "vulkan" => {
-            let whisper = runtime
+            let whisper = paths
                 .whisper_vulkan
                 .as_ref()
                 .ok_or_else(|| "尚未配置 Vulkan 运行时；仍可继续使用 CPU。".to_owned())?;
@@ -538,7 +647,7 @@ async fn select_asr_backend(
         }
         _ => return Err("桌面应用仅支持选择 CPU 或 Vulkan 后端。".to_owned()),
     };
-    let response = execute_core_async(args, &runtime).await?;
+    let response = execute_core_async(args, &paths).await?;
     if response.get("status").and_then(Value::as_str) != Some("ok") {
         return Err(response
             .pointer("/error/message")
@@ -546,7 +655,7 @@ async fn select_asr_backend(
             .unwrap_or("无法切换转录后端。")
             .to_owned());
     }
-    runtime_info_for(&runtime, &diagnostics).await
+    runtime_info_for(&paths, &diagnostics).await
 }
 
 async fn runtime_info_for(
@@ -561,16 +670,14 @@ async fn runtime_info_for(
             .unwrap_or("Core 健康检查未通过。")
             .to_owned());
     }
-    let model = env::var_os("SIAOCUT_DEFAULT_MODEL")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            env::var_os("LOCALAPPDATA")
-                .map(PathBuf::from)
-                .unwrap_or_default()
-                .join("SiaoCut")
-                .join("models")
-                .join("ggml-tiny.en.bin")
-        });
+    let model = runtime.default_model.clone().unwrap_or_else(|| {
+        env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_default()
+            .join("SiaoCut")
+            .join("models")
+            .join("ggml-tiny.en.bin")
+    });
     Ok(RuntimeInfo {
         core_path: runtime.core.display().to_string(),
         core_api_version: health
@@ -660,9 +767,10 @@ fn open_log_directory(diagnostics: tauri::State<'_, Diagnostics>) -> Result<(), 
 
 #[tauri::command]
 async fn authorize_media(app: tauri::AppHandle, project_id: String) -> Result<String, String> {
-    let runtime = app.state::<RuntimePaths>();
+    let runtime = app.state::<RuntimeState>();
+    let paths = runtime.paths()?;
     let response =
-        execute_core_async(vec!["project".into(), "show".into(), project_id], &runtime).await?;
+        execute_core_async(vec!["project".into(), "show".into(), project_id], &paths).await?;
     if response.get("status").and_then(Value::as_str) != Some("ok") {
         return Err(response
             .pointer("/error/message")
@@ -689,9 +797,10 @@ async fn authorize_artifact(
     project_id: String,
     kind: String,
 ) -> Result<Option<String>, String> {
-    let runtime = app.state::<RuntimePaths>();
+    let runtime = app.state::<RuntimeState>();
+    let paths = runtime.paths()?;
     let response =
-        execute_core_async(vec!["project".into(), "show".into(), project_id], &runtime).await?;
+        execute_core_async(vec!["project".into(), "show".into(), project_id], &paths).await?;
     if response.get("status").and_then(Value::as_str) != Some("ok") {
         return Err(response
             .pointer("/error/message")
@@ -727,7 +836,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let resource_dir = app.path().resource_dir().ok();
-            app.manage(discover_runtime(resource_dir.as_deref())?);
+            app.manage(RuntimeState { resource_dir });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -792,6 +901,11 @@ mod tests {
         assert!(validate_core_args(&["transcription".into(), "providers".into()]).is_ok());
         assert!(validate_core_args(&["agent".into(), "health".into()]).is_ok());
         assert!(validate_core_args(&["glossary".into(), "show".into(), "p1".into()]).is_ok());
+        assert!(validate_core_args(&["resources".into(), "status".into()]).is_ok());
+        assert!(
+            validate_core_args(&["resources".into(), "install".into(), "url_import".into()])
+                .is_ok()
+        );
     }
 
     #[test]
@@ -959,6 +1073,104 @@ mod tests {
 
         assert_ne!(paths.ffmpeg.as_deref(), Some(bundled_ffmpeg.as_path()));
         assert_eq!(paths.manifest.as_deref(), Some(manifest.as_path()));
+    }
+
+    #[test]
+    fn reads_only_relative_product_managed_entrypoints() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("LocalResources");
+        let executable = root.join("packages/media/8.1/ffmpeg.exe");
+        fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        fs::write(&executable, b"runtime").unwrap();
+        let config_path = temp.path().join("config/local-resources.json");
+        fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        fs::write(
+            &config_path,
+            serde_json::json!({
+                "root": root,
+                "activeEntrypoints": {
+                    "ffmpeg": "packages/media/8.1/ffmpeg.exe",
+                    "ffprobe": "../outside.exe"
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let config = managed_resource_config(&config_path).unwrap();
+
+        assert_eq!(managed_entrypoint(&config, "ffmpeg"), Some(executable));
+        assert_eq!(managed_entrypoint(&config, "ffprobe"), None);
+    }
+
+    #[test]
+    fn reloads_product_managed_entrypoints_after_activation() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("LocalResources");
+        let first = root.join("packages/media/1/ffmpeg.exe");
+        let second = root.join("packages/media/2/ffmpeg.exe");
+        fs::create_dir_all(first.parent().unwrap()).unwrap();
+        fs::create_dir_all(second.parent().unwrap()).unwrap();
+        fs::write(&first, b"first").unwrap();
+        fs::write(&second, b"second").unwrap();
+        let config_path = temp.path().join("config/local-resources.json");
+        fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+
+        for (relative, expected) in [
+            ("packages/media/1/ffmpeg.exe", &first),
+            ("packages/media/2/ffmpeg.exe", &second),
+        ] {
+            fs::write(
+                &config_path,
+                serde_json::json!({
+                    "root": root,
+                    "activeEntrypoints": { "ffmpeg": relative }
+                })
+                .to_string(),
+            )
+            .unwrap();
+            let config = managed_resource_config(&config_path).unwrap();
+            assert_eq!(
+                managed_entrypoint(&config, "ffmpeg").as_ref(),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn discovers_managed_cpu_transcription_without_a_vad_model() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("LocalResources");
+        let ffmpeg = root.join("packages/ffmpeg-cpu/8.1/ffmpeg.exe");
+        let ffprobe = root.join("packages/ffmpeg-cpu/8.1/ffprobe.exe");
+        let whisper = root.join("packages/whisper-cpu-upstream/1.9.1/whisper-cli.exe");
+        let model = root.join("models/transcription-model/base-test/ggml-base.bin");
+        for path in [&ffmpeg, &ffprobe, &whisper, &model] {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, b"fixture").unwrap();
+        }
+        let config_path = temp.path().join("config/local-resources.json");
+        fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        fs::write(
+            &config_path,
+            serde_json::json!({
+                "root": root,
+                "activeEntrypoints": {
+                    "ffmpeg": "packages/ffmpeg-cpu/8.1/ffmpeg.exe",
+                    "ffprobe": "packages/ffmpeg-cpu/8.1/ffprobe.exe",
+                    "whisper": "packages/whisper-cpu-upstream/1.9.1/whisper-cli.exe",
+                    "default_model": "models/transcription-model/base-test/ggml-base.bin"
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let paths = discover_runtime_with_config(None, &config_path).unwrap();
+        assert_eq!(paths.whisper.as_deref(), Some(whisper.as_path()));
+        assert_eq!(paths.default_model.as_deref(), Some(model.as_path()));
+        assert!(paths.whisper_vad_model.is_none());
+        assert!(paths.whisper_vulkan.is_none());
     }
 
     #[test]

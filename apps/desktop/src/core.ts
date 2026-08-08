@@ -142,6 +142,15 @@ export async function pickMedia(): Promise<string | null> {
   });
 }
 
+export async function pickResourceDirectory(): Promise<string | null> {
+  if (!isTauri()) return "D:\\SiaoCut Resources";
+  return open({
+    multiple: false,
+    directory: true,
+    title: tr("app.resources.chooseLocation"),
+  });
+}
+
 export async function pickSubtitleFile(): Promise<string | null> {
   if (!isTauri()) return "demo.srt";
   return open({
@@ -192,7 +201,10 @@ export async function pickModel(): Promise<string | null> {
 }
 
 export async function authorizeMedia(projectId: string): Promise<string | null> {
-  if (!isTauri()) return null;
+  if (!isTauri()) {
+    const { mockAuthorizeMedia } = await import("./core.mock");
+    return mockAuthorizeMedia();
+  }
   const path = await invoke<string>("authorize_media", { projectId });
   return convertFileSrc(path);
 }
