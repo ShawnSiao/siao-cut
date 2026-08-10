@@ -22,6 +22,9 @@ export type AgentRunBatch = {
   status: AgentRunStatus;
   segmentIds: string[];
   codexThreadId: string | null;
+  providerRequestId: string | null;
+  usage: unknown | null;
+  retryCount: number;
   errorCode: string | null;
   errorMessage: string | null;
   startedAt: string | null;
@@ -34,6 +37,15 @@ export type AgentRun = {
   taskId: string;
   projectId: string;
   provider: string;
+  executionKind: "codex" | "api";
+  serviceConfigId: string | null;
+  serviceRevision: number | null;
+  networkRevision: number | null;
+  providerId: string | null;
+  modelId: string | null;
+  providerRequestId: string | null;
+  usage: unknown | null;
+  retryCount: number;
   status: AgentRunStatus;
   baseVersionId: string;
   progress: number;
@@ -568,6 +580,12 @@ export type AutoWorkflow = {
   progress: number;
   transcriptVersionId: string | null;
   agentTaskId: string | null;
+  aiExecutionKind: "codex" | "api" | null;
+  aiServiceConfigId: string | null;
+  aiServiceRevision: number | null;
+  aiNetworkRevision: number | null;
+  aiModelId: string | null;
+  aiAuthorized: boolean;
   exportJobId: string | null;
   audit: Record<string, unknown> | null;
   cancelRequestedAt: string | null;

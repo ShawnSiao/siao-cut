@@ -1,6 +1,7 @@
 import { runCore, runCoreStructured } from "../core";
 import type { UiLocale } from "../i18n";
 import type { TranscriptionLanguage } from "../types";
+import type { AiExecutionSelection } from "../features/ai-assistance/types";
 
 type AutoWorkflowInput =
   | { kind: "local"; mediaPath: string; title: string }
@@ -15,6 +16,7 @@ type StartAutoWorkflowOptions = {
   subtitleMode: "source" | "translated" | "bilingual";
   translationLanguage?: string;
   burnSubtitles: boolean;
+  aiExecution?: AiExecutionSelection;
 };
 
 type StartTranscriptionOptions = {
@@ -52,6 +54,16 @@ export const backgroundTaskClient = {
       "--output", options.output,
       "--subtitle-mode", options.subtitleMode,
       ...(options.translationLanguage ? ["--translate", options.translationLanguage] : []),
+      ...(options.aiExecution && options.aiExecution.kind !== "copy_prompt" ? [
+        "--ai-execution", options.aiExecution.kind,
+        ...(options.aiExecution.kind === "api" ? [
+          "--ai-service-config-id", options.aiExecution.serviceConfigId,
+          "--ai-service-revision", String(options.aiExecution.serviceRevision),
+          "--ai-network-revision", String(options.aiExecution.networkRevision),
+          "--ai-model-id", options.aiExecution.modelId,
+        ] : []),
+        "--confirm-ai-text-send",
+      ] : []),
       ...(options.burnSubtitles ? ["--burn-subtitles"] : []),
     ]);
   },

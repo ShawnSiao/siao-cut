@@ -1,5 +1,5 @@
 import { RefreshCw, X } from "lucide-react";
-import type { RefObject } from "react";
+import { useState, type RefObject } from "react";
 import { tr } from "../i18n";
 import type {
   ModelDownloadJob,
@@ -17,6 +17,7 @@ import type {
 } from "../types";
 import { Dialog } from "./ui";
 import { LocalResourcePanel } from "./local-resource-ui";
+import AiServicesPanel from "../features/environment-settings/AiServicesPanel";
 import {
   AsrBackendPicker,
   DiagnosticsPanel,
@@ -74,13 +75,15 @@ type RuntimeSettingsDialogProps = {
 };
 
 export default function RuntimeSettingsDialog(props: RuntimeSettingsDialogProps) {
+  const [tab, setTab] = useState<"local" | "ai">("local");
   return (
     <Dialog label={tr("app.resources.title")} className="runtime-dialog runtime-settings-dialog" onClose={props.onClose} returnFocusRef={props.returnFocusRef}>
       <header className="runtime-dialog-header">
         <div><p className="eyebrow">{tr("app.resources.management")}</p><h2>{tr("app.resources.title")}</h2></div>
         <button autoFocus className="dialog-close" aria-label={tr("app.resources.close")} title={tr("app.resources.close")} onClick={props.onClose}><X size={18}/></button>
       </header>
-      <div className="runtime-dialog-content">
+      <div className="environment-tabs" role="tablist" aria-label="环境配置分类"><button type="button" role="tab" aria-selected={tab === "local"} onClick={() => setTab("local")}>本地功能</button><button type="button" role="tab" aria-selected={tab === "ai"} onClick={() => setTab("ai")}>AI 服务</button></div>
+      {tab === "local" ? <div className="runtime-dialog-content" role="tabpanel" aria-label="本地功能">
         <p className="dialog-copy">{tr("app.resources.panelDescription")}</p>
         <LocalResourcePanel status={props.localResources} job={props.resourceJob} busy={props.resourceBusy} onPrepare={props.onPrepareResource} onChangeLocation={props.onChangeResourceLocation} onRemove={props.onRemoveResource} onRollback={props.onRollbackResource} onCleanup={props.onCleanupResources}/>
         <details className="resource-diagnostics"><summary><span><strong>{tr("app.resources.diagnostics")}</strong><small>{tr("app.resources.diagnosticsDescription")}</small></span></summary><div>
@@ -94,7 +97,7 @@ export default function RuntimeSettingsDialog(props: RuntimeSettingsDialogProps)
         </div></details>
         <UpdatePanel policy={props.updatePolicy} update={props.availableUpdate} busy={props.updateBusy} error={props.updateError} onCheck={props.onCheckUpdates} onInstall={props.onInstallUpdate}/>
         <button className="button quiet full" onClick={props.onRefresh}><RefreshCw size={14}/>{tr("app.s0507")}</button>
-      </div>
+      </div> : <div className="runtime-dialog-content" role="tabpanel" aria-label="AI 服务"><AiServicesPanel/></div>}
     </Dialog>
   );
 }

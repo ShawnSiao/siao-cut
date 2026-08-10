@@ -44,6 +44,7 @@ const mockSpeakerTracks = new Map<string, SpeakerTrack>();
 const mockTranscriptionJobs = new Map<string, TranscriptionJob>();
 const mockAgentRuns = new Map<string, AgentRun>();
 const mockAgentPolls = new Map<string, number>();
+const executionKindReason = (kind: AgentRun["executionKind"]) => kind === "api" ? "AI 服务提供的待审建议" : "本机 Codex 提供的待审建议";
 let mockTranscriptionConfig: TranscriptionProviderConfig = { providerId: "moss_openai", endpoint: "http://127.0.0.1:8000", modelId: "OpenMOSS-Team/MOSS-Transcribe-Diarize", updatedAt: new Date().toISOString() };
 let mockTranscriptionHealth: TranscriptionProviderHealth = { ...mockTranscriptionConfig, state: "healthy", detail: "本机 MOSS 服务可用。", checkedAt: new Date().toISOString() };
 let mockTranscriptionReviews: TranscriptionReviewItem[] = [];
@@ -1075,6 +1076,12 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
       progress: 0.08,
       transcriptVersionId: null,
       agentTaskId: null,
+      aiExecutionKind: valueAfter("--ai-execution") as AutoWorkflow["aiExecutionKind"],
+      aiServiceConfigId: valueAfter("--ai-service-config-id"),
+      aiServiceRevision: valueAfter("--ai-service-revision") ? Number(valueAfter("--ai-service-revision")) : null,
+      aiNetworkRevision: valueAfter("--ai-network-revision") ? Number(valueAfter("--ai-network-revision")) : null,
+      aiModelId: valueAfter("--ai-model-id"),
+      aiAuthorized: args.includes("--confirm-ai-text-send"),
       exportJobId: null,
       audit: null,
       cancelRequestedAt: null,
@@ -1172,17 +1179,31 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
     return { apiVersion: "0.1", status: "ok", project: mockProject, workflowId, taskId, message: "工作流已创建，需要 Agent 继续。" };
   }
   if (command === "agent" && subcommand === "health") {
+    const unavailable = typeof window !== "undefined" && window.localStorage.getItem("siaocut.mock.codexUnavailable") === "true";
+    if (unavailable) {
+      return { apiVersion: "0.1", status: "ok", codex: { available: false, authenticated: false, version: null, authMode: null }, message: "Codex CLI 未安装。" };
+    }
     return { apiVersion: "0.1", status: "ok", codex: { available: true, authenticated: true, version: "codex-cli 0.145.0", authMode: "chatgpt" }, message: "Codex CLI 已就绪。" };
   }
   if (command === "agent" && subcommand === "start") {
     const task = mockProject.tasks.find((candidate) => candidate.id === args[2]);
     if (!task) return { apiVersion: "0.1", status: "error", error: { code: "invalid_request", message: "Agent 任务不存在。" } };
     const now = new Date().toISOString();
+    const executionKind = valueAfter("--execution") === "api" ? "api" : "codex";
     const run: AgentRun = {
       id: `agent-run-${mockAgentRuns.size + 1}`,
       taskId: task.id,
       projectId: mockProject.id,
-      provider: "codex-cli",
+      provider: executionKind === "api" ? "preview-api" : "codex-cli",
+      executionKind,
+      serviceConfigId: valueAfter("--service-config-id"),
+      serviceRevision: valueAfter("--service-revision") ? Number(valueAfter("--service-revision")) : null,
+      networkRevision: valueAfter("--network-revision") ? Number(valueAfter("--network-revision")) : null,
+      providerId: executionKind === "api" ? "preview-api" : "codex",
+      modelId: valueAfter("--model-id"),
+      providerRequestId: null,
+      usage: null,
+      retryCount: 0,
       status: "running",
       baseVersionId: mockProject.history.currentVersionId ?? mockProject.versions.at(-1)?.id ?? "v1",
       progress: 0.08,
@@ -1201,7 +1222,7 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
       completedAt: null,
       workerPid: 2468,
       attemptCount: 1,
-      batches: [{ id: `agent-batch-${mockAgentRuns.size + 1}`, ordinal: 0, status: "running", segmentIds: mockProject.transcript.segments.map((segment) => segment.id), codexThreadId: null, errorCode: null, errorMessage: null, startedAt: now, completedAt: null, attemptCount: 1 }],
+      batches: [{ id: `agent-batch-${mockAgentRuns.size + 1}`, ordinal: 0, status: "running", segmentIds: mockProject.transcript.segments.map((segment) => segment.id), codexThreadId: null, providerRequestId: null, usage: null, retryCount: 0, errorCode: null, errorMessage: null, startedAt: now, completedAt: null, attemptCount: 1 }],
     };
     task.status = "running";
     task.progress = run.progress;
@@ -1240,7 +1261,7 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
             status: "pending_review",
             baseVersionId: run.baseVersionId,
             createdAt: now,
-            items: [{ id: `patch-item-${run.id}`, segmentId: segment.id, target: "transcript", beforeText: segment.text, afterText: `${segment.text}（已润色）`, currentText: segment.text, reason: "本机 Codex 提供的待审建议", confidence: 0.9, status: "pending" }],
+            items: [{ id: `patch-item-${run.id}`, segmentId: segment.id, target: "transcript", beforeText: segment.text, afterText: `${segment.text}（已润色）`, currentText: segment.text, reason: executionKindReason(run.executionKind), confidence: 0.9, status: "pending" }],
           });
         }
         syncMockProject(mockProject);

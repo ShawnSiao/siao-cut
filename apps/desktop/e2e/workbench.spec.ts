@@ -14,6 +14,30 @@ async function runMockCore(page: Page, args: string[]) {
   }, args);
 }
 
+async function confirmAiAssistance(page: Page, mode: "AI 服务" | "本机 Codex") {
+  const dialog = page.getByRole("dialog", { name: "确认 AI 辅助" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("radio", { name: new RegExp(mode) }).check();
+  await dialog.getByRole("checkbox", { name: /已核对接收方、模型、文本范围/ }).check();
+  await dialog.getByRole("button", { name: "确认并执行" }).click();
+}
+
+async function configureMockApiService(page: Page) {
+  await page.getByRole("button", { name: "本地资源" }).click();
+  const runtime = page.getByRole("dialog", { name: "本地资源" });
+  await runtime.getByRole("tab", { name: "AI 服务" }).click();
+  const panel = runtime.getByRole("tabpanel", { name: "AI 服务" });
+  await panel.getByLabel("显示名称").fill("API 回归服务");
+  await panel.getByLabel("API Key").fill("e2e-placeholder-key");
+  await panel.getByLabel("模型").fill("preview-model");
+  await panel.getByRole("button", { name: "保存" }).click();
+  const setDefault = panel.getByRole("button", { name: "设为默认" });
+  await expect(setDefault).toBeVisible();
+  await setDefault.click();
+  await expect(panel.getByText("默认服务")).toBeVisible();
+  await runtime.getByRole("button", { name: "关闭本地资源" }).click();
+}
+
 test("switches the application chrome to English without reloading the project", async ({ page }) => {
   await page.goto("/");
   const projectHeading = page.getByRole("heading", { name: "发布口播 · 草稿" });
@@ -25,7 +49,7 @@ test("switches the application chrome to English without reloading the project",
   await expect(page.getByText("已重新定位原片；内容哈希与项目记录一致。")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "New project" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Review suggestions" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Send to local Codex" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Start AI assistance" })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Export" })).toBeVisible();
   await page.getByRole("button", { name: "Local resources" }).click();
   const runtime = page.getByRole("dialog", { name: "Local resources" });
@@ -171,11 +195,43 @@ test("runs local Codex and keeps every result pending review", async ({ page }) 
   await bindMockMedia(page);
   const editor = page.getByLabel("00:13 字幕文本");
   const original = await editor.inputValue();
-  await page.getByRole("button", { name: "交给本机 Codex" }).click();
-  await expect(page.getByText("本机 Codex 已启动；完成后仍需逐条审阅。")).toBeVisible();
-  await expect(page.getByText("本机 Codex 已完成；建议已进入集中审阅，文稿未自动修改。")).toBeVisible({ timeout: 5000 });
+  await page.getByRole("button", { name: "开始 AI 辅助" }).click();
+  await confirmAiAssistance(page, "本机 Codex");
+  await expect(page.getByText("AI 辅助已启动；完成后仍需逐条审阅。")).toBeVisible();
+  await expect(page.getByText("AI 辅助已完成；建议已进入集中审阅，文稿未自动修改。")).toBeVisible({ timeout: 5000 });
   await expect(editor).toHaveValue(original);
   await expect(page.getByText("本机 Codex 提供的待审建议")).toBeVisible();
+});
+
+test("runs all text assistance workflows through a default API when Codex is unavailable", async ({ page }) => {
+  test.setTimeout(90_000);
+  await page.addInitScript(() => window.localStorage.setItem("siaocut.mock.codexUnavailable", "true"));
+  await page.goto("/");
+  await bindMockMedia(page);
+
+  await page.getByRole("button", { name: "本地资源" }).click();
+  let runtime = page.getByRole("dialog", { name: "本地资源" });
+  await runtime.getByText("兼容与诊断").click();
+  await runtime.getByRole("combobox", { name: "转写模式" }).selectOption("multispeaker");
+  await runtime.getByRole("button", { name: "关闭本地资源" }).click();
+  await page.getByRole("button", { name: "开始多人转写" }).click();
+  await expect(page.getByText(/字幕和说话人轨已作为一个版本写入/)).toBeVisible();
+  await configureMockApiService(page);
+
+  const editor = page.getByLabel("00:13 字幕文本");
+  const original = await editor.inputValue();
+  for (const workflow of ["polish", "proofread", "punctuate", "edit", "translate", "speaker_names"]) {
+    await page.getByRole("combobox", { name: "Agent 工作流" }).selectOption(workflow);
+    await page.getByRole("button", { name: "开始 AI 辅助" }).click();
+    const confirm = page.getByRole("dialog", { name: "确认 AI 辅助" });
+    await expect(confirm.getByRole("radio", { name: /本机 Codex/ })).toBeDisabled();
+    await expect(confirm.getByText("API 回归服务 / preview-model")).toBeVisible();
+    await confirmAiAssistance(page, "AI 服务");
+    await expect(page.getByText("AI 辅助已完成；建议已进入集中审阅，文稿未自动修改。")).toBeVisible({ timeout: 7000 });
+  }
+
+  await expect(editor).toHaveValue(original);
+  await expect(page.getByText("AI 服务提供的待审建议").first()).toBeVisible();
 });
 
 test("requeues a failed external Agent task and shows its next claim without flashing back", async ({ page }) => {
@@ -702,7 +758,7 @@ test("uses MOSS as an explicit multispeaker mode with loopback settings and revi
   await expect(page.getByText("当前结果没有词级时间戳")).toBeVisible();
 
   await page.getByRole("combobox", { name: "Agent 工作流" }).selectOption("speaker_names");
-  await expect(page.getByRole("button", { name: "交给本机 Codex" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "开始 AI 辅助" })).toBeEnabled();
   await page.getByRole("tab", { name: "导出" }).click();
   const exportPanel = page.getByLabel("导出设置");
   await exportPanel.getByLabel("导出格式").selectOption("json");

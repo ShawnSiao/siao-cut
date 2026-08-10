@@ -26,7 +26,7 @@ describe("App locale switching", () => {
 
     await waitFor(() => expect(screen.getByRole("button", { name: "New project" })).toBeInTheDocument());
     expect(screen.getByRole("button", { name: "Review suggestions" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Send to local Codex" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start AI assistance" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Export" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Undo" })).toBeInTheDocument();
     expect(screen.getByText("4 subtitles")).toBeInTheDocument();

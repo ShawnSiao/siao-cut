@@ -1,0 +1,22 @@
+.ai-execution-dialog { width: min(700px, calc(100vw - 32px)); }
+.ai-execution-options { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 15px 0; }
+.ai-execution-options > label { display: grid; grid-template-columns: auto auto 1fr; align-items: start; gap: 8px; border: 1px solid var(--border-subtle); border-radius: var(--radius-control); padding: 11px; cursor: pointer; }
+.ai-execution-options > label.selected { border-color: var(--brand); background: color-mix(in srgb, var(--brand) 8%, transparent); }
+.ai-execution-options span, .ai-execution-boundary span { display: grid; gap: 3px; }
+.ai-execution-options small, .ai-execution-boundary small { color: var(--muted); font-size: 11px; line-height: 1.45; }
+.ai-execution-target { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; border-radius: var(--radius-control); background: var(--bg-control); padding: 12px; }
+.ai-execution-target label { display: grid; gap: 5px; }
+.ai-execution-target p { grid-column: 1 / -1; margin: 0; color: var(--warning); font-size: 11px; }
+.ai-execution-scope { display: grid; gap: 0; margin: 14px 0; border: 1px solid var(--border-subtle); border-radius: var(--radius-control); }
+.ai-execution-scope > div { display: grid; grid-template-columns: 92px 1fr; gap: 10px; border-bottom: 1px solid var(--border-subtle); padding: 8px 10px; }
+.ai-execution-scope > div:last-child { border-bottom: 0; }
+.ai-execution-scope dt { color: var(--muted); font-size: 11px; }.ai-execution-scope dd { margin: 0; font-size: 12px; }
+.ai-execution-boundary { display: flex; gap: 9px; border-radius: var(--radius-control); background: var(--bg-control); padding: 11px; }
+.ai-execution-boundary > svg { flex: 0 0 auto; color: var(--brand); }
+.ai-execution-confirm { display: flex; align-items: flex-start; gap: 8px; margin: 14px 0; font-size: 12px; line-height: 1.5; }
+@media (max-width: 660px) { .ai-execution-options { grid-template-columns: 1fr; } .ai-execution-target { grid-template-columns: 1fr; } }
+.auto-ai-target { display: grid; gap: 10px; border: 1px solid var(--border-subtle); border-radius: var(--radius-control); padding: 12px; }
+.auto-ai-target header { display: grid; gap: 3px; }.auto-ai-target header small { color: var(--muted); font-size: 11px; line-height: 1.45; }
+.auto-ai-target > div { display: flex; flex-wrap: wrap; gap: 12px; }.auto-ai-target > div > label { display: flex; align-items: center; gap: 6px; }
+.auto-ai-target .auto-ai-fields { display: grid; grid-template-columns: 1fr 1fr; }.auto-ai-fields label { display: grid; gap: 4px; }
+.auto-ai-confirm { display: flex; align-items: flex-start; gap: 7px; color: var(--muted); font-size: 11px; line-height: 1.5; }
