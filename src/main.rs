@@ -2,9 +2,10 @@ use anyhow::{Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand, error::ErrorKind};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::{env, fs, path::PathBuf};
+use std::{env, fs, io::Read, path::PathBuf};
 
 mod agent_runner;
+mod ai_services;
 mod artifacts;
 mod audio_analysis;
 mod auto_workflow;
@@ -57,6 +58,8 @@ enum Commands {
     DesktopRequest {
         input: PathBuf,
     },
+    #[command(name = "ai-request", hide = true)]
+    AiRequest,
     Import {
         media: PathBuf,
         #[arg(long)]
@@ -895,9 +898,31 @@ fn run_desktop_request(database: &mut rusqlite::Connection, input: &PathBuf) -> 
     }
 }
 
+fn run_ai_request() -> Result<Value> {
+    let mut payload = Vec::new();
+    std::io::stdin()
+        .take(16 * 1024 + 1)
+        .read_to_end(&mut payload)
+        .map_err(|_| anyhow!("invalid_request: 无法读取 AI 服务请求"))?;
+    match ai_services::execute_request(&db::home_dir(), &payload) {
+        Ok(value) => Ok(envelope(value)),
+        Err(error) => {
+            let request_id = error
+                .provider_request_id
+                .as_deref()
+                .map(|value| format!("；厂商请求 ID：{value}"))
+                .unwrap_or_default();
+            Err(anyhow!("{}: {}{}", error.code, error.message, request_id))
+        }
+    }
+}
+
 fn run(cli: Cli) -> Result<Value> {
     if matches!(&cli.command, Commands::Contract) {
         return Ok(envelope(contracts::contract()));
+    }
+    if matches!(&cli.command, Commands::AiRequest) {
+        return run_ai_request();
     }
     let mut database = db::open()?;
     tasks::reconcile_expired(&mut database)?;
@@ -942,6 +967,7 @@ fn run(cli: Cli) -> Result<Value> {
             })))
         }
         Commands::DesktopRequest { input } => run_desktop_request(&mut database, &input),
+        Commands::AiRequest => unreachable!("ai-request returns before database initialization"),
         Commands::Import { media, title } => {
             let project = project::create(&mut database, &media, title)?;
             Ok(envelope(
@@ -2501,6 +2527,12 @@ mod cli_tests {
         assert_eq!(shifted.transcript.segments.len(), 1000);
         assert_eq!(shifted.transcript.segments[0].start, 0.25);
         assert_eq!(shifted.transcript.segments[999].start, 1998.25);
+    }
+
+    #[test]
+    fn ai_request_reads_sensitive_payload_from_standard_input() {
+        let cli = Cli::try_parse_from(["siaocut-core", "ai-request"]).unwrap();
+        assert!(matches!(cli.command, Commands::AiRequest));
     }
 
     #[test]

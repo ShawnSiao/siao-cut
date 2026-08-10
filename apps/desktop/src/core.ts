@@ -59,6 +59,14 @@ export async function runCoreStructured(request: StructuredCoreRequest): Promise
   }
 }
 
+export async function runAiRequest<T extends object>(request: T): Promise<CoreEnvelope> {
+  if (!isTauri()) {
+    const { mockAiRequest } = await import("./features/environment-settings/mock-ai-settings");
+    return ensureOk(await mockAiRequest(request));
+  }
+  return ensureOk(await invoke<CoreEnvelope>("run_ai_request", { payload: JSON.stringify(request) }));
+}
+
 export async function localFileAvailable(path: string): Promise<boolean> {
   if (!path.trim()) return false;
   if (!isTauri()) return true;
