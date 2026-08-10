@@ -1,6 +1,7 @@
 use crate::{
+    agent::{api_executor, batching, execution::ExecutionTarget},
     contracts, db,
-    model::{AgentRun, AgentRunBatch},
+    model::AgentRun,
     project, tasks,
     util::{KillOnCloseJob, hidden_command, new_id, now},
 };
@@ -18,7 +19,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-const BATCH_SIZE: usize = 80;
 const DEFAULT_TIMEOUT_SECONDS: u64 = 900;
 const MIN_TIMEOUT_SECONDS: u64 = 30;
 const MAX_TIMEOUT_SECONDS: u64 = 3600;
@@ -51,6 +51,11 @@ struct StoredBatch {
     status: String,
     segment_ids: Vec<String>,
     result: Option<Value>,
+}
+
+enum RunExecutor<'a> {
+    Codex(&'a RunnerConfig),
+    Api(ExecutionTarget),
 }
 
 #[derive(Debug)]
@@ -102,16 +107,27 @@ pub fn health() -> CodexHealth {
     health_with(&executable)
 }
 
-pub fn start(
+pub fn start_with_execution(
     db: &mut Connection,
     task_id: &str,
     timeout_seconds: Option<u64>,
     start_delay_ms: Option<u64>,
+    execution: ExecutionTarget,
 ) -> Result<AgentRun> {
     let timeout_seconds = timeout_seconds.unwrap_or(DEFAULT_TIMEOUT_SECONDS);
     validate_timeout(timeout_seconds)?;
-    let executable = require_ready_codex()?;
-    let cli_health = health_with(&executable);
+    execution.validate()?;
+    let (provider, cli_health) = match &execution {
+        ExecutionTarget::Codex => {
+            let executable = require_ready_codex()?;
+            ("codex".to_owned(), Some(health_with(&executable)))
+        }
+        ExecutionTarget::Api { .. } => (
+            api_executor::validate_target(&execution)?
+                .ok_or_else(|| anyhow!("provider_not_configured: AI 服务不可用"))?,
+            None,
+        ),
+    };
     let (project_id, task_status, base_version_id, kind): (String, String, Option<String>, String) =
         db.query_row(
             "SELECT project_id,status,base_version_id,kind FROM tasks WHERE id=?1",
@@ -121,14 +137,14 @@ pub fn start(
         .optional()?
         .ok_or_else(|| anyhow!("任务不存在：{task_id}"))?;
     if task_status != "queued" {
-        bail!("agent_run_active: 只有排队中的任务可以启动本机 Agent")
+        bail!("agent_run_active: 只有排队中的任务可以启动 AI 辅助")
     }
     if db.query_row(
         "SELECT EXISTS(SELECT 1 FROM agent_runs WHERE task_id=?1)",
         [task_id],
         |row| row.get::<_, bool>(0),
     )? {
-        bail!("agent_run_active: 此任务已存在本机 Agent 运行记录")
+        bail!("agent_run_active: 此任务已存在 AI 辅助运行记录")
     }
     let base_version_id = base_version_id
         .ok_or_else(|| anyhow!("agent_project_version_conflict: 任务缺少基线版本"))?;
@@ -139,13 +155,52 @@ pub fn start(
     if segment_ids.is_empty() {
         bail!("agent_batch_incomplete: 项目没有可处理的字幕段")
     }
-    let batches = split_batches(&kind, &segment_ids);
+    let batches = batching::plan(db, &kind, &segment_ids)?;
+    let (service_id, service_revision, network_revision, model_id) = match &execution {
+        ExecutionTarget::Codex => (None, None, None, None),
+        ExecutionTarget::Api {
+            service_config_id,
+            service_revision,
+            network_revision,
+            model_id,
+        } => (
+            Some(service_config_id.as_str()),
+            Some(*service_revision),
+            Some(*network_revision),
+            Some(model_id.as_str()),
+        ),
+    };
     let run_id = new_id("ar");
     let timestamp = now();
     let tx = db.transaction()?;
     tx.execute(
-        "INSERT INTO agent_runs(id,task_id,project_id,status,base_version_id,progress,current_batch,batch_count,timeout_seconds,cli_version,auth_mode,created_at,updated_at,attempt_count) VALUES(?1,?2,?3,'queued',?4,0,0,?5,?6,?7,?8,?9,?9,1)",
-        params![&run_id, task_id, &project_id, &base_version_id, batches.len() as i64, timeout_seconds as i64, &cli_health.version, &cli_health.auth_mode, &timestamp],
+        "INSERT INTO agent_runs(
+             id,task_id,project_id,provider,execution_kind,service_config_id,
+             service_revision,network_revision,provider_id,model_id,status,
+             base_version_id,progress,current_batch,batch_count,timeout_seconds,
+             cli_version,auth_mode,created_at,updated_at,attempt_count
+         ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?4,?9,'queued',?10,0,0,?11,?12,?13,?14,?15,?15,1)",
+        params![
+            &run_id,
+            task_id,
+            &project_id,
+            &provider,
+            execution.kind(),
+            service_id,
+            service_revision.map(|value| value as i64),
+            network_revision.map(|value| value as i64),
+            model_id,
+            &base_version_id,
+            batches.len() as i64,
+            timeout_seconds as i64,
+            cli_health
+                .as_ref()
+                .and_then(|health| health.version.as_deref()),
+            cli_health
+                .as_ref()
+                .and_then(|health| health.auth_mode.as_deref()),
+            &timestamp
+        ],
     )?;
     insert_batches(&tx, &run_id, &batches, &timestamp)?;
     tx.commit()?;
@@ -156,73 +211,7 @@ pub fn start(
     load(db, &run_id)
 }
 
-pub fn load(db: &Connection, run_id: &str) -> Result<AgentRun> {
-    let mut run = db
-        .query_row(
-            "SELECT id,task_id,project_id,provider,status,base_version_id,progress,current_batch,batch_count,timeout_seconds,cli_version,auth_mode,codex_thread_id,cancel_requested_at,error_code,error_message,created_at,updated_at,started_at,completed_at,worker_pid,attempt_count FROM agent_runs WHERE id=?1",
-            [run_id],
-            |row| {
-                Ok(AgentRun {
-                    id: row.get(0)?,
-                    task_id: row.get(1)?,
-                    project_id: row.get(2)?,
-                    provider: row.get(3)?,
-                    status: row.get(4)?,
-                    base_version_id: row.get(5)?,
-                    progress: row.get(6)?,
-                    current_batch: row.get::<_, i64>(7)? as u32,
-                    batch_count: row.get::<_, i64>(8)? as u32,
-                    timeout_seconds: row.get::<_, i64>(9)? as u64,
-                    cli_version: row.get(10)?,
-                    auth_mode: row.get(11)?,
-                    codex_thread_id: row.get(12)?,
-                    cancel_requested_at: row.get(13)?,
-                    error_code: row.get(14)?,
-                    error_message: row.get(15)?,
-                    created_at: row.get(16)?,
-                    updated_at: row.get(17)?,
-                    started_at: row.get(18)?,
-                    completed_at: row.get(19)?,
-                    worker_pid: row.get(20)?,
-                    attempt_count: row.get::<_, i64>(21)? as u32,
-                    batches: Vec::new(),
-                })
-            },
-        )
-        .optional()?
-        .ok_or_else(|| anyhow!("agent_run_not_found: Agent 运行记录不存在：{run_id}"))?;
-    run.batches = db
-        .prepare(
-            "SELECT id,ordinal,status,segment_ids_json,codex_thread_id,error_code,error_message,started_at,completed_at,attempt_count FROM agent_run_batches WHERE run_id=?1 ORDER BY ordinal",
-        )?
-        .query_map([run_id], |row| {
-            let raw_ids: String = row.get(3)?;
-            Ok(AgentRunBatch {
-                id: row.get(0)?,
-                ordinal: row.get::<_, i64>(1)? as u32,
-                status: row.get(2)?,
-                segment_ids: serde_json::from_str(&raw_ids).unwrap_or_default(),
-                codex_thread_id: row.get(4)?,
-                error_code: row.get(5)?,
-                error_message: row.get(6)?,
-                started_at: row.get(7)?,
-                completed_at: row.get(8)?,
-                attempt_count: row.get::<_, i64>(9)? as u32,
-            })
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(run)
-}
-
-pub fn list(db: &Connection, project_id: Option<&str>) -> Result<Vec<AgentRun>> {
-    let ids = db
-        .prepare(
-            "SELECT id FROM agent_runs WHERE (?1 IS NULL OR project_id=?1) ORDER BY created_at DESC",
-        )?
-        .query_map([project_id], |row| row.get::<_, String>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    ids.into_iter().map(|id| load(db, &id)).collect()
-}
+pub use crate::agent::repository::{list, load};
 
 pub fn cancel(db: &mut Connection, run_id: &str) -> Result<AgentRun> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -259,8 +248,15 @@ pub fn cancel(db: &mut Connection, run_id: &str) -> Result<AgentRun> {
 }
 
 pub fn resume(db: &mut Connection, run_id: &str, start_delay_ms: Option<u64>) -> Result<AgentRun> {
-    let executable = require_ready_codex()?;
-    let cli_health = health_with(&executable);
+    let stored_run = load(db, run_id)?;
+    let execution = ExecutionTarget::from_run(&stored_run)?;
+    let cli_health = match &execution {
+        ExecutionTarget::Codex => Some(health_with(&require_ready_codex()?)),
+        ExecutionTarget::Api { .. } => {
+            api_executor::validate_target(&execution)?;
+            None
+        }
+    };
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let (task_id, run_status, run_attempt_count, previous_base_version_id): (
         String,
@@ -289,7 +285,7 @@ pub fn resume(db: &mut Connection, run_id: &str, start_delay_ms: Option<u64>) ->
     if segment_ids.is_empty() {
         bail!("agent_batch_incomplete: 项目没有可处理的字幕段")
     }
-    let batches = split_batches(&kind, &segment_ids);
+    let batches = batching::plan(&tx, &kind, &segment_ids)?;
     let next_attempt_count = u32::try_from(run_attempt_count + 1)
         .map_err(|_| anyhow!("agent_run_not_resumable: Agent 运行次数无效"))?;
     let timestamp = now();
@@ -319,8 +315,12 @@ pub fn resume(db: &mut Connection, run_id: &str, start_delay_ms: Option<u64>) ->
             progress,
             reused_batch_count as i64,
             batches.len() as i64,
-            &cli_health.version,
-            &cli_health.auth_mode,
+            cli_health
+                .as_ref()
+                .and_then(|health| health.version.as_deref()),
+            cli_health
+                .as_ref()
+                .and_then(|health| health.auth_mode.as_deref()),
             &timestamp,
             &run_status,
             run_attempt_count
@@ -369,7 +369,7 @@ pub fn reconcile_interrupted(db: &mut Connection) -> Result<()> {
             let timestamp = now();
             let changed = db.execute(
                 "UPDATE agent_runs
-                 SET status='interrupted',worker_pid=NULL,error_code='agent_worker_interrupted',error_message='上次本机 Agent 进程意外中断；需要显式继续。',updated_at=?2
+                 SET status='interrupted',worker_pid=NULL,error_code='agent_worker_interrupted',error_message='上次 AI 辅助进程意外中断；需要显式继续。',updated_at=?2
                  WHERE id=?1 AND status=?3 AND updated_at=?4 AND worker_pid IS ?5",
                 params![&run_id, &timestamp, &status, &updated_at, worker_pid],
             )?;
@@ -377,7 +377,7 @@ pub fn reconcile_interrupted(db: &mut Connection) -> Result<()> {
                 continue;
             }
             db.execute(
-                "UPDATE agent_run_batches SET status='failed',error_code='agent_worker_interrupted',error_message='本机 Agent 进程意外中断。',updated_at=?2 WHERE run_id=?1 AND status='running'",
+                "UPDATE agent_run_batches SET status='failed',error_code='agent_worker_interrupted',error_message='AI 辅助进程意外中断。',updated_at=?2 WHERE run_id=?1 AND status='running'",
                 params![&run_id, &timestamp],
             )?;
             tasks::interrupt_runner(db, &task_id, task_lease_id.as_deref())?;
@@ -420,16 +420,34 @@ pub fn run_worker(
 }
 
 fn execute_run(db: &mut Connection, run_id: &str) -> Result<()> {
-    let config = RunnerConfig {
-        executable: require_ready_codex()?,
-        temp_root: env::temp_dir().join("SiaoCut-Agent"),
-    };
-    execute_run_with_config(db, run_id, &config)
+    let run = load(db, run_id)?;
+    match ExecutionTarget::from_run(&run)? {
+        ExecutionTarget::Codex => {
+            let config = RunnerConfig {
+                executable: require_ready_codex()?,
+                temp_root: env::temp_dir().join("SiaoCut-Agent"),
+            };
+            execute_run_with_executor(db, run_id, RunExecutor::Codex(&config))
+        }
+        target @ ExecutionTarget::Api { .. } => {
+            api_executor::validate_target(&target)?;
+            execute_run_with_executor(db, run_id, RunExecutor::Api(target))
+        }
+    }
 }
 
+#[cfg(test)]
 fn execute_run_with_config(db: &mut Connection, run_id: &str, config: &RunnerConfig) -> Result<()> {
+    execute_run_with_executor(db, run_id, RunExecutor::Codex(config))
+}
+
+fn execute_run_with_executor(
+    db: &mut Connection,
+    run_id: &str,
+    executor: RunExecutor<'_>,
+) -> Result<()> {
     let run = load(db, run_id)?;
-    let worker = format!("codex-{run_id}");
+    let worker = format!("agent-{run_id}");
     let (_, task, payload) = tasks::claim(db, &worker, Some(&run.task_id))?
         .ok_or_else(|| anyhow!("agent_run_active: Agent 任务不再处于可领取状态"))?;
     let lease_id = task
@@ -447,13 +465,17 @@ fn execute_run_with_config(db: &mut Connection, run_id: &str, config: &RunnerCon
             &worker,
             &lease_id,
             0.02,
-            Some("本机 Agent 已开始处理"),
+            Some(execution_message(
+                &executor,
+                "AI 服务已开始处理",
+                "本机 Agent 已开始处理",
+            )),
         )?;
         let batch_rows = load_stored_batch_rows(db, run_id)?;
         let mut results = Vec::with_capacity(batch_rows.len());
         for (index, batch) in batch_rows.iter().enumerate() {
             if cancel_requested(db, run_id, &run.task_id)? {
-                bail!("agent_run_cancelled: 本机 Agent 任务已取消")
+                bail!("agent_run_cancelled: AI 辅助任务已取消")
             }
             let batch_payload = payload_for_batch(&payload, &batch.segment_ids)?;
             if batch.status == "completed" {
@@ -491,36 +513,85 @@ fn execute_run_with_config(db: &mut Connection, run_id: &str, config: &RunnerCon
                     .and_then(Value::as_str)
                     .unwrap_or_default(),
             );
-            let mut batch_result = invoke_codex(
-                db,
-                config,
-                run_id,
-                &run.task_id,
-                &lease_id,
-                &batch.id,
-                &batch_payload,
-                &schema,
-                run.timeout_seconds,
-            )?;
+            let mut batch_result = match &executor {
+                RunExecutor::Codex(config) => invoke_codex(
+                    db,
+                    config,
+                    run_id,
+                    &run.task_id,
+                    &lease_id,
+                    &batch.id,
+                    &batch_payload,
+                    &schema,
+                    run.timeout_seconds,
+                )?,
+                RunExecutor::Api(target) => {
+                    let result = api_executor::execute(target, &batch_payload, &schema)?;
+                    BatchResult {
+                        value: result.value,
+                        thread_id: None,
+                        provider_request_id: result.provider_request_id,
+                        usage: result.usage,
+                        retry_count: result.retry_count,
+                    }
+                }
+            };
             normalize_batch_result(&batch_payload, &mut batch_result.value);
             validate_batch_result(&batch_payload, &batch.segment_ids, &batch_result.value)?;
             let completed_at = now();
             db.execute(
-            "UPDATE agent_run_batches SET status='completed',result_json=?2,codex_thread_id=?3,error_code=NULL,error_message=NULL,completed_at=?4,updated_at=?4 WHERE id=?1",
-            params![&batch.id, serde_json::to_string(&batch_result.value)?, &batch_result.thread_id, &completed_at],
-        )?;
+                "UPDATE agent_run_batches
+             SET status='completed',result_json=?2,codex_thread_id=?3,
+                 provider_request_id=?4,usage_json=?5,retry_count=?6,
+                 error_code=NULL,error_message=NULL,completed_at=?7,updated_at=?7
+             WHERE id=?1",
+                params![
+                    &batch.id,
+                    serde_json::to_string(&batch_result.value)?,
+                    &batch_result.thread_id,
+                    &batch_result.provider_request_id,
+                    batch_result
+                        .usage
+                        .as_ref()
+                        .map(serde_json::to_string)
+                        .transpose()?,
+                    batch_result.retry_count as i64,
+                    &completed_at
+                ],
+            )?;
             let progress = 0.05 + 0.85 * ((index + 1) as f64 / batch_rows.len() as f64);
             db.execute(
-            "UPDATE agent_runs SET progress=?2,current_batch=?3,codex_thread_id=COALESCE(?4,codex_thread_id),updated_at=?5 WHERE id=?1",
-            params![run_id, progress, (index + 1) as i64, &batch_result.thread_id, &completed_at],
-        )?;
+                "UPDATE agent_runs
+             SET progress=?2,current_batch=?3,codex_thread_id=COALESCE(?4,codex_thread_id),
+                 provider_request_id=COALESCE(?5,provider_request_id),usage_json=?6,
+                 retry_count=retry_count+?7,updated_at=?8
+             WHERE id=?1",
+                params![
+                    run_id,
+                    progress,
+                    (index + 1) as i64,
+                    &batch_result.thread_id,
+                    &batch_result.provider_request_id,
+                    batch_result
+                        .usage
+                        .as_ref()
+                        .map(serde_json::to_string)
+                        .transpose()?,
+                    batch_result.retry_count as i64,
+                    &completed_at
+                ],
+            )?;
             tasks::heartbeat(
                 db,
                 &run.task_id,
                 &worker,
                 &lease_id,
                 progress,
-                Some("本机 Agent 已完成一个文本批次"),
+                Some(execution_message(
+                    &executor,
+                    "AI 服务已完成一个文本批次",
+                    "本机 Agent 已完成一个文本批次",
+                )),
             )?;
             results.push(batch_result.value);
         }
@@ -562,6 +633,16 @@ fn ensure_project_version(
 struct BatchResult {
     value: Value,
     thread_id: Option<String>,
+    provider_request_id: Option<String>,
+    usage: Option<Value>,
+    retry_count: u32,
+}
+
+fn execution_message<'a>(executor: &RunExecutor<'_>, api: &'a str, codex: &'a str) -> &'a str {
+    match executor {
+        RunExecutor::Codex(_) => codex,
+        RunExecutor::Api(_) => api,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -652,7 +733,7 @@ fn invoke_codex(
             tasks::heartbeat(
                 db,
                 task_id,
-                &format!("codex-{run_id}"),
+                &format!("agent-{run_id}"),
                 lease_id,
                 progress.max(0.03),
                 Some("本机 Agent 仍在处理文本批次"),
@@ -688,6 +769,9 @@ fn invoke_codex(
     Ok(BatchResult {
         value,
         thread_id: events.thread_id,
+        provider_request_id: None,
+        usage: None,
+        retry_count: 0,
     })
 }
 
@@ -1330,16 +1414,6 @@ fn validate_timeout(timeout_seconds: u64) -> Result<()> {
     Ok(())
 }
 
-fn split_batches(kind: &str, segment_ids: &[String]) -> Vec<Vec<String>> {
-    if matches!(kind, "summary" | "speaker_names") {
-        return vec![segment_ids.to_vec()];
-    }
-    segment_ids
-        .chunks(BATCH_SIZE)
-        .map(<[String]>::to_vec)
-        .collect()
-}
-
 fn insert_batches(
     tx: &rusqlite::Transaction<'_>,
     run_id: &str,
@@ -1439,7 +1513,7 @@ fn spawn_worker(
     if let Some(delay) = delay.as_deref() {
         arguments.push(delay);
     }
-    crate::util::spawn_detached_current(&arguments).context("无法启动本机 Agent Worker")
+    crate::util::spawn_detached_current(&arguments).context("无法启动 AI 辅助 Worker")
 }
 
 fn mark_start_failed(
@@ -1454,11 +1528,11 @@ fn mark_start_failed(
         [run_id],
         |row| row.get(0),
     )?;
-    tasks::fail_runner(db, &task_id, None, None, "无法启动本机 Agent Worker。")?;
+    tasks::fail_runner(db, &task_id, None, None, "无法启动 AI 辅助 Worker。")?;
     db.execute(
         "UPDATE agent_runs
          SET status='failed',error_code='agent_worker_interrupted',
-             error_message='无法启动本机 Agent Worker。',completed_at=?2,updated_at=?2
+             error_message='无法启动 AI 辅助 Worker。',completed_at=?2,updated_at=?2
          WHERE id=?1 AND status='queued' AND attempt_count=?3",
         params![run_id, timestamp, expected_attempt_count],
     )?;
@@ -1483,7 +1557,7 @@ fn mark_run_submitting(db: &Connection, run_id: &str, expected_attempt_count: u3
         params![run_id, now(), expected_attempt_count],
     )?;
     if changed != 1 {
-        bail!("agent_run_cancelled: 本机 Agent 任务在提交结果前已取消或状态已变化")
+        bail!("agent_run_cancelled: AI 辅助任务在提交结果前已取消或状态已变化")
     }
     Ok(())
 }
@@ -1527,7 +1601,7 @@ fn finalize_worker_error(
         return Ok(());
     }
     let message = public_error_message(code);
-    let worker = expected_lease_id.map(|_| format!("codex-{run_id}"));
+    let worker = expected_lease_id.map(|_| format!("agent-{run_id}"));
     if !tasks::fail_runner(
         db,
         &run.task_id,
@@ -1562,13 +1636,21 @@ fn public_error_message(code: &str) -> &'static str {
         "codex_cli_missing" => "Codex CLI 不可用。",
         "codex_not_logged_in" => "Codex CLI 尚未登录。",
         "codex_cli_unsupported" => "Codex CLI 版本不支持本机 Agent 所需的权限隔离。",
-        "agent_run_timeout" => "本机 Agent 处理超时；可以显式继续。",
+        "agent_run_timeout" => "AI 辅助处理超时；可以显式继续。",
         "agent_batch_incomplete" => "Agent 没有确认处理全部字幕段。",
         "agent_segment_duplicate" => "Agent 结果包含重复字幕段。",
         "agent_segment_unauthorized" => "Agent 结果包含任务范围外字幕段。",
         "agent_project_version_conflict" => "处理期间项目版本已变化；结果未提交。",
         "patch_before_mismatch" => "Agent 建议原文与任务基线不一致。",
-        _ => "Codex 未返回可安全提交的结构化结果。",
+        "authentication_failed" => "AI 服务鉴权失败；请检查 API Key。",
+        "credential_missing" => "AI 服务尚未保存 API Key。",
+        "model_not_found" => "AI 服务中不存在所选模型。",
+        "rate_limited" => "AI 服务请求过于频繁；可以稍后继续。",
+        "network_timeout" => "AI 服务请求超时；可以显式继续。",
+        "service_unavailable" => "AI 服务暂时不可用；可以稍后继续。",
+        "service_revision_changed" => "AI 服务或代理配置已变化；请重新确认。",
+        "invalid_response" => "AI 服务未返回可验证的结构化结果。",
+        _ => "AI 辅助未返回可安全提交的结构化结果。",
     }
 }
 
@@ -1648,13 +1730,17 @@ mod tests {
             .map(|index| format!("s-{index}"))
             .collect::<Vec<_>>();
         assert_eq!(
-            split_batches("polish", &ids)
+            batching::split(&ids, &vec![1; ids.len()], false)
+                .unwrap()
                 .iter()
                 .map(Vec::len)
                 .collect::<Vec<_>>(),
-            vec![80, 80, 1]
+            vec![60, 60, 41]
         );
-        assert_eq!(split_batches("summary", &ids), vec![ids]);
+        assert_eq!(
+            batching::split(&ids, &vec![1; ids.len()], true).unwrap(),
+            vec![ids]
+        );
     }
 
     #[test]

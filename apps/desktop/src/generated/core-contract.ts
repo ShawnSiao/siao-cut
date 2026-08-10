@@ -341,7 +341,27 @@ export const coreErrorCodes = [
   "export_cleanup_failed",
   "job_interrupted",
   "job_failed",
-  "invalid_request"
+  "invalid_request",
+  "revision_conflict",
+  "validation_failed",
+  "configuration_read_failed",
+  "configuration_write_failed",
+  "credential_read_failed",
+  "credential_write_failed",
+  "credential_delete_failed",
+  "credential_unsupported",
+  "ai_service_not_found",
+  "credential_missing",
+  "unauthorized",
+  "forbidden",
+  "model_not_found",
+  "rate_limited",
+  "timeout",
+  "provider_unavailable",
+  "invalid_response",
+  "service_revision_changed",
+  "payload_too_large",
+  "cancelled"
 ] as const;
 export type KnownCoreErrorCode = typeof coreErrorCodes[number];
 

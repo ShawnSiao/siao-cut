@@ -51,7 +51,7 @@ pub fn execute_request(home: &Path, payload: &[u8]) -> Result<Value, AiCommandEr
         AiRequest::ListModels { input } => {
             let service = resolve_probe(&services, &input)?;
             let models = providers::list_models(&service, &network).map_err(command_error)?;
-            Ok(json!({"models": AiModelList { models, manual_entry_allowed: true }}))
+            Ok(json!({"aiModels": AiModelList { models, manual_entry_allowed: true }}))
         }
         AiRequest::TestService { input } => {
             let service = resolve_probe(&services, &input)?;
@@ -79,6 +79,12 @@ pub fn execute_request(home: &Path, payload: &[u8]) -> Result<Value, AiCommandEr
             Ok(json!({"purged": true}))
         }
     }
+}
+
+pub fn purge(home: &Path) -> Result<(), AiError> {
+    AiServiceStore::for_home(home).purge()?;
+    NetworkStore::for_home(home).remove_file()?;
+    Ok(())
 }
 
 fn snapshot(

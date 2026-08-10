@@ -12,6 +12,20 @@ pub enum AiProviderId {
     Custom,
 }
 
+impl AiProviderId {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Openai => "openai",
+            Self::Anthropic => "anthropic",
+            Self::Gemini => "gemini",
+            Self::Deepseek => "deepseek",
+            Self::Kimi => "kimi",
+            Self::Glm => "glm",
+            Self::Custom => "custom",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AiProtocol {

@@ -77,5 +77,6 @@ pub fn generate(
             .map(str::to_owned)
             .or(request_id),
         usage: payload.get("usage").cloned(),
+        retry_count: 0,
     })
 }

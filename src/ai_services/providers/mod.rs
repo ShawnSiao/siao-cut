@@ -7,7 +7,7 @@ mod transport;
 #[cfg(test)]
 mod contract_tests;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 
 use std::{thread, time::Duration};
 
@@ -32,6 +32,7 @@ pub struct ProviderOutput {
     pub output_text: String,
     pub provider_request_id: Option<String>,
     pub usage: Option<Value>,
+    pub retry_count: u32,
 }
 
 #[derive(Debug)]
@@ -71,7 +72,10 @@ pub fn generate(
 ) -> Result<ProviderOutput, ProviderFailure> {
     for attempt in 0..=2 {
         match generate_once(service, network, input) {
-            Ok(output) => return Ok(output),
+            Ok(mut output) => {
+                output.retry_count = attempt;
+                return Ok(output);
+            }
             Err(failure) if failure.error.retryable() && attempt < 2 => {
                 let fallback = Duration::from_secs(1_u64 << attempt);
                 thread::sleep(

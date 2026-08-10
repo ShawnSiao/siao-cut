@@ -4,6 +4,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{env, fs, io::Read, path::PathBuf};
 
+mod agent;
 mod agent_runner;
 mod ai_services;
 mod artifacts;
@@ -60,6 +61,8 @@ enum Commands {
     },
     #[command(name = "ai-request", hide = true)]
     AiRequest,
+    #[command(name = "ai-services", subcommand)]
+    AiServices(AiServicesCommand),
     Import {
         media: PathBuf,
         #[arg(long)]
@@ -547,6 +550,16 @@ enum AgentCommand {
     Health,
     Start {
         task_id: String,
+        #[arg(long, default_value = "codex", value_parser = ["codex", "api"])]
+        execution: String,
+        #[arg(long)]
+        service_config_id: Option<String>,
+        #[arg(long)]
+        service_revision: Option<u64>,
+        #[arg(long)]
+        network_revision: Option<u64>,
+        #[arg(long)]
+        model_id: Option<String>,
         #[arg(long, default_value_t = 900)]
         timeout_seconds: u64,
         #[arg(long, hide = true)]
@@ -565,6 +578,14 @@ enum AgentCommand {
         run_id: String,
         #[arg(long, hide = true)]
         start_delay_ms: Option<u64>,
+    },
+}
+
+#[derive(Subcommand)]
+enum AiServicesCommand {
+    Purge {
+        #[arg(long)]
+        confirm: bool,
     },
 }
 
@@ -625,6 +646,18 @@ struct AutoWorkflowStartArgs {
     locale: String,
     #[arg(long)]
     translate: Option<String>,
+    #[arg(long, default_value = "manual", value_parser = ["manual", "codex", "api"])]
+    ai_execution: String,
+    #[arg(long)]
+    ai_service_config_id: Option<String>,
+    #[arg(long)]
+    ai_service_revision: Option<u64>,
+    #[arg(long)]
+    ai_network_revision: Option<u64>,
+    #[arg(long)]
+    ai_model_id: Option<String>,
+    #[arg(long)]
+    confirm_ai_text_send: bool,
     #[arg(short = 'o', long)]
     output: PathBuf,
     #[arg(long)]
@@ -968,6 +1001,17 @@ fn run(cli: Cli) -> Result<Value> {
         }
         Commands::DesktopRequest { input } => run_desktop_request(&mut database, &input),
         Commands::AiRequest => unreachable!("ai-request returns before database initialization"),
+        Commands::AiServices(AiServicesCommand::Purge { confirm }) => {
+            if !confirm {
+                bail!("confirmation_required: 删除 AI 服务配置需要 --confirm")
+            }
+            ai_services::commands::purge(&db::home_dir())
+                .map_err(|error| anyhow!("{}: {}", error.code(), error))?;
+            Ok(envelope(json!({
+                "purged": true,
+                "message": "AI 服务配置和凭据已删除；项目、媒体和本地资源未修改。"
+            })))
+        }
         Commands::Import { media, title } => {
             let project = project::create(&mut database, &media, title)?;
             Ok(envelope(
@@ -1585,21 +1629,34 @@ fn run(cli: Cli) -> Result<Value> {
             }
             AgentCommand::Start {
                 task_id,
+                execution,
+                service_config_id,
+                service_revision,
+                network_revision,
+                model_id,
                 timeout_seconds,
                 start_delay_ms,
             } => {
-                let run = agent_runner::start(
+                let target = agent::execution::ExecutionTarget::from_cli(
+                    &execution,
+                    service_config_id,
+                    service_revision,
+                    network_revision,
+                    model_id,
+                )?;
+                let run = agent_runner::start_with_execution(
                     &mut database,
                     &task_id,
                     Some(timeout_seconds),
                     start_delay_ms,
+                    target,
                 )?;
                 Ok(envelope(json!({
                     "projectId": run.project_id,
                     "taskId": run.task_id,
                     "agentRunId": run.id,
                     "agentRun": run,
-                    "message": "本机 Agent 已启动；结果完成后仍需人工审阅。"
+                    "message": "AI 辅助已启动；结果完成后仍需人工审阅。"
                 })))
             }
             AgentCommand::Status { run_id } => {
@@ -1622,7 +1679,7 @@ fn run(cli: Cli) -> Result<Value> {
                     "taskId": run.task_id,
                     "agentRunId": run.id,
                     "agentRun": run,
-                    "message": "本机 Agent 已取消；项目内容未自动修改。"
+                    "message": "AI 辅助已取消；项目内容未自动修改。"
                 })))
             }
             AgentCommand::Resume {
@@ -1635,7 +1692,7 @@ fn run(cli: Cli) -> Result<Value> {
                     "taskId": run.task_id,
                     "agentRunId": run.id,
                     "agentRun": run,
-                    "message": "本机 Agent 已重新排队。"
+                    "message": "AI 辅助已重新排队。"
                 })))
             }
         },
@@ -1690,6 +1747,12 @@ fn run(cli: Cli) -> Result<Value> {
                     language,
                     locale,
                     translate,
+                    ai_execution,
+                    ai_service_config_id,
+                    ai_service_revision,
+                    ai_network_revision,
+                    ai_model_id,
+                    confirm_ai_text_send,
                     output,
                     burn_subtitles,
                     subtitle_mode,
@@ -1719,6 +1782,15 @@ fn run(cli: Cli) -> Result<Value> {
                 };
                 let subtitle_mode = model::SubtitleMode::parse(&subtitle_mode)
                     .ok_or_else(|| anyhow!("auto_workflow_subtitle_mode_invalid: 字幕模式必须为 source、translated 或 bilingual"))?;
+                let translation_execution = agent::execution::ExecutionTarget::auto_from_cli(
+                    &ai_execution,
+                    ai_service_config_id,
+                    ai_service_revision,
+                    ai_network_revision,
+                    ai_model_id,
+                    confirm_ai_text_send,
+                    translate.is_some(),
+                )?;
                 let workflow = auto_workflow::start(
                     &mut database,
                     auto_workflow::StartRequest {
@@ -1731,6 +1803,7 @@ fn run(cli: Cli) -> Result<Value> {
                         burn_subtitles,
                         subtitle_mode,
                         start_delay_ms,
+                        translation_execution,
                     },
                 )?;
                 Ok(envelope(json!({

@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 29;
+pub const CURRENT_SCHEMA_VERSION: i64 = 31;
 
 struct Migration {
     version: i64,
@@ -130,6 +130,14 @@ const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 29,
         apply: migration_29_local_resource_profiles,
+    },
+    Migration {
+        version: 30,
+        apply: migration_30_agent_execution_targets,
+    },
+    Migration {
+        version: 31,
+        apply: migration_31_auto_workflow_ai_target,
     },
 ];
 
@@ -1031,6 +1039,36 @@ fn migration_23_agent_runs(tx: &Transaction<'_>) -> Result<()> {
              UNIQUE(run_id,ordinal)
          );
          CREATE INDEX idx_agent_run_batches_run ON agent_run_batches(run_id,ordinal);",
+    )?;
+    Ok(())
+}
+
+fn migration_30_agent_execution_targets(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute_batch(
+        "ALTER TABLE agent_runs ADD COLUMN execution_kind TEXT NOT NULL DEFAULT 'codex';
+         ALTER TABLE agent_runs ADD COLUMN service_config_id TEXT;
+         ALTER TABLE agent_runs ADD COLUMN service_revision INTEGER;
+         ALTER TABLE agent_runs ADD COLUMN network_revision INTEGER;
+         ALTER TABLE agent_runs ADD COLUMN provider_id TEXT;
+         ALTER TABLE agent_runs ADD COLUMN model_id TEXT;
+         ALTER TABLE agent_runs ADD COLUMN provider_request_id TEXT;
+         ALTER TABLE agent_runs ADD COLUMN usage_json TEXT;
+         ALTER TABLE agent_runs ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0;
+         ALTER TABLE agent_run_batches ADD COLUMN provider_request_id TEXT;
+         ALTER TABLE agent_run_batches ADD COLUMN usage_json TEXT;
+         ALTER TABLE agent_run_batches ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0;",
+    )?;
+    Ok(())
+}
+
+fn migration_31_auto_workflow_ai_target(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute_batch(
+        "ALTER TABLE auto_workflows ADD COLUMN ai_execution_kind TEXT;
+         ALTER TABLE auto_workflows ADD COLUMN ai_service_config_id TEXT;
+         ALTER TABLE auto_workflows ADD COLUMN ai_service_revision INTEGER;
+         ALTER TABLE auto_workflows ADD COLUMN ai_network_revision INTEGER;
+         ALTER TABLE auto_workflows ADD COLUMN ai_model_id TEXT;
+         ALTER TABLE auto_workflows ADD COLUMN ai_authorized INTEGER NOT NULL DEFAULT 0;",
     )?;
     Ok(())
 }

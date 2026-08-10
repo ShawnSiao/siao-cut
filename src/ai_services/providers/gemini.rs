@@ -78,5 +78,6 @@ pub fn generate(
         output_text,
         provider_request_id: request_id,
         usage: payload.get("usageMetadata").cloned(),
+        retry_count: 0,
     })
 }
