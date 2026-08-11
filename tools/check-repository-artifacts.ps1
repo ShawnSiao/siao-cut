@@ -103,3 +103,4 @@ if ($errors.Count -gt 0) {
 }
 
 Write-Host "Repository artifact policy check passed for $($trackedFiles.Count) files."
+& (Join-Path $repositoryRoot 'tools\check-source-size.ps1')

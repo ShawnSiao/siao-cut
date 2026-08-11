@@ -58,7 +58,7 @@ export function Dialog({ label, className = "", onClose, returnFocusRef, childre
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const panel = panelRef.current;
     const focusable = () => Array.from(panel?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])') ?? []);
-    window.requestAnimationFrame(() => (panel?.querySelector<HTMLElement>("[autofocus]") ?? focusable()[0] ?? panel)?.focus());
+    window.requestAnimationFrame(() => (panel?.querySelector<HTMLElement>("[data-dialog-initial-focus], [autofocus]") ?? focusable()[0] ?? panel)?.focus());
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();

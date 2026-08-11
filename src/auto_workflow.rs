@@ -1,5 +1,6 @@
 use crate::{
-    cuts, db, export, media,
+    agent::execution::ExecutionTarget,
+    agent_runner, cuts, db, export, media,
     model::{AutoWorkflow, AutoWorkflowEvent, SubtitleMode},
     project, source_import, tasks, translation,
     util::{new_id, now},
@@ -39,6 +40,7 @@ pub struct StartRequest {
     pub subtitle_mode: SubtitleMode,
     pub start_delay_ms: Option<u64>,
     pub instruction_locale: String,
+    pub translation_execution: Option<ExecutionTarget>,
 }
 
 pub fn start(db: &mut Connection, request: StartRequest) -> Result<AutoWorkflow> {
@@ -70,6 +72,7 @@ fn insert_with_flag(db: &mut Connection, request: StartRequest) -> Result<(AutoW
         subtitle_mode,
         start_delay_ms: _,
         instruction_locale,
+        translation_execution,
     } = request;
     if !["zh-CN", "en-US"].contains(&instruction_locale.as_str()) {
         bail!("instruction_locale_invalid: --locale 必须为 zh-CN 或 en-US")
@@ -90,6 +93,12 @@ fn insert_with_flag(db: &mut Connection, request: StartRequest) -> Result<(AutoW
         )
     {
         bail!("auto_workflow_translation_required: 译文或双语输出必须指定 --translate")
+    }
+    if translation_execution.is_some() && translation_language.is_none() {
+        bail!("auto_workflow_translation_required: AI 执行目标只能用于字幕翻译")
+    }
+    if let Some(target) = translation_execution.as_ref() {
+        target.validate()?;
     }
     let model = model.canonicalize()?;
     let output = absolute_path(&output)?;
@@ -138,8 +147,9 @@ fn insert_with_flag(db: &mut Connection, request: StartRequest) -> Result<(AutoW
              id,input_kind,input_value,title,confirmed_media_id,model_path,
              transcribe_language,translation_language,output_path,burn_subtitles,
              subtitle_mode,status,current_stage,progress,created_at,updated_at,attempt_count,
-             instruction_locale
-         ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'queued','import',0,?12,?12,1,?13)",
+             instruction_locale,ai_execution_kind,ai_service_config_id,
+             ai_service_revision,ai_network_revision,ai_model_id,ai_authorized
+         ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'queued','import',0,?12,?12,1,?13,?14,?15,?16,?17,?18,?19)",
         params![
             &id,
             input_kind,
@@ -154,6 +164,12 @@ fn insert_with_flag(db: &mut Connection, request: StartRequest) -> Result<(AutoW
             subtitle_mode.as_str(),
             &timestamp,
             instruction_locale,
+            translation_execution.as_ref().map(ExecutionTarget::kind),
+            translation_execution.as_ref().and_then(|target| match target { ExecutionTarget::Api { service_config_id, .. } => Some(service_config_id.as_str()), ExecutionTarget::Codex => None }),
+            translation_execution.as_ref().and_then(|target| match target { ExecutionTarget::Api { service_revision, .. } => Some(*service_revision as i64), ExecutionTarget::Codex => None }),
+            translation_execution.as_ref().and_then(|target| match target { ExecutionTarget::Api { network_revision, .. } => Some(*network_revision as i64), ExecutionTarget::Codex => None }),
+            translation_execution.as_ref().and_then(|target| match target { ExecutionTarget::Api { model_id, .. } => Some(model_id.as_str()), ExecutionTarget::Codex => None }),
+            translation_execution.is_some(),
         ],
     )?;
     append_event(db, &id, "import", "queued", 0.0, "自动工作流已创建")?;
@@ -173,14 +189,15 @@ pub fn load(db: &Connection, workflow_id: &str) -> Result<AutoWorkflow> {
         "SELECT id,input_kind,input_value,title,confirmed_media_id,project_id,source_import_id,
                 model_path,transcribe_language,translation_language,output_path,burn_subtitles,
                 subtitle_mode,status,current_stage,progress,transcript_version_id,agent_task_id,
-                export_job_id,audit_json,cancel_requested_at,error_message,created_at,updated_at,
-                completed_at,worker_pid,attempt_count,instruction_locale
+                ai_execution_kind,ai_service_config_id,ai_service_revision,ai_network_revision,
+                ai_model_id,ai_authorized,export_job_id,audit_json,cancel_requested_at,error_message,
+                created_at,updated_at,completed_at,worker_pid,attempt_count,instruction_locale
          FROM auto_workflows WHERE id=?1",
         [workflow_id],
         |row| {
-            let audit: Option<String> = row.get(19)?;
+            let audit: Option<String> = row.get(25)?;
             let status = row.get::<_, String>(13)?;
-            let error_message = row.get::<_, Option<String>>(21)?;
+            let error_message = row.get::<_, Option<String>>(27)?;
             Ok(AutoWorkflow {
                 id: row.get(0)?,
                 input_kind: row.get(1)?,
@@ -202,16 +219,22 @@ pub fn load(db: &Connection, workflow_id: &str) -> Result<AutoWorkflow> {
                 progress: row.get(15)?,
                 transcript_version_id: row.get(16)?,
                 agent_task_id: row.get(17)?,
-                export_job_id: row.get(18)?,
+                ai_execution_kind: row.get(18)?,
+                ai_service_config_id: row.get(19)?,
+                ai_service_revision: row.get::<_, Option<i64>>(20)?.map(|value| value as u64),
+                ai_network_revision: row.get::<_, Option<i64>>(21)?.map(|value| value as u64),
+                ai_model_id: row.get(22)?,
+                ai_authorized: row.get(23)?,
+                export_job_id: row.get(24)?,
                 audit: audit.and_then(|value| serde_json::from_str(&value).ok()),
-                cancel_requested_at: row.get(20)?,
+                cancel_requested_at: row.get(26)?,
                 error_message,
-                created_at: row.get(22)?,
-                updated_at: row.get(23)?,
-                completed_at: row.get(24)?,
-                worker_pid: row.get(25)?,
-                attempt_count: row.get::<_, i64>(26)? as u32,
-                instruction_locale: row.get(27)?,
+                created_at: row.get(28)?,
+                updated_at: row.get(29)?,
+                completed_at: row.get(30)?,
+                worker_pid: row.get(31)?,
+                attempt_count: row.get::<_, i64>(32)? as u32,
+                instruction_locale: row.get(33)?,
             })
         },
     )
@@ -825,17 +848,25 @@ fn run_suggestions(db: &mut Connection, workflow: &AutoWorkflow) -> Result<bool>
             "UPDATE auto_workflows SET agent_task_id=?2 WHERE id=?1",
             params![&workflow.id, task_id],
         )?;
-        set_state(
-            db,
-            &workflow.id,
-            "translate",
-            "needs_agent",
-            0.62,
-            &format!(
+        let target = workflow_execution_target(workflow)?;
+        let message = if let Some(target) = target {
+            match agent_runner::start_with_execution(db, &task_id, None, None, target) {
+                Ok(_) => format!(
+                    "已生成 {} 条粗剪建议；API 翻译已开始，完成后等待人工确认",
+                    suggestions.len()
+                ),
+                Err(_) => format!(
+                    "已生成 {} 条粗剪建议；AI 配置已变化或不可用，请重新确认翻译任务",
+                    suggestions.len()
+                ),
+            }
+        } else {
+            format!(
                 "已生成 {} 条粗剪建议；翻译任务等待 Agent",
                 suggestions.len()
-            ),
-        )?;
+            )
+        };
+        set_state(db, &workflow.id, "translate", "needs_agent", 0.62, &message)?;
         return Ok(true);
     }
     if suggestions.is_empty() {
@@ -851,6 +882,33 @@ fn run_suggestions(db: &mut Connection, workflow: &AutoWorkflow) -> Result<bool>
             &format!("{} 条粗剪建议等待人工确认", suggestions.len()),
         )?;
         Ok(true)
+    }
+}
+
+fn workflow_execution_target(workflow: &AutoWorkflow) -> Result<Option<ExecutionTarget>> {
+    if !workflow.ai_authorized {
+        return Ok(None);
+    }
+    match workflow.ai_execution_kind.as_deref() {
+        Some("codex") => Ok(Some(ExecutionTarget::Codex)),
+        Some("api") => Ok(Some(ExecutionTarget::Api {
+            service_config_id: workflow
+                .ai_service_config_id
+                .clone()
+                .ok_or_else(|| anyhow!("auto_workflow_state_invalid: 缺少 AI 服务"))?,
+            service_revision: workflow
+                .ai_service_revision
+                .ok_or_else(|| anyhow!("auto_workflow_state_invalid: 缺少服务修订号"))?,
+            network_revision: workflow
+                .ai_network_revision
+                .ok_or_else(|| anyhow!("auto_workflow_state_invalid: 缺少网络修订号"))?,
+            model_id: workflow
+                .ai_model_id
+                .clone()
+                .ok_or_else(|| anyhow!("auto_workflow_state_invalid: 缺少 AI 模型"))?,
+        })),
+        None => Ok(None),
+        Some(_) => bail!("auto_workflow_state_invalid: 不支持的 AI 执行方式"),
     }
 }
 
@@ -1150,6 +1208,7 @@ mod tests {
                 subtitle_mode: SubtitleMode::Source,
                 start_delay_ms: None,
                 instruction_locale: "zh-CN".into(),
+                translation_execution: None,
             },
         )
         .unwrap()

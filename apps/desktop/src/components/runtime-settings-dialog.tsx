@@ -1,7 +1,8 @@
 import { RefreshCw, X } from "lucide-react";
-import type { RefObject } from "react";
+import { useState, type RefObject } from "react";
 import { tr } from "../i18n";
 import type {
+  CodexHealth,
   ModelDownloadJob,
   ModelStatus,
   LocalCapabilityId,
@@ -17,6 +18,7 @@ import type {
 } from "../types";
 import { Dialog } from "./ui";
 import { LocalResourcePanel } from "./local-resource-ui";
+import AiServicesPanel from "../features/environment-settings/AiServicesPanel";
 import {
   AsrBackendPicker,
   DiagnosticsPanel,
@@ -30,6 +32,7 @@ import {
 type RuntimeSettingsDialogProps = {
   returnFocusRef: RefObject<HTMLButtonElement | null>;
   runtime: RuntimeInfo | null;
+  codexHealth: CodexHealth | null;
   localResources: LocalResourceStatus | null;
   resourceJob: LocalResourceJob | null;
   resourceBusy: boolean;
@@ -74,13 +77,15 @@ type RuntimeSettingsDialogProps = {
 };
 
 export default function RuntimeSettingsDialog(props: RuntimeSettingsDialogProps) {
+  const [tab, setTab] = useState<"local" | "ai">("local");
   return (
-    <Dialog label={tr("app.resources.title")} className="runtime-dialog runtime-settings-dialog" onClose={props.onClose} returnFocusRef={props.returnFocusRef}>
-      <header className="runtime-dialog-header">
-        <div><p className="eyebrow">{tr("app.resources.management")}</p><h2>{tr("app.resources.title")}</h2></div>
-        <button autoFocus className="dialog-close" aria-label={tr("app.resources.close")} title={tr("app.resources.close")} onClick={props.onClose}><X size={18}/></button>
+    <Dialog label={tr("app.environment.title")} className="runtime-dialog runtime-settings-dialog" onClose={props.onClose} returnFocusRef={props.returnFocusRef}>
+      <header className="environment-settings-header">
+        <div className="environment-title-group"><span>{tr("app.resources.management")}</span><h2>{tr("app.environment.title")}</h2><p>{tr("app.environment.description")}</p></div>
+        <nav className="environment-settings-tabs" role="tablist" aria-label={tr("app.environment.title")}><button className={tab === "local" ? "active" : ""} type="button" role="tab" aria-selected={tab === "local"} onClick={() => setTab("local")}>{tr("app.environment.localTab")}</button><button className={tab === "ai" ? "active" : ""} type="button" role="tab" aria-selected={tab === "ai"} onClick={() => setTab("ai")}>{tr("app.environment.aiTab")}</button></nav>
+        <button autoFocus data-dialog-initial-focus className="environment-settings-close" aria-label={tr("app.environment.close")} title={tr("app.environment.close")} onClick={props.onClose}><X size={17}/></button>
       </header>
-      <div className="runtime-dialog-content">
+      {tab === "local" ? <div className="runtime-dialog-content environment-local-content" role="tabpanel" aria-label="本地功能">
         <p className="dialog-copy">{tr("app.resources.panelDescription")}</p>
         <LocalResourcePanel status={props.localResources} job={props.resourceJob} busy={props.resourceBusy} onPrepare={props.onPrepareResource} onChangeLocation={props.onChangeResourceLocation} onRemove={props.onRemoveResource} onRollback={props.onRollbackResource} onCleanup={props.onCleanupResources}/>
         <details className="resource-diagnostics"><summary><span><strong>{tr("app.resources.diagnostics")}</strong><small>{tr("app.resources.diagnosticsDescription")}</small></span></summary><div>
@@ -94,7 +99,7 @@ export default function RuntimeSettingsDialog(props: RuntimeSettingsDialogProps)
         </div></details>
         <UpdatePanel policy={props.updatePolicy} update={props.availableUpdate} busy={props.updateBusy} error={props.updateError} onCheck={props.onCheckUpdates} onInstall={props.onInstallUpdate}/>
         <button className="button quiet full" onClick={props.onRefresh}><RefreshCw size={14}/>{tr("app.s0507")}</button>
-      </div>
+      </div> : <div className="runtime-dialog-content environment-ai-content" role="tabpanel" aria-label="AI 服务"><AiServicesPanel codexHealth={props.codexHealth} onRefreshCodex={props.onRefresh}/></div>}
     </Dialog>
   );
 }

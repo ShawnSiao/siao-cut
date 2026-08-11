@@ -32,10 +32,19 @@ async function openDrawerTab(name: "审阅" | "质量" | "分析" | "历史" | "
 
 async function selectAdvancedTranscriptionMode(mode: "quick" | "multispeaker") {
   fireEvent.click(await screen.findByRole("button", { name: "本地资源" }));
-  const dialog = await screen.findByRole("dialog", { name: "本地资源" });
+  const dialog = await screen.findByRole("dialog", { name: "环境配置" });
   openResourceDiagnostics(dialog);
   fireEvent.change(within(dialog).getByRole("combobox", { name: "转写模式" }), { target: { value: mode } });
   return dialog;
+}
+
+async function confirmCodexAiAssistance() {
+  const dialog = await screen.findByRole("dialog", { name: "确认 AI 辅助" });
+  const codex = within(dialog).getByRole("radio", { name: /本机 Codex/ });
+  await waitFor(() => expect(codex).toBeEnabled());
+  fireEvent.click(codex);
+  fireEvent.click(within(dialog).getByRole("checkbox", { name: /已核对接收方、模型、文本范围/ }));
+  fireEvent.click(within(dialog).getByRole("button", { name: "确认并执行" }));
 }
 
 function openResourceDiagnostics(dialog: HTMLElement) {
@@ -64,6 +73,12 @@ function autoWorkflowFixture(overrides: Partial<AutoWorkflow> = {}): AutoWorkflo
     progress: 0.5,
     transcriptVersionId: null,
     agentTaskId: null,
+    aiExecutionKind: null,
+    aiServiceConfigId: null,
+    aiServiceRevision: null,
+    aiNetworkRevision: null,
+    aiModelId: null,
+    aiAuthorized: false,
     exportJobId: null,
     audit: null,
     cancelRequestedAt: null,
@@ -129,7 +144,7 @@ describe("SiaoCut review workbench", () => {
   it("persists source language independently and creates the selected Agent workflow", async () => {
     render(<App />);
     const newProject = await screen.findByRole("button", { name: "新建项目" });
-    const agentButton = screen.getByRole("button", { name: "交给本机 Codex" });
+    const agentButton = screen.getByRole("button", { name: "开始 AI 辅助" });
     expect(agentButton).toBeDisabled();
     expect(agentButton).toHaveAttribute("title", "请先导入或重新定位本地媒体。");
     fireEvent.click(newProject);
@@ -139,7 +154,7 @@ describe("SiaoCut review workbench", () => {
     fireEvent.change(within(runtime).getByRole("combobox", { name: "素材语言" }), { target: { value: "en" } });
     expect(localStorage.getItem(TRANSCRIPTION_LANGUAGE_STORAGE_KEY)).toBe("en");
     expect(parseTranscriptionLanguage("unsupported")).toBe("auto");
-    fireEvent.click(within(runtime).getByRole("button", { name: "关闭本地资源" }));
+    fireEvent.click(within(runtime).getByRole("button", { name: "关闭环境配置" }));
 
     fireEvent.change(screen.getByRole("combobox", { name: "Agent 工作流" }), { target: { value: "edit" } });
     fireEvent.click(screen.getByRole("button", { name: "手工交接" }));
@@ -463,7 +478,7 @@ describe("SiaoCut review workbench", () => {
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "新建项目" }));
     const workflow = screen.getByRole("combobox", { name: "Agent 工作流" });
-    await waitFor(() => expect(screen.getByRole("button", { name: "交给本机 Codex" })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "开始 AI 辅助" })).toBeEnabled());
     fireEvent.change(workflow, { target: { value: "translate" } });
     const target = screen.getByRole("combobox", { name: "翻译目标语言" });
     expect(target).toHaveValue("en");
@@ -491,14 +506,15 @@ describe("SiaoCut review workbench", () => {
     fireEvent.click(await screen.findByRole("button", { name: "新建项目" }));
     const editor = await screen.findByLabelText("00:13 字幕文本");
     const original = (editor as HTMLTextAreaElement).value;
-    const start = screen.getByRole("button", { name: "交给本机 Codex" });
+    const start = screen.getByRole("button", { name: "开始 AI 辅助" });
     await waitFor(() => expect(start).toBeEnabled());
 
     fireEvent.click(start);
-    expect(await screen.findByText("本机 Codex 已启动；完成后仍需逐条审阅。")).toBeInTheDocument();
+    await confirmCodexAiAssistance();
+    expect(await screen.findByText("AI 辅助已启动；完成后仍需逐条审阅。")).toBeInTheDocument();
     expect(screen.getByText(/本机 Agent 处理中|等待本机 Agent/)).toBeInTheDocument();
 
-    await waitFor(() => expect(screen.getByText("本机 Codex 已完成；建议已进入集中审阅，文稿未自动修改。")).toBeInTheDocument(), { timeout: 5000 });
+    await waitFor(() => expect(screen.getByText("AI 辅助已完成；建议已进入集中审阅，文稿未自动修改。")).toBeInTheDocument(), { timeout: 5000 });
     expect(screen.getByLabelText("00:13 字幕文本")).toHaveValue(original);
     expect(screen.getByText(/本机 Codex 提供的待审建议/)).toBeInTheDocument();
   }, 7000);
@@ -1198,7 +1214,7 @@ describe("SiaoCut review workbench", () => {
     render(<App />);
 
     fireEvent.click(await screen.findByRole("button", { name: "本地资源" }));
-    const settings = await screen.findByRole("dialog", { name: "本地资源" });
+    const settings = await screen.findByRole("dialog", { name: "环境配置" });
     fireEvent.click(within(settings).getByRole("button", { name: "更改位置" }));
     const setup = await screen.findByRole("dialog", { name: "准备 SiaoCut" });
     fireEvent.click(within(setup).getByRole("button", { name: "更改位置" }));
@@ -1206,7 +1222,7 @@ describe("SiaoCut review workbench", () => {
     fireEvent.click(within(setup).getByRole("button", { name: "确认此位置" }));
 
     expect(await screen.findByText("本地资源已安全移到新的保存位置。")).toBeInTheDocument();
-    const reopened = await screen.findByRole("dialog", { name: "本地资源" });
+    const reopened = await screen.findByRole("dialog", { name: "环境配置" });
     expect(within(reopened).getByText("D:\\SiaoCut Resources")).toBeInTheDocument();
     fireEvent.click(within(reopened).getByRole("button", { name: "释放无用空间" }));
 
@@ -1403,16 +1419,28 @@ describe("SiaoCut review workbench", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "选择文件" }));
     await waitFor(() => expect(within(dialog).getByText("demo.mp4")).toBeInTheDocument());
     fireEvent.click(within(dialog).getByRole("checkbox", { name: "创建 Agent 翻译任务" }));
-    fireEvent.click(within(dialog).getByRole("button", { name: "启动一键工作流" }));
+    const target = await within(dialog).findByRole("region", { name: "字幕翻译执行方式" });
+    await waitFor(() => expect(within(target).getByRole("radio", { name: "本机 Codex" })).toBeEnabled());
+    const manualTarget = within(target).getByRole("radio", { name: "复制提示词" });
+    fireEvent.click(manualTarget);
+    expect(manualTarget).toBeChecked();
+    const start = within(dialog).getByRole("button", { name: "启动一键工作流" });
+    await waitFor(() => expect(start).toBeEnabled());
+    fireEvent.click(start);
 
-    const status = await screen.findByRole("region", { name: "一键工作流状态" });
+    await waitFor(() => {
+      const error = within(dialog).queryByRole("alert");
+      if (error) throw new Error(error.textContent ?? "one-click workflow failed");
+      expect(screen.getByRole("region", { name: "一键工作流状态" })).toBeInTheDocument();
+    }, { timeout: 10_000 });
+    const status = screen.getByRole("region", { name: "一键工作流状态" });
     await waitFor(() => expect(within(status).getByText(/需要 Agent 继续 · 等待 Agent 翻译/)).toBeInTheDocument(), { timeout: 5000 });
     fireEvent.click(within(status).getByRole("button", { name: "取消流程" }));
 
     await waitFor(() => expect(within(status).getByText(/已取消 · 等待 Agent 翻译/)).toBeInTheDocument());
     expect(within(status).getByRole("button", { name: "显式继续" })).toBeInTheDocument();
     expect(within(status).getByRole("button", { name: "打开待审项目" })).toBeInTheDocument();
-  });
+  }, 20_000);
 
   it("requires audited URL metadata and rights confirmation in the one-click flow", async () => {
     render(<App />);
@@ -1450,7 +1478,7 @@ describe("SiaoCut review workbench", () => {
     render(<App />);
     const settings = await screen.findByRole("button", { name: "本地资源" });
     fireEvent.click(settings);
-    const dialog = await screen.findByRole("dialog", { name: "本地资源" });
+    const dialog = await screen.findByRole("dialog", { name: "环境配置" });
     expect(within(dialog).getByText("whisper.cpp")).not.toBeVisible();
     openResourceDiagnostics(dialog);
     expect(screen.getByText("whisper.cpp")).toBeInTheDocument();
@@ -1467,16 +1495,16 @@ describe("SiaoCut review workbench", () => {
     render(<App />);
     const settings = await screen.findByRole("button", { name: "本地资源" });
     fireEvent.click(settings);
-    expect(await screen.findByRole("button", { name: "关闭本地资源" })).toHaveFocus();
+    expect(await screen.findByRole("button", { name: "关闭环境配置" })).toHaveFocus();
     fireEvent.keyDown(window, { key: "Escape" });
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "本地资源" })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "环境配置" })).not.toBeInTheDocument());
     expect(settings).toHaveFocus();
   });
 
   it("requires explicit download verification and confirmation before removing a model", async () => {
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "本地资源" }));
-    openResourceDiagnostics(await screen.findByRole("dialog", { name: "本地资源" }));
+    openResourceDiagnostics(await screen.findByRole("dialog", { name: "环境配置" }));
     const option = (await screen.findByText("平衡 · 推荐")).closest("article");
     expect(option).not.toBeNull();
     fireEvent.click(within(option!).getByRole("button", { name: "下载" }));
@@ -1545,7 +1573,7 @@ describe("SiaoCut review workbench", () => {
     fireEvent.click(await screen.findByRole("button", { name: "新建项目" }));
     const runtime = await selectAdvancedTranscriptionMode("multispeaker");
     expect(localStorage.getItem("siaocut.transcriptionMode")).toBe("multispeaker");
-    fireEvent.click(within(runtime).getByRole("button", { name: "关闭本地资源" }));
+    fireEvent.click(within(runtime).getByRole("button", { name: "关闭环境配置" }));
     const start = screen.getByRole("button", { name: "开始多人转写" });
     await waitFor(() => expect(start).toBeEnabled());
     fireEvent.click(start);
@@ -1554,7 +1582,7 @@ describe("SiaoCut review workbench", () => {
     expect(screen.getByText("当前结果没有词级时间戳")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "创建词范围软剪辑" })).not.toBeInTheDocument();
     fireEvent.change(screen.getByRole("combobox", { name: "Agent 工作流" }), { target: { value: "speaker_names" } });
-    expect(screen.getByRole("button", { name: "交给本机 Codex" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "开始 AI 辅助" })).toBeEnabled();
     await openDrawerTab("导出");
     const exportPanel = await screen.findByLabelText("导出设置");
     fireEvent.change(within(exportPanel).getByLabelText("导出格式"), { target: { value: "json" } });
@@ -1569,7 +1597,7 @@ describe("SiaoCut review workbench", () => {
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "新建项目" }));
     const runtime = await selectAdvancedTranscriptionMode("multispeaker");
-    fireEvent.click(within(runtime).getByRole("button", { name: "关闭本地资源" }));
+    fireEvent.click(within(runtime).getByRole("button", { name: "关闭环境配置" }));
     fireEvent.click(screen.getByText("高级实验项：Prompt 与热词"));
     fireEvent.change(screen.getByRole("textbox", { name: "自定义 Prompt" }), { target: { value: "simulate-conflict" } });
 

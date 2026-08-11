@@ -10,6 +10,7 @@ import { useAppUpdater } from "../hooks/use-app-updater";
 export { AudioQualityPanel, PatchReviewCard, SpeakerPackageManager, SpeakerTrackPanel, SpeechInsightsPanel } from "../components/workbench-panels";
 import { agentTaskStatusLabel, audioRiskLabel, audioUnitLabel, autoStageLabel, autoStatusLabel, clearTransientCoreError, cutSuggestionLabel, DEFAULT_EXPORT_PREFERENCES, editReasonLabel, formatTime, getProjectCapabilities, hasMeaningfulSubtitleText, isHttpsSourceUrl, modelDescription, modelName, parseExportPreferences, parseTranscriptionLanguage, patchReasonLabel, segmentCountLabel, sourceStatusLabel, structureEditLabel, subtitleCountLabel, subtitleIssueLabel, subtitleQualityStatusLabel, taskLabel, TRANSCRIPTION_LANGUAGE_STORAGE_KEY, versionReasonLabel, wordCountLabel, type ExportPreferencesV1, type SegmentSelectionMode, type StructureEditMode } from "../app-view-model";
 import { agentReviewClient } from "../domains/agent-review-client";
+import type { AiExecutionSelection } from "../features/ai-assistance/types";
 import { backgroundTaskClient } from "../domains/background-task-client";
 import { exportRuntimeClient } from "../domains/export-runtime-client";
 import { projectSessionClient } from "../domains/project-session-client";
@@ -130,6 +131,8 @@ const RuntimeSettingsDialog = lazy(() => import("../components/runtime-settings-
 const SourceImportDialog = lazy(() => import("../components/source-import-dialog"));
 const LocalResourceSetupDialog = lazy(() => import("../components/local-resource-ui").then((module) => ({ default: module.LocalResourceSetupDialog })));
 const AgentHandoffDialog = lazy(() => import("../components/agent-handoff-dialog"));
+const AiExecutionConfirm = lazy(() => import("../features/ai-assistance/AiExecutionConfirm"));
+const AutoWorkflowAiTarget = lazy(() => import("../features/ai-assistance/AutoWorkflowAiTarget"));
 const SubtitleImportDialog = lazy(() => import("../components/subtitle-import-dialog"));
 const QuickRetranscriptionDialog = lazy(() => import("../components/quick-retranscription-dialog"));
 
@@ -250,12 +253,14 @@ function WorkbenchController() {
     const [autoSourcePreview, setAutoSourcePreview] = useState<SourcePreview | null>(null);
     const [autoAuthorized, setAutoAuthorized] = useState(false);
     const [autoTranslate, setAutoTranslate] = useState(false);
+    const [autoAiSelection, setAutoAiSelection] = useState<AiExecutionSelection | null>(null);
     const [autoTranslationLanguage, setAutoTranslationLanguage] = useState("en");
     const [transcriptionLanguage, setTranscriptionLanguage] = useState<TranscriptionLanguage>(() => parseTranscriptionLanguage(localStorage.getItem(TRANSCRIPTION_LANGUAGE_STORAGE_KEY)));
     const [agentWorkflowKind, setAgentWorkflowKind] = useState<"polish" | "proofread" | "edit" | "translate" | "punctuate" | "speaker_names">("polish");
     const [codexHealth, setCodexHealth] = useState<CodexHealth | null>(null);
     const [agentRun, setAgentRun] = useState<AgentRun | null>(null);
     const [showAgentHandoff, setShowAgentHandoff] = useState(false);
+    const [showAiExecutionConfirm, setShowAiExecutionConfirm] = useState(false);
     const [agentHandoffTaskId, setAgentHandoffTaskId] = useState<string | null>(null);
     const [agentIdentity, setAgentIdentity] = useState("external-agent");
     const [agentHandoffReady, setAgentHandoffReady] = useState(false);
@@ -1739,6 +1744,7 @@ function WorkbenchController() {
             subtitleMode: autoTranslate ? autoSubtitleMode : "source",
             translationLanguage: autoTranslate ? autoTranslationLanguage : undefined,
             burnSubtitles: autoBurnSubtitles,
+            aiExecution: autoTranslate ? autoAiSelection ?? undefined : undefined,
         });
         if (!envelope.workflow)
             throw new Error(tr("app.s0104"));
@@ -2480,7 +2486,7 @@ function WorkbenchController() {
             const target = event.target;
             const modifier = event.ctrlKey || event.metaKey;
             const key = event.key.toLowerCase();
-            const dialogOpen = showRuntime || showResourceSetup || showSourceImport || showAutoWorkflow || showSubtitleImport || showAgentHandoff || showTranscriptionCandidate || Boolean(structureEditMode) || Boolean(currentDeleteCandidate);
+            const dialogOpen = showRuntime || showResourceSetup || showSourceImport || showAutoWorkflow || showSubtitleImport || showAgentHandoff || showAiExecutionConfirm || showTranscriptionCandidate || Boolean(structureEditMode) || Boolean(currentDeleteCandidate);
             const editingTarget = target instanceof HTMLElement && (target.isContentEditable || target.matches("input, textarea, select"));
             if (event.key === "Escape" && showMoreMenu) {
                 event.preventDefault();
@@ -2558,7 +2564,7 @@ function WorkbenchController() {
         };
         window.addEventListener("keydown", handleShortcut);
         return () => window.removeEventListener("keydown", handleShortcut);
-    }, [busy, currentDeleteCandidate, mergeCandidatesAdjacent, project, selectedSegmentIds, showAgentHandoff, showAutoWorkflow, showMoreMenu, showResourceSetup, showRuntime, showSourceImport, showSubtitleImport, showTranscriptionCandidate, structureEditMode]);
+    }, [busy, currentDeleteCandidate, mergeCandidatesAdjacent, project, selectedSegmentIds, showAgentHandoff, showAiExecutionConfirm, showAutoWorkflow, showMoreMenu, showResourceSetup, showRuntime, showSourceImport, showSubtitleImport, showTranscriptionCandidate, structureEditMode]);
     const chooseModel = () => withBusy(tr("app.s0214"), async () => {
         const path = await pickModel();
         if (!path)
@@ -2671,13 +2677,13 @@ function WorkbenchController() {
             speaker_names: tr("app.workflow.created.speakerNames"),
         }[agentWorkflowKind]);
     });
-    const startCodexAgent = () => project && withBusy(tr("app.creator.agent.starting"), async () => {
+    const startAiAssistance = (target: AiExecutionSelection) => project && withBusy(tr("app.creator.agent.starting"), async () => {
         assertAgentWorkflowReady();
         const workflow = await agentReviewClient.createWorkflow(project.id, agentWorkflowKind, uiLocale, agentWorkflowKind === "translate" ? subtitleLanguage : undefined);
         if (!workflow.taskId)
             throw new Error(tr("app.creator.agent.taskMissing"));
         await refreshProject(project.id);
-        if (!codexHealth?.available || !codexHealth.authenticated) {
+        if (target.kind === "copy_prompt") {
             agentHandoffReturnFocusRef.current = agentButtonRef.current;
             setAgentHandoffTaskId(workflow.taskId);
             setAgentHandoffReady(true);
@@ -2686,7 +2692,7 @@ function WorkbenchController() {
             setNotice(tr("app.creator.agent.manualFallback"));
             return;
         }
-        const envelope = await agentReviewClient.startAgent(workflow.taskId);
+        const envelope = await agentReviewClient.startAgent(workflow.taskId, 900, target);
         if (!envelope.agentRun)
             throw new Error(tr("app.creator.agent.runMissing"));
         setAgentRun(envelope.agentRun);
@@ -2729,6 +2735,19 @@ function WorkbenchController() {
         tr("app.agent.handoff.prompt.submit", { taskId: handoffTask.id, worker: handoffIdentity }),
         tr("app.agent.handoff.prompt.review", { taskId: handoffTask.id }),
     ].join("\n\n") : "";
+    const aiConfirmationSegments = project?.transcript.segments ?? [];
+    const aiConfirmationCharacters = aiConfirmationSegments.reduce((total, segment) => total + Array.from(segment.text).length, 0);
+    const aiConfirmationLabel = {
+        polish: tr("app.workflow.polish"),
+        proofread: tr("app.workflow.proofread"),
+        edit: tr("app.workflow.edit"),
+        translate: tr("app.workflow.translate"),
+        punctuate: tr("app.workflow.punctuate"),
+        speaker_names: tr("app.workflow.speakerNames"),
+    }[agentWorkflowKind];
+    const aiConfirmationContext = agentWorkflowKind === "translate"
+        ? `翻译术语表 ${glossaryDraft.split(/\r?\n/).filter((line) => line.trim()).length} 条`
+        : agentWorkflowKind === "speaker_names" ? "说话人文本证据（不含音频）" : null;
     const copyAgentHandoff = async () => {
         if (!handoffText) return;
         try {
@@ -3005,7 +3024,7 @@ function WorkbenchController() {
 	                        </div>
 	                      </>}
 	                      {agentRun && <div className={`creator-agent-run ${agentRun.status}`} role="status"><span><strong>{tr(`app.creator.agent.status.${agentRun.status}` as Parameters<typeof tr>[0])}</strong><small>{tr("app.creator.agent.batch", { current: agentRun.currentBatch, total: agentRun.batchCount })}</small></span><progress max={1} value={agentRun.progress}/>{["queued", "running", "submitting"].includes(agentRun.status) ? <button onClick={() => void cancelCodexAgent()}>{tr("app.creator.agent.cancel")}</button> : ["failed", "interrupted", "cancelled"].includes(agentRun.status) ? <button onClick={() => void resumeCodexAgent()}><RefreshCw size={12}/>{tr("app.creator.agent.resume")}</button> : null}{agentRun.errorMessage && <JobFailureDetails context="agent" status={agentRun.status} errorCode={agentRun.errorCode} errorMessage={agentRun.errorMessage}/>}</div>}
-	                      <div className="creator-agent-actions"><Button ref={agentButtonRef} variant="agent" disabled={!capabilities.canCreateAgentTask || agentRunActive || Boolean(busy) || (agentWorkflowKind === "speaker_names" && speakerTrack?.status !== "ready")} title={agentCapabilityTitle} onClick={startCodexAgent}><Bot size={14}/>{tr("app.creator.agent.start")}</Button><button className="button quiet" disabled={agentRunActive || Boolean(busy)} onClick={(event) => openAgentHandoff(event.currentTarget)}>{tr("app.creator.agent.manual")}</button></div>
+                      <div className="creator-agent-actions"><Button ref={agentButtonRef} variant="agent" disabled={!capabilities.canCreateAgentTask || agentRunActive || Boolean(busy) || (agentWorkflowKind === "speaker_names" && speakerTrack?.status !== "ready")} title={agentCapabilityTitle} onClick={() => { agentHandoffReturnFocusRef.current = agentButtonRef.current; setShowAiExecutionConfirm(true); }}><Bot size={14}/>{tr("app.creator.agent.start")}</Button><button className="button quiet" disabled={agentRunActive || Boolean(busy)} onClick={(event) => openAgentHandoff(event.currentTarget)}>{tr("app.creator.agent.manual")}</button></div>
 	                      <p className="runtime-disclosure"><ShieldCheck size={13}/>{tr("app.creator.agent.boundary")}</p>
 	                    </section>
 	                    <div className="review-panel-scroll creator-review-list" role="region" aria-label={tr("app.s0297")} tabIndex={0}>
@@ -3118,6 +3137,18 @@ function WorkbenchController() {
             />
           </>)}
       </section>
+      {showAiExecutionConfirm && project && <Suspense fallback={null}><AiExecutionConfirm
+        returnFocusRef={agentHandoffReturnFocusRef}
+        codexReady={Boolean(codexHealth?.available && codexHealth.authenticated)}
+        taskLabel={`AI 辅助 · ${aiConfirmationLabel}`}
+        segmentCount={aiConfirmationSegments.length}
+        characterCount={aiConfirmationCharacters}
+        startTime={aiConfirmationSegments[0]?.start ?? 0}
+        endTime={aiConfirmationSegments.at(-1)?.end ?? 0}
+        contextLabel={aiConfirmationContext}
+        onClose={() => setShowAiExecutionConfirm(false)}
+        onConfirm={(selection) => { setShowAiExecutionConfirm(false); void startAiAssistance(selection); }}
+      /></Suspense>}
       {showAgentHandoff && project && <Suspense fallback={null}><AgentHandoffDialog
         returnFocusRef={agentHandoffReturnFocusRef}
         taskReady={Boolean(agentHandoffTaskId)}
@@ -3197,18 +3228,20 @@ function WorkbenchController() {
           <div className="auto-options">
             <label><span>{tr("app.transcription.language")}</span><select aria-label={`${tr("app.transcription.language")} · ${tr("app.s0236")}`} value={transcriptionLanguage} disabled={Boolean(autoBusy)} onChange={(event) => selectTranscriptionLanguage(event.target.value as TranscriptionLanguage)}><option value="auto">{tr("app.transcription.auto")}</option><option value="en">{tr("app.transcription.english")}</option><option value="zh">{tr("app.transcription.chinese")}</option></select></label>
             <label className="auto-check"><input type="checkbox" checked={autoTranslate} onChange={(event) => { setAutoTranslate(event.target.checked); if (!event.target.checked)
-            setAutoSubtitleMode("source"); }}/><span>{tr("app.s0496")}</span></label>
+            setAutoSubtitleMode("source"); setAutoAiSelection(null); }}/><span>{tr("app.s0496")}</span></label>
             <label><span>{tr("app.s0497")}</span><input aria-label={tr("app.s0498")} value={autoTranslationLanguage} disabled={!autoTranslate} onChange={(event) => setAutoTranslationLanguage(event.target.value)}/></label>
             <label><span>{tr("app.s0499")}</span><select aria-label={tr("app.s0500")} value={autoSubtitleMode} disabled={!autoTranslate} onChange={(event) => setAutoSubtitleMode(event.target.value as typeof autoSubtitleMode)}><option value="source">{tr("app.s0406")}</option><option value="translated">{tr("app.s0407")}</option><option value="bilingual">{tr("app.s0408")}</option></select></label>
             <label className="auto-check"><input type="checkbox" checked={autoBurnSubtitles} onChange={(event) => setAutoBurnSubtitles(event.target.checked)}/><span>{tr("app.s0501")}</span></label>
           </div>
-          <button className="button primary full" disabled={Boolean(autoBusy) || !modelPathAvailable || (autoTranslate && !autoTranslationLanguage.trim()) || (autoInputKind === "local" ? !autoMediaPath : !autoSourcePreview || !autoAuthorized)} onClick={() => void startAutoWorkflow()}>{autoBusy ? <LoaderCircle className="spin" size={14}/> : <Sparkles size={14}/>}{tr("app.s0502")}</button>
+          {autoTranslate && <Suspense fallback={null}><AutoWorkflowAiTarget codexReady={Boolean(codexHealth?.available && codexHealth.authenticated)} onChange={setAutoAiSelection}/></Suspense>}
+          <button className="button primary full" disabled={Boolean(autoBusy) || !modelPathAvailable || (autoTranslate && (!autoTranslationLanguage.trim() || !autoAiSelection)) || (autoInputKind === "local" ? !autoMediaPath : !autoSourcePreview || !autoAuthorized)} onClick={() => void startAutoWorkflow()}>{autoBusy ? <LoaderCircle className="spin" size={14}/> : <Sparkles size={14}/>}{tr("app.s0502")}</button>
           {autoError && <div className="source-error" role="alert"><CircleAlert size={15}/><JobFailureDetails context="auto" status="failed" errorMessage={autoError}/></div>}
         </div>
       </Dialog>}
       {showRuntime && <Suspense fallback={null}><RuntimeSettingsDialog
         returnFocusRef={runtimeButtonRef}
         runtime={runtime}
+        codexHealth={codexHealth}
         localResources={localResources}
         resourceJob={resourceJob}
         resourceBusy={resourceBusy}

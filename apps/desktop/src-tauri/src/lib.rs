@@ -12,6 +12,7 @@ use std::{
     time::Instant,
 };
 use tauri::Manager;
+use tokio::io::AsyncWriteExt;
 use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
 #[derive(Serialize)]
@@ -606,6 +607,42 @@ async fn run_core_structured(
 }
 
 #[tauri::command]
+async fn run_ai_request(
+    runtime: tauri::State<'_, RuntimeState>,
+    payload: String,
+) -> Result<Value, String> {
+    if payload.len() > 16 * 1024 || serde_json::from_str::<Value>(&payload).is_err() {
+        return Err("ai_request_invalid: AI 服务请求格式无效。".to_owned());
+    }
+    let paths = runtime.paths()?;
+    let mut command = tokio::process::Command::new(&paths.core);
+    configure_command(&mut command, &paths);
+    let mut child = command
+        .env("SIAOCUT_DIRECT", "1")
+        .arg("--json")
+        .arg("ai-request")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("ai_request_start_failed: 无法启动 Core：{error}"))?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "ai_request_start_failed: 无法建立安全输入管道。".to_owned())?;
+    stdin
+        .write_all(payload.as_bytes())
+        .await
+        .map_err(|_| "ai_request_write_failed: 无法发送 AI 服务请求。".to_owned())?;
+    drop(stdin);
+    let output = child
+        .wait_with_output()
+        .await
+        .map_err(|error| format!("ai_request_failed: Core 请求失败：{error}"))?;
+    parse_core_response(&output.stdout, &output.stderr)
+}
+
+#[tauri::command]
 fn local_file_available(path: String) -> bool {
     !path.trim().is_empty() && Path::new(&path).is_file()
 }
@@ -842,6 +879,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             run_core,
             run_core_structured,
+            run_ai_request,
             local_file_available,
             runtime_info,
             select_asr_backend,

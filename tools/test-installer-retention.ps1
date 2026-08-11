@@ -42,8 +42,9 @@ $token = [guid]::NewGuid().ToString('N')
 $installDir = Join-Path $tempRoot "SiaoCut-Acceptance-$token"
 $managedResourceRoot = Join-Path $tempRoot "SiaoCut-Resources-$token"
 $resourceConfigHome = Join-Path $tempRoot "SiaoCut-Resource-Config-$token"
+$aiConfigHome = Join-Path $tempRoot "SiaoCut-AI-Config-$token"
 $resourceSentinel = Join-Path $managedResourceRoot 'retention-sentinel.txt'
-$probeDir = Join-Path $env:LOCALAPPDATA 'SiaoCut\retention-probes'
+$probeDir = Join-Path $tempRoot 'retention-probes'
 $probe = Join-Path $probeDir "$token.txt"
 $configPath = Join-Path $tempRoot "siaocut-installer-test-$token.json"
 if ([version]$ToVersion -le [version]$FromVersion) { throw 'ToVersion must be higher than FromVersion.' }
@@ -191,13 +192,32 @@ function Stop-InstalledProcesses([string]$Root) {
     }
 }
 
+function Invoke-CoreJsonRequest([string]$CorePath, [string]$Payload) {
+    $requestToken = [guid]::NewGuid().ToString('N')
+    $inputPath = Join-Path $tempRoot "ai-request-$requestToken.input"
+    $outputPath = Join-Path $tempRoot "ai-request-$requestToken.output"
+    $errorPath = Join-Path $tempRoot "ai-request-$requestToken.error"
+    [IO.File]::WriteAllText($inputPath, $Payload, [Text.UTF8Encoding]::new($false))
+    try {
+        $process = Start-Process -FilePath $CorePath -ArgumentList '--json', 'ai-request' -RedirectStandardInput $inputPath -RedirectStandardOutput $outputPath -RedirectStandardError $errorPath -Wait -PassThru
+        $output = if (Test-Path -LiteralPath $outputPath) { [IO.File]::ReadAllText($outputPath, [Text.Encoding]::UTF8) } else { '' }
+        $errorOutput = if (Test-Path -LiteralPath $errorPath) { [IO.File]::ReadAllText($errorPath, [Text.Encoding]::UTF8) } else { '' }
+        if ($process.ExitCode -ne 0) { throw "Installed Core JSON request failed: $errorOutput" }
+        return $output | ConvertFrom-Json
+    } finally {
+        foreach ($path in @($inputPath, $outputPath, $errorPath)) {
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+        }
+    }
+}
+
 try {
     $usesHistoricalInstaller = -not [string]::IsNullOrWhiteSpace($FromInstallerPath)
     $v1 = if ($usesHistoricalInstaller) { $FromInstallerPath } else { Build-AcceptanceInstaller $FromVersion }
     Install-Silent $v1
     $v1Package = if ($usesHistoricalInstaller) { $null } else { Assert-AppOnlyPackage -InstallerPath $v1 }
     Assert-DesktopStarts
-    $env:SIAOCUT_HOME = Join-Path $installDir 'acceptance-home'
+    $env:SIAOCUT_HOME = $aiConfigHome
     $env:SIAOCUT_RESOURCE_CONFIG_HOME = $resourceConfigHome
     $env:SIAOCUT_DIRECT = '1'
     $env:SIAOCUT_SERVICE_IDLE_MS = '100'
@@ -234,6 +254,11 @@ try {
         throw "Installed Core changed the selected resource location: $configuredRoot"
     }
     [IO.File]::WriteAllText($resourceSentinel, 'must survive install, upgrade, and uninstall', [Text.UTF8Encoding]::new($false))
+    $aiSavePayload = '{"kind":"save","input":{"expectedRevision":0,"id":null,"providerId":"custom","displayName":"Retention probe","protocol":"openai_chat_completions","baseUrl":"http://127.0.0.1:8040/v1","modelId":"retention-model","apiKey":null}}'
+    $aiSave = Invoke-CoreJsonRequest -CorePath (Join-Path $installDir 'siaocut-core.exe') -Payload $aiSavePayload
+    if ($aiSave.status -ne 'ok' -or @($aiSave.aiServices.services).Count -ne 1) { throw 'Installed Core could not save the AI service retention probe.' }
+    $aiConfigPath = Join-Path $aiConfigHome 'ai-services.json'
+    if (-not (Test-Path -LiteralPath $aiConfigPath -PathType Leaf)) { throw 'AI service configuration file was not created.' }
     $sourceInspectionStatus = 'not_run_without_external_runtime'
     if ($null -eq $externalRuntime) {
         if ($health.engines.ffmpeg -ne 'not_configured' -or $health.engines.asr -ne 'not_configured' -or $health.engines.sourceImport -ne 'not_configured') {
@@ -264,6 +289,7 @@ try {
         throw 'Resource configuration did not survive the application upgrade.'
     }
     if (-not (Test-Path -LiteralPath $resourceSentinel -PathType Leaf)) { throw 'Selected resource directory was deleted during upgrade.' }
+    if (-not (Test-Path -LiteralPath $aiConfigPath -PathType Leaf)) { throw 'AI service configuration was deleted during upgrade.' }
     $uninstaller = Join-Path $installDir 'uninstall.exe'
     if (-not (Test-Path -LiteralPath $uninstaller)) { throw 'Uninstaller is missing after upgrade.' }
     $uninstall = Start-Process -FilePath $uninstaller -ArgumentList '/S' -Wait -PassThru
@@ -271,6 +297,7 @@ try {
     if (-not (Test-Path -LiteralPath $probe)) { throw 'User data probe was deleted during uninstall.' }
     if (-not (Test-Path -LiteralPath (Join-Path $resourceConfigHome 'local-resources.json') -PathType Leaf)) { throw 'Resource configuration was deleted during uninstall.' }
     if (-not (Test-Path -LiteralPath $resourceSentinel -PathType Leaf)) { throw 'Selected resource directory was deleted during uninstall.' }
+    if (-not (Test-Path -LiteralPath $aiConfigPath -PathType Leaf)) { throw 'Silent uninstall deleted AI service configuration.' }
     Install-Silent $v2
     Assert-DesktopStarts
     $resourcesAfterReinstall = & (Join-Path $installDir 'siaocut-core.exe') --json resources status | Out-String | ConvertFrom-Json
@@ -278,6 +305,8 @@ try {
         throw 'Resource configuration was not restored after reinstall.'
     }
     if (-not (Test-Path -LiteralPath $resourceSentinel -PathType Leaf)) { throw 'Selected resource directory was not retained after reinstall.' }
+    $aiSnapshot = Invoke-CoreJsonRequest -CorePath (Join-Path $installDir 'siaocut-core.exe') -Payload '{"kind":"snapshot"}'
+    if ($aiSnapshot.status -ne 'ok' -or @($aiSnapshot.aiEnvironment.aiServices.services).Count -ne 1) { throw 'AI service configuration was not restored after reinstall.' }
     $reinstalledUninstaller = Join-Path $installDir 'uninstall.exe'
     $reinstalledUninstall = Start-Process -FilePath $reinstalledUninstaller -ArgumentList '/S' -Wait -PassThru
     if ($reinstalledUninstall.ExitCode -ne 0) { throw "Reinstalled application uninstall failed with exit code $($reinstalledUninstall.ExitCode)." }
@@ -292,6 +321,9 @@ try {
         resourceConfigAfterUpgrade = $true
         resourceConfigAfterUninstall = $true
         selectedResourceDirectoryAfterUninstall = $true
+        aiConfigAfterUpgrade = $true
+        aiConfigAfterSilentUninstall = $true
+        aiConfigAfterReinstall = $true
         resourceConfigAfterReinstall = $true
         selectedResourceDirectoryAfterReinstall = $true
         reinstallCompleted = $true
@@ -322,10 +354,10 @@ try {
     if (Test-Path -LiteralPath $configPath) { Remove-Item -LiteralPath $configPath -Force }
     if (Test-Path -LiteralPath $probe) { Remove-Item -LiteralPath $probe -Force }
     if ((Test-Path -LiteralPath $probeDir) -and -not (Get-ChildItem -LiteralPath $probeDir -Force | Select-Object -First 1)) { Remove-Item -LiteralPath $probeDir -Force }
-    foreach ($generated in @($managedResourceRoot, $resourceConfigHome)) {
+    foreach ($generated in @($managedResourceRoot, $resourceConfigHome, $aiConfigHome)) {
         $resolvedGenerated = [IO.Path]::GetFullPath($generated)
         $tempPrefix = $tempRoot.TrimEnd('\') + '\'
-        if ($resolvedGenerated.StartsWith($tempPrefix, [StringComparison]::OrdinalIgnoreCase) -and (Split-Path -Leaf $resolvedGenerated) -match '^SiaoCut-(Resources|Resource-Config)-[0-9a-f]{32}$' -and (Test-Path -LiteralPath $resolvedGenerated)) {
+        if ($resolvedGenerated.StartsWith($tempPrefix, [StringComparison]::OrdinalIgnoreCase) -and (Split-Path -Leaf $resolvedGenerated) -match '^SiaoCut-(Resources|Resource-Config|AI-Config)-[0-9a-f]{32}$' -and (Test-Path -LiteralPath $resolvedGenerated)) {
             Remove-Item -LiteralPath $resolvedGenerated -Recurse -Force
         }
     }

@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "providers": [
+    {"id":"openai","displayName":"OpenAI","protocol":"openai_responses","officialBaseUrl":"https://api.openai.com/v1","modelsPath":"/models","documentationUrl":"https://platform.openai.com/docs/quickstart","supportsModelDiscovery":true},
+    {"id":"anthropic","displayName":"Anthropic","protocol":"anthropic_messages","officialBaseUrl":"https://api.anthropic.com","modelsPath":"/v1/models","documentationUrl":"https://platform.claude.com/docs/en/api/messages/create","supportsModelDiscovery":true},
+    {"id":"gemini","displayName":"Gemini","protocol":"gemini_generate_content","officialBaseUrl":"https://generativelanguage.googleapis.com/v1beta","modelsPath":"/models","documentationUrl":"https://ai.google.dev/api/generate-content","supportsModelDiscovery":true},
+    {"id":"deepseek","displayName":"DeepSeek","protocol":"openai_chat_completions","officialBaseUrl":"https://api.deepseek.com","modelsPath":"/models","documentationUrl":"https://api-docs.deepseek.com/api/create-chat-completion","supportsModelDiscovery":true},
+    {"id":"kimi","displayName":"Kimi","protocol":"openai_chat_completions","officialBaseUrl":"https://api.moonshot.ai/v1","modelsPath":"/models","documentationUrl":"https://platform.kimi.ai/docs/api/overview","supportsModelDiscovery":true},
+    {"id":"glm","displayName":"GLM","protocol":"openai_chat_completions","officialBaseUrl":"https://open.bigmodel.cn/api/paas/v4","modelsPath":"/models","documentationUrl":"https://docs.bigmodel.cn/cn/guide/develop/openai/introduction","supportsModelDiscovery":true},
+    {"id":"custom","displayName":"其他兼容服务","protocol":"openai_chat_completions","officialBaseUrl":null,"modelsPath":"/models","documentationUrl":null,"supportsModelDiscovery":true}
+  ]
+}

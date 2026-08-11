@@ -26,7 +26,7 @@ describe("App locale switching", () => {
 
     await waitFor(() => expect(screen.getByRole("button", { name: "New project" })).toBeInTheDocument());
     expect(screen.getByRole("button", { name: "Review suggestions" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Send to local Codex" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start AI assistance" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Export" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Undo" })).toBeInTheDocument();
     expect(screen.getByText("4 subtitles")).toBeInTheDocument();
@@ -36,7 +36,7 @@ describe("App locale switching", () => {
     expect(document.documentElement.lang).toBe("en-US");
 
     fireEvent.click(screen.getByRole("button", { name: "Local resources" }));
-    expect(await screen.findByRole("dialog", { name: "Local resources" })).toHaveTextContent("Browser preview is not connected to an update source.");
+    expect(await screen.findByRole("dialog", { name: "Environment settings" })).toHaveTextContent("Browser preview is not connected to an update source.");
   });
 
   it("localizes Core-authored version reasons and speaker stages in English chrome", () => {

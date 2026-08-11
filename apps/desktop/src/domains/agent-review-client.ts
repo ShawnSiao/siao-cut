@@ -1,11 +1,22 @@
 import { runCore } from "../core";
 import type { UiLocale } from "../i18n";
+import type { AiExecutionSelection } from "../features/ai-assistance/types";
 
 type AgentWorkflowKind = "polish" | "proofread" | "edit" | "translate" | "punctuate" | "speaker_names";
 
 export const agentReviewClient = {
   getCodexHealth: () => runCore(["agent", "health"]),
-  startAgent: (taskId: string, timeoutSeconds = 900) => runCore(["agent", "start", taskId, "--timeout-seconds", String(timeoutSeconds)]),
+  startAgent: (taskId: string, timeoutSeconds = 900, target: AiExecutionSelection = { kind: "codex" }) => runCore([
+    "agent", "start", taskId,
+    "--execution", target.kind === "api" ? "api" : "codex",
+    ...(target.kind === "api" ? [
+      "--service-config-id", target.serviceConfigId,
+      "--service-revision", String(target.serviceRevision),
+      "--network-revision", String(target.networkRevision),
+      "--model-id", target.modelId,
+    ] : []),
+    "--timeout-seconds", String(timeoutSeconds),
+  ]),
   getAgentRun: (runId: string) => runCore(["agent", "status", runId]),
   listAgentRuns: (projectId?: string) => runCore(["agent", "list", ...(projectId ? [projectId] : [])]),
   cancelAgent: (runId: string) => runCore(["agent", "cancel", runId]),
