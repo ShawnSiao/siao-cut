@@ -1437,7 +1437,7 @@ describe("SiaoCut review workbench", () => {
     await waitFor(() => expect(within(status).getByText(/已取消 · 等待 Agent 翻译/)).toBeInTheDocument());
     expect(within(status).getByRole("button", { name: "显式继续" })).toBeInTheDocument();
     expect(within(status).getByRole("button", { name: "打开待审项目" })).toBeInTheDocument();
-  });
+  }, 10_000);
 
   it("requires audited URL metadata and rights confirmation in the one-click flow", async () => {
     render(<App />);

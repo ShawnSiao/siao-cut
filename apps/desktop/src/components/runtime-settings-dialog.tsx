@@ -83,7 +83,7 @@ export default function RuntimeSettingsDialog(props: RuntimeSettingsDialogProps)
       <header className="environment-settings-header">
         <div className="environment-title-group"><span>{tr("app.resources.management")}</span><h2>{tr("app.environment.title")}</h2><p>{tr("app.environment.description")}</p></div>
         <nav className="environment-settings-tabs" role="tablist" aria-label={tr("app.environment.title")}><button className={tab === "local" ? "active" : ""} type="button" role="tab" aria-selected={tab === "local"} onClick={() => setTab("local")}>{tr("app.environment.localTab")}</button><button className={tab === "ai" ? "active" : ""} type="button" role="tab" aria-selected={tab === "ai"} onClick={() => setTab("ai")}>{tr("app.environment.aiTab")}</button></nav>
-        <button autoFocus className="environment-settings-close" aria-label={tr("app.environment.close")} title={tr("app.environment.close")} onClick={props.onClose}><X size={17}/></button>
+        <button autoFocus data-dialog-initial-focus className="environment-settings-close" aria-label={tr("app.environment.close")} title={tr("app.environment.close")} onClick={props.onClose}><X size={17}/></button>
       </header>
       {tab === "local" ? <div className="runtime-dialog-content environment-local-content" role="tabpanel" aria-label="本地功能">
         <p className="dialog-copy">{tr("app.resources.panelDescription")}</p>
