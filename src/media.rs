@@ -427,6 +427,21 @@ fn comparable_text(text: &str) -> String {
         .collect()
 }
 
+fn item_has_lexical_tokens(item: &Value) -> bool {
+    item.get("tokens")
+        .and_then(Value::as_array)
+        .is_some_and(|tokens| {
+            tokens.iter().any(|token| {
+                let text = token
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .trim();
+                !text.is_empty() && !is_special_token(text) && !is_punctuation_only(text)
+            })
+        })
+}
+
 fn whisper_item_segments(item: &Value, audio_duration: f64) -> Result<Vec<ImportedSegment>> {
     let timestamps = item.get("timestamps").unwrap_or(&Value::Null);
     let item_start = parse_timing_field(
@@ -448,7 +463,7 @@ fn whisper_item_segments(item: &Value, audio_duration: f64) -> Result<Vec<Import
         .and_then(Value::as_str)
         .unwrap_or("")
         .trim();
-    if text.is_empty() {
+    if text.is_empty() && !item_has_lexical_tokens(item) {
         return Ok(Vec::new());
     }
 
@@ -457,6 +472,7 @@ fn whisper_item_segments(item: &Value, audio_duration: f64) -> Result<Vec<Import
         .and_then(Value::as_array)
         .ok_or_else(|| timing_error("非空字幕段缺少词级时间，结果未应用"))?;
     let mut pending_text = String::new();
+    let mut pending_has_lexical_content = false;
     let mut tokens: Vec<TimedToken> = Vec::new();
     let mut previous_word_start = None;
     let mut previous_word_end = None;
@@ -471,7 +487,9 @@ fn whisper_item_segments(item: &Value, audio_duration: f64) -> Result<Vec<Import
             continue;
         }
         if is_punctuation_only(word_text) {
-            if let Some(previous) = tokens.last_mut() {
+            if pending_has_lexical_content {
+                pending_text.push_str(raw_text);
+            } else if let Some(previous) = tokens.last_mut() {
                 previous.rendered_text.push_str(raw_text);
                 previous.word.text.push_str(word_text);
             } else {
@@ -493,32 +511,84 @@ fn whisper_item_segments(item: &Value, audio_duration: f64) -> Result<Vec<Import
         if word_end < word_start {
             return Err(timing_error("词级内容结束时间不晚于开始时间，结果未应用"));
         }
-        if word_end == word_start {
-            word_end = token_values[token_index + 1..]
-                .iter()
-                .find_map(|candidate| {
-                    let candidate_text = candidate
-                        .get("text")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .trim();
-                    (!candidate_text.is_empty()
-                        && !is_special_token(candidate_text)
-                        && !is_punctuation_only(candidate_text))
-                    .then(|| {
-                        candidate
-                            .pointer("/timestamps/from")
-                            .and_then(Value::as_str)
-                            .and_then(|value| parse_whisper_timestamp(value).ok())
-                    })
-                    .flatten()
-                    .filter(|next_start| *next_start > word_start)
-                })
-                .or_else(|| (item_end > word_start).then_some(item_end))
-                .ok_or_else(|| timing_error("词级内容结束时间不晚于开始时间，结果未应用"))?;
+        if word_start + PARENT_SEGMENT_TOLERANCE_SECONDS < item_start
+            || word_start > item_end + PARENT_SEGMENT_TOLERANCE_SECONDS
+        {
+            return Err(timing_error("词级时间不在所属字幕段附近，结果未应用"));
         }
-        if word_end - word_start > MAX_CAPTION_DURATION_SECONDS {
-            return Err(timing_error("单个词级时间范围异常，结果未应用"));
+        if word_start > audio_duration + AUDIO_DURATION_TOLERANCE_SECONDS {
+            return Err(timing_error("词级时间超出标准化音频时长，结果未应用"));
+        }
+        if word_end == word_start {
+            let mut next_lexical_start = None;
+            for candidate in &token_values[token_index + 1..] {
+                let candidate_text = candidate
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .trim();
+                if candidate_text.is_empty()
+                    || is_special_token(candidate_text)
+                    || is_punctuation_only(candidate_text)
+                {
+                    continue;
+                }
+                let candidate_timestamps = candidate
+                    .get("timestamps")
+                    .ok_or_else(|| timing_error("词级内容缺少时间戳，结果未应用"))?;
+                let candidate_start = parse_timing_field(
+                    candidate_timestamps.get("from").and_then(Value::as_str),
+                    "词级内容缺少有效开始时间，结果未应用",
+                )?;
+                let candidate_end = parse_timing_field(
+                    candidate_timestamps.get("to").and_then(Value::as_str),
+                    "词级内容缺少有效结束时间，结果未应用",
+                )?;
+                if candidate_end < candidate_start {
+                    return Err(timing_error("词级内容结束时间不晚于开始时间，结果未应用"));
+                }
+                next_lexical_start = Some(candidate_start);
+                break;
+            }
+
+            match next_lexical_start {
+                Some(next_start) if next_start + TIMELINE_ORDER_TOLERANCE_SECONDS < word_start => {
+                    return Err(timing_error("词级时间出现倒退，结果未应用"));
+                }
+                Some(next_start) if next_start <= word_start + TIMELINE_ORDER_TOLERANCE_SECONDS => {
+                    pending_text.push_str(raw_text);
+                    pending_has_lexical_content = true;
+                    continue;
+                }
+                Some(next_start) => word_end = next_start,
+                None if item_end > word_start => word_end = item_end,
+                None => {
+                    let merged_text = format!("{pending_text}{raw_text}");
+                    if let Some(previous) = tokens.last_mut() {
+                        previous.rendered_text.push_str(&merged_text);
+                        previous.word.text.push_str(merged_text.trim_end());
+                    } else if item_end > item_start {
+                        tokens.push(TimedToken {
+                            rendered_text: merged_text.clone(),
+                            word: Word {
+                                id: new_id("w"),
+                                segment_id: String::new(),
+                                start: item_start,
+                                end: item_end,
+                                text: merged_text.trim().to_owned(),
+                                confidence: token.get("p").and_then(Value::as_f64),
+                            },
+                        });
+                        previous_word_start = Some(item_start);
+                        previous_word_end = Some(item_end);
+                    } else {
+                        return Err(timing_error("词级内容结束时间不晚于开始时间，结果未应用"));
+                    }
+                    pending_text.clear();
+                    pending_has_lexical_content = false;
+                    continue;
+                }
+            }
         }
         if word_start + PARENT_SEGMENT_TOLERANCE_SECONDS < item_start
             || word_end > item_end + PARENT_SEGMENT_TOLERANCE_SECONDS
@@ -536,8 +606,9 @@ fn whisper_item_segments(item: &Value, audio_duration: f64) -> Result<Vec<Import
             return Err(timing_error("词级时间出现倒退，结果未应用"));
         }
         let rendered_text = format!("{pending_text}{raw_text}");
-        let stored_text = format!("{}{}", pending_text.trim(), word_text);
+        let stored_text = rendered_text.trim().to_owned();
         pending_text.clear();
+        pending_has_lexical_content = false;
         tokens.push(TimedToken {
             rendered_text,
             word: Word {
@@ -560,6 +631,9 @@ fn whisper_item_segments(item: &Value, audio_duration: f64) -> Result<Vec<Import
         && let Some(previous) = tokens.last_mut()
     {
         previous.rendered_text.push_str(&pending_text);
+        if pending_has_lexical_content {
+            previous.word.text.push_str(pending_text.trim_end());
+        }
     }
     let reconstructed = tokens
         .iter()
@@ -628,8 +702,29 @@ fn validate_whisper_transcript(
         });
     let mut previous_segment_start = None;
     let mut previous_segment_end = None;
-    let mut segments = Vec::new();
+    let mut segments: Vec<ImportedSegment> = Vec::new();
+    let mut pending_prefix = String::new();
     for item in entries {
+        let item_text = item
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        let has_lexical_tokens = item_has_lexical_tokens(item);
+        if !has_lexical_tokens && (item_text.is_empty() || is_special_token(item_text)) {
+            continue;
+        }
+        if !has_lexical_tokens && is_punctuation_only(item_text) {
+            if let Some(previous) = segments.last_mut() {
+                previous.text.push_str(item_text);
+                if let Some(word) = previous.words.last_mut() {
+                    word.text.push_str(item_text);
+                }
+            } else {
+                pending_prefix.push_str(item_text);
+            }
+            continue;
+        }
         let timestamps = item.get("timestamps").unwrap_or(&Value::Null);
         let item_start = parse_timing_field(
             timestamps.get("from").and_then(Value::as_str),
@@ -646,7 +741,17 @@ fn validate_whisper_transcript(
         {
             return Err(timing_error("字幕段时间出现倒退，结果未应用"));
         }
-        segments.extend(whisper_item_segments(item, audio_duration)?);
+        let mut item_segments = whisper_item_segments(item, audio_duration)?;
+        if !pending_prefix.is_empty()
+            && let Some(first) = item_segments.first_mut()
+        {
+            first.text.insert_str(0, &pending_prefix);
+            if let Some(word) = first.words.first_mut() {
+                word.text.insert_str(0, &pending_prefix);
+            }
+            pending_prefix.clear();
+        }
+        segments.extend(item_segments);
         previous_segment_start = Some(item_start);
         previous_segment_end = Some(item_end);
     }
@@ -913,6 +1018,153 @@ mod tests {
         assert_eq!(segments[0].words.len(), 2);
         assert_eq!(segments[0].words[0].start, 4.4);
         assert_eq!(segments[0].words[0].end, 4.51);
+    }
+
+    #[test]
+    fn merges_a_zero_duration_word_into_the_next_word_with_the_same_start() {
+        let item = serde_json::json!({
+            "timestamps":{"from":"00:06:03,320","to":"00:06:04,000"},
+            "text":" And or the best",
+            "tokens":[
+                {"text":" And","timestamps":{"from":"00:06:03,320","to":"00:06:03,560"}},
+                {"text":" or","timestamps":{"from":"00:06:03,680","to":"00:06:03,680"}},
+                {"text":" the","timestamps":{"from":"00:06:03,680","to":"00:06:03,780"}},
+                {"text":" best","timestamps":{"from":"00:06:03,780","to":"00:06:04,000"}}
+            ]
+        });
+
+        let segments = whisper_item_segments(&item, 365.0).unwrap();
+
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].text, "And or the best");
+        assert_eq!(segments[0].words.len(), 3);
+        assert_eq!(segments[0].words[1].text, "or the");
+        assert_eq!(segments[0].words[1].start, 363.68);
+        assert_eq!(segments[0].words[1].end, 363.78);
+    }
+
+    #[test]
+    fn merges_a_terminal_zero_duration_word_into_the_previous_word() {
+        let item = serde_json::json!({
+            "timestamps":{"from":"00:00:00,000","to":"00:00:01,000"},
+            "text":" hello world",
+            "tokens":[
+                {"text":" hello","timestamps":{"from":"00:00:00,100","to":"00:00:00,800"}},
+                {"text":" world","timestamps":{"from":"00:00:01,000","to":"00:00:01,000"}}
+            ]
+        });
+
+        let segments = whisper_item_segments(&item, 2.0).unwrap();
+
+        assert_eq!(segments[0].text, "hello world");
+        assert_eq!(segments[0].words.len(), 1);
+        assert_eq!(segments[0].words[0].text, "hello world");
+        assert_eq!(segments[0].words[0].end, 0.8);
+    }
+
+    #[test]
+    fn uses_the_parent_range_when_all_content_words_are_terminal_zero_duration() {
+        let item = serde_json::json!({
+            "timestamps":{"from":"00:00:00,000","to":"00:00:01,000"},
+            "text":" one two",
+            "tokens":[
+                {"text":" one","timestamps":{"from":"00:00:01,000","to":"00:00:01,000"}},
+                {"text":" two","timestamps":{"from":"00:00:01,000","to":"00:00:01,000"}}
+            ]
+        });
+
+        let segments = whisper_item_segments(&item, 2.0).unwrap();
+
+        assert_eq!(segments[0].text, "one two");
+        assert_eq!(segments[0].words.len(), 1);
+        assert_eq!(segments[0].words[0].text, "one two");
+        assert_eq!(segments[0].words[0].start, 0.0);
+        assert_eq!(segments[0].words[0].end, 1.0);
+    }
+
+    #[test]
+    fn rejects_a_terminal_zero_duration_word_outside_its_parent_item() {
+        let item = serde_json::json!({
+            "timestamps":{"from":"00:00:00,000","to":"00:00:01,000"},
+            "text":" hello stray",
+            "tokens":[
+                {"text":" hello","timestamps":{"from":"00:00:00,100","to":"00:00:00,800"}},
+                {"text":" stray","timestamps":{"from":"00:00:02,000","to":"00:00:02,000"}}
+            ]
+        });
+
+        let error = whisper_item_segments(&item, 3.0).unwrap_err().to_string();
+
+        assert!(error.contains("transcription_timing_invalid"));
+        assert!(error.contains("所属字幕段"));
+    }
+
+    #[test]
+    fn ignores_empty_control_only_items_without_valid_segment_timing() {
+        let raw = serde_json::json!({
+            "transcription":[
+                {
+                    "text":"",
+                    "tokens":[{"text":"[_BEG_]"}]
+                },
+                {
+                    "timestamps":{"from":"00:00:00,000","to":"00:00:01,000"},
+                    "text":" hello",
+                    "tokens":[{"text":" hello","timestamps":{"from":"00:00:00,100","to":"00:00:00,900"}}]
+                }
+            ]
+        });
+
+        let validated = validate_whisper_transcript(&raw, 2.0).unwrap();
+
+        assert_eq!(validated.segments.len(), 1);
+        assert_eq!(validated.segments[0].text, "hello");
+    }
+
+    #[test]
+    fn attaches_a_punctuation_only_item_to_the_previous_timed_item() {
+        let raw = serde_json::json!({
+            "transcription":[
+                {
+                    "timestamps":{"from":"00:00:00,000","to":"00:00:01,000"},
+                    "text":" Hello",
+                    "tokens":[{"text":" Hello","timestamps":{"from":"00:00:00,100","to":"00:00:00,900"}}]
+                },
+                {
+                    "timestamps":{"from":"00:00:00,000","to":"00:00:00,000"},
+                    "text":"。",
+                    "tokens":[{"text":"。","timestamps":{"from":"00:00:00,000","to":"00:00:00,000"}}]
+                },
+                {
+                    "timestamps":{"from":"00:00:01,000","to":"00:00:02,000"},
+                    "text":" Next",
+                    "tokens":[{"text":" Next","timestamps":{"from":"00:00:01,100","to":"00:00:01,900"}}]
+                }
+            ]
+        });
+
+        let validated = validate_whisper_transcript(&raw, 3.0).unwrap();
+
+        assert_eq!(validated.segments.len(), 2);
+        assert_eq!(validated.segments[0].text, "Hello。");
+        assert_eq!(validated.segments[0].words[0].text, "Hello。");
+    }
+
+    #[test]
+    fn accepts_a_single_long_word_for_quality_review_instead_of_rejecting_import() {
+        let item = serde_json::json!({
+            "timestamps":{"from":"00:00:00,000","to":"00:00:09,500"},
+            "text":" elongated",
+            "tokens":[
+                {"text":" elongated","timestamps":{"from":"00:00:00,100","to":"00:00:09,100"}}
+            ]
+        });
+
+        let segments = whisper_item_segments(&item, 10.0).unwrap();
+
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].text, "elongated");
+        assert_eq!(segments[0].end - segments[0].start, 9.0);
     }
 
     #[test]
