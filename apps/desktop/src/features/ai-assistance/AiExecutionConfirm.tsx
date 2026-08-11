@@ -1,4 +1,4 @@
-import { Bot, Cloud, Copy, ShieldCheck, X } from "lucide-react";
+import { Bot, CircleAlert, Cloud, Copy, Cpu, ShieldCheck, X } from "lucide-react";
 import { useEffect, useMemo, useState, type RefObject } from "react";
 import { Dialog } from "../../components/ui";
 import { useAiServices } from "../environment-settings/use-ai-services";
@@ -66,7 +66,23 @@ export default function AiExecutionConfirm(props: Props) {
       <label className={mode === "codex" ? "selected" : ""}><input type="radio" name="ai-mode" checked={mode === "codex"} disabled={!props.codexReady} onChange={() => setMode("codex")}/><Bot size={17}/><span><strong>本机 Codex</strong><small>{props.codexReady ? "使用本机隔离执行器" : "未安装或未登录"}</small></span></label>
       <label className={mode === "copy_prompt" ? "selected" : ""}><input type="radio" name="ai-mode" checked={mode === "copy_prompt"} onChange={() => setMode("copy_prompt")}/><Copy size={17}/><span><strong>复制提示词</strong><small>手工交给外部 Agent</small></span></label>
     </div>
-    {mode === "api" && service && <div className="ai-execution-target"><label><span>服务</span><select value={service.id} onChange={(event) => chooseService(event.target.value)}>{services.map((item) => <option key={item.id} value={item.id}>{item.displayName}{item.isDefault ? "（默认）" : ""}</option>)}</select></label><label><span>本次模型</span><input value={modelId} spellCheck={false} onChange={(event) => setModelId(event.target.value)}/></label>{service.connectionState !== "ready" && <p>此服务尚未通过最近一次连接测试；仍可继续执行。</p>}</div>}
+    {mode === "api" && service && <div className="ai-execution-target ai-service-fields">
+      <label className="ai-service-field">
+        <span className="ai-service-field-heading"><span>服务</span><small>选择已保存服务</small></span>
+        <span className="ai-service-control">
+          <Cloud aria-hidden="true" size={17}/>
+          <select aria-label="服务" value={service.id} onChange={(event) => chooseService(event.target.value)}>{services.map((item) => <option key={item.id} value={item.id}>{item.displayName}{item.isDefault ? "（默认）" : ""}</option>)}</select>
+        </span>
+      </label>
+      <label className="ai-service-field">
+        <span className="ai-service-field-heading"><span>本次模型</span><small>仅影响本次运行</small></span>
+        <span className="ai-service-control ai-service-model-control">
+          <Cpu aria-hidden="true" size={17}/>
+          <input aria-label="本次模型" value={modelId} spellCheck={false} onChange={(event) => setModelId(event.target.value)}/>
+        </span>
+      </label>
+      {service.connectionState !== "ready" && <p className="ai-service-note"><CircleAlert aria-hidden="true" size={15}/><span>此服务尚未通过最近一次连接测试；仍可继续执行。</span></p>}
+    </div>}
     <dl className="ai-execution-scope"><div><dt>接收方</dt><dd>{mode === "api" ? `${service?.displayName ?? "AI 服务"} / ${modelId || "未选模型"}` : mode === "codex" ? "本机 Codex" : "复制提示词"}</dd></div><div><dt>文本范围</dt><dd>{props.segmentCount} 段 · {props.characterCount.toLocaleString()} 字符 · {formatTime(props.startTime)}—{formatTime(props.endTime)}</dd></div>{props.contextLabel && <div><dt>辅助文本</dt><dd>{props.contextLabel}</dd></div>}<div><dt>费用提示</dt><dd>{mode === "api" ? "可能产生 API 用量；SiaoCut 不估算厂商费用。" : "SiaoCut 不产生第三方 API 用量。"}</dd></div></dl>
     <section className="ai-execution-boundary"><ShieldCheck size={17}/><span><strong>只发送文本任务载荷</strong><small>不包含视频、音频、本机媒体路径、数据库或凭据。结果只进入待审核流程，不直接修改项目。</small></span></section>
     <label className="ai-execution-confirm"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)}/><span>已核对接收方、模型、文本范围和可能的 API 用量，同意执行本次 AI 辅助。</span></label>

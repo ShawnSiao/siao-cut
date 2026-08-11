@@ -15,6 +15,9 @@ describe("AiExecutionConfirm", () => {
     const onConfirm = vi.fn();
     render(<AiExecutionConfirm returnFocusRef={createRef()} codexReady={false} taskLabel="AI 辅助 · 润色" segmentCount={12} characterCount={345} startTime={0} endTime={72} contextLabel={null} onClose={vi.fn()} onConfirm={onConfirm}/>);
     await waitFor(() => expect((screen.getByRole("radio", { name: /AI 服务/ }) as HTMLInputElement).checked).toBe(true));
+    expect(screen.getByRole("combobox", { name: "服务" }).closest(".ai-service-control")).not.toBeNull();
+    expect(screen.getByRole("textbox", { name: "本次模型" }).closest(".ai-service-model-control")).not.toBeNull();
+    expect(screen.getByText("仅影响本次运行")).not.toBeNull();
     expect(screen.getByText(/12 段 · 345 字符/)).not.toBeNull();
     expect(screen.getByText(/不包含视频、音频、本机媒体路径、数据库或凭据/)).not.toBeNull();
     fireEvent.click(screen.getByRole("checkbox"));
