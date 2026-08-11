@@ -3241,6 +3241,7 @@ function WorkbenchController() {
       {showRuntime && <Suspense fallback={null}><RuntimeSettingsDialog
         returnFocusRef={runtimeButtonRef}
         runtime={runtime}
+        codexHealth={codexHealth}
         localResources={localResources}
         resourceJob={resourceJob}
         resourceBusy={resourceBusy}

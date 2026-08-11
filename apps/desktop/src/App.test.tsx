@@ -32,7 +32,7 @@ async function openDrawerTab(name: "审阅" | "质量" | "分析" | "历史" | "
 
 async function selectAdvancedTranscriptionMode(mode: "quick" | "multispeaker") {
   fireEvent.click(await screen.findByRole("button", { name: "本地资源" }));
-  const dialog = await screen.findByRole("dialog", { name: "本地资源" });
+  const dialog = await screen.findByRole("dialog", { name: "环境配置" });
   openResourceDiagnostics(dialog);
   fireEvent.change(within(dialog).getByRole("combobox", { name: "转写模式" }), { target: { value: mode } });
   return dialog;
@@ -154,7 +154,7 @@ describe("SiaoCut review workbench", () => {
     fireEvent.change(within(runtime).getByRole("combobox", { name: "素材语言" }), { target: { value: "en" } });
     expect(localStorage.getItem(TRANSCRIPTION_LANGUAGE_STORAGE_KEY)).toBe("en");
     expect(parseTranscriptionLanguage("unsupported")).toBe("auto");
-    fireEvent.click(within(runtime).getByRole("button", { name: "关闭本地资源" }));
+    fireEvent.click(within(runtime).getByRole("button", { name: "关闭环境配置" }));
 
     fireEvent.change(screen.getByRole("combobox", { name: "Agent 工作流" }), { target: { value: "edit" } });
     fireEvent.click(screen.getByRole("button", { name: "手工交接" }));
@@ -1214,7 +1214,7 @@ describe("SiaoCut review workbench", () => {
     render(<App />);
 
     fireEvent.click(await screen.findByRole("button", { name: "本地资源" }));
-    const settings = await screen.findByRole("dialog", { name: "本地资源" });
+    const settings = await screen.findByRole("dialog", { name: "环境配置" });
     fireEvent.click(within(settings).getByRole("button", { name: "更改位置" }));
     const setup = await screen.findByRole("dialog", { name: "准备 SiaoCut" });
     fireEvent.click(within(setup).getByRole("button", { name: "更改位置" }));
@@ -1222,7 +1222,7 @@ describe("SiaoCut review workbench", () => {
     fireEvent.click(within(setup).getByRole("button", { name: "确认此位置" }));
 
     expect(await screen.findByText("本地资源已安全移到新的保存位置。")).toBeInTheDocument();
-    const reopened = await screen.findByRole("dialog", { name: "本地资源" });
+    const reopened = await screen.findByRole("dialog", { name: "环境配置" });
     expect(within(reopened).getByText("D:\\SiaoCut Resources")).toBeInTheDocument();
     fireEvent.click(within(reopened).getByRole("button", { name: "释放无用空间" }));
 
@@ -1475,7 +1475,7 @@ describe("SiaoCut review workbench", () => {
     render(<App />);
     const settings = await screen.findByRole("button", { name: "本地资源" });
     fireEvent.click(settings);
-    const dialog = await screen.findByRole("dialog", { name: "本地资源" });
+    const dialog = await screen.findByRole("dialog", { name: "环境配置" });
     expect(within(dialog).getByText("whisper.cpp")).not.toBeVisible();
     openResourceDiagnostics(dialog);
     expect(screen.getByText("whisper.cpp")).toBeInTheDocument();
@@ -1492,16 +1492,16 @@ describe("SiaoCut review workbench", () => {
     render(<App />);
     const settings = await screen.findByRole("button", { name: "本地资源" });
     fireEvent.click(settings);
-    expect(await screen.findByRole("button", { name: "关闭本地资源" })).toHaveFocus();
+    expect(await screen.findByRole("button", { name: "关闭环境配置" })).toHaveFocus();
     fireEvent.keyDown(window, { key: "Escape" });
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "本地资源" })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "环境配置" })).not.toBeInTheDocument());
     expect(settings).toHaveFocus();
   });
 
   it("requires explicit download verification and confirmation before removing a model", async () => {
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "本地资源" }));
-    openResourceDiagnostics(await screen.findByRole("dialog", { name: "本地资源" }));
+    openResourceDiagnostics(await screen.findByRole("dialog", { name: "环境配置" }));
     const option = (await screen.findByText("平衡 · 推荐")).closest("article");
     expect(option).not.toBeNull();
     fireEvent.click(within(option!).getByRole("button", { name: "下载" }));
@@ -1570,7 +1570,7 @@ describe("SiaoCut review workbench", () => {
     fireEvent.click(await screen.findByRole("button", { name: "新建项目" }));
     const runtime = await selectAdvancedTranscriptionMode("multispeaker");
     expect(localStorage.getItem("siaocut.transcriptionMode")).toBe("multispeaker");
-    fireEvent.click(within(runtime).getByRole("button", { name: "关闭本地资源" }));
+    fireEvent.click(within(runtime).getByRole("button", { name: "关闭环境配置" }));
     const start = screen.getByRole("button", { name: "开始多人转写" });
     await waitFor(() => expect(start).toBeEnabled());
     fireEvent.click(start);
@@ -1594,7 +1594,7 @@ describe("SiaoCut review workbench", () => {
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "新建项目" }));
     const runtime = await selectAdvancedTranscriptionMode("multispeaker");
-    fireEvent.click(within(runtime).getByRole("button", { name: "关闭本地资源" }));
+    fireEvent.click(within(runtime).getByRole("button", { name: "关闭环境配置" }));
     fireEvent.click(screen.getByText("高级实验项：Prompt 与热词"));
     fireEvent.change(screen.getByRole("textbox", { name: "自定义 Prompt" }), { target: { value: "simulate-conflict" } });
 
