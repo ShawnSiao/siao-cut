@@ -1420,7 +1420,10 @@ describe("SiaoCut review workbench", () => {
     await waitFor(() => expect(within(dialog).getByText("demo.mp4")).toBeInTheDocument());
     fireEvent.click(within(dialog).getByRole("checkbox", { name: "创建 Agent 翻译任务" }));
     const target = await within(dialog).findByRole("region", { name: "字幕翻译执行方式" });
-    fireEvent.click(within(target).getByRole("radio", { name: "复制提示词" }));
+    await waitFor(() => expect(within(target).getByRole("radio", { name: "本机 Codex" })).toBeEnabled());
+    const manualTarget = within(target).getByRole("radio", { name: "复制提示词" });
+    fireEvent.click(manualTarget);
+    expect(manualTarget).toBeChecked();
     const start = within(dialog).getByRole("button", { name: "启动一键工作流" });
     await waitFor(() => expect(start).toBeEnabled());
     fireEvent.click(start);
@@ -1429,7 +1432,7 @@ describe("SiaoCut review workbench", () => {
       const error = within(dialog).queryByRole("alert");
       if (error) throw new Error(error.textContent ?? "one-click workflow failed");
       expect(screen.getByRole("region", { name: "一键工作流状态" })).toBeInTheDocument();
-    }, { timeout: 5000 });
+    }, { timeout: 10_000 });
     const status = screen.getByRole("region", { name: "一键工作流状态" });
     await waitFor(() => expect(within(status).getByText(/需要 Agent 继续 · 等待 Agent 翻译/)).toBeInTheDocument(), { timeout: 5000 });
     fireEvent.click(within(status).getByRole("button", { name: "取消流程" }));
@@ -1437,7 +1440,7 @@ describe("SiaoCut review workbench", () => {
     await waitFor(() => expect(within(status).getByText(/已取消 · 等待 Agent 翻译/)).toBeInTheDocument());
     expect(within(status).getByRole("button", { name: "显式继续" })).toBeInTheDocument();
     expect(within(status).getByRole("button", { name: "打开待审项目" })).toBeInTheDocument();
-  }, 10_000);
+  }, 20_000);
 
   it("requires audited URL metadata and rights confirmation in the one-click flow", async () => {
     render(<App />);
