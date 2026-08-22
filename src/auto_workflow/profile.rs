@@ -13,13 +13,14 @@ pub(super) fn validate_start_profile(
     has_translation: bool,
     has_ai_execution: bool,
     subtitle_mode: SubtitleMode,
+    check_local_capability: bool,
 ) -> Result<()> {
     if profile == WorkflowProfile::Draft
         && (has_translation || has_ai_execution || subtitle_mode != SubtitleMode::Source)
     {
         bail!("auto_workflow_profile_invalid: 快速初稿禁止翻译、AI 执行和非原文字幕模式")
     }
-    if profile == WorkflowProfile::Delivery {
+    if profile == WorkflowProfile::Delivery && check_local_capability {
         audio_analysis::ensure_available()?;
     }
     Ok(())

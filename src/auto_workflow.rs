@@ -65,10 +65,18 @@ pub fn start(db: &mut Connection, request: StartRequest) -> Result<AutoWorkflow>
 
 #[cfg(test)]
 fn insert(db: &mut Connection, request: StartRequest) -> Result<AutoWorkflow> {
-    insert_with_flag(db, request).map(|(workflow, _)| workflow)
+    insert_with_capability_check(db, request, false).map(|(workflow, _)| workflow)
 }
 
 fn insert_with_flag(db: &mut Connection, request: StartRequest) -> Result<(AutoWorkflow, bool)> {
+    insert_with_capability_check(db, request, true)
+}
+
+fn insert_with_capability_check(
+    db: &mut Connection,
+    request: StartRequest,
+    check_local_capability: bool,
+) -> Result<(AutoWorkflow, bool)> {
     let StartRequest {
         input,
         model,
@@ -110,6 +118,7 @@ fn insert_with_flag(db: &mut Connection, request: StartRequest) -> Result<(AutoW
         translation_language.is_some(),
         translation_execution.is_some(),
         subtitle_mode,
+        check_local_capability,
     )?;
     if let Some(target) = translation_execution.as_ref() {
         target.validate()?;
