@@ -1366,14 +1366,16 @@ describe("SiaoCut review workbench", () => {
     await waitFor(() => expect(secondStart).toBeEnabled());
     fireEvent.click(secondStart);
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "一键工作流" })).not.toBeInTheDocument());
-    await waitFor(() => expect(screen.getAllByRole("region", { name: "一键工作流状态" })).toHaveLength(2));
+    const activityCenter = await screen.findByRole("region", { name: "项目任务状态" });
+    fireEvent.click(within(activityCenter).getByText("查看其余 1 项任务"));
+    await waitFor(() => expect(within(activityCenter).getAllByRole("group", { name: "自动工作流状态" })).toHaveLength(2));
 
     const secondProject = screen.getByRole("button", { name: /^第二个本地项目/ });
     await waitFor(() => expect(secondProject).toBeEnabled());
     fireEvent.click(secondProject);
     await screen.findByRole("heading", { name: "第二个本地项目" });
     await waitFor(() => {
-      const workflows = screen.getAllByRole("region", { name: "一键工作流状态" });
+      const workflows = within(activityCenter).getAllByRole("group", { name: "自动工作流状态" });
       expect(workflows).toHaveLength(2);
       expect(workflows.some((workflow) => {
         const progress = within(workflow).getByRole("progressbar") as HTMLProgressElement;
@@ -1394,13 +1396,14 @@ describe("SiaoCut review workbench", () => {
     await waitFor(() => expect(within(dialog).getByText("demo.mp4")).toBeInTheDocument());
     expect(start).toBeEnabled();
     fireEvent.click(start);
-    const status = await screen.findByRole("region", { name: "一键工作流状态" });
+    const activityCenter = await screen.findByRole("region", { name: "项目任务状态" });
+    const status = within(activityCenter).getByRole("group", { name: "自动工作流状态" });
     expect(within(status).getByText(/正在处理 · 导入素材/)).toBeInTheDocument();
     fireEvent.click(within(status).getByRole("button", { name: "取消流程" }));
     await waitFor(() => expect(within(status).getByText(/已取消 · 导入素材/)).toBeInTheDocument());
     expect(screen.getByText("自动工作流已取消；已完成的本地项目和中间证据仍然保留。")).toBeInTheDocument();
     fireEvent.click(within(status).getByRole("button", { name: "关闭此流程状态" }));
-    await waitFor(() => expect(screen.queryByRole("region", { name: "一键工作流状态" })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole("region", { name: "项目任务状态" })).not.toBeInTheDocument());
     expect(parseDismissedAutoWorkflowIds(localStorage.getItem(AUTO_WORKFLOW_DISMISSED_STORAGE_KEY))).toHaveLength(1);
 
     fireEvent.click(screen.getByRole("button", { name: "一键成片" }));
@@ -1409,7 +1412,7 @@ describe("SiaoCut review workbench", () => {
     expect(within(history).getByText(/已取消 · 导入素材/)).toBeInTheDocument();
     fireEvent.click(within(history).getByRole("button", { name: "显式继续" }));
     await waitFor(() => expect(screen.getByText("自动工作流已显式继续；这是第 2 次尝试。")).toBeInTheDocument());
-    expect(await screen.findByRole("region", { name: "一键工作流状态" })).toBeInTheDocument();
+    expect(await screen.findByRole("group", { name: "自动工作流状态" })).toBeInTheDocument();
   });
 
   it("keeps a cancelled Agent translation workflow available for recovery", async () => {
@@ -1431,9 +1434,9 @@ describe("SiaoCut review workbench", () => {
     await waitFor(() => {
       const error = within(dialog).queryByRole("alert");
       if (error) throw new Error(error.textContent ?? "one-click workflow failed");
-      expect(screen.getByRole("region", { name: "一键工作流状态" })).toBeInTheDocument();
+      expect(screen.getByRole("group", { name: "自动工作流状态" })).toBeInTheDocument();
     }, { timeout: 10_000 });
-    const status = screen.getByRole("region", { name: "一键工作流状态" });
+    const status = screen.getByRole("group", { name: "自动工作流状态" });
     await waitFor(() => expect(within(status).getByText(/需要 Agent 继续 · 等待 Agent 翻译/)).toBeInTheDocument(), { timeout: 5000 });
     fireEvent.click(within(status).getByRole("button", { name: "取消流程" }));
 
@@ -1464,7 +1467,7 @@ describe("SiaoCut review workbench", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "选择文件" }));
     await waitFor(() => expect(within(dialog).getByText("demo.mp4")).toBeInTheDocument());
     fireEvent.click(within(dialog).getByRole("button", { name: "启动一键工作流" }));
-    const status = await screen.findByRole("region", { name: "一键工作流状态" });
+    const status = await screen.findByRole("group", { name: "自动工作流状态" });
     await waitFor(() => expect(within(status).getByText(/需要你确认 · 等待人工确认/)).toBeInTheDocument(), { timeout: 5000 });
     fireEvent.click(within(status).getByRole("button", { name: "确认完成并继续" }));
     await waitFor(() => expect(within(status).getByText("仍有 Agent 修改或粗剪建议等待人工处理")).toBeInTheDocument());
@@ -1607,7 +1610,7 @@ describe("SiaoCut review workbench", () => {
 
     expect(await screen.findByText("候选结果等待确认")).toBeInTheDocument();
     expect(screen.getByText("18 段 · 3 位说话人 · 2 项提醒")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "查看影响" }));
+    fireEvent.click(screen.getByRole("button", { name: "查看候选结果" }));
     const dialog = await screen.findByRole("dialog", { name: "确认多人转写候选结果" });
     const apply = within(dialog).getByRole("button", { name: "应用并替换" });
     expect(apply).toBeDisabled();

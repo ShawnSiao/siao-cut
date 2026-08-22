@@ -775,11 +775,15 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
     mockProject.mediaArtifacts = { status: "ready", proxyPath: "proxy.mp4", waveformPath: "waveform.png", thumbnails: [], sourceSha256: "demo", updatedAt: new Date().toISOString(), errorMessage: null };
     return { apiVersion: "0.1", status: "ok", project: mockProject, message: "预览资源已生成；原片未修改。" };
   }
-  if (command === "cut" && ["apply", "restore"].includes(subcommand)) {
-    const edit = mockProject.edits.find((candidate) => candidate.id === args[3]);
-    if (edit) edit.status = subcommand === "apply" ? "applied" : "restored";
-    updateMockTimeline();
-    return { apiVersion: "0.1", status: "ok", project: mockProject };
+    if (command === "cut" && ["apply", "restore", "dismiss"].includes(subcommand)) {
+      const edit = mockProject.edits.find((candidate) => candidate.id === args[3]);
+      recordMockSnapshot();
+      if (edit) edit.status = subcommand === "apply" ? "applied" : subcommand === "dismiss" ? "dismissed" : "restored";
+      const versionId = `v${mockProject.versions.length + 1}`;
+      mockProject.versions.push({ id: versionId, reason: subcommand === "apply" ? "应用软剪辑" : subcommand === "dismiss" ? "保留原片" : "恢复剪辑", createdAt: new Date().toISOString() });
+      mockProject.history = { canUndo: true, canRedo: false, currentVersionId: versionId };
+      updateMockTimeline();
+      return { apiVersion: "0.1", status: "ok", project: mockProject };
   }
   if (command === "cut" && subcommand === "detect") {
     const existing = mockProject.edits.find((edit) => edit.id === "e-detected");

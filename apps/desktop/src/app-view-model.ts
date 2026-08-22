@@ -204,6 +204,7 @@ export const versionReasonLabel = (reason: string) => {
         "检测粗剪建议": tr("app.version.cutSuggestions"),
         "创建词范围剪辑": tr("app.version.wordCutCreated"),
         "应用软剪辑": tr("app.version.cutApplied"),
+        "保留原片": tr("app.version.cutDismissed"),
         "恢复软剪辑": tr("app.version.cutRestored"),
         "恢复全部软剪辑": tr("app.version.allCutsRestored"),
         "生成说话人轨": tr("app.version.speakerTrackGenerated"),

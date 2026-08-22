@@ -630,8 +630,16 @@ test("reviews and edits a transcript from the workbench", async ({ page }) => {
   await expect(page.getByText("已重做项目修改。")).toBeVisible();
   await page.getByRole("button", { name: "检测粗剪建议" }).click();
   await expect(page.getByText("发现 1 条粗剪建议；试听并确认后才会应用。")).toBeVisible();
-  await expect(page.getByText("说话重启：你可以")).toBeVisible();
+  const detectedCut = page.locator("article.review-item").filter({ hasText: "说话重启：你可以" });
+  await expect(detectedCut).toBeVisible();
   await expect(page.getByText("需要人工确认 · 说话重启")).toBeVisible();
+  const timelineBeforeDismiss = await page.getByText(/成片 .* · 原片/).textContent();
+  await detectedCut.getByRole("button", { name: "保留原片" }).click();
+  await expect(page.getByText("已保留原片；时间线未修改。")).toBeVisible();
+  await expect(detectedCut).toHaveCount(0);
+  await expect(page.getByText(timelineBeforeDismiss!)).toBeVisible();
+  await commands.getByRole("button", { name: "撤销" }).click();
+  await expect(page.locator("article.review-item").filter({ hasText: "说话重启：你可以" })).toBeVisible();
   const editor = page.getByLabel("00:13 字幕文本");
   await editor.fill("人工修订后的原文。");
   await editor.blur();
@@ -702,7 +710,7 @@ test("runs a resumable one-click workflow through the human review gate", async 
   await dialog.getByRole("button", { name: "选择文件" }).click();
   await expect(dialog.getByText("demo.mp4")).toBeVisible();
   await start.click();
-  const status = page.getByRole("region", { name: "一键工作流状态" });
+  const status = page.getByRole("group", { name: "自动工作流状态" });
   await expect(status.getByText(/需要你确认 · 等待人工确认/)).toBeVisible({ timeout: 5000 });
   await status.getByRole("button", { name: "确认完成并继续" }).click();
   await expect(status.getByText("一键工作流未完成，可以继续或重试。")).toBeVisible();
@@ -723,7 +731,7 @@ test("dismisses a cancelled one-click status while keeping an explicit recovery 
   await dialog.getByRole("button", { name: "选择文件" }).click();
   await dialog.getByRole("button", { name: "启动一键工作流" }).click();
 
-  const status = page.getByRole("region", { name: "一键工作流状态" });
+  const status = page.getByRole("group", { name: "自动工作流状态" });
   await expect(status).toBeVisible();
   await status.getByRole("button", { name: "取消流程" }).click();
   await expect(status.getByText(/已取消/)).toBeVisible();
@@ -736,7 +744,7 @@ test("dismisses a cancelled one-click status while keeping an explicit recovery 
   await expect(history.getByText(/已取消/)).toBeVisible();
   await history.getByRole("button", { name: "显式继续" }).click();
   await expect(page.getByText(/自动工作流已显式继续；这是第 2 次尝试/)).toBeVisible();
-  await expect(page.getByRole("region", { name: "一键工作流状态" })).toBeVisible();
+  await expect(page.getByRole("group", { name: "自动工作流状态" })).toBeVisible();
 });
 
 test("uses MOSS as an explicit multispeaker mode with loopback settings and review", async ({ page }) => {
@@ -800,7 +808,7 @@ test("keeps a conflicting MOSS candidate isolated until explicit replacement", a
   await expect(deleteDialog.getByRole("button", { name: "确认删除" })).toBeDisabled();
   await deleteDialog.getByRole("button", { name: "取消" }).click();
 
-  await page.getByRole("button", { name: "查看影响" }).click();
+  await page.getByRole("button", { name: "查看候选结果" }).click();
   const candidate = page.getByRole("dialog", { name: "确认多人转写候选结果" });
   const apply = candidate.getByRole("button", { name: "应用并替换" });
   await expect(apply).toBeDisabled();
