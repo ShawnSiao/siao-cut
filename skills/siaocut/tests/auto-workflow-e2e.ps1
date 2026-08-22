@@ -146,20 +146,22 @@ function Resolve-ReviewGate {
     $project = $projectResponse.project
     $proposed = @($project.edits | Where-Object { $_.status -eq 'proposed' })
     $pendingPatchCount = @($project.patchSets | ForEach-Object { $_.items } | Where-Object { $_.status -in @('pending', 'conflict') }).Count
-    if (($proposed.Count + $pendingPatchCount) -eq 0) {
-        throw 'needs_review workflow has no reviewable evidence.'
+    if (($proposed.Count + $pendingPatchCount) -eq 0 -and [string]$Workflow.profile -ne 'delivery') {
+        throw 'needs_review workflow has no reviewable evidence outside the delivery confirmation gate.'
     }
     if ([Math]::Abs([double]$project.timeline.outputDuration - [double]$project.timeline.sourceDuration) -gt 0.001) {
         throw 'A proposed cut changed the timeline before human review.'
     }
-    $blocked = Invoke-CoreExpectedError -Arguments @('auto', 'continue', [string]$Workflow.id) -Code 'auto_workflow_review_pending'
-    if (-not $blocked.message) { throw 'Review gate rejection did not include a message.' }
-    $script:reviewBlockedBeforeResolution = $true
-    foreach ($edit in $proposed) {
-        Invoke-Core -Arguments @('cut', 'restore', [string]$Workflow.projectId, [string]$edit.id) | Out-Null
-    }
-    if ($Workflow.agentTaskId -and $pendingPatchCount -gt 0) {
-        Invoke-Core -Arguments @('task', 'review-all', [string]$Workflow.agentTaskId, '--action', 'apply') | Out-Null
+    if (($proposed.Count + $pendingPatchCount) -gt 0) {
+        $blocked = Invoke-CoreExpectedError -Arguments @('auto', 'continue', [string]$Workflow.id) -Code 'auto_workflow_review_pending'
+        if (-not $blocked.message) { throw 'Review gate rejection did not include a message.' }
+        $script:reviewBlockedBeforeResolution = $true
+        foreach ($edit in $proposed) {
+            Invoke-Core -Arguments @('cut', 'dismiss', [string]$Workflow.projectId, [string]$edit.id) | Out-Null
+        }
+        if ($Workflow.agentTaskId -and $pendingPatchCount -gt 0) {
+            Invoke-Core -Arguments @('task', 'review-all', [string]$Workflow.agentTaskId, '--action', 'apply') | Out-Null
+        }
     }
     $continued = Invoke-Core -Arguments @('auto', 'continue', [string]$Workflow.id)
     if ([string]$continued.workflow.status -notin @('queued', 'running')) {
@@ -268,13 +270,20 @@ try {
     $sourceHashBefore = (Get-FileHash -Algorithm SHA256 -LiteralPath $media).Hash.ToLowerInvariant()
 
     $localResults = [Collections.Generic.List[object]]::new()
+    Invoke-CoreExpectedError -Arguments @('auto', 'start', '--media', $media, '--model', $Model, '--output', (Join-Path $work 'invalid-profile.mp4'), '--profile', 'unknown') -Code 'auto_workflow_profile_invalid' | Out-Null
+    Invoke-CoreExpectedError -Arguments @('auto', 'start', '--media', $media, '--model', $Model, '--output', (Join-Path $work 'invalid-draft.mp4'), '--profile', 'draft', '--translate', 'es') -Code 'auto_workflow_profile_invalid' | Out-Null
     for ($run = 1; $run -le $LocalRuns; $run++) {
         $projectsBeforeRun = @((Invoke-Core -Arguments @('project', 'list')).projects).Count
         $output = Join-Path $work ("auto-local-$run.mp4")
         $arguments = @('auto', 'start', '--media', $media, '--title', "Automatic local run $run", '--model', $Model, '--language', 'en', '--output', $output, '--burn-subtitles', '--subtitle-mode', 'source')
-        if ($run -eq 1) { $arguments += @('--start-delay-ms', '5000') }
-        if ($run -eq 2) { $arguments += @('--translate', 'es') }
+        $expectedProfile = if ($run -eq 2) { 'draft' } elseif ($run -eq 3) { 'delivery' } else { 'balanced' }
+        if ($run -eq 1) { $arguments += @('--start-delay-ms', '5000', '--translate', 'es') }
+        if ($run -eq 2) { $arguments += @('--profile', 'draft') }
+        if ($run -eq 3) { $arguments += @('--profile', 'delivery') }
         $started = Invoke-Core -Arguments $arguments
+        if ([string]$started.workflow.profile -ne $expectedProfile) {
+            throw "Run $run selected $($started.workflow.profile), expected $expectedProfile."
+        }
         $duplicate = Invoke-Core -Arguments $arguments
         if ([string]$duplicate.workflowId -ne [string]$started.workflowId) {
             throw "Active automatic workflow was duplicated on run $run."
@@ -309,6 +318,12 @@ try {
         if ($canonical.transcriptionVersions -ne 1) { throw "Run $run repeated or missed transcription; found $($canonical.transcriptionVersions), reasons: $($canonical.versionReasons -join ', ')." }
         if ($canonical.proposedCuts -ne 0) { throw "Run $run retained unresolved cut proposals." }
         if (-not $completed.transcriptVersionId -or -not $completed.exportJobId) { throw "Run $run is missing persisted child evidence." }
+        if ($expectedProfile -eq 'draft' -and ($completed.agentTaskId -or $completed.audioAnalysisJobId)) {
+            throw 'Draft created an Agent or audio-analysis child task.'
+        }
+        if ($expectedProfile -eq 'delivery' -and -not $completed.audioAnalysisJobId) {
+            throw 'Delivery did not preserve its audio-analysis child task ID.'
+        }
         $video = Assert-Video -Path $output -ExpectedDuration $canonical.outputDuration -ExpectedWidth 640 -ExpectedHeight 360
         $events = (Invoke-Core -Arguments @('auto', 'events', [string]$started.workflowId, '--after', '0')).events
         foreach ($event in @($events)) {
@@ -317,6 +332,7 @@ try {
         }
         $localResults.Add([ordered]@{
             run = $run
+            profile = [string]$completed.profile
             workflowId = [string]$started.workflowId
             projectId = [string]$completed.projectId
             attemptCount = [int]$completed.attemptCount

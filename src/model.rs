@@ -88,6 +88,34 @@ impl SubtitleMode {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum WorkflowProfile {
+    Draft,
+    #[default]
+    Balanced,
+    Delivery,
+}
+
+impl WorkflowProfile {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "draft" => Some(Self::Draft),
+            "balanced" => Some(Self::Balanced),
+            "delivery" => Some(Self::Delivery),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Draft => "draft",
+            Self::Balanced => "balanced",
+            Self::Delivery => "delivery",
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum SubtitleStylePreset {
     Compact,
@@ -687,11 +715,13 @@ pub struct AutoWorkflow {
     pub output_path: String,
     pub burn_subtitles: bool,
     pub subtitle_mode: SubtitleMode,
+    pub profile: WorkflowProfile,
     pub status: String,
     pub current_stage: String,
     pub progress: f64,
     pub transcript_version_id: Option<String>,
     pub agent_task_id: Option<String>,
+    pub audio_analysis_job_id: Option<String>,
     pub ai_execution_kind: Option<String>,
     pub ai_service_config_id: Option<String>,
     pub ai_service_revision: Option<u64>,

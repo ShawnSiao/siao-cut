@@ -68,11 +68,13 @@ function autoWorkflowFixture(overrides: Partial<AutoWorkflow> = {}): AutoWorkflo
     outputPath: "output.mp4",
     burnSubtitles: true,
     subtitleMode: "source",
+    profile: "balanced",
     status: "running",
     currentStage: "transcribe",
     progress: 0.5,
     transcriptVersionId: null,
     agentTaskId: null,
+    audioAnalysisJobId: null,
     aiExecutionKind: null,
     aiServiceConfigId: null,
     aiServiceRevision: null,
@@ -1390,6 +1392,23 @@ describe("SiaoCut review workbench", () => {
     }, { timeout: 4000 });
     expect(screen.getByRole("heading", { name: "第二个本地项目" })).toBeInTheDocument();
   }, 10_000);
+
+  it("switches one-click profiles before showing their fixed configuration", async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "一键成片" }));
+    const dialog = screen.getByRole("dialog", { name: "一键工作流" });
+    expect(within(dialog).getByRole("radio", { name: /平衡审阅/ })).toBeChecked();
+    expect(within(dialog).getByRole("checkbox", { name: "创建 Agent 翻译任务" })).toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole("radio", { name: /快速初稿/ }));
+    expect(within(dialog).getByText(/未经建议审阅的初稿/)).toBeVisible();
+    expect(within(dialog).queryByRole("checkbox", { name: "创建 Agent 翻译任务" })).not.toBeInTheDocument();
+    expect(within(dialog).queryByLabelText("一键翻译语言")).not.toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole("radio", { name: /精细交付/ }));
+    expect(within(dialog).getByText(/必须确认完成审阅/)).toBeVisible();
+    expect(within(dialog).getByRole("checkbox", { name: "创建 Agent 翻译任务" })).toBeInTheDocument();
+  });
 
   it("dismisses a cancelled one-click status without deleting its recovery path", async () => {
     render(<App />);

@@ -2,13 +2,13 @@ import { changeUiLocale, getUiLocale, tr, type UiLocale } from "../i18n";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type SyntheticEvent } from "react";
 import { Activity, Bot, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Clock3, Copy, Cpu, Database, Download, FileVideo2, FileText, Film, FolderOpen, FolderPlus, HardDrive, History, Link2, LoaderCircle, Play, RefreshCw, RotateCcw, Search, Scissors, Settings2, ShieldCheck, Sparkles, Trash2, Undo2, Redo2, Headphones, ListChecks, MoreHorizontal, MoveHorizontal, Users, X, } from "lucide-react";
 import { authorizeArtifact, authorizeMedia, localFileAvailable, openLogDirectory, pickMedia, pickModel, pickResourceDirectory, pickSubtitleFile, pickTranscriptPath, pickVideoPath, runtimeInfo, selectAsrBackend, updaterPolicy } from "../core";
-import type { AgentRun, AudioAnalysisJob, AudioRisk, AutoWorkflow, CanvasSettings, CodexHealth, CutPreview, ExportJob, LocalCapabilityId, LocalResourceJob, LocalResourcePlan, LocalResourceStatus, LocalTranscriptionProfile, ModelDownloadJob, ModelStatus, Project, ProjectDeletionPreflight, RuntimeInfo, Segment, SourceImportJob, SourcePreview, SpeakerIdentity, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SpeechEvidence, SpeechInsights, SpeechPause, SubtitleImportPreview, SubtitleQualityIssue, Task, TranscriptReplacementPreflight, TranscriptionJob, TranscriptionLanguage, TranscriptionProviderConfig, TranscriptionProviderHealth, TranscriptionReviewItem } from "../types";
+import type { AgentRun, AudioAnalysisJob, AudioRisk, AutoWorkflow, CanvasSettings, CodexHealth, CutPreview, ExportJob, LocalCapabilityId, LocalResourceJob, LocalResourcePlan, LocalResourceStatus, LocalTranscriptionProfile, ModelDownloadJob, ModelStatus, Project, ProjectDeletionPreflight, RuntimeInfo, Segment, SourceImportJob, SourcePreview, SpeakerIdentity, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SpeechEvidence, SpeechInsights, SpeechPause, SubtitleImportPreview, SubtitleQualityIssue, Task, TranscriptReplacementPreflight, TranscriptionJob, TranscriptionLanguage, TranscriptionProviderConfig, TranscriptionProviderHealth, TranscriptionReviewItem, WorkflowProfile } from "../types";
 import { Button, Dialog, IconButton, StatusBadge } from "../components/ui";
 import { JobFailureDetails } from "../components/job-failure";
 import { AudioQualityPanel, PatchReviewCard, RuntimeChecklist, SegmentRow, SpeakerTrackPanel, SpeechInsightsPanel, TranscriptionReviewPanel } from "../components/workbench-panels";
 import { useAppUpdater } from "../hooks/use-app-updater";
 export { AudioQualityPanel, PatchReviewCard, SpeakerPackageManager, SpeakerTrackPanel, SpeechInsightsPanel } from "../components/workbench-panels";
-import { agentTaskStatusLabel, audioRiskLabel, audioUnitLabel, autoStageLabel, autoStatusLabel, clearTransientCoreError, cutSuggestionLabel, DEFAULT_EXPORT_PREFERENCES, editReasonLabel, formatTime, getProjectCapabilities, hasMeaningfulSubtitleText, isHttpsSourceUrl, modelDescription, modelName, parseExportPreferences, parseTranscriptionLanguage, patchReasonLabel, segmentCountLabel, sourceStatusLabel, structureEditLabel, subtitleCountLabel, subtitleIssueLabel, subtitleQualityStatusLabel, taskLabel, TRANSCRIPTION_LANGUAGE_STORAGE_KEY, versionReasonLabel, wordCountLabel, type ExportPreferencesV1, type SegmentSelectionMode, type StructureEditMode } from "../app-view-model";
+import { agentTaskStatusLabel, audioRiskLabel, audioUnitLabel, autoStageLabel, autoStatusLabel, clearTransientCoreError, cutSuggestionLabel, DEFAULT_EXPORT_PREFERENCES, editReasonLabel, formatTime, getProjectCapabilities, hasMeaningfulSubtitleText, isHttpsSourceUrl, modelDescription, modelName, parseExportPreferences, parseTranscriptionLanguage, patchReasonLabel, segmentCountLabel, sourceStatusLabel, structureEditLabel, subtitleCountLabel, subtitleIssueLabel, subtitleQualityStatusLabel, taskLabel, TRANSCRIPTION_LANGUAGE_STORAGE_KEY, versionReasonLabel, wordCountLabel, workflowProfileLabel, type ExportPreferencesV1, type SegmentSelectionMode, type StructureEditMode } from "../app-view-model";
 import { agentReviewClient } from "../domains/agent-review-client";
 import type { AiExecutionSelection } from "../features/ai-assistance/types";
 import { backgroundTaskClient } from "../domains/background-task-client";
@@ -144,7 +144,7 @@ const ExportPanel = lazy(() => import("../components/export-panel"));
 const WorkbenchActivityCenter = lazy(() => import("./workbench-activity-center"));
 const FocusReviewPanel = lazy(() => import("./focus-review-panel"));
 const FocusReviewToolbar = lazy(() => import("./focus-review-panel").then((module) => ({ default: module.FocusReviewToolbar })));
-const SubtitleTimelinePanel = lazy(() => import("./subtitle-timeline-panel").then((module) => ({ default: module.SubtitleTimelinePanel })));
+const SubtitleTimelinePanel = lazy(() => import("./subtitle-timeline-panel").then((module) => ({ default: module.SubtitleTimelinePanel }))); const AutoWorkflowProfileSelector = lazy(() => import("./auto-workflow-profile-selector"));
 const ProjectDeleteDialog = lazy(() => import("../components/project-delete-dialog"));
 const AppCommandMenu = lazy(() => import("../components/app-command-menu"));
 const RuntimeSettingsDialog = lazy(() => import("../components/runtime-settings-dialog"));
@@ -272,7 +272,7 @@ function WorkbenchController() {
     const [autoUrl, setAutoUrl] = useState("");
     const [autoSourcePreview, setAutoSourcePreview] = useState<SourcePreview | null>(null);
     const [autoAuthorized, setAutoAuthorized] = useState(false);
-    const [autoTranslate, setAutoTranslate] = useState(false);
+    const [autoTranslate, setAutoTranslate] = useState(false); const [autoProfile, setAutoProfile] = useState<WorkflowProfile>("balanced");
     const [autoAiSelection, setAutoAiSelection] = useState<AiExecutionSelection | null>(null);
     const [autoTranslationLanguage, setAutoTranslationLanguage] = useState("en");
     const [transcriptionLanguage, setTranscriptionLanguage] = useState<TranscriptionLanguage>(() => parseTranscriptionLanguage(localStorage.getItem(TRANSCRIPTION_LANGUAGE_STORAGE_KEY)));
@@ -1784,7 +1784,7 @@ function WorkbenchController() {
             language: transcriptionLanguage,
             locale: uiLocale,
             output,
-            subtitleMode: autoTranslate ? autoSubtitleMode : "source",
+            subtitleMode: autoTranslate ? autoSubtitleMode : "source", profile: autoProfile,
             translationLanguage: autoTranslate ? autoTranslationLanguage : undefined,
             burnSubtitles: autoBurnSubtitles,
             aiExecution: autoTranslate ? autoAiSelection ?? undefined : undefined,
@@ -3329,7 +3329,7 @@ function WorkbenchController() {
         {recentAutoWorkflows.length > 0 && <section className="auto-history" aria-label={tr("app.auto.history.title")}>
           <header><span><strong>{tr("app.auto.history.title")}</strong><small>{tr("app.auto.history.help")}</small></span><History size={15}/></header>
           <div>{recentAutoWorkflows.map((workflow) => <article key={workflow.id}>
-            <span><strong>{autoStatusLabel(workflow.status)} · {autoStageLabel(workflow.currentStage)}</strong><small>{workflow.title ?? workflow.outputPath} · {new Date(workflow.updatedAt).toLocaleString(uiLocale)}</small></span>
+            <span><strong>{workflowProfileLabel(workflow.profile)} · {autoStatusLabel(workflow.status)} · {autoStageLabel(workflow.currentStage)}</strong><small>{workflow.title ?? workflow.outputPath} · {new Date(workflow.updatedAt).toLocaleString(uiLocale)}</small></span>
             <div>
               <button className="button quiet" onClick={() => { showAutoWorkflowStatus(workflow); setShowAutoWorkflow(false); }}>{tr("app.auto.history.show")}</button>
               {workflow.projectId && <button className="button quiet" onClick={() => { setShowAutoWorkflow(false); void openAutoProject(workflow); }}>{tr("app.s0276")}</button>}
@@ -3338,6 +3338,7 @@ function WorkbenchController() {
           </article>)}</div>
         </section>}
         <div className="auto-form">
+          <Suspense fallback={null}><AutoWorkflowProfileSelector value={autoProfile} onChange={(profile) => { setAutoProfile(profile); if (profile === "draft") { setAutoTranslate(false); setAutoSubtitleMode("source"); setAutoAiSelection(null); } }}/></Suspense>
           <label><span>{tr("app.s0482")}</span><select aria-label={tr("app.s0483")} value={autoInputKind} disabled={Boolean(autoBusy)} onChange={(event) => { setAutoInputKind(event.target.value as "local" | "url"); setAutoSourcePreview(null); setAutoAuthorized(false); setAutoError(null); }}><option value="local">{tr("app.s0484")}</option><option value="url">{tr("app.s0485")}</option></select></label>
           {autoInputKind === "local" ? <div className="auto-file-row"><span><small>{tr("app.s0486")}</small><strong title={autoMediaPath}>{autoMediaPath || tr("app.s0468")}</strong></span><button className="button quiet" disabled={Boolean(autoBusy)} onClick={() => void chooseAutoMedia()}><FolderOpen size={14}/>{tr("app.s0470")}</button></div> : <>
             <form className="source-form" onSubmit={(event) => { event.preventDefault(); void inspectAutoSource(); }}><label><span>{tr("app.s0487")}</span><input autoComplete="url" aria-label={tr("app.s0488")} placeholder="https://…" value={autoUrl} disabled={Boolean(autoBusy)} onChange={(event) => { setAutoUrl(event.target.value); setAutoSourcePreview(null); setAutoAuthorized(false); setAutoError(null); }}/></label><button className="button quiet" type="submit" disabled={Boolean(autoBusy) || !autoUrl.trim()}><Search size={14}/>{tr("app.s0489")}</button></form>
@@ -3346,10 +3347,10 @@ function WorkbenchController() {
           <div className="auto-file-row"><span><small>{tr("app.s0494")}</small><strong title={modelPath ?? undefined}>{modelPath ?? tr("app.s0468")}</strong></span><button className="button quiet" onClick={() => { setShowAutoWorkflow(false); setShowRuntime(true); }}>{tr("app.s0495")}</button></div>
           <div className="auto-options">
             <label><span>{tr("app.transcription.language")}</span><select aria-label={`${tr("app.transcription.language")} · ${tr("app.s0236")}`} value={transcriptionLanguage} disabled={Boolean(autoBusy)} onChange={(event) => selectTranscriptionLanguage(event.target.value as TranscriptionLanguage)}><option value="auto">{tr("app.transcription.auto")}</option><option value="en">{tr("app.transcription.english")}</option><option value="zh">{tr("app.transcription.chinese")}</option></select></label>
-            <label className="auto-check"><input type="checkbox" checked={autoTranslate} onChange={(event) => { setAutoTranslate(event.target.checked); if (!event.target.checked)
+            {autoProfile !== "draft" && <><label className="auto-check"><input type="checkbox" checked={autoTranslate} onChange={(event) => { setAutoTranslate(event.target.checked); if (!event.target.checked)
             setAutoSubtitleMode("source"); setAutoAiSelection(null); }}/><span>{tr("app.s0496")}</span></label>
             <label><span>{tr("app.s0497")}</span><input aria-label={tr("app.s0498")} value={autoTranslationLanguage} disabled={!autoTranslate} onChange={(event) => setAutoTranslationLanguage(event.target.value)}/></label>
-            <label><span>{tr("app.s0499")}</span><select aria-label={tr("app.s0500")} value={autoSubtitleMode} disabled={!autoTranslate} onChange={(event) => setAutoSubtitleMode(event.target.value as typeof autoSubtitleMode)}><option value="source">{tr("app.s0406")}</option><option value="translated">{tr("app.s0407")}</option><option value="bilingual">{tr("app.s0408")}</option></select></label>
+            <label><span>{tr("app.s0499")}</span><select aria-label={tr("app.s0500")} value={autoSubtitleMode} disabled={!autoTranslate} onChange={(event) => setAutoSubtitleMode(event.target.value as typeof autoSubtitleMode)}><option value="source">{tr("app.s0406")}</option><option value="translated">{tr("app.s0407")}</option><option value="bilingual">{tr("app.s0408")}</option></select></label></>}
             <label className="auto-check"><input type="checkbox" checked={autoBurnSubtitles} onChange={(event) => setAutoBurnSubtitles(event.target.checked)}/><span>{tr("app.s0501")}</span></label>
           </div>
           {autoTranslate && <Suspense fallback={null}><AutoWorkflowAiTarget codexReady={Boolean(codexHealth?.available && codexHealth.authenticated)} onChange={setAutoAiSelection}/></Suspense>}

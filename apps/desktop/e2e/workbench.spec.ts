@@ -778,6 +778,45 @@ test("runs a resumable one-click workflow through the human review gate", async 
   await expect(page.getByText(/一键工作流已完成，视频已导出到/)).toBeVisible();
 });
 
+test("runs quick draft without suggestion or Agent stages", async ({ page }) => {
+  await page.goto("/");
+  await page.getByText("更多导入方式").click();
+  await page.getByRole("button", { name: "一键成片", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "一键工作流" });
+  await dialog.getByRole("radio", { name: /快速初稿/ }).check();
+  await expect(dialog.getByText(/未经建议审阅的初稿/)).toBeVisible();
+  await expect(dialog.getByRole("checkbox", { name: "创建 Agent 翻译任务" })).toHaveCount(0);
+  await dialog.getByRole("button", { name: "选择文件" }).click();
+  await dialog.getByRole("button", { name: "启动一键工作流" }).click();
+
+  const status = page.getByRole("group", { name: "自动工作流状态" });
+  await expect(status.getByText(/已完成 · 流程完成/)).toBeVisible({ timeout: 5000 });
+  const result = await runMockCore(page, ["auto", "list"]);
+  expect(result.workflows[0]).toMatchObject({ profile: "draft", currentStage: "complete", agentTaskId: null, audioAnalysisJobId: null });
+});
+
+test("runs delivery audio analysis and requires review even without automatic application", async ({ page }) => {
+  await page.goto("/");
+  await page.getByText("更多导入方式").click();
+  await page.getByRole("button", { name: "一键成片", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "一键工作流" });
+  await dialog.getByRole("radio", { name: /精细交付/ }).check();
+  await expect(dialog.getByText(/必须确认完成审阅/)).toBeVisible();
+  await dialog.getByRole("button", { name: "选择文件" }).click();
+  await dialog.getByRole("button", { name: "启动一键工作流" }).click();
+
+  const status = page.getByRole("group", { name: "自动工作流状态" });
+  await expect(status.getByText(/需要你确认 · 等待人工确认/)).toBeVisible({ timeout: 6000 });
+  let result = await runMockCore(page, ["auto", "list"]);
+  expect(result.workflows[0]).toMatchObject({ profile: "delivery", currentStage: "review", progress: 0.60 });
+  expect(result.workflows[0].audioAnalysisJobId).toBeTruthy();
+  await page.getByRole("button", { name: "保留原片" }).click();
+  await status.getByRole("button", { name: "确认完成并继续" }).click();
+  await expect(status.getByText(/已完成 · 流程完成/)).toBeVisible({ timeout: 3000 });
+  result = await runMockCore(page, ["auto", "list"]);
+  expect(result.workflows[0].audioAnalysisJobId).toMatch(/^audio-/);
+});
+
 test("dismisses a cancelled one-click status while keeping an explicit recovery path", async ({ page }) => {
   await page.goto("/");
   await page.getByText("更多导入方式").click();

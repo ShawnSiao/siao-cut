@@ -1,5 +1,5 @@
 import { tr } from "./i18n";
-import type { AudioRisk, ModelStatus, Project, SubtitleQualityIssue, TranscriptionLanguage } from "./types";
+import type { AudioRisk, ModelStatus, Project, SubtitleQualityIssue, TranscriptionLanguage, WorkflowProfile } from "./types";
 type HumanState = string;
 export type SegmentSelectionMode = "replace" | "toggle" | "range";
 export type StructureEditMode = "split" | "merge" | "timing" | "offset";
@@ -152,6 +152,7 @@ export const sourceStatusLabel = (status: string) => ({
 export const autoStageLabel = (stage: string) => ({
     import: tr("app.s0021"),
     transcribe: tr("app.s0022"),
+    analyze: tr("app.workflowProfile.stage.analyze"),
     suggestions: tr("app.s0023"),
     translate: tr("app.s0024"),
     review: tr("app.s0025"),
@@ -159,6 +160,11 @@ export const autoStageLabel = (stage: string) => ({
     export: tr("app.s0027"),
     complete: tr("app.s0028"),
 }[stage] ?? stage);
+export const workflowProfileLabel = (profile: WorkflowProfile) => ({
+    draft: tr("app.workflowProfile.draft"),
+    balanced: tr("app.workflowProfile.balanced"),
+    delivery: tr("app.workflowProfile.delivery"),
+})[profile];
 export const autoStatusLabel = (status: string) => ({
     queued: tr("app.s0029"),
     running: tr("app.s0001"),

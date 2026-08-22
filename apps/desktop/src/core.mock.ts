@@ -1075,11 +1075,13 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
       outputPath: valueAfter("--output") ?? "SiaoCut-auto.mp4",
       burnSubtitles: args.includes("--burn-subtitles"),
       subtitleMode: (valueAfter("--subtitle-mode") ?? "source") as AutoWorkflow["subtitleMode"],
+      profile: (valueAfter("--profile") ?? "balanced") as AutoWorkflow["profile"],
       status: "running",
       currentStage: "import",
       progress: 0.08,
       transcriptVersionId: null,
       agentTaskId: null,
+      audioAnalysisJobId: null,
       aiExecutionKind: valueAfter("--ai-execution") as AutoWorkflow["aiExecutionKind"],
       aiServiceConfigId: valueAfter("--ai-service-config-id"),
       aiServiceRevision: valueAfter("--ai-service-revision") ? Number(valueAfter("--ai-service-revision")) : null,
@@ -1119,22 +1121,37 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
         workflow.progress = 0.68;
       } else if (polls === 1) {
         workflow.currentStage = "transcribe";
-        workflow.progress = 0.32;
+        workflow.progress = workflow.profile === "delivery" ? 0.10 : 0.15;
         workflow.projectId = "p-auto";
-        mockProject = { ...structuredClone(sampleProject), id: workflow.projectId, title: workflow.title ?? (workflow.inputKind === "url" ? mockSourcePreview.title : "一键成片项目"), tasks: [], patchSets: [], edits: structuredClone(sampleProject.edits.slice(0, 1)) };
+        mockProject = { ...structuredClone(sampleProject), id: workflow.projectId, title: workflow.title ?? (workflow.inputKind === "url" ? mockSourcePreview.title : "一键成片项目"), tasks: [], patchSets: [], edits: workflow.profile === "draft" ? [] : structuredClone(sampleProject.edits.slice(0, 1)) };
+      } else if (polls === 2 && workflow.profile === "draft") {
+        workflow.currentStage = "audit";
+        workflow.progress = 0.70;
+        workflow.transcriptVersionId = "v-auto-transcript";
+      } else if (polls >= 3 && workflow.profile === "draft") {
+        workflow.currentStage = "export";
+        workflow.progress = 0.75;
+      } else if (polls === 2 && workflow.profile === "delivery") {
+        workflow.currentStage = "analyze";
+        workflow.progress = 0.40;
+        workflow.audioAnalysisJobId = `audio-${workflow.id}`;
+        workflow.transcriptVersionId = "v-auto-transcript";
+      } else if (polls === 3 && workflow.profile === "delivery") {
+        workflow.currentStage = "suggestions";
+        workflow.progress = 0.55;
       } else if (polls === 2) {
         workflow.currentStage = "suggestions";
-        workflow.progress = 0.52;
+        workflow.progress = 0.45;
         workflow.transcriptVersionId = "v-auto-transcript";
       } else if (workflow.translationLanguage) {
         workflow.status = "needs_agent";
         workflow.currentStage = "translate";
-        workflow.progress = 0.58;
+        workflow.progress = workflow.profile === "delivery" ? 0.60 : 0.50;
         workflow.agentTaskId = "t-auto-translate";
       } else {
         workflow.status = "needs_review";
         workflow.currentStage = "review";
-        workflow.progress = 0.68;
+        workflow.progress = workflow.profile === "delivery" ? 0.60 : 0.50;
       }
       workflow.updatedAt = new Date().toISOString();
     }
@@ -1161,7 +1178,7 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
     if (workflow) {
       workflow.status = "running";
       workflow.currentStage = "export";
-      workflow.progress = 0.86;
+      workflow.progress = workflow.profile === "delivery" ? 0.85 : workflow.profile === "draft" ? 0.75 : 0.80;
       workflow.errorMessage = null;
       workflow.attemptCount += 1;
       workflow.updatedAt = new Date().toISOString();
