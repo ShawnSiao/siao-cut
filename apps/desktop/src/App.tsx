@@ -10,6 +10,7 @@ export {
   upsertAutoWorkflowSnapshot,
   resolveCaptionKaraokeStyle,
   resolveCaptionSegment,
+  resolveFocusCaptionText,
   resolveCanvasMedia,
   resolveImportedProjectMedia,
   resolvePlaybackDuration,

@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import App, { AUTO_WORKFLOW_DISMISSED_STORAGE_KEY, PatchReviewCard, TRANSCRIPTION_LANGUAGE_STORAGE_KEY, agentTaskStatusLabel, clearTransientCoreError, getProjectCapabilities, isHttpsSourceUrl, parseDismissedAutoWorkflowIds, parseExportPreferences, parseTranscriptionLanguage, resolveCanvasMedia, resolveCaptionKaraokeStyle, resolveCaptionSegment, resolveImportedProjectMedia, resolvePlaybackDuration, shouldCheckForUpdates, startSerialPolling, taskLabel, upsertAutoWorkflowSnapshot } from "./App";
+import App, { AUTO_WORKFLOW_DISMISSED_STORAGE_KEY, PatchReviewCard, TRANSCRIPTION_LANGUAGE_STORAGE_KEY, agentTaskStatusLabel, clearTransientCoreError, getProjectCapabilities, isHttpsSourceUrl, parseDismissedAutoWorkflowIds, parseExportPreferences, parseTranscriptionLanguage, resolveCanvasMedia, resolveCaptionKaraokeStyle, resolveCaptionSegment, resolveFocusCaptionText, resolveImportedProjectMedia, resolvePlaybackDuration, shouldCheckForUpdates, startSerialPolling, taskLabel, upsertAutoWorkflowSnapshot } from "./App";
 import { mockRun, resetMockLocalResourcesForTest, resetMockProjectForTest, setMockAuthorizedMediaForTest, setMockLocalResourcesForTest, setMockProjectForTest } from "./core.mock";
 import { agentReviewClient } from "./domains/agent-review-client";
 import { projectSessionClient } from "./domains/project-session-client";
@@ -139,6 +139,12 @@ describe("SiaoCut review workbench", () => {
     expect(resolveCaptionSegment([first, current], first, 5, false)).toBe(current);
     expect(resolveCaptionSegment([first, current], first, 3, false)).toBe(first);
     expect(resolveCaptionSegment([first, current], first, 3, true)).toBeNull();
+  });
+
+  it("does not silently fall back to source text when a focused translation is missing", () => {
+    expect(resolveFocusCaptionText("source", "原文", "", "暂无译文")).toEqual({ primary: "原文", secondary: "", missingTranslation: false });
+    expect(resolveFocusCaptionText("translated", "原文", "", "暂无译文")).toEqual({ primary: "暂无译文", secondary: "", missingTranslation: true });
+    expect(resolveFocusCaptionText("bilingual", "原文", "", "暂无译文")).toEqual({ primary: "原文", secondary: "暂无译文", missingTranslation: true });
   });
 
   it("persists source language independently and creates the selected Agent workflow", async () => {

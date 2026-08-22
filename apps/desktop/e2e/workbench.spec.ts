@@ -159,6 +159,61 @@ test("uses B by default, restores C after A, and links review markers to detail 
   await expect(timeline.getByRole("button", { name: /高级审校/ })).toHaveAttribute("aria-pressed", "true");
 });
 
+test("keeps one player while focused review supports keyboard exit and responsive layouts", async ({ page }) => {
+  await page.goto("/");
+  await page.evaluate(async () => {
+    const mock = await import("/src/core.mock.ts");
+    mock.setMockAuthorizedMediaForTest("mock://local-media");
+  });
+  await bindMockMedia(page);
+  const video = page.locator("video");
+  await video.evaluate((element) => {
+    const media = element as HTMLVideoElement & { focusReviewMarker?: string };
+    media.currentTime = 13.5;
+    media.focusReviewMarker = "same-player";
+  });
+
+  await page.getByRole("button", { name: "审阅建议" }).click();
+  await expect(page.getByText("专注审阅", { exact: true }).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "退出专注审阅" })).toBeFocused();
+  expect(await video.evaluate((element) => (element as HTMLVideoElement & { focusReviewMarker?: string }).focusReviewMarker)).toBe("same-player");
+  expect(Math.abs(await video.evaluate((element) => (element as HTMLVideoElement).currentTime) - 13.5)).toBeLessThanOrEqual(0.25);
+
+  for (const viewport of [{ width: 1080, height: 720 }, { width: 1444, height: 972 }, { width: 2560, height: 1410 }]) {
+    await page.setViewportSize(viewport);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  }
+
+  await page.keyboard.press("Escape");
+  await expect(page.getByText("专注审阅", { exact: true })).toHaveCount(0);
+  expect(await video.evaluate((element) => (element as HTMLVideoElement & { focusReviewMarker?: string }).focusReviewMarker)).toBe("same-player");
+  expect(Math.abs(await video.evaluate((element) => (element as HTMLVideoElement).currentTime) - 13.5)).toBeLessThanOrEqual(0.25);
+
+  await page.getByRole("button", { name: "审阅建议" }).click();
+  await page.keyboard.press("n");
+  await expect(page.getByText(/第 2 项，共/)).toBeVisible();
+  await page.keyboard.press("p");
+  await expect(page.getByText(/第 1 项，共/)).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByText("专注审阅", { exact: true })).toHaveCount(0);
+  expect(await video.evaluate((element) => (element as HTMLVideoElement & { focusReviewMarker?: string }).focusReviewMarker)).toBe("same-player");
+
+  const timeline = page.locator(".subtitle-timeline-panel");
+  await timeline.getByRole("button", { name: /高级审校/ }).click();
+  await timeline.getByRole("button", { name: "专注审阅" }).click();
+  await expect(page.getByRole("button", { name: "保留原片" })).toBeVisible();
+  await page.getByRole("button", { name: "保留原片" }).click();
+  await expect(page.getByText(/剩余 4 项/)).toBeVisible();
+});
+
+test("blocks focused review until the source media is available", async ({ page }) => {
+  await page.goto("/");
+  const action = page.getByRole("button", { name: "审阅建议" });
+  await expect(action).toBeDisabled();
+  await expect(action).toHaveAttribute("title", /重新定位/);
+  await expect(page.getByRole("button", { name: "重新定位原片" }).first()).toBeVisible();
+});
+
 test("uses direct transcript keys for time-confirmed split and adjacent merge", async ({ page }) => {
   await page.goto("/");
   const editor = page.getByLabel("00:13 字幕文本");
