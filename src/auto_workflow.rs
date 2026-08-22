@@ -52,7 +52,7 @@ pub struct StartRequest {
 
 pub fn start(db: &mut Connection, request: StartRequest) -> Result<AutoWorkflow> {
     let start_delay_ms = request.start_delay_ms;
-    let (workflow, created) = insert_with_flag(db, request)?;
+    let (workflow, created) = insert_with_flag(db, request, true)?;
     if !created {
         return Ok(workflow);
     }
@@ -65,14 +65,10 @@ pub fn start(db: &mut Connection, request: StartRequest) -> Result<AutoWorkflow>
 
 #[cfg(test)]
 fn insert(db: &mut Connection, request: StartRequest) -> Result<AutoWorkflow> {
-    insert_with_capability_check(db, request, false).map(|(workflow, _)| workflow)
+    insert_with_flag(db, request, false).map(|(workflow, _)| workflow)
 }
 
-fn insert_with_flag(db: &mut Connection, request: StartRequest) -> Result<(AutoWorkflow, bool)> {
-    insert_with_capability_check(db, request, true)
-}
-
-fn insert_with_capability_check(
+fn insert_with_flag(
     db: &mut Connection,
     request: StartRequest,
     check_local_capability: bool,
