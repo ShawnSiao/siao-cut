@@ -1282,6 +1282,7 @@ pub fn health() -> Result<ResourceHealth> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Datelike;
     use tempfile::tempdir;
 
     #[test]
@@ -1724,6 +1725,22 @@ mod tests {
                     .as_str()
                     .is_some_and(|value| !value.is_empty())
             );
+            if component["id"] == "ffmpeg-cpu" {
+                let url = component["url"].as_str().unwrap();
+                let tag = url
+                    .split("/download/")
+                    .nth(1)
+                    .unwrap()
+                    .split('/')
+                    .next()
+                    .unwrap();
+                let date = chrono::NaiveDate::parse_from_str(
+                    tag.strip_prefix("autobuild-").unwrap().get(..10).unwrap(),
+                    "%Y-%m-%d",
+                )
+                .unwrap();
+                assert_ne!(date.month(), date.succ_opt().unwrap().month());
+            }
         }
         for model in catalog["models"].as_array().unwrap() {
             assert!(

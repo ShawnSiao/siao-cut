@@ -6,13 +6,13 @@
     {
       "id": "ffmpeg-cpu",
       "name": "FFmpeg 8.1 LGPL shared",
-      "version": "8.1",
+      "version": "8.1.2-34-g9b6c8969e0",
       "kind": "on-demand-runtime",
       "backend": "cpu",
       "source": "https://github.com/BtbN/FFmpeg-Builds",
-      "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-07-27-14-00/ffmpeg-n8.1.2-31-g8c9502e9b0-win64-lgpl-shared-8.1.zip",
-      "size": 70510962,
-      "sha256": "0c434d097268f8ee61c96eab3faf048ead646f4ff38ee21027012d23f84e5c19",
+      "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-07-31-14-10/ffmpeg-n8.1.2-34-g9b6c8969e0-win64-lgpl-shared-8.1.zip",
+      "size": 70508781,
+      "sha256": "c222a490dde4e7059f45495deef6bfb98dbcacc2b43df5b607546252037aa95c",
       "license": "LGPL-2.1-or-later",
       "bundled": false
     },
