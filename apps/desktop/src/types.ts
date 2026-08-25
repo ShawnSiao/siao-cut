@@ -1,5 +1,5 @@
-import type { AgentRunStatus, AutoWorkflowStage, AutoWorkflowStatus, BackgroundJobStatus, CoreErrorCode, LocalResourceState, TaskStatus, TranscriptionJobStatus, WorkflowStatus } from "./generated/core-contract";
-export type { AgentRunStatus, AutoWorkflowStage, AutoWorkflowStatus, BackgroundJobStatus, CoreErrorCode, KnownCoreErrorCode, LocalResourceState, TaskStatus, TranscriptionJobStatus, WorkflowStatus } from "./generated/core-contract";
+import type { AgentRunStatus, AutoWorkflowStage, AutoWorkflowStatus, BackgroundJobStatus, CoreErrorCode, LocalResourceState, TaskStatus, TranscriptionJobStage, TranscriptionJobStatus, WorkflowStatus } from "./generated/core-contract";
+export type { AgentRunStatus, AutoWorkflowStage, AutoWorkflowStatus, BackgroundJobStatus, CoreErrorCode, KnownCoreErrorCode, LocalResourceState, TaskStatus, TranscriptionJobStage, TranscriptionJobStatus, WorkflowStatus } from "./generated/core-contract";
 
 export type Segment = {
   id: string;
@@ -625,7 +625,7 @@ export type TranscriptionJob = {
   prompt: string | null;
   hotwords: string[];
   status: TranscriptionJobStatus;
-  stage: string;
+  stage: TranscriptionJobStage | string;
   resultRunId: string | null;
   baseVersionId: string | null;
   sourceSha256: string | null;

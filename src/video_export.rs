@@ -527,19 +527,15 @@ fn build_command(spec: CommandSpec<'_>) -> Result<Command> {
     }
     let mut command = hidden_command(ffmpeg);
     command.args(["-y", "-hide_banner", "-loglevel", "error"]);
-    let video_input;
-    let audio_input;
-    if has_video && has_audio {
+    let (video_input, audio_input) = if has_video && has_audio {
         command.arg("-i").arg(source);
-        video_input = 0;
-        audio_input = 0;
+        (0, 0)
     } else if has_video {
         command
             .arg("-i")
             .arg(source)
             .args(["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]);
-        video_input = 0;
-        audio_input = 1;
+        (0, 1)
     } else {
         command.arg("-i").arg(source).args([
             "-f",
@@ -547,9 +543,8 @@ fn build_command(spec: CommandSpec<'_>) -> Result<Command> {
             "-i",
             "color=c=0x101414:s=1280x720:r=30",
         ]);
-        video_input = 1;
-        audio_input = 0;
-    }
+        (1, 0)
+    };
 
     let mut filters = Vec::new();
     let mut concat_inputs = String::new();
@@ -1774,8 +1769,10 @@ mod tests {
         assert!(decoded.status.success());
         let samples = decoded
             .stdout
-            .chunks_exact(4)
-            .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|bytes| f32::from_le_bytes(*bytes))
             .collect::<Vec<_>>();
         let join_sample = (0.8 * 48_000.0) as usize;
         let seam_radius = 144usize;

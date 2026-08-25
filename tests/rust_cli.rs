@@ -1491,6 +1491,38 @@ fn cut_detect_returns_reviewable_typed_word_suggestions() {
 }
 
 #[test]
+fn cut_dismiss_keeps_the_original_timeline_and_is_recoverable() {
+    let temp = tempdir().unwrap();
+    let media = temp.path().join("dismiss-cut.wav");
+    fs::write(&media, b"audio").unwrap();
+    let imported = run(temp.path(), &["import", media.to_str().unwrap()]);
+    let project = imported["projectId"].as_str().unwrap();
+    run(
+        temp.path(),
+        &[
+            "transcript",
+            "add",
+            project,
+            "--start",
+            "0",
+            "--end",
+            "0.5",
+            "--text",
+            "嗯",
+        ],
+    );
+    let detected = run(temp.path(), &["cut", "detect", project]);
+    let cut_id = detected["suggestions"][0]["id"].as_str().unwrap();
+    let dismissed = run(temp.path(), &["cut", "dismiss", project, cut_id]);
+    assert_eq!(dismissed["cut"]["status"], "dismissed");
+    let shown = run(temp.path(), &["project", "show", project]);
+    assert_eq!(shown["project"]["timeline"]["outputDuration"], 0.5);
+    run(temp.path(), &["project", "undo", project]);
+    let restored = run(temp.path(), &["project", "show", project]);
+    assert_eq!(restored["project"]["edits"][0]["status"], "proposed");
+}
+
+#[test]
 fn subtitle_style_is_recoverable_and_drives_ass_export() {
     let temp = tempdir().unwrap();
     let media = temp.path().join("styled-subtitles.wav");

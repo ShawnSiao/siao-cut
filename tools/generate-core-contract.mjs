@@ -28,6 +28,7 @@ const declarations = [
   ["agentRunStatuses", "AgentRunStatus", contract.statusSets.agentRun],
   ["localResourceStates", "LocalResourceState", contract.statusSets.localResource],
   ["transcriptionJobStatuses", "TranscriptionJobStatus", contract.statusSets.transcriptionJob],
+  ["transcriptionJobStages", "TranscriptionJobStage", contract.statusSets.transcriptionJobStage],
   ["taskStatuses", "TaskStatus", contract.statusSets.task],
   ["workflowStatuses", "WorkflowStatus", contract.statusSets.workflow],
   ["autoWorkflowStatuses", "AutoWorkflowStatus", contract.statusSets.autoWorkflow],

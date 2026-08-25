@@ -45,6 +45,20 @@ export const transcriptionJobStatuses = [
 ] as const;
 export type TranscriptionJobStatus = typeof transcriptionJobStatuses[number];
 
+export const transcriptionJobStages = [
+  "queued",
+  "preparing_audio",
+  "requesting_model",
+  "validating_result",
+  "awaiting_apply",
+  "cancelled",
+  "interrupted",
+  "failed",
+  "completed",
+  "discarded"
+] as const;
+export type TranscriptionJobStage = typeof transcriptionJobStages[number];
+
 export const taskStatuses = [
   "queued",
   "claimed",
@@ -147,6 +161,7 @@ export const coreErrorCodes = [
   "word_cut_range_missing",
   "word_cut_stale",
   "word_cut_boundary_mismatch",
+  "cut_review_invalid",
   "history_undo_empty",
   "history_redo_empty",
   "history_project_busy",

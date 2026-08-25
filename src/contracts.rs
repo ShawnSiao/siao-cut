@@ -23,6 +23,19 @@ pub const TRANSCRIPTION_JOB_STATUSES: &[&str] = &[
     "discarded",
 ];
 
+pub const TRANSCRIPTION_JOB_STAGES: &[&str] = &[
+    "queued",
+    "preparing_audio",
+    "requesting_model",
+    "validating_result",
+    "awaiting_apply",
+    "cancelled",
+    "interrupted",
+    "failed",
+    "completed",
+    "discarded",
+];
+
 pub const TASK_STATUSES: &[&str] = &[
     "queued",
     "claimed",
@@ -139,6 +152,7 @@ pub const CORE_ERROR_CODES: &[&str] = &[
     "word_cut_range_missing",
     "word_cut_stale",
     "word_cut_boundary_mismatch",
+    "cut_review_invalid",
     "history_undo_empty",
     "history_redo_empty",
     "history_project_busy",
@@ -361,6 +375,7 @@ pub fn contract() -> Value {
         "statusSets": {
             "backgroundJob": BACKGROUND_JOB_STATUSES,
             "transcriptionJob": TRANSCRIPTION_JOB_STATUSES,
+            "transcriptionJobStage": TRANSCRIPTION_JOB_STAGES,
             "task": TASK_STATUSES,
             "workflow": WORKFLOW_STATUSES,
             "autoWorkflow": AUTO_WORKFLOW_STATUSES,
@@ -416,6 +431,7 @@ mod tests {
         for statuses in [
             BACKGROUND_JOB_STATUSES,
             TRANSCRIPTION_JOB_STATUSES,
+            TRANSCRIPTION_JOB_STAGES,
             TASK_STATUSES,
             WORKFLOW_STATUSES,
             AUTO_WORKFLOW_STATUSES,

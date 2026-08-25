@@ -20,6 +20,8 @@ import { localResourceClient } from "../domains/local-resource-client";
 import { useBackgroundTaskRegistry } from "../hooks/use-background-task-registry";
 import { useWorkbenchFeedback } from "../hooks/use-workbench-feedback";
 import { SubtitleTimelinePanel, type TimelineReviewMarker } from "./subtitle-timeline-panel";
+import type { WorkbenchActivity, WorkbenchActivityInputs } from "./workbench-activity";
+import type { WorkbenchActivityAction } from "./workbench-activity-center";
 
 const RESOURCE_SETUP_DEFERRED_KEY = "siaocut.localResourcesSetupDeferred.v1";
 
@@ -124,7 +126,7 @@ export function resolvePlaybackDuration(mediaDuration: number, fallbackDuration:
 const isValidAgentIdentity = (value: string) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value);
 const TranscriptionCandidateDialog = lazy(() => import("../components/transcription-candidate-dialog"));
 const ExportPanel = lazy(() => import("../components/export-panel"));
-const TranscriptionJobBar = lazy(() => import("../components/transcription-job-bar"));
+const WorkbenchActivityCenter = lazy(() => import("./workbench-activity-center"));
 const ProjectDeleteDialog = lazy(() => import("../components/project-delete-dialog"));
 const AppCommandMenu = lazy(() => import("../components/app-command-menu"));
 const RuntimeSettingsDialog = lazy(() => import("../components/runtime-settings-dialog"));
@@ -1046,6 +1048,16 @@ function WorkbenchController() {
         (trackedAutoWorkflowIds.includes(workflow.id) || ACTIVE_AUTO_WORKFLOW_STATUSES.has(workflow.status))
         && !dismissedAutoWorkflowIds.includes(workflow.id)
     ));
+    const workbenchActivityInputs: WorkbenchActivityInputs = {
+        busyMessage: busy,
+        sourceJob,
+        transcriptionJob,
+        agentRun,
+        audioAnalysisJob,
+        exportJob: activeExport,
+        autoWorkflows: visibleAutoWorkflows,
+        autoWorkflowErrors,
+    };
     const recentAutoWorkflows = autoWorkflows.slice(0, 5);
     const humanState = busy ? tr("app.s0001") : taskLabel(project);
     const humanStateTone = humanState === tr("app.s0003") ? "warning" : humanState === tr("app.s0002") ? "agent" : humanState === tr("app.s0001") ? "info" : "success";
@@ -2383,10 +2395,10 @@ function WorkbenchController() {
         setActiveExport(envelope.job);
         setNotice(tr("app.s0192"));
     });
-    const updateCut = (editId: string, action: "apply" | "restore") => project && withBusy(action === "apply" ? tr("app.s0193") : tr("app.s0194"), async () => {
+    const updateCut = (editId: string, action: "apply" | "restore" | "dismiss") => project && withBusy(action === "apply" ? tr("app.s0193") : action === "dismiss" ? tr("app.cut.dismissing") : tr("app.s0194"), async () => {
         await transcriptEditingClient.updateCut(project.id, editId, action);
         await refreshProject(project.id);
-        setNotice(action === "apply" ? tr("app.s0195") : tr("app.s0196"));
+        setNotice(action === "apply" ? tr("app.s0195") : action === "dismiss" ? tr("app.cut.dismissed") : tr("app.s0196"));
     });
     const detectSuggestions = () => project && withBusy(tr("app.s0197"), async () => {
         const envelope = await transcriptEditingClient.detectCuts(project.id);
@@ -2819,6 +2831,66 @@ function WorkbenchController() {
         await refreshProject(project.id);
         setNotice(action === "apply" ? tr("app.s0234") : tr("app.s0235"));
     });
+    const activityActionsFor = (activity: WorkbenchActivity): WorkbenchActivityAction[] => {
+        if (activity.kind === "local")
+            return [];
+        if (activity.kind === "source") {
+            const actions: WorkbenchActivityAction[] = [{
+                id: "open",
+                label: tr("app.activity.open"),
+                primary: true,
+                disabled: Boolean(sourceBusy),
+                onClick: () => setShowSourceImport(true),
+            }];
+            if (["queued", "running", "finalizing"].includes(activity.status))
+                actions.push({ id: "cancel", label: tr("app.activity.cancel"), disabled: Boolean(sourceBusy), onClick: () => void cancelSourceImport() });
+            else if (["failed", "interrupted", "cancelled", "canceled"].includes(activity.status))
+                actions.push({ id: "resume", label: tr("app.activity.resume"), disabled: Boolean(sourceBusy), onClick: () => void resumeSourceImport() });
+            return actions;
+        }
+        if (activity.kind === "transcription") {
+            if (activity.status === "awaiting_apply")
+                return [
+                    { id: "inspect", label: tr("app.activity.inspect"), primary: true, disabled: Boolean(busy), onClick: () => { setTranscriptionApplyConfirmed(false); setShowTranscriptionCandidate(true); } },
+                    { id: "discard", label: tr("app.activity.discard"), disabled: Boolean(busy), onClick: () => void discardTranscriptionCandidate() },
+                ];
+            if (["queued", "running"].includes(activity.status))
+                return [{ id: "cancel", label: tr("app.activity.cancel"), disabled: Boolean(busy), onClick: () => void cancelTranscription() }];
+            return [{ id: "resume", label: tr("app.activity.resume"), primary: true, disabled: Boolean(busy), onClick: () => void resumeTranscription() }];
+        }
+        if (activity.kind === "agent") {
+            if (["queued", "running", "submitting"].includes(activity.status))
+                return [{ id: "cancel", label: tr("app.activity.cancel"), disabled: Boolean(busy), onClick: () => void cancelCodexAgent() }];
+            return [{ id: "resume", label: tr("app.activity.resume"), primary: true, disabled: Boolean(busy), onClick: () => void resumeCodexAgent() }];
+        }
+        if (activity.kind === "audio") {
+            if (["queued", "running"].includes(activity.status))
+                return [{ id: "cancel", label: tr("app.activity.cancel"), disabled: Boolean(busy), onClick: () => void cancelAudioAnalysis() }];
+            return [{ id: "resume", label: tr("app.activity.resume"), primary: true, disabled: Boolean(busy), onClick: () => void resumeAudioAnalysis() }];
+        }
+        if (activity.kind === "export") {
+            if (["queued", "running"].includes(activity.status))
+                return [{ id: "cancel", label: tr("app.activity.cancel"), disabled: Boolean(busy), onClick: () => void cancelExport() }];
+            return [{ id: "retry", label: tr("app.activity.retry"), primary: true, disabled: Boolean(busy), onClick: () => void retryExport() }];
+        }
+        const workflow = visibleAutoWorkflows.find((candidate) => `auto:${candidate.id}` === activity.id);
+        if (!workflow)
+            return [];
+        const actions: WorkbenchActivityAction[] = [];
+        if (workflow.projectId && ["needs_agent", "needs_review", "cancelled"].includes(workflow.status))
+            actions.push({ id: "open", label: tr("app.s0276"), primary: ["needs_agent", "needs_review"].includes(workflow.status), disabled: Boolean(autoBusy), onClick: () => void openAutoProject(workflow) });
+        if (workflow.status === "needs_review")
+            actions.push({ id: "continue", label: tr("app.s0278"), disabled: Boolean(autoBusy), onClick: () => void continueAutoWorkflow(workflow) });
+        if (["failed", "interrupted", "cancelled"].includes(workflow.status))
+            actions.push({ id: "resume", label: tr("app.s0279"), primary: true, disabled: Boolean(autoBusy), onClick: () => void continueAutoWorkflow(workflow) });
+        if (["queued", "running", "needs_agent", "needs_review"].includes(workflow.status))
+            actions.push({ id: "cancel", label: tr("app.s0277"), disabled: Boolean(autoBusy), onClick: () => void cancelAutoWorkflow(workflow) });
+        if (["completed", "cancelled"].includes(workflow.status))
+            actions.push({ id: "details", label: tr("app.s0280"), disabled: Boolean(autoBusy), onClick: () => { setAutoWorkflow(workflow); setShowAutoWorkflow(true); } });
+        if (TERMINAL_AUTO_WORKFLOW_STATUSES.has(workflow.status))
+            actions.push({ id: "dismiss", label: tr("app.auto.status.dismiss"), disabled: Boolean(autoBusy), onClick: () => dismissAutoWorkflowStatus(workflow) });
+        return actions;
+    };
     const drawerTabs = ["review", "quality", "analysis", "history", "export"] as const;
     const changeDrawerTabFromKeyboard = (event: ReactKeyboardEvent<HTMLButtonElement>, tab: typeof drawerTabs[number]) => {
         if (event.key !== "ArrowLeft" && event.key !== "ArrowRight")
@@ -2961,26 +3033,7 @@ function WorkbenchController() {
 	        <nav className="creator-flow" aria-label={tr("app.creator.flow.label")}>{creatorSteps.map((step, index) => <span key={step} className={index < creatorStepIndex ? "done" : index === creatorStepIndex ? "active" : "pending"}><i>{index < creatorStepIndex ? <Check size={12}/> : index + 1}</i>{tr(`app.creator.step.${step}`)}</span>)}</nav>
 
         {(notice || error) && <div className={`notice ${error ? "error" : ""}`} role="status" aria-live="polite">{error && <CircleAlert size={15}/>}<span>{error ? tr("app.error.unknownSummary") : notice}</span>{error && <details><summary>{tr("app.error.technicalDetails")}</summary><code>{error}</code></details>}{error && <button className="notice-action" onClick={() => void initialize()}>{tr("app.s0262")}</button>}<button aria-label={tr("app.s0263")} title={tr("app.s0263")} onClick={() => { setNotice(null); setError(null); }}>×</button></div>}
-        {busy && <div className="progress-strip" role="status" aria-live="polite"><LoaderCircle size={14} className="spin"/>{busy}</div>}
-        {transcriptionJob && <Suspense fallback={null}><TranscriptionJobBar job={transcriptionJob} busy={Boolean(busy)} onCancel={cancelTranscription} onResume={resumeTranscription} onInspectCandidate={() => { setTranscriptionApplyConfirmed(false); setShowTranscriptionCandidate(true); }} onDiscardCandidate={discardTranscriptionCandidate}/></Suspense>}
-        {activeExport && ["queued", "running"].includes(activeExport.status) && <div className="export-progress" role="status"><Film size={15}/><span>{tr("app.s0264") + " "}{Math.round(activeExport.progress * 100)}%</span><progress value={activeExport.progress} max={1}/><button onClick={cancelExport}>{tr("app.s0265")}</button></div>}
-        {activeExport && ["failed", "interrupted"].includes(activeExport.status) && <div className="export-progress interrupted" role="status"><CircleAlert size={15}/><span>{activeExport.status === "interrupted" ? tr("app.s0266") : tr("app.s0267")}</span><JobFailureDetails context="export" status={activeExport.status} errorCode={activeExport.errorCode} errorMessage={activeExport.errorMessage}/><button onClick={retryExport}>{tr("app.s0269")}</button></div>}
-        {sourceJob && !showSourceImport && ["queued", "running", "finalizing"].includes(sourceJob.status) && <div className="source-progress" role="status"><Link2 size={15}/><span><strong>{sourceStatusLabel(sourceJob.status)} · {Math.round(sourceJob.progress * 100)}%</strong><small>{sourceJob.title}</small></span><progress value={sourceJob.progress} max={1}/><button onClick={() => setShowSourceImport(true)}>{tr("app.s0270")}</button></div>}
-        {visibleAutoWorkflows.map((workflow) => <section className={`auto-progress ${workflow.status}`} aria-label={tr("app.s0271")} key={workflow.id}>
-          <Sparkles size={17}/>
-          <div className="auto-progress-copy"><strong>{autoStatusLabel(workflow.status)} · {autoStageLabel(workflow.currentStage)}</strong>{["failed", "interrupted"].includes(workflow.status) ? <JobFailureDetails context="auto" status={workflow.status} errorCode={workflow.errorCode} errorMessage={workflow.errorMessage}/> : <small>{!workflow.projectId && ["needs_agent", "needs_review"].includes(workflow.status) ? tr("app.s0272") : workflow.status === "needs_agent" ? tr("app.s0273") : workflow.status === "needs_review" ? tr("app.s0274") : workflow.outputPath}</small>}</div>
-          <progress value={workflow.progress} max={1} aria-label={tr("app.s0275")}/>
-          <span className="auto-progress-percent">{Math.round(workflow.progress * 100)}%</span>
-          <div className="auto-progress-actions">
-            {workflow.projectId && ["needs_agent", "needs_review", "cancelled"].includes(workflow.status) && <button onClick={() => void openAutoProject(workflow)}>{tr("app.s0276")}</button>}
-            {["queued", "running", "needs_agent", "needs_review", "failed", "interrupted"].includes(workflow.status) && <button disabled={Boolean(autoBusy)} onClick={() => void cancelAutoWorkflow(workflow)}>{tr("app.s0277")}</button>}
-            {workflow.status === "needs_review" && <button className="primary" disabled={Boolean(autoBusy)} onClick={() => void continueAutoWorkflow(workflow)}>{tr("app.s0278")}</button>}
-            {["failed", "interrupted", "cancelled"].includes(workflow.status) && <button className="primary" disabled={Boolean(autoBusy)} onClick={() => void continueAutoWorkflow(workflow)}>{tr("app.s0279")}</button>}
-            {["completed", "cancelled"].includes(workflow.status) && <button onClick={() => { setAutoWorkflow(workflow); setShowAutoWorkflow(true); }}>{tr("app.s0280")}</button>}
-            {TERMINAL_AUTO_WORKFLOW_STATUSES.has(workflow.status) && <button aria-label={tr("app.auto.status.dismiss")} title={tr("app.auto.status.dismiss")} onClick={() => dismissAutoWorkflowStatus(workflow)}><X size={13}/>{tr("app.auto.status.dismiss")}</button>}
-          </div>
-          {autoWorkflowErrors[workflow.id] && <JobFailureDetails className="auto-progress-error" context="auto" status="failed" errorMessage={autoWorkflowErrors[workflow.id]}/>}
-        </section>)}
+        <Suspense fallback={null}><WorkbenchActivityCenter inputs={workbenchActivityInputs} actionsFor={activityActionsFor}/></Suspense>
 
         {!project ? (<section className="welcome-card">
             <div className="welcome-icon"><FileVideo2 size={30}/></div>
@@ -3029,7 +3082,7 @@ function WorkbenchController() {
 	                    </section>
 	                    <div className="review-panel-scroll creator-review-list" role="region" aria-label={tr("app.s0297")} tabIndex={0}>
 	                      {orderedPatchSets.map((set) => <section className="patch-set" key={set.id}><header><span>{set.kind}{set.language ? ` · ${set.language.toUpperCase()}` : ""}</span>{set.items.length > 1 && <div><button onClick={() => reviewAll(set.taskId, "keep")}>{tr("app.s0298")}</button>{!set.items.some((item) => item.status === "conflict") && <button onClick={() => reviewAll(set.taskId, "apply")}>{tr("app.s0299")}</button>}</div>}</header>{set.items.map((item) => <div key={item.id} data-review-detail-id={`agent:${item.id}`} tabIndex={-1}><PatchReviewCard item={item} onReview={(action) => reviewPatch(item.id, action)} onSelect={() => { const segment = project.transcript.segments.find((candidate) => candidate.id === item.segmentId); if (segment) selectSegment(segment); }}/></div>)}</section>)}
-	                      {pendingEdits.map((edit) => <article className="review-item" key={edit.id} data-review-detail-id={`edit:${edit.id}`} tabIndex={-1}><span className="review-tag">{tr("app.composite.reviewSuggestion", { kind: cutSuggestionLabel(edit.suggestion?.suggestionType) })}</span><strong>{editReasonLabel(edit)}</strong><p>{edit.suggestion ? tr("app.composite.suggestionEvidence", { range: `${formatTime(edit.start)} — ${formatTime(edit.end)}`, confidence: Math.round(edit.suggestion.confidence * 100) }) : `${formatTime(edit.start)} — ${formatTime(edit.end)}`}</p><div className="cut-actions"><button onClick={() => selectSegment(project.transcript.segments.find((segment) => segment.id === edit.segmentId)!)}>{tr("app.s0303")}</button>{edit.kind === "word_cut" && <button onClick={() => previewCut(edit.id)}><Headphones size={11}/>{tr("app.s0304")}</button>}<button onClick={() => updateCut(edit.id, "apply")}>{tr("app.s0305")}</button></div></article>)}
+	                      {pendingEdits.map((edit) => <article className="review-item" key={edit.id} data-review-detail-id={`edit:${edit.id}`} tabIndex={-1}><span className="review-tag">{tr("app.composite.reviewSuggestion", { kind: cutSuggestionLabel(edit.suggestion?.suggestionType) })}</span><strong>{editReasonLabel(edit)}</strong><p>{edit.suggestion ? tr("app.composite.suggestionEvidence", { range: `${formatTime(edit.start)} — ${formatTime(edit.end)}`, confidence: Math.round(edit.suggestion.confidence * 100) }) : `${formatTime(edit.start)} — ${formatTime(edit.end)}`}</p><div className="cut-actions"><button onClick={() => selectSegment(project.transcript.segments.find((segment) => segment.id === edit.segmentId)!)}>{tr("app.s0303")}</button>{edit.kind === "word_cut" && <button onClick={() => previewCut(edit.id)}><Headphones size={11}/>{tr("app.s0304")}</button>}<button onClick={() => updateCut(edit.id, "dismiss")}>{tr("app.cut.dismiss")}</button><button onClick={() => updateCut(edit.id, "apply")}>{tr("app.s0305")}</button></div></article>)}
 	                      {audioRisks.map((risk, index) => <article className="review-item audio-risk-item" key={`${risk.kind}-${risk.start}-${index}`}><span className="review-tag warning"><CircleAlert size={12}/>{tr("app.s0306")}</span><strong>{audioRiskLabel(risk.kind)}</strong><p>{tr("app.composite.audioRiskEvidence", { range: `${formatTime(risk.start)} — ${formatTime(risk.end)}`, measured: risk.measuredValue, threshold: risk.threshold, unit: audioUnitLabel(risk.unit) })}</p><button onClick={() => locateAudioRisk(risk)}>{tr("app.s0309")}</button></article>)}
 	                      <TranscriptionReviewPanel items={transcriptionReviews} disabled={Boolean(busy)} onLocate={(segmentId) => { const segment = project.transcript.segments.find((item) => item.id === segmentId); if (segment) selectSegment(segment); }} onResolve={resolveTranscriptionReview}/>
 	                      {failedTasks.map((task) => <article className={`agent-task-status ${task.status}`} key={task.id}>

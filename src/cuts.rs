@@ -401,7 +401,7 @@ pub fn set_status(
     cut_id: &str,
     status: &str,
 ) -> Result<Edit> {
-    if !["applied", "restored"].contains(&status) {
+    if !["applied", "restored", "dismissed"].contains(&status) {
         bail!("软剪辑状态无效：{status}")
     }
     let edit = project::load(db, project_id)?
@@ -411,13 +411,16 @@ pub fn set_status(
             edit.id == cut_id && matches!(edit.kind.as_str(), "cut" | "word_cut" | "semantic_cut")
         })
         .ok_or_else(|| anyhow!("软剪辑不存在：{cut_id}"))?;
+    if status == "dismissed" && edit.status != "proposed" {
+        bail!("cut_review_invalid: 只有待审软剪辑建议可以保留原片")
+    }
     if status == "applied" && edit.cut_range.as_ref().is_some_and(|range| range.stale) {
         bail!("word_alignment_stale: 字幕文本已经变化，请重新创建词范围剪辑")
     }
-    let reason = if status == "applied" {
-        "应用软剪辑"
-    } else {
-        "恢复软剪辑"
+    let reason = match status {
+        "applied" => "应用软剪辑",
+        "dismissed" => "保留原片",
+        _ => "恢复软剪辑",
     };
     project::mutate_with_snapshot(db, project_id, reason, |tx| {
         let changed = tx.execute(
@@ -476,6 +479,43 @@ mod tests {
             "applied"
         );
         assert_eq!(restore_all(&mut db, &project.id).unwrap(), 1);
+    }
+
+    #[test]
+    fn cut_suggestion_can_be_dismissed_without_changing_the_timeline_and_undo_restores_review() {
+        let temp = tempdir().unwrap();
+        let mut db = db::open_at(&temp.path().join("dismiss-cut.db")).unwrap();
+        let media = temp.path().join("talk.wav");
+        fs::write(&media, b"audio").unwrap();
+        let project = project::create(&mut db, &media, None).unwrap();
+        project::add_segment(&mut db, &project.id, 0.0, 0.5, "嗯".into(), None).unwrap();
+        let cut = detect(&mut db, &project.id).unwrap().remove(0);
+        let duration_before = project::load(&db, &project.id)
+            .unwrap()
+            .timeline
+            .output_duration;
+
+        let dismissed = set_status(&mut db, &project.id, &cut.id, "dismissed").unwrap();
+        assert_eq!(dismissed.status, "dismissed");
+        assert_eq!(
+            project::load(&db, &project.id)
+                .unwrap()
+                .timeline
+                .output_duration,
+            duration_before
+        );
+        assert!(detect(&mut db, &project.id).unwrap().is_empty());
+
+        let undone = project::undo(&mut db, &project.id).unwrap();
+        assert_eq!(
+            undone
+                .edits
+                .iter()
+                .find(|edit| edit.id == cut.id)
+                .unwrap()
+                .status,
+            "proposed"
+        );
     }
 
     #[test]

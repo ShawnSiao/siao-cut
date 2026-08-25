@@ -692,6 +692,10 @@ enum CutCommand {
         project_id: String,
         cut_id: String,
     },
+    Dismiss {
+        project_id: String,
+        cut_id: String,
+    },
     Restore {
         project_id: String,
         cut_id: Option<String>,
@@ -1883,6 +1887,14 @@ fn run(cli: Cli) -> Result<Value> {
                 Ok(envelope(
                     json!({"projectId":project_id,"cut":cut,"message":"已应用可恢复软剪辑。"}),
                 ))
+            }
+            CutCommand::Dismiss { project_id, cut_id } => {
+                let cut = cuts::set_status(&mut database, &project_id, &cut_id, "dismissed")?;
+                Ok(envelope(json!({
+                    "projectId":project_id,
+                    "cut":cut,
+                    "message":"已保留原片；该建议不会修改时间线。"
+                })))
             }
             CutCommand::Restore {
                 project_id,
