@@ -21,7 +21,7 @@ export function deriveReviewQueue(
   const segmentById = new Map(project.transcript.segments.map((segment) => [segment.id, segment]));
   const items: ReviewQueueItem[] = [];
 
-  project.subtitleQuality.issues.forEach((issue) => items.push({
+  project.subtitleQuality.issues.filter((issue) => issue.severity === "error").forEach((issue) => items.push({
     id: `quality:${issue.id}`,
     kind: "quality",
     sourceId: issue.id,

@@ -14,6 +14,10 @@ use serde::{Deserialize, Serialize};
 struct StoredSubtitleStyle {
     preset: SubtitleStylePreset,
     position: SubtitlePosition,
+    #[serde(default)]
+    source_font_size: Option<u16>,
+    #[serde(default)]
+    translation_font_size: Option<u16>,
 }
 
 #[derive(Debug, Serialize)]
@@ -29,17 +33,17 @@ pub fn catalog() -> Vec<SubtitleStylePresetOption> {
         SubtitleStylePresetOption {
             id: SubtitleStylePreset::Compact,
             label: "紧凑",
-            description: "42 px，适合信息密度较高的双语字幕",
+            description: "译文 42 px、原文 32 px，适合信息密度较高的双语字幕",
         },
         SubtitleStylePresetOption {
             id: SubtitleStylePreset::Standard,
             label: "清晰",
-            description: "52 px，默认口播字幕，兼顾可读性和画面占用",
+            description: "译文 52 px、原文 40 px，默认突出目标受众语言",
         },
         SubtitleStylePresetOption {
             id: SubtitleStylePreset::Emphasis,
             label: "强调",
-            description: "60 px，加粗描边，适合短句和重点表达",
+            description: "译文 60 px、原文 46 px，加粗描边突出目标语言",
         },
     ]
 }
@@ -52,16 +56,19 @@ pub fn resolve(preset: SubtitleStylePreset, position: SubtitlePosition) -> Subti
     };
     match preset {
         SubtitleStylePreset::Compact => {
-            style.font_size = 42;
-            style.secondary_font_size = 32;
+            style.font_size = 32;
+            style.secondary_font_size = 42;
             style.outline_width = 2;
             style.shadow_depth = 1;
             style.safe_margin_percent = 6;
         }
-        SubtitleStylePreset::Standard => {}
+        SubtitleStylePreset::Standard => {
+            style.font_size = 40;
+            style.secondary_font_size = 52;
+        }
         SubtitleStylePreset::Emphasis => {
-            style.font_size = 60;
-            style.secondary_font_size = 46;
+            style.font_size = 46;
+            style.secondary_font_size = 60;
             style.outline_width = 4;
             style.shadow_depth = 2;
             style.safe_margin_percent = 10;
@@ -73,24 +80,53 @@ pub fn resolve(preset: SubtitleStylePreset, position: SubtitlePosition) -> Subti
 pub fn from_storage(value: &str) -> Result<SubtitleStyle> {
     let stored: StoredSubtitleStyle = serde_json::from_str(value)
         .map_err(|error| anyhow!("subtitle_style_snapshot_invalid: {error}"))?;
-    Ok(resolve(stored.preset, stored.position))
+    let mut style = resolve(stored.preset, stored.position);
+    if let Some(size) = stored.source_font_size {
+        style.font_size = validate_font_size(size)?;
+    }
+    if let Some(size) = stored.translation_font_size {
+        style.secondary_font_size = validate_font_size(size)?;
+    }
+    Ok(style)
 }
 
 pub fn storage_json(style: &SubtitleStyle) -> Result<String> {
     Ok(serde_json::to_string(&StoredSubtitleStyle {
         preset: style.preset,
         position: style.position,
+        source_font_size: Some(style.font_size),
+        translation_font_size: Some(style.secondary_font_size),
     })?)
 }
 
-pub fn set(db: &mut Connection, project_id: &str, preset: &str, position: &str) -> Result<Project> {
+fn validate_font_size(size: u16) -> Result<u16> {
+    if !(24..=120).contains(&size) {
+        bail!("subtitle_style_font_size_invalid: 字幕字号必须在 24 至 120 px 之间")
+    }
+    Ok(size)
+}
+
+pub fn set(
+    db: &mut Connection,
+    project_id: &str,
+    preset: &str,
+    position: &str,
+    source_font_size: Option<u16>,
+    translation_font_size: Option<u16>,
+) -> Result<Project> {
     let preset = SubtitleStylePreset::parse(preset).ok_or_else(|| {
         anyhow!("subtitle_style_preset_invalid: 字幕预设只支持 compact、standard 或 emphasis")
     })?;
     let position = SubtitlePosition::parse(position).ok_or_else(|| {
         anyhow!("subtitle_style_position_invalid: 字幕位置只支持 bottom 或 center")
     })?;
-    let next = resolve(preset, position);
+    let mut next = resolve(preset, position);
+    if let Some(size) = source_font_size {
+        next.font_size = validate_font_size(size)?;
+    }
+    if let Some(size) = translation_font_size {
+        next.secondary_font_size = validate_font_size(size)?;
+    }
     let current = project::load(db, project_id)?;
     if current.subtitle_style == next {
         return Ok(current);
@@ -202,11 +238,29 @@ mod tests {
         let compact = resolve(SubtitleStylePreset::Compact, SubtitlePosition::Bottom);
         let standard = resolve(SubtitleStylePreset::Standard, SubtitlePosition::Bottom);
         let emphasis = resolve(SubtitleStylePreset::Emphasis, SubtitlePosition::Center);
-        assert_eq!((compact.font_size, compact.outline_width), (42, 2));
-        assert_eq!((standard.font_size, standard.safe_margin_percent), (52, 8));
         assert_eq!(
-            (emphasis.font_size, emphasis.position),
-            (60, SubtitlePosition::Center)
+            (
+                compact.font_size,
+                compact.secondary_font_size,
+                compact.outline_width
+            ),
+            (32, 42, 2)
+        );
+        assert_eq!(
+            (
+                standard.font_size,
+                standard.secondary_font_size,
+                standard.safe_margin_percent
+            ),
+            (40, 52, 8)
+        );
+        assert_eq!(
+            (
+                emphasis.font_size,
+                emphasis.secondary_font_size,
+                emphasis.position
+            ),
+            (46, 60, SubtitlePosition::Center)
         );
         assert_eq!(
             from_storage(&storage_json(&emphasis).unwrap()).unwrap(),
@@ -220,8 +274,8 @@ mod tests {
         let style = resolve(SubtitleStylePreset::Emphasis, SubtitlePosition::Bottom);
         let source = ass_header_for_media(&style, CanvasSettings::default(), None).unwrap();
         assert!(source.contains("PlayResX: 1920\nPlayResY: 1080"));
-        assert!(source.contains("Style: Primary,Microsoft YaHei UI,60,&H00F5F4F2,&H00C6BEB5"));
-        assert!(source.contains("Style: Secondary,Microsoft YaHei UI,46,&H00C6BEB5"));
+        assert!(source.contains("Style: Primary,Microsoft YaHei UI,46,&H00F5F4F2,&H00C6BEB5"));
+        assert!(source.contains("Style: Secondary,Microsoft YaHei UI,60,&H00C6BEB5"));
         assert!(source.contains(",4,2,2,80,80,108,1"));
         let vertical = ass_header_for_media(
             &style,
@@ -249,10 +303,25 @@ mod tests {
         let created = project::create(&mut db, &media, None).unwrap();
         project::add_segment(&mut db, &created.id, 0.0, 1.0, "正文".into(), None).unwrap();
         let before = project::load(&db, &created.id).unwrap();
-        let updated = set(&mut db, &created.id, "emphasis", "center").unwrap();
+        let updated = set(
+            &mut db,
+            &created.id,
+            "emphasis",
+            "center",
+            Some(44),
+            Some(68),
+        )
+        .unwrap();
         assert_eq!(updated.transcript, before.transcript);
         assert_eq!(updated.subtitle_style.preset, SubtitleStylePreset::Emphasis);
         assert_eq!(updated.subtitle_style.position, SubtitlePosition::Center);
+        assert_eq!(
+            (
+                updated.subtitle_style.font_size,
+                updated.subtitle_style.secondary_font_size
+            ),
+            (44, 68)
+        );
         let undone = project::undo(&mut db, &created.id).unwrap();
         assert_eq!(undone.subtitle_style, SubtitleStyle::default());
         assert_eq!(undone.transcript, before.transcript);

@@ -178,6 +178,11 @@ test("keeps one player while focused review supports keyboard exit and responsiv
   await expect(page.getByRole("button", { name: "退出专注审阅" })).toBeFocused();
   expect(await video.evaluate((element) => (element as HTMLVideoElement & { focusReviewMarker?: string }).focusReviewMarker)).toBe("same-player");
   expect(Math.abs(await video.evaluate((element) => (element as HTMLVideoElement).currentTime) - 13.5)).toBeLessThanOrEqual(0.25);
+  const expandedPlayerWidth = (await page.locator(".creator-player").boundingBox())!.width;
+  await page.getByRole("button", { name: "收起问题卡片" }).click();
+  await expect(page.getByRole("button", { name: "展开问题卡片" })).toBeVisible();
+  await expect.poll(async () => (await page.locator(".creator-player").boundingBox())!.width).toBeGreaterThan(expandedPlayerWidth + 200);
+  await page.getByRole("button", { name: "展开问题卡片" }).click();
 
   for (const viewport of [{ width: 1080, height: 720 }, { width: 1444, height: 972 }, { width: 2560, height: 1410 }]) {
     await page.setViewportSize(viewport);
@@ -203,7 +208,7 @@ test("keeps one player while focused review supports keyboard exit and responsiv
   await timeline.getByRole("button", { name: "专注审阅" }).click();
   await expect(page.getByRole("button", { name: "保留原片" })).toBeVisible();
   await page.getByRole("button", { name: "保留原片" }).click();
-  await expect(page.getByText(/剩余 4 项/)).toBeVisible();
+  await expect(page.getByText(/剩余 1 项/)).toBeVisible();
 });
 
 test("blocks focused review until the source media is available", async ({ page }) => {
@@ -228,7 +233,7 @@ test("uses direct transcript keys for time-confirmed split and adjacent merge", 
   await expect(split.getByText(/缺少可信的词级时间/)).toBeVisible();
   await split.getByRole("spinbutton", { name: /时间拆分点/ }).fill("15.500");
   await split.getByRole("button", { name: "确认拆分当前段" }).click();
-  await expect(page.getByLabel("字幕文稿列表").locator("textarea")).toHaveCount(5);
+  await expect(page.getByLabel("字幕文稿列表").getByLabel(/字幕文本$/)).toHaveCount(5);
 
   const secondHalf = page.getByLabel("00:15 字幕文本");
   await secondHalf.evaluate((element) => {
@@ -240,7 +245,7 @@ test("uses direct transcript keys for time-confirmed split and adjacent merge", 
   const merge = page.getByRole("dialog", { name: "合并字幕" });
   await expect(merge.getByText(/作用范围：2 段/)).toBeVisible();
   await merge.getByRole("button", { name: "确认合并 2 段" }).click();
-  await expect(page.getByLabel("字幕文稿列表").locator("textarea")).toHaveCount(4);
+  await expect(page.getByLabel("字幕文稿列表").getByLabel(/字幕文本$/)).toHaveCount(4);
 });
 
 test("runs local Codex and keeps every result pending review", async ({ page }) => {
@@ -434,7 +439,7 @@ test("selects subtitle ranges and confirms recoverable structure edits", async (
   await splitDialog.getByRole("spinbutton", { name: /时间拆分点/ }).fill("15.500");
   await splitDialog.getByRole("button", { name: "确认拆分当前段" }).click();
   await expect(page.getByText(/字幕已拆分.*Ctrl\+Z 撤销/)).toBeVisible();
-  await expect(page.getByLabel("字幕文稿列表").locator("textarea")).toHaveCount(5);
+  await expect(page.getByLabel("字幕文稿列表").getByLabel(/字幕文本$/)).toHaveCount(5);
 });
 
 test("expands the editing workbench on a maximized 27-inch display", async ({ page }) => {
@@ -570,7 +575,7 @@ test("previews and explicitly replaces local subtitle files", async ({ page }) =
   await expect(transcript.locator("textarea").first()).toHaveValue("导入后的第一条字幕");
   await page.getByRole("tab", { name: /^质量/ }).click();
   const quality = page.getByRole("region", { name: "字幕质量" });
-  await expect(quality.getByText("1 项质量提醒")).toBeVisible();
+  await expect(quality.getByText("无阻断问题 · 1 条排版建议已汇总")).toBeVisible();
   await expect(quality).toHaveClass(/warning/);
   await expect(quality.locator("svg.lucide-circle-alert").first()).toBeVisible();
   await quality.getByRole("button", { name: "提醒 1" }).click();
@@ -710,6 +715,29 @@ test("reviews and edits a transcript from the workbench", async ({ page }) => {
   await expect(page.getByText(/字幕已导出到/)).toBeVisible();
   await exportPanel.getByRole("button", { name: "导出视频" }).click();
   await expect(page.getByText(/视频已导出到/)).toBeVisible();
+});
+
+test("edits stale translations directly and gives the target language an independent larger size", async ({ page }) => {
+  await page.goto("/");
+  const source = page.getByLabel("00:13 字幕文本");
+  await source.fill("人工修订后的原文。");
+  await source.blur();
+  await expect(page.getByText("原文已更新；对应译文需要更新。")).toBeVisible();
+
+  const translated = page.getByLabel("编辑 00:13 的 EN 译文");
+  await translated.fill("The manually corrected translation.");
+  await translated.blur();
+  await expect(page.getByText("译文已更新，并与当前原文重新关联。")).toBeVisible();
+  await expect(translated).toHaveValue("The manually corrected translation.");
+
+  await page.getByRole("tab", { name: "导出" }).click();
+  const exportPanel = page.getByLabel("导出设置");
+  await exportPanel.getByLabel("字幕模式").selectOption("bilingual");
+  await expect(exportPanel.getByLabel("原文字号")).toHaveValue("40");
+  await expect(exportPanel.getByLabel("译文字号")).toHaveValue("52");
+  await exportPanel.getByLabel("译文字号").fill("72");
+  await exportPanel.getByLabel("译文字号").blur();
+  await expect(exportPanel.getByLabel("译文字号")).toHaveValue("72");
 });
 
 test("versions glossary terms and requires stale-translation export confirmation", async ({ page }) => {

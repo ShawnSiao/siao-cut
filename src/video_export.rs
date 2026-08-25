@@ -1344,7 +1344,8 @@ mod tests {
             None,
         )
         .unwrap();
-        crate::subtitle_style::set(&mut database, &created.id, "emphasis", "center").unwrap();
+        crate::subtitle_style::set(&mut database, &created.id, "emphasis", "center", None, None)
+            .unwrap();
         let job = create(
             &mut database,
             &created.id,
@@ -1362,7 +1363,8 @@ mod tests {
         assert_eq!(job.subtitle_style.preset, SubtitleStylePreset::Emphasis);
         assert_eq!(job.subtitle_style.position, SubtitlePosition::Center);
 
-        crate::subtitle_style::set(&mut database, &created.id, "compact", "bottom").unwrap();
+        crate::subtitle_style::set(&mut database, &created.id, "compact", "bottom", None, None)
+            .unwrap();
         let reloaded = load(&database, &job.id).unwrap();
         assert_eq!(
             reloaded.subtitle_style.preset,
@@ -1446,7 +1448,8 @@ mod tests {
                 )
                 .unwrap();
         }
-        crate::subtitle_style::set(&mut database, &created.id, "emphasis", "bottom").unwrap();
+        crate::subtitle_style::set(&mut database, &created.id, "emphasis", "bottom", None, None)
+            .unwrap();
         let styled = project::load(&database, &created.id).unwrap();
         let subtitle_path = temp.path().join("styled.ass");
         let ass = export::render(
@@ -1460,7 +1463,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(ass.contains("Style: Primary,Microsoft YaHei UI,60"));
+        assert!(ass.contains("Style: Primary,Microsoft YaHei UI,46"));
         assert!(ass.contains(",4,2,2,80,80,108,1"));
         assert_eq!(ass.matches("\\N").count(), 1);
         assert!(ass.contains("{\\kf"));

@@ -800,13 +800,18 @@ pub fn render(project: &Project, options: &ExportOptions<'_>) -> Result<String> 
                 project.canvas_settings,
                 ffprobe_video_dimensions(Path::new(&project.media.source_path)),
             )?;
+            let dialogue_style = if options.subtitle_mode == SubtitleMode::Translated {
+                "Secondary"
+            } else {
+                "Primary"
+            };
             format!(
                 "{}\n{}\n",
                 header,
                 segments
                     .iter()
                     .map(|(start, end, text, karaoke)| format!(
-                        "Dialogue: 0,{},{},Primary,{}",
+                        "Dialogue: 0,{},{},{dialogue_style},{}",
                         ass_timestamp(*start),
                         ass_timestamp(*end),
                         ass_dialogue_text(
@@ -1223,11 +1228,26 @@ mod tests {
         )
         .unwrap();
         assert!(bilingual_ass.contains("PlayResX: 1920\nPlayResY: 1080"));
-        assert!(bilingual_ass.contains("Style: Primary,Microsoft YaHei UI,60"));
-        assert!(bilingual_ass.contains("Style: Secondary,Microsoft YaHei UI,46"));
+        assert!(bilingual_ass.contains("Style: Primary,Microsoft YaHei UI,46"));
+        assert!(bilingual_ass.contains("Style: Secondary,Microsoft YaHei UI,60"));
         assert!(bilingual_ass.contains(
             "Dialogue: 0,0:00:00.00,0:00:01.00,Primary,{\\kf100}原文\\N{\\rSecondary}Translation"
         ));
+        let translated_ass = render(
+            &project,
+            &ExportOptions {
+                format: "ass",
+                language: Some("en"),
+                subtitle_mode: SubtitleMode::Translated,
+                include_cuts: false,
+                allow_stale_translation: false,
+            },
+        )
+        .unwrap();
+        assert!(
+            translated_ass
+                .contains("Dialogue: 0,0:00:00.00,0:00:01.00,Secondary,{\\kf100}Translation")
+        );
 
         project.translations.get_mut("en").unwrap().status = "stale".into();
         let error = render(

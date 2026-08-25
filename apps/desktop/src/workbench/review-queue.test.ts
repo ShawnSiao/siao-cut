@@ -11,6 +11,7 @@ describe("deriveReviewQueue", () => {
       segmentId: "s3",
       status: "conflict",
     });
+    project.subtitleQuality.issues[0].severity = "error";
     const reviews = [{
       id: "review-1",
       projectId: project.id,
@@ -26,7 +27,7 @@ describe("deriveReviewQueue", () => {
     const risk = { kind: "silence" as const, start: 20, end: 22, measuredValue: 2, threshold: 1.5, unit: "seconds", toolVersion: "test" };
     const queue = deriveReviewQueue(project, reviews, [risk, risk]);
 
-    expect(queue.map((item) => item.kind)).toEqual(["cut", "agent", "quality", "agent", "quality", "audio", "quality", "transcription"]);
+    expect(queue.map((item) => item.kind)).toEqual(["cut", "agent", "quality", "agent", "audio", "transcription"]);
     expect(queue.find((item) => item.id === "agent:pi-conflict")?.conflict).toBe(true);
     expect(queue.filter((item) => item.kind === "audio")).toHaveLength(1);
   });
@@ -49,5 +50,20 @@ describe("deriveReviewQueue", () => {
     }], []);
 
     expect(queue.some((item) => ["agent", "cut", "transcription"].includes(item.kind))).toBe(false);
+  });
+
+  it("keeps advisory subtitle warnings out of focused review", () => {
+    const project = structuredClone(sampleProject);
+    project.patchSets = [];
+    project.edits = [];
+    project.subtitleQuality.issues = Array.from({ length: 1_000 }, (_, index) => ({
+      ...project.subtitleQuality.issues[0],
+      id: `warning-${index}`,
+      segmentId: `s${index}`,
+      start: index,
+      end: index + 1,
+    }));
+
+    expect(deriveReviewQueue(project, [], [])).toEqual([]);
   });
 });

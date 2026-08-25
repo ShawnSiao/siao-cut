@@ -23,6 +23,7 @@ import type { TimelineReviewMarker } from "./subtitle-timeline-panel";
 import type { WorkbenchActivity, WorkbenchActivityInputs } from "./workbench-activity";
 import type { WorkbenchActivityAction } from "./workbench-activity-center";
 import type { ReviewQueueItem } from "./review-queue";
+import { groupSubtitleQualityIssues } from "./subtitle-quality-groups";
 import { useFocusReviewState } from "./use-focus-review-state";
 
 const RESOURCE_SETUP_DEFERRED_KEY = "siaocut.localResourcesSetupDeferred.v1";
@@ -926,6 +927,7 @@ function WorkbenchController() {
         return project?.transcript.segments.filter((segment) => segment.text.toLowerCase().includes(search.toLowerCase()) && (!issueSegmentIds || issueSegmentIds.has(segment.id))) ?? [];
     }, [project, qualityFilter, search]);
     const visibleQualityIssues = project?.subtitleQuality.issues.filter((issue) => qualityFilter === "all" || issue.severity === qualityFilter) ?? [];
+    const visibleQualityIssueGroups = groupSubtitleQualityIssues(visibleQualityIssues);
     const selectedSegments = useMemo(() => project?.transcript.segments.filter((segment) => selectedSegmentIds.includes(segment.id)) ?? [], [project, selectedSegmentIds]);
     const allVisibleSegmentsSelected = filteredSegments.length > 0 && filteredSegments.every((segment) => selectedSegmentIds.includes(segment.id));
     const selectedScopeLabel = selectedSegments.length
@@ -1050,6 +1052,9 @@ function WorkbenchController() {
         bottom: project.subtitleStyle.position === "bottom" ? `${project.subtitleStyle.safeMarginPercent}%` : undefined,
         textShadow: `0 ${project.subtitleStyle.shadowDepth}px ${Math.max(1, project.subtitleStyle.shadowDepth * 2)}px ${project.subtitleStyle.outlineColor}, 0 0 ${project.subtitleStyle.outlineWidth * 2}px ${project.subtitleStyle.outlineColor}`,
     } : undefined;
+    const captionPrimaryStyle = project && subtitleMode === "translated"
+        ? { ...captionKaraokeStyle, fontSize: `${Math.max(12, Math.round(project.subtitleStyle.secondaryFontSize * 0.36))}px` }
+        : captionKaraokeStyle;
     const currentDeleteCandidate = deleteCandidate ? projects.find((item) => item.id === deleteCandidate.id) ?? deleteCandidate : null;
     const deleteBlockMessage = deletionPreflight?.blockers.length
         ? deletionPreflight.blockers.map((blocker) => ({
@@ -1104,7 +1109,7 @@ function WorkbenchController() {
     const speakerById = new Map(speakerTrack?.speakers.map((speaker) => [speaker.id, speaker]) ?? []);
     const associationBySegment = new Map(speakerTrack?.associations.map((association) => [association.segmentId, association]) ?? []);
     const actionableReviewCount = orderedPatchSets.reduce((count, set) => count + set.items.length, 0) + pendingEdits.length + failedTasks.length + audioRisks.length + transcriptionReviews.length + Number(Boolean(projectSpeakerJob && ["failed", "interrupted"].includes(projectSpeakerJob.status)));
-    const focusReviewCount = (project?.subtitleQuality.issues.length ?? 0)
+    const focusReviewCount = (project?.subtitleQuality.issues.filter((issue) => issue.severity === "error").length ?? 0)
         + orderedPatchSets.reduce((count, set) => count + set.items.length, 0)
         + pendingEdits.length
         + transcriptionReviews.filter((item) => item.status === "open").length
@@ -2118,6 +2123,21 @@ function WorkbenchController() {
         await refreshProject(project.id);
         setNotice(tr("app.s0154"));
     });
+    const editTranslationSegment = (segment: Segment, text: string) => {
+        const translated = selectedTranslation?.segments.find((item) => item.segmentId === segment.id);
+        const expectedVersion = project?.history.currentVersionId;
+        if (!project || !selectedSubtitleLanguage || !translated || text.trim() === translated.text)
+            return;
+        if (!expectedVersion) {
+            setError(tr("app.creator.translation.versionUnavailable"));
+            return;
+        }
+        void withBusy(tr("app.creator.translation.editing"), async () => {
+            await translationClient.editSegment(project.id, segment.id, selectedSubtitleLanguage, text.trim(), expectedVersion);
+            await refreshProject(project.id);
+            setNotice(tr("app.creator.translation.edited"));
+        });
+    };
     const replaceAll = () => project && search && (replacement || emptyReplacementConfirmed) && withBusy(tr("app.s0155"), async () => {
         const result = await transcriptEditingClient.replaceAll(project.id, search, replacement);
         await refreshProject(project.id);
@@ -2385,8 +2405,8 @@ function WorkbenchController() {
             }
         });
     };
-    const changeSubtitleStyle = (preset: Project["subtitleStyle"]["preset"], position: Project["subtitleStyle"]["position"]) => project && withBusy(tr("app.s0181"), async () => {
-        const envelope = await transcriptEditingClient.setSubtitleStyle(project.id, preset, position);
+    const changeSubtitleStyle = (preset: Project["subtitleStyle"]["preset"], position: Project["subtitleStyle"]["position"], sourceFontSize?: number, translationFontSize?: number) => project && withBusy(tr("app.s0181"), async () => {
+        const envelope = await transcriptEditingClient.setSubtitleStyle(project.id, preset, position, sourceFontSize, translationFontSize);
         if (!envelope.project)
             throw new Error(tr("app.s0182"));
         setProject(envelope.project);
@@ -3112,7 +3132,7 @@ function WorkbenchController() {
                   {mediaUrl ? <video key={project.id} ref={videoRef} src={mediaUrl} controls preload="metadata" onLoadedMetadata={handleVideoLoadedMetadata} onPlay={() => setPlayback((current) => ({ ...current, playing: true }))} onPause={() => setPlayback((current) => ({ ...current, playing: false }))} onTimeUpdate={handleVideoTimeUpdate}/> : <div className="video-placeholder"><Play size={30}/><span>{tr("app.s0286")}</span></div>}
                   {showSubtitleSafeArea && <div className="subtitle-safe-area" aria-label={tr("app.s0287")} data-label={tr("app.s0287")} style={{ inset: `${project.subtitleStyle.safeMarginPercent}% 6%` }}/>}
                   {captionSegment && captionPrimaryText && <div className={`caption-overlay ${project.subtitleStyle.position}`} data-preset={project.subtitleStyle.preset} data-position={project.subtitleStyle.position} data-outline-width={project.subtitleStyle.outlineWidth} style={captionPreviewStyle}>
-                    <span className={`caption-primary${playback.playing ? " playing" : ""}`} data-caption-text={playback.playing ? captionPrimaryText : undefined} data-progress={captionProgress.toFixed(3)} style={captionKaraokeStyle}>{captionPrimaryText}</span>
+                    <span className={`caption-primary${playback.playing ? " playing" : ""}`} data-caption-text={playback.playing ? captionPrimaryText : undefined} data-progress={captionProgress.toFixed(3)} style={captionPrimaryStyle}>{captionPrimaryText}</span>
                     {captionSecondaryText && <span className="caption-secondary" style={{ color: project.subtitleStyle.secondaryColor, fontSize: `${Math.max(12, Math.round(project.subtitleStyle.secondaryFontSize * 0.36))}px` }}>{captionSecondaryText}</span>}
                   </div>}
                 </div>
@@ -3124,7 +3144,7 @@ function WorkbenchController() {
 	              <aside className="creator-drawer" aria-label={tr("app.creator.drawer.label")}>
 	                {focusReview && <Suspense fallback={null}><FocusReviewPanel project={project} transcriptionReviews={transcriptionReviews} audioRisks={audioRisks} busy={Boolean(busy)} error={error} onLocate={locateFocusReviewItem} onAgentReview={(item, action) => void reviewPatch(item.sourceId, action)} onCutReview={(item, action) => void updateCut(item.sourceId, action)} onTranscriptionReview={(item, action) => void resolveTranscriptionReview(item.sourceId, action)} onOpenEditor={openFocusReviewEditor} onTogglePlayback={toggleTimelinePlayback} onSeekDelta={(delta) => seekTimeline(playback.currentTime + delta)} onExit={() => exitFocusReview()}/></Suspense>}
 	                <div className="creator-drawer-tabs" role="tablist" aria-label={tr("app.creator.drawer.tabs")}>
-	                  {drawerTabs.map((tab) => <button id={`creator-drawer-tab-${tab}`} key={tab} role="tab" aria-controls={`creator-drawer-panel-${tab}`} aria-selected={drawerTab === tab} tabIndex={drawerTab === tab ? 0 : -1} className={drawerTab === tab ? "active" : ""} onKeyDown={(event) => changeDrawerTabFromKeyboard(event, tab)} onClick={() => openCreatorDrawer(tab)}>{tr(({ review: "app.creator.drawer.review", quality: "app.creator.drawer.quality", analysis: "app.creator.drawer.analysis", history: "app.creator.drawer.history", export: "app.creator.drawer.export" } as const)[tab])}{tab === "review" && actionableReviewCount > 0 ? <i>{actionableReviewCount}</i> : null}{tab === "quality" && project.subtitleQuality.issueCount > 0 ? <i>{project.subtitleQuality.issueCount}</i> : null}</button>)}
+	                  {drawerTabs.map((tab) => <button id={`creator-drawer-tab-${tab}`} key={tab} role="tab" aria-controls={`creator-drawer-panel-${tab}`} aria-selected={drawerTab === tab} tabIndex={drawerTab === tab ? 0 : -1} className={drawerTab === tab ? "active" : ""} onKeyDown={(event) => changeDrawerTabFromKeyboard(event, tab)} onClick={() => openCreatorDrawer(tab)}>{tr(({ review: "app.creator.drawer.review", quality: "app.creator.drawer.quality", analysis: "app.creator.drawer.analysis", history: "app.creator.drawer.history", export: "app.creator.drawer.export" } as const)[tab])}{tab === "review" && actionableReviewCount > 0 ? <i>{actionableReviewCount}</i> : null}{tab === "quality" && project.subtitleQuality.errorCount > 0 ? <i>{project.subtitleQuality.errorCount}</i> : null}</button>)}
 	                </div>
 	                <div className="creator-drawer-body" id={`creator-drawer-panel-${drawerTab}`} role="tabpanel" aria-labelledby={`creator-drawer-tab-${drawerTab}`}>
 	                  {drawerTab === "review" && <>
@@ -3174,7 +3194,7 @@ function WorkbenchController() {
                       {actionableReviewCount === 0 && processingTasks.length === 0 && !agentRunActive && <div className="all-clear"><Check size={20}/><span>{tr("app.s0329")}</span></div>}
                     </div>
                   </>}
-                  {drawerTab === "quality" && <section className={`subtitle-quality-summary creator-quality ${project.subtitleQuality.status}`} aria-label={tr("app.s0357")}><div className="subtitle-quality-state">{project.subtitleQuality.status === "good" ? <Check size={15}/> : <CircleAlert size={15}/>}<span><strong>{subtitleQualityStatusLabel(project.subtitleQuality)}</strong><small>{project.subtitleQuality.errorCount}{tr("app.s0358") + " "}{project.subtitleQuality.warningCount}{tr("app.s0359")}</small></span></div><div className="subtitle-quality-filters" aria-label={tr("app.s0360")}><button className={qualityFilter === "all" ? "active" : ""} onClick={() => setQualityFilter("all")}>{tr("app.s0361")}</button><button className={qualityFilter === "error" ? "active" : ""} disabled={!project.subtitleQuality.errorCount} onClick={() => setQualityFilter("error")}>{tr("app.s0362") + " "}{project.subtitleQuality.errorCount}</button><button className={qualityFilter === "warning" ? "active" : ""} disabled={!project.subtitleQuality.warningCount} onClick={() => setQualityFilter("warning")}>{tr("app.s0363") + " "}{project.subtitleQuality.warningCount}</button></div>{visibleQualityIssues.length > 0 ? <div className="subtitle-quality-issues">{visibleQualityIssues.map((issue) => <button className={issue.severity} key={issue.id} data-review-detail-id={`quality:${issue.id}`} onClick={() => locateSubtitleIssue(issue)}><CircleAlert size={12}/><span><strong>{subtitleIssueLabel(issue.kind)}</strong><small>{formatTime(issue.start)}{tr("app.s0364")}</small></span></button>)}</div> : <div className="all-clear"><Check size={20}/><span>{tr("app.creator.quality.ready")}</span></div>}<button className="button primary full" onClick={() => openCreatorDrawer("export")}>{tr("app.creator.quality.continue")}</button></section>}
+                  {drawerTab === "quality" && <section className={`subtitle-quality-summary creator-quality ${project.subtitleQuality.status}`} aria-label={tr("app.s0357")}><div className="subtitle-quality-state">{project.subtitleQuality.status === "good" ? <Check size={15}/> : <CircleAlert size={15}/>}<span><strong>{project.subtitleQuality.errorCount > 0 ? subtitleQualityStatusLabel(project.subtitleQuality) : project.subtitleQuality.warningCount > 0 ? tr("app.creator.quality.advisorySummary", { count: project.subtitleQuality.warningCount }) : subtitleQualityStatusLabel(project.subtitleQuality)}</strong><small>{project.subtitleQuality.errorCount}{tr("app.s0358") + " "}{project.subtitleQuality.warningCount}{tr("app.s0359")}</small></span></div><div className="subtitle-quality-filters" aria-label={tr("app.s0360")}><button className={qualityFilter === "all" ? "active" : ""} onClick={() => setQualityFilter("all")}>{tr("app.s0361")}</button><button className={qualityFilter === "error" ? "active" : ""} disabled={!project.subtitleQuality.errorCount} onClick={() => setQualityFilter("error")}>{tr("app.s0362") + " "}{project.subtitleQuality.errorCount}</button><button className={qualityFilter === "warning" ? "active" : ""} disabled={!project.subtitleQuality.warningCount} onClick={() => setQualityFilter("warning")}>{tr("app.s0363") + " "}{project.subtitleQuality.warningCount}</button></div>{visibleQualityIssueGroups.length > 0 ? <><p className="quality-review-policy">{tr("app.creator.quality.reviewPolicy")}</p><div className="subtitle-quality-issues">{visibleQualityIssueGroups.map((group) => <button className={group.severity} key={group.id} data-review-detail-id={`quality:${group.first.id}`} onClick={() => locateSubtitleIssue(group.first)}><CircleAlert size={12}/><span><strong>{subtitleIssueLabel(group.kind)}{group.count > 1 ? ` · ${tr("app.creator.quality.groupCount", { count: group.count })}` : ""}</strong><small>{formatTime(group.start)} — {formatTime(group.end)}</small></span></button>)}</div></> : <div className="all-clear"><Check size={20}/><span>{tr("app.creator.quality.ready")}</span></div>}<button className="button primary full" onClick={() => openCreatorDrawer("export")}>{tr("app.creator.quality.continue")}</button></section>}
                   {drawerTab === "analysis" && <div className="inspector-view creator-analysis">
                     <SpeechInsightsPanel insights={project.speechInsights} onLocateEvidence={locateSpeechEvidence} onLocatePause={locateSpeechPause}/>
                     <AudioQualityPanel job={audioAnalysisJob} onStart={startAudioAnalysis} onCancel={cancelAudioAnalysis} onResume={resumeAudioAnalysis} onLocate={locateAudioRisk} disabled={!capabilities.canAnalyzeAudio || Boolean(busy)}/>
@@ -3186,7 +3206,7 @@ function WorkbenchController() {
                     </section>}
                   </div>}
                   {drawerTab === "history" && <div className="inspector-view"><div className="version-block"><div className="section-title"><div><p className="eyebrow">{tr("app.s0385")}</p><h2>{tr("app.s0386")}</h2></div><History size={16}/></div>{project.versions.slice().reverse().map((version) => <button className="version-row" key={version.id} onClick={() => restoreVersion(version.id)}><span><strong>{versionReasonLabel(version.reason)}</strong><small>{new Date(version.createdAt).toLocaleString(uiLocale)}</small></span><RotateCcw size={14}/></button>)}</div></div>}
-                  {drawerTab === "export" && showExportPanel && <Suspense fallback={null}><ExportPanel embedded ref={exportPanelRef} project={project} busy={Boolean(busy)} subtitleMode={subtitleMode} translationLanguageOptions={translationLanguageOptions} translationLanguages={translationLanguages} selectedSubtitleLanguage={selectedSubtitleLanguage} selectedTranslationPending={selectedTranslationPending} selectedTranslationStale={selectedTranslationStale} confirmStaleTranslation={confirmStaleTranslation} confirmUncutExport={confirmUncutExport} exportFormat={exportFormat} structuredExport={structuredExport} includeSpeakerLabels={includeSpeakerLabels} transcriptionExportErrorCount={transcriptionExportErrors.length} transcriptionExportWarningCount={transcriptionExportWarnings.length} confirmTranscriptionWarnings={confirmTranscriptionWarnings} showSubtitleSafeArea={showSubtitleSafeArea} transcriptionExportBlocked={transcriptionExportBlocked} canExportVideo={capabilities.canExportVideo} activeExportRunning={Boolean(activeExport && ["queued", "running"].includes(activeExport.status))} mediaCapabilityTitle={mediaCapabilityTitle} onClose={() => { setShowExportPanel(false); setDrawerTab("quality"); }} onChangeCanvas={(settings) => void changeCanvas(settings)} onSubtitleModeChange={(mode) => { setSubtitleMode(mode); setConfirmStaleTranslation(false); }} onSubtitleLanguageChange={(language) => { setSubtitleLanguage(language); setConfirmStaleTranslation(false); }} onExportFormatChange={(format) => { setExportFormat(format); setConfirmTranscriptionWarnings(false); }} onIncludeSpeakerLabelsChange={setIncludeSpeakerLabels} onConfirmWarningsChange={setConfirmTranscriptionWarnings} onConfirmStaleTranslationChange={setConfirmStaleTranslation} onConfirmUncutExportChange={setConfirmUncutExport} onSubtitleStyleChange={(preset, position) => void changeSubtitleStyle(preset, position)} onShowSafeAreaChange={setShowSubtitleSafeArea} onExportTranscript={exportTranscript} onExportVideo={exportVideo}/></Suspense>}
+                  {drawerTab === "export" && showExportPanel && <Suspense fallback={null}><ExportPanel embedded ref={exportPanelRef} project={project} busy={Boolean(busy)} subtitleMode={subtitleMode} translationLanguageOptions={translationLanguageOptions} translationLanguages={translationLanguages} selectedSubtitleLanguage={selectedSubtitleLanguage} selectedTranslationPending={selectedTranslationPending} selectedTranslationStale={selectedTranslationStale} confirmStaleTranslation={confirmStaleTranslation} confirmUncutExport={confirmUncutExport} exportFormat={exportFormat} structuredExport={structuredExport} includeSpeakerLabels={includeSpeakerLabels} transcriptionExportErrorCount={transcriptionExportErrors.length} transcriptionExportWarningCount={transcriptionExportWarnings.length} confirmTranscriptionWarnings={confirmTranscriptionWarnings} showSubtitleSafeArea={showSubtitleSafeArea} transcriptionExportBlocked={transcriptionExportBlocked} canExportVideo={capabilities.canExportVideo} activeExportRunning={Boolean(activeExport && ["queued", "running"].includes(activeExport.status))} mediaCapabilityTitle={mediaCapabilityTitle} onClose={() => { setShowExportPanel(false); setDrawerTab("quality"); }} onChangeCanvas={(settings) => void changeCanvas(settings)} onSubtitleModeChange={(mode) => { setSubtitleMode(mode); setConfirmStaleTranslation(false); }} onSubtitleLanguageChange={(language) => { setSubtitleLanguage(language); setConfirmStaleTranslation(false); }} onExportFormatChange={(format) => { setExportFormat(format); setConfirmTranscriptionWarnings(false); }} onIncludeSpeakerLabelsChange={setIncludeSpeakerLabels} onConfirmWarningsChange={setConfirmTranscriptionWarnings} onConfirmStaleTranslationChange={setConfirmStaleTranslation} onConfirmUncutExportChange={setConfirmUncutExport} onSubtitleStyleChange={(preset, position, sourceFontSize, translationFontSize) => void changeSubtitleStyle(preset, position, sourceFontSize, translationFontSize)} onShowSafeAreaChange={setShowSubtitleSafeArea} onExportTranscript={exportTranscript} onExportVideo={exportVideo}/></Suspense>}
 	                </div>
 	              </aside>
 
@@ -3224,7 +3244,7 @@ function WorkbenchController() {
                   </div>
                 </section>
                 <div className="segment-list" aria-label={tr("app.s0365")}>
-                  {filteredSegments.map((segment) => { const association = associationBySegment.get(segment.id); return <SegmentRow key={segment.id} segment={segment} speaker={association ? speakerById.get(association.speakerId) : undefined} speakerManual={association?.source === "manual"} selected={selectedSegmentIds.includes(segment.id)} active={segment.id === selectedId} translation={translation?.[1]} onSelect={(mode) => selectSegmentInWorkbench(segment, mode)} onSave={(text) => editSegment(segment, text)} onSplitAt={(text, offset) => void splitSegmentFromEditor(segment, text, offset)} onMergePrevious={(text) => void mergePreviousFromEditor(segment, text)}/>; })}
+                  {filteredSegments.map((segment) => { const association = associationBySegment.get(segment.id); return <SegmentRow key={segment.id} segment={segment} speaker={association ? speakerById.get(association.speakerId) : undefined} speakerManual={association?.source === "manual"} selected={selectedSegmentIds.includes(segment.id)} active={segment.id === selectedId} translation={translation?.[1]} translationLanguage={translation?.[0]} onSelect={(mode) => selectSegmentInWorkbench(segment, mode)} onSave={(text) => editSegment(segment, text)} onSaveTranslation={(text) => editTranslationSegment(segment, text)} onSplitAt={(text, offset) => void splitSegmentFromEditor(segment, text, offset)} onMergePrevious={(text) => void mergePreviousFromEditor(segment, text)}/>; })}
                   {!filteredSegments.length && <p className="empty-list">{project.transcript.segments.length ? tr("app.s0366") : tr("app.s0367")}</p>}
                 </div>
               </article>

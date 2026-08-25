@@ -203,6 +203,7 @@ export const versionReasonLabel = (reason: string) => {
     const fixed = ({
         "项目创建": tr("app.reason.projectCreated"),
         "编辑原文": tr("app.reason.transcriptEdited"),
+        "编辑译文": tr("app.reason.translationEdited"),
         "重新定位原片": tr("app.version.relinkedMedia"),
         "更新画布设置": tr("app.version.canvasUpdated"),
         "新增字幕段": tr("app.version.segmentAdded"),

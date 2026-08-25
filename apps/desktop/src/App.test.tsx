@@ -713,6 +713,22 @@ describe("SiaoCut review workbench", () => {
     await waitFor(() => expect(screen.getAllByText("需要更新").length).toBeGreaterThan(0));
   });
 
+  it("allows correcting a stale translation and links it to the edited source", async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /^发布口播/ }));
+    const sourceEditor = await screen.findByLabelText("00:13 字幕文本");
+    fireEvent.change(sourceEditor, { target: { value: "这是一段人工修订后的原文。" } });
+    fireEvent.blur(sourceEditor);
+    await waitFor(() => expect(screen.getAllByText("需要更新").length).toBeGreaterThan(0));
+
+    const translationEditor = screen.getByLabelText("编辑 00:13 的 EN 译文");
+    fireEvent.change(translationEditor, { target: { value: "This is the corrected translation." } });
+    fireEvent.blur(translationEditor);
+
+    await waitFor(() => expect(screen.getByText("译文已更新，并与当前原文重新关联。")).toBeInTheDocument());
+    expect(screen.getByLabelText("编辑 00:13 的 EN 译文")).toHaveValue("This is the corrected translation.");
+  });
+
   it("requires explicit confirmation before exporting stale translation segments", async () => {
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: /^发布口播/ }));
@@ -1085,7 +1101,7 @@ describe("SiaoCut review workbench", () => {
     await waitFor(() => expect(within(transcript).getByDisplayValue("导入后的第一条字幕")).toBeInTheDocument());
     await openDrawerTab("质量");
     const quality = screen.getByRole("region", { name: "字幕质量" });
-    expect(within(quality).getByText("1 项质量提醒")).toBeInTheDocument();
+    expect(within(quality).getByText("无阻断问题 · 1 条排版建议已汇总")).toBeInTheDocument();
     fireEvent.click(within(quality).getByRole("button", { name: "提醒 1" }));
     expect(within(transcript).queryByDisplayValue("导入后的第一条字幕")).not.toBeInTheDocument();
     expect(within(transcript).getByDisplayValue("导入后的第二条字幕")).toBeInTheDocument();
@@ -1149,8 +1165,11 @@ describe("SiaoCut review workbench", () => {
       expect(caption).toHaveTextContent("Today I want to explain why we are building a local-first editing workbench.");
     });
     expect(screen.getByLabelText("字幕安全区")).toBeInTheDocument();
-    expect(within(panel).getByText("60 px")).toBeInTheDocument();
-    expect(within(panel).getByText("46 px")).toBeInTheDocument();
+    expect(within(panel).getByLabelText("原文字号")).toHaveValue(46);
+    expect(within(panel).getByLabelText("译文字号")).toHaveValue(60);
+    fireEvent.change(within(panel).getByLabelText("译文字号"), { target: { value: "72" } });
+    fireEvent.blur(within(panel).getByLabelText("译文字号"));
+    await waitFor(() => expect(within(panel).getByLabelText("译文字号")).toHaveValue(72));
     expect(screen.getByLabelText("00:13 字幕文本")).toHaveValue(originalText);
   });
 

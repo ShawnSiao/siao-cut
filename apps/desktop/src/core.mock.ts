@@ -3,17 +3,17 @@ import type { AgentRun, AudioAnalysisJob, AutoWorkflow, CoreEnvelope, ExportJob,
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
 const mockSubtitleStylePresets = [
-  { id: "compact", label: "紧凑", description: "42 px，适合信息密度较高的双语字幕" },
-  { id: "standard", label: "清晰", description: "52 px，默认口播字幕，兼顾可读性和画面占用" },
-  { id: "emphasis", label: "强调", description: "60 px，加粗描边，适合短句和重点表达" },
+  { id: "compact", label: "紧凑", description: "译文 42 px、原文 32 px，适合信息密度较高的双语字幕" },
+  { id: "standard", label: "清晰", description: "译文 52 px、原文 40 px，默认突出目标受众语言" },
+  { id: "emphasis", label: "强调", description: "译文 60 px、原文 46 px，加粗描边突出目标语言" },
 ] satisfies Array<{ id: Project["subtitleStyle"]["preset"]; label: string; description: string }>;
 
 const resolveMockSubtitleStyle = (preset: Project["subtitleStyle"]["preset"], position: Project["subtitleStyle"]["position"]): Project["subtitleStyle"] => {
   const sizes = preset === "compact"
-    ? { fontSize: 42, secondaryFontSize: 32, outlineWidth: 2, shadowDepth: 1, safeMarginPercent: 6 }
+    ? { fontSize: 32, secondaryFontSize: 42, outlineWidth: 2, shadowDepth: 1, safeMarginPercent: 6 }
     : preset === "emphasis"
-      ? { fontSize: 60, secondaryFontSize: 46, outlineWidth: 4, shadowDepth: 2, safeMarginPercent: 10 }
-      : { fontSize: 52, secondaryFontSize: 40, outlineWidth: 3, shadowDepth: 1, safeMarginPercent: 8 };
+      ? { fontSize: 46, secondaryFontSize: 60, outlineWidth: 4, shadowDepth: 2, safeMarginPercent: 10 }
+      : { fontSize: 40, secondaryFontSize: 52, outlineWidth: 3, shadowDepth: 1, safeMarginPercent: 8 };
   return {
     preset,
     position,
@@ -533,12 +533,40 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
   if (command === "transcript" && subcommand === "set-style") {
     const preset = args[args.indexOf("--preset") + 1] as Project["subtitleStyle"]["preset"];
     const position = args[args.indexOf("--position") + 1] as Project["subtitleStyle"]["position"];
-    mockProject.subtitleStyle = resolveMockSubtitleStyle(preset, position);
+    const sourceFontSize = valueAfter("--source-font-size");
+    const translationFontSize = valueAfter("--translation-font-size");
+    recordMockSnapshot();
+    mockProject.subtitleStyle = {
+      ...resolveMockSubtitleStyle(preset, position),
+      ...(sourceFontSize == null ? {} : { fontSize: Number(sourceFontSize) }),
+      ...(translationFontSize == null ? {} : { secondaryFontSize: Number(translationFontSize) }),
+    };
     const versionId = `v${mockProject.versions.length + 1}`;
     mockProject.versions.push({ id: versionId, reason: "更新字幕样式", createdAt: new Date().toISOString() });
     mockProject.history = { canUndo: true, canRedo: false, currentVersionId: versionId };
     mockProjects = mockProjects.map((item) => item.id === mockProject.id ? mockProject : item);
     return { apiVersion: "0.1", status: "ok", project: mockProject, subtitleStyle: mockProject.subtitleStyle, subtitleStylePresets: mockSubtitleStylePresets, message: "字幕样式已更新；正文和时间未修改，可通过项目历史撤销。" };
+  }
+  if (command === "translation" && subcommand === "edit") {
+    const segmentId = args[3];
+    const language = valueAfter("--lang") ?? "";
+    const text = valueAfter("--text")?.trim() ?? "";
+    if (valueAfter("--expected-version") !== mockProject.history.currentVersionId)
+      throw new Error("translation_version_conflict: 项目版本已变化，请刷新后重试");
+    const next = structuredClone(mockProject);
+    const translation = next.translations[language];
+    const translated = translation?.segments.find((segment) => segment.segmentId === segmentId);
+    if (!translation || !translated) throw new Error("translation_not_found: 译文不存在");
+    if (!text) throw new Error("translation_text_empty: 译文不能为空");
+    recordMockSnapshot();
+    translated.text = text;
+    translated.sourceHash = `manual:${next.transcript.segments.find((segment) => segment.id === segmentId)?.text ?? ""}`;
+    translated.status = "current";
+    translation.status = translation.segments.every((segment) => segment.status === "current") ? "current" : "stale";
+    const versionId = `v${next.versions.length + 1}`;
+    next.versions.push({ id: versionId, reason: "编辑译文", createdAt: new Date().toISOString() });
+    next.history = { canUndo: true, canRedo: false, currentVersionId: versionId };
+    return { apiVersion: "0.1", status: "ok", project: syncMockProject(next), message: "译文已更新，并与当前原文版本重新关联。" };
   }
   if (command === "transcript" && subcommand === "edit") {
     const segmentId = args[3];
