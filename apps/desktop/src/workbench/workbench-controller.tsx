@@ -19,9 +19,11 @@ import { translationClient } from "../domains/translation-client";
 import { localResourceClient } from "../domains/local-resource-client";
 import { useBackgroundTaskRegistry } from "../hooks/use-background-task-registry";
 import { useWorkbenchFeedback } from "../hooks/use-workbench-feedback";
-import { SubtitleTimelinePanel, type TimelineReviewMarker } from "./subtitle-timeline-panel";
+import type { TimelineReviewMarker } from "./subtitle-timeline-panel";
 import type { WorkbenchActivity, WorkbenchActivityInputs } from "./workbench-activity";
 import type { WorkbenchActivityAction } from "./workbench-activity-center";
+import type { ReviewQueueItem } from "./review-queue";
+import { useFocusReviewState } from "./use-focus-review-state";
 
 const RESOURCE_SETUP_DEFERRED_KEY = "siaocut.localResourcesSetupDeferred.v1";
 
@@ -119,6 +121,19 @@ export function resolveCaptionSegment(
     return timedSegment ?? (playing ? null : selected ?? null);
 }
 
+export function resolveFocusCaptionText(
+    mode: "source" | "translated" | "bilingual",
+    sourceText: string,
+    translatedText: string,
+    missingTranslationText: string,
+) {
+    if (mode === "translated")
+        return { primary: translatedText || missingTranslationText, secondary: "", missingTranslation: !translatedText };
+    if (mode === "bilingual")
+        return { primary: sourceText, secondary: translatedText || missingTranslationText, missingTranslation: !translatedText };
+    return { primary: sourceText, secondary: "", missingTranslation: false };
+}
+
 export function resolvePlaybackDuration(mediaDuration: number, fallbackDuration: number | null | undefined) {
     return Number.isFinite(mediaDuration) && mediaDuration > 0 ? mediaDuration : fallbackDuration ?? 0;
 }
@@ -127,6 +142,9 @@ const isValidAgentIdentity = (value: string) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,63
 const TranscriptionCandidateDialog = lazy(() => import("../components/transcription-candidate-dialog"));
 const ExportPanel = lazy(() => import("../components/export-panel"));
 const WorkbenchActivityCenter = lazy(() => import("./workbench-activity-center"));
+const FocusReviewPanel = lazy(() => import("./focus-review-panel"));
+const FocusReviewToolbar = lazy(() => import("./focus-review-panel").then((module) => ({ default: module.FocusReviewToolbar })));
+const SubtitleTimelinePanel = lazy(() => import("./subtitle-timeline-panel").then((module) => ({ default: module.SubtitleTimelinePanel })));
 const ProjectDeleteDialog = lazy(() => import("../components/project-delete-dialog"));
 const AppCommandMenu = lazy(() => import("../components/app-command-menu"));
 const RuntimeSettingsDialog = lazy(() => import("../components/runtime-settings-dialog"));
@@ -343,6 +361,11 @@ function WorkbenchController() {
     const sourceJobOriginProjectIdsRef = useRef(new Map<string, string | null>());
     const taskActionIdsRef = useRef(new Set<string>());
     const busyRef = useRef(false);
+    const { focusReview, enterFocusReview, exitFocusReview, resetFocusReview } = useFocusReviewState({
+        projectAvailable: Boolean(project), mediaAvailable: Boolean(mediaUrl), mediaMissingMessage: tr("app.focusReview.mediaMissing"),
+        drawerTab, selectedId, selectedSegmentIds, playerExpanded, setDrawerTab, setSelectedId, setSelectedSegmentIds,
+        setSelectionAnchorId, setPlayerExpanded, setShowExportPanel, setError,
+    });
     const beginProjectLoad = useCallback((projectId: string) => {
         const sequence = (projectLoadSequenceRef.current.get(projectId) ?? 0) + 1;
         projectLoadSequenceRef.current.set(projectId, sequence);
@@ -371,7 +394,8 @@ function WorkbenchController() {
         setTaskActions({});
         setWordRange(null);
         setCutPreview(null);
-    }, []);
+        resetFocusReview();
+    }, [resetFocusReview]);
     const refreshLatestExport = useCallback(async (projectId: string, loadSequence?: number) => {
         const envelope = await exportRuntimeClient.listVideoExports(projectId);
         if (activeProjectIdRef.current === projectId && (loadSequence === undefined || isCurrentProjectLoad(projectId, loadSequence)))
@@ -991,8 +1015,9 @@ function WorkbenchController() {
     );
     const captionWords = project?.transcript.words.filter((word) => word.segmentId === captionSegment?.id) ?? [];
     const selectedTranslationText = selectedTranslation?.segments.find((segment) => segment.segmentId === captionSegment?.id)?.text ?? "";
-    const captionPrimaryText = subtitleMode === "translated" ? selectedTranslationText : captionSegment?.text ?? "";
-    const captionSecondaryText = subtitleMode === "bilingual" ? selectedTranslationText : "";
+    const focusCaptionText = resolveFocusCaptionText(subtitleMode, captionSegment?.text ?? "", selectedTranslationText, tr("app.focusReview.noTranslation"));
+    const captionPrimaryText = focusReview ? focusCaptionText.primary : subtitleMode === "translated" ? selectedTranslationText : captionSegment?.text ?? "";
+    const captionSecondaryText = focusReview ? focusCaptionText.secondary : subtitleMode === "bilingual" ? selectedTranslationText : "";
     const captionProgress = (() => {
         if (!playback.playing || !captionSegment)
             return 1;
@@ -1079,6 +1104,11 @@ function WorkbenchController() {
     const speakerById = new Map(speakerTrack?.speakers.map((speaker) => [speaker.id, speaker]) ?? []);
     const associationBySegment = new Map(speakerTrack?.associations.map((association) => [association.segmentId, association]) ?? []);
     const actionableReviewCount = orderedPatchSets.reduce((count, set) => count + set.items.length, 0) + pendingEdits.length + failedTasks.length + audioRisks.length + transcriptionReviews.length + Number(Boolean(projectSpeakerJob && ["failed", "interrupted"].includes(projectSpeakerJob.status)));
+    const focusReviewCount = (project?.subtitleQuality.issues.length ?? 0)
+        + orderedPatchSets.reduce((count, set) => count + set.items.length, 0)
+        + pendingEdits.length
+        + transcriptionReviews.filter((item) => item.status === "open").length
+        + audioRisks.length;
     const mossWordTimingUnavailable = speakerTrack?.providerId === "moss_openai" && speakerTrack.sourceKind === "end_to_end";
     const transcriptionExportErrors = transcriptionReviews.filter((item) => item.status === "open" && item.severity === "error");
     const transcriptionExportWarnings = transcriptionReviews.filter((item) => item.status === "open" && item.severity === "warning");
@@ -1125,7 +1155,8 @@ function WorkbenchController() {
         setQuickRetranscriptionError(null);
         setStructureEditMode(null);
         setShowTranscriptionCandidate(false);
-    }, [project?.id]);
+        resetFocusReview();
+    }, [project?.id, resetFocusReview]);
     useEffect(() => {
         if (!showExportPanel)
             return;
@@ -2494,6 +2525,8 @@ function WorkbenchController() {
         return () => document.removeEventListener("pointerdown", closeOnOutsidePointer);
     }, [showMoreMenu]);
     useEffect(() => {
+        if (focusReview)
+            return;
         const handleShortcut = (event: KeyboardEvent) => {
             const target = event.target;
             const modifier = event.ctrlKey || event.metaKey;
@@ -2576,7 +2609,7 @@ function WorkbenchController() {
         };
         window.addEventListener("keydown", handleShortcut);
         return () => window.removeEventListener("keydown", handleShortcut);
-    }, [busy, currentDeleteCandidate, mergeCandidatesAdjacent, project, selectedSegmentIds, showAgentHandoff, showAiExecutionConfirm, showAutoWorkflow, showMoreMenu, showResourceSetup, showRuntime, showSourceImport, showSubtitleImport, showTranscriptionCandidate, structureEditMode]);
+    }, [busy, currentDeleteCandidate, focusReview, mergeCandidatesAdjacent, project, selectedSegmentIds, showAgentHandoff, showAiExecutionConfirm, showAutoWorkflow, showMoreMenu, showResourceSetup, showRuntime, showSourceImport, showSubtitleImport, showTranscriptionCandidate, structureEditMode]);
     const chooseModel = () => withBusy(tr("app.s0214"), async () => {
         const path = await pickModel();
         if (!path)
@@ -2923,6 +2956,26 @@ function WorkbenchController() {
         else
             video.pause();
     };
+    const locateFocusReviewItem = (item: ReviewQueueItem) => {
+        const segment = item.segmentId ? project?.transcript.segments.find((candidate) => candidate.id === item.segmentId) : null;
+        if (segment)
+            selectSegment(segment);
+        else
+            seekTimeline(item.start);
+    };
+    const openFocusReviewEditor = (item: ReviewQueueItem) => {
+        locateFocusReviewItem(item);
+        if (item.kind === "quality") {
+            setQualityFilter("all");
+            setReviewFocusDetailId(`quality:${item.sourceId}`);
+            setDrawerTab("quality");
+        }
+        else {
+            setDrawerTab("analysis");
+        }
+        setShowExportPanel(false);
+        exitFocusReview(false);
+    };
     const nudgeTimelineSegment = async (segmentId: string, delta: number) => {
         if (!project || structureBusy || busy)
             return;
@@ -2978,7 +3031,15 @@ function WorkbenchController() {
             void transcribe();
             return;
         }
-        if (agentRunActive || actionableReviewCount > 0) {
+        if (agentRunActive) {
+            openCreatorDrawer("review");
+            return;
+        }
+        if (focusReviewCount > 0) {
+            enterFocusReview();
+            return;
+        }
+        if (actionableReviewCount > 0) {
             openCreatorDrawer("review");
             return;
         }
@@ -2988,7 +3049,7 @@ function WorkbenchController() {
         : !capabilities.hasTranscript ? tr("app.creator.action.transcribe")
             : agentRunActive ? tr("app.creator.action.viewAgent")
                 : actionableReviewCount > 0 ? tr("app.creator.action.review") : tr("app.creator.action.checkExport");
-    return (<main className="app-shell">
+    return (<main className={`app-shell${focusReview ? " focus-review" : ""}`}>
       <aside className="rail">
         <div className="brand"><span className="brand-mark">S</span><span>SiaoCut</span></div>
         <div className="new-project-actions">
@@ -3018,6 +3079,7 @@ function WorkbenchController() {
       </aside>
 
       <section className={`workbench${project ? "" : " empty-workbench"}`}>
+        {focusReview && project && <Suspense fallback={null}><FocusReviewToolbar remaining={focusReviewCount} subtitleMode={subtitleMode} translationPending={selectedTranslationPending} translationStale={selectedTranslationStale} onSubtitleModeChange={(mode) => { setSubtitleMode(mode); setConfirmStaleTranslation(false); }} onExit={() => exitFocusReview()}/></Suspense>}
         <header className="topbar">
           <div className="topbar-heading"><p className="eyebrow">{tr("app.s0247")}</p><h1>{project?.title ?? tr("app.s0248")}</h1></div>
 	          <div className="command-bar creator-command-bar" aria-label={tr("app.s0249")}>
@@ -3026,7 +3088,7 @@ function WorkbenchController() {
 	              <IconButton label={tr("app.s0251")} shortcut="Ctrl+Z" disabled={!project?.history.canUndo || Boolean(busy)} onClick={() => navigateHistory("undo")}><Undo2 size={15}/></IconButton>
 	              <IconButton label={tr("app.s0252")} shortcut="Ctrl+Shift+Z" disabled={!project?.history.canRedo || Boolean(busy)} onClick={() => navigateHistory("redo")}><Redo2 size={15}/></IconButton>
 	            </div>
-	            <Button variant="primary" className="creator-primary-action" disabled={Boolean(busy) || (creatorPhase === "transcribe" && (!canStartTranscription || transcriptionActive))} title={creatorPhase === "transcribe" ? transcribeCapabilityTitle : undefined} onClick={runCreatorPrimaryAction}>{creatorPhase === "review" ? <ListChecks size={15}/> : creatorPhase === "export" ? <Download size={15}/> : <Sparkles size={15}/>} {creatorPrimaryLabel}</Button>
+	            <Button variant="primary" className="creator-primary-action" disabled={Boolean(busy) || (creatorPhase === "transcribe" && (!canStartTranscription || transcriptionActive)) || (creatorPhase === "review" && focusReviewCount > 0 && !mediaUrl)} title={creatorPhase === "transcribe" ? transcribeCapabilityTitle : creatorPhase === "review" && focusReviewCount > 0 && !mediaUrl ? tr("app.focusReview.mediaMissing") : undefined} onClick={runCreatorPrimaryAction}>{creatorPhase === "review" ? <ListChecks size={15}/> : creatorPhase === "export" ? <Download size={15}/> : <Sparkles size={15}/>} {creatorPrimaryLabel}</Button>
 	            <div className="command-more" ref={commandMoreRef}><IconButton label={tr("app.s0256")} onClick={() => setShowMoreMenu((current) => !current)}><MoreHorizontal size={17}/></IconButton>{showMoreMenu && <Suspense fallback={null}><AppCommandMenu canDetectSuggestions={Boolean(project?.transcript.words.length) && !busy} canPreparePreview={capabilities.canPreparePreview && !busy} canRelinkMedia={capabilities.canRelinkMedia && !busy} canRetranscribe={Boolean(project?.transcript.segments.length) && capabilities.hasBoundMedia && !busy} mediaCapabilityTitle={mediaCapabilityTitle} onDetectSuggestions={() => { setShowMoreMenu(false); void detectSuggestions(); }} onPreparePreview={() => { setShowMoreMenu(false); void preparePreview(); }} onRelinkMedia={() => { setShowMoreMenu(false); void relinkMedia(); }} onRetranscribe={() => { setShowMoreMenu(false); void openQuickRetranscription(); }}/></Suspense>}</div>
 	          </div>
 	        </header>
@@ -3060,6 +3122,7 @@ function WorkbenchController() {
 	              </article>
 
 	              <aside className="creator-drawer" aria-label={tr("app.creator.drawer.label")}>
+	                {focusReview && <Suspense fallback={null}><FocusReviewPanel project={project} transcriptionReviews={transcriptionReviews} audioRisks={audioRisks} busy={Boolean(busy)} error={error} onLocate={locateFocusReviewItem} onAgentReview={(item, action) => void reviewPatch(item.sourceId, action)} onCutReview={(item, action) => void updateCut(item.sourceId, action)} onTranscriptionReview={(item, action) => void resolveTranscriptionReview(item.sourceId, action)} onOpenEditor={openFocusReviewEditor} onTogglePlayback={toggleTimelinePlayback} onSeekDelta={(delta) => seekTimeline(playback.currentTime + delta)} onExit={() => exitFocusReview()}/></Suspense>}
 	                <div className="creator-drawer-tabs" role="tablist" aria-label={tr("app.creator.drawer.tabs")}>
 	                  {drawerTabs.map((tab) => <button id={`creator-drawer-tab-${tab}`} key={tab} role="tab" aria-controls={`creator-drawer-panel-${tab}`} aria-selected={drawerTab === tab} tabIndex={drawerTab === tab ? 0 : -1} className={drawerTab === tab ? "active" : ""} onKeyDown={(event) => changeDrawerTabFromKeyboard(event, tab)} onClick={() => openCreatorDrawer(tab)}>{tr(({ review: "app.creator.drawer.review", quality: "app.creator.drawer.quality", analysis: "app.creator.drawer.analysis", history: "app.creator.drawer.history", export: "app.creator.drawer.export" } as const)[tab])}{tab === "review" && actionableReviewCount > 0 ? <i>{actionableReviewCount}</i> : null}{tab === "quality" && project.subtitleQuality.issueCount > 0 ? <i>{project.subtitleQuality.issueCount}</i> : null}</button>)}
 	                </div>
@@ -3168,10 +3231,11 @@ function WorkbenchController() {
 
 	            </section>
 
-            <SubtitleTimelinePanel
+            <Suspense fallback={null}><SubtitleTimelinePanel
               project={project}
               speakerTrack={speakerTrack}
               transcriptionReviews={transcriptionReviews}
+              audioRisks={audioRisks}
               waveformUrl={waveformUrl}
               playback={playback}
               selectedId={selectedId}
@@ -3187,7 +3251,9 @@ function WorkbenchController() {
               }}
               onOpenReviewDetail={openTimelineReviewDetail}
               onRestoreCut={(editId) => void updateCut(editId, "restore")}
-            />
+              canEnterFocusReview={Boolean(mediaUrl)}
+              onEnterFocusReview={enterFocusReview}
+            /></Suspense>
           </>)}
       </section>
       {showAiExecutionConfirm && project && <Suspense fallback={null}><AiExecutionConfirm

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { Bot, ChevronDown, ChevronUp, CircleAlert, Clock3, Eye, Focus, ListChecks, Minus, MoveHorizontal, Pause, Play, Plus, RotateCcw, Users } from "lucide-react";
 import { tr } from "../i18n";
-import type { Project, Segment, SpeakerTrack, TranscriptionReviewItem } from "../types";
+import type { AudioRisk, Project, Segment, SpeakerTrack, TranscriptionReviewItem } from "../types";
 import { formatTime } from "../app-view-model";
 
 export const TIMELINE_PREFERENCES_STORAGE_KEY = "siaocut.timelinePreferences.v1";
@@ -29,13 +29,13 @@ export const DEFAULT_TIMELINE_PREFERENCES: TimelinePreferencesV1 = {
 
 export type TimelineReviewMarker = {
   id: string;
-  source: "quality" | "agent" | "transcription" | "edit";
+  source: "quality" | "agent" | "transcription" | "edit" | "audio";
   tone: "error" | "warning" | "agent" | "cut" | "applied";
-  segmentId: string;
+  segmentId: string | null;
   start: number;
   end: number;
   detail: string;
-  detailTarget: "quality" | "review" | "history";
+  detailTarget: "quality" | "review" | "analysis" | "history";
   detailId: string;
 };
 
@@ -99,6 +99,7 @@ function markerRange(segmentById: Map<string, Segment>, segmentId: string | null
 export function deriveTimelineReviewMarkers(
   project: Project,
   transcriptionReviews: TranscriptionReviewItem[],
+  audioRisks: AudioRisk[] = [],
 ): TimelineReviewMarker[] {
   const segmentById = new Map(project.transcript.segments.map((segment) => [segment.id, segment]));
   const markers: TimelineReviewMarker[] = [];
@@ -153,7 +154,7 @@ export function deriveTimelineReviewMarkers(
     });
 
   project.edits
-    .filter((edit) => ["suggested", "proposed", "applied"].includes(edit.status))
+    .filter((edit) => ["suggested", "proposed"].includes(edit.status))
     .forEach((edit) => {
       const range = markerRange(segmentById, edit.segmentId);
       if (!range)
@@ -161,24 +162,32 @@ export function deriveTimelineReviewMarkers(
       markers.push({
         id: `edit:${edit.id}`,
         source: "edit",
-        tone: edit.status === "applied" ? "applied" : "cut",
+        tone: "cut",
         ...range,
         start: Number.isFinite(edit.start) ? edit.start : range.start,
         end: Number.isFinite(edit.end) ? edit.end : range.end,
         detail: edit.reason,
-        detailTarget: edit.status === "applied" ? "history" : "review",
+        detailTarget: "review",
         detailId: `edit:${edit.id}`,
       });
     });
 
+  audioRisks.forEach((risk) => markers.push({
+    id: `audio:${risk.kind}:${risk.start}:${risk.end}`,
+    source: "audio",
+    tone: "warning",
+    segmentId: project.transcript.segments.find((segment) => risk.start >= segment.start && risk.start < segment.end)?.id ?? null,
+    start: risk.start,
+    end: risk.end,
+    detail: risk.kind,
+    detailTarget: "analysis",
+    detailId: `audio:${risk.kind}:${risk.start}:${risk.end}`,
+  }));
+
   const unique = new Map<string, TimelineReviewMarker>();
   markers
     .sort((left, right) => left.start - right.start || left.id.localeCompare(right.id))
-    .forEach((marker) => {
-      const key = `${marker.source}:${marker.segmentId}:${marker.tone}`;
-      if (!unique.has(key))
-        unique.set(key, marker);
-    });
+    .forEach((marker) => unique.set(marker.id, marker));
   return [...unique.values()];
 }
 
@@ -217,6 +226,8 @@ function markerLabel(marker: TimelineReviewMarker) {
     return tr("app.timeline.review.agent");
   if (marker.source === "transcription")
     return tr("app.timeline.review.transcription");
+  if (marker.source === "audio")
+    return tr("app.focusReview.kind.audio");
   return marker.tone === "applied" ? tr("app.timeline.review.appliedCut") : tr("app.timeline.review.cut");
 }
 
@@ -224,6 +235,7 @@ export function SubtitleTimelinePanel({
   project,
   speakerTrack,
   transcriptionReviews,
+  audioRisks = [],
   waveformUrl,
   playback,
   selectedId,
@@ -236,10 +248,13 @@ export function SubtitleTimelinePanel({
   onOpenTiming,
   onOpenReviewDetail,
   onRestoreCut,
+  canEnterFocusReview = false,
+  onEnterFocusReview = () => undefined,
 }: {
   project: Project;
   speakerTrack: SpeakerTrack | null;
   transcriptionReviews: TranscriptionReviewItem[];
+  audioRisks?: AudioRisk[];
   waveformUrl: string | null;
   playback: { playing: boolean; currentTime: number; duration: number };
   selectedId: string | null;
@@ -252,6 +267,8 @@ export function SubtitleTimelinePanel({
   onOpenTiming: (segment: Segment) => void;
   onOpenReviewDetail: (marker: TimelineReviewMarker) => void;
   onRestoreCut: (editId: string) => void;
+  canEnterFocusReview?: boolean;
+  onEnterFocusReview?: () => void;
 }) {
   const [preferences, setPreferences] = useState(() => parseTimelinePreferences(localStorage.getItem(TIMELINE_PREFERENCES_STORAGE_KEY)));
   const [containerWidth, setContainerWidth] = useState(960);
@@ -264,7 +281,7 @@ export function SubtitleTimelinePanel({
   const selected = project.transcript.segments.find((segment) => segment.id === selectedId) ?? null;
   const selectedEdit = selected ? project.edits.find((edit) => edit.segmentId === selected.id && ["suggested", "proposed", "applied"].includes(edit.status)) ?? null : null;
   const activeSegment = project.transcript.segments.find((segment) => playback.currentTime >= segment.start && playback.currentTime < segment.end) ?? null;
-  const reviewMarkers = useMemo(() => deriveTimelineReviewMarkers(project, transcriptionReviews), [project, transcriptionReviews]);
+  const reviewMarkers = useMemo(() => deriveTimelineReviewMarkers(project, transcriptionReviews, audioRisks), [audioRisks, project, transcriptionReviews]);
   const speakerTurns = useMemo(() => deriveTimelineSpeakerTurns(project, speakerTrack), [project, speakerTrack]);
   const speakerById = useMemo(() => new Map(speakerTrack?.speakers.map((speaker) => [speaker.id, speaker]) ?? []), [speakerTrack]);
   const canvasWidth = preferences.expanded
@@ -429,6 +446,7 @@ export function SubtitleTimelinePanel({
             <button type="button" onClick={fitTimeline}><Focus size={13}/>{tr("app.timeline.fit")}</button>
           </div>
           <label className="subtitle-timeline-follow"><input type="checkbox" checked={preferences.followPlayhead} onChange={(event) => updatePreferences({ followPlayhead: event.target.checked })}/><Eye size={13}/>{tr("app.timeline.follow")}</label>
+          {preferences.mode === "review" && <button type="button" className="timeline-focus-review" disabled={!canEnterFocusReview} title={canEnterFocusReview ? undefined : tr("app.focusReview.mediaMissing")} onClick={onEnterFocusReview}><Focus size={13}/>{tr("app.focusReview.enter")}</button>}
         </>}
         <button type="button" className="timeline-toggle" aria-expanded={preferences.expanded} onClick={() => updatePreferences({ expanded: !preferences.expanded })}>{preferences.expanded ? <ChevronDown size={14}/> : <ChevronUp size={14}/>}{preferences.expanded ? tr("app.creator.timeline.collapse") : tr("app.creator.timeline.expand")}</button>
       </div>
