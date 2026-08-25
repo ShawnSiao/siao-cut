@@ -913,6 +913,8 @@ fn auto_workflow_cli_starts_deduplicates_queries_cancels_and_continues() {
     let workflow_id = started["workflowId"].as_str().unwrap();
     assert_eq!(started["workflow"]["currentStage"], "import");
     assert_eq!(started["workflow"]["instructionLocale"], "en-US");
+    assert_eq!(started["workflow"]["profile"], "balanced");
+    assert!(started["workflow"]["audioAnalysisJobId"].is_null());
 
     let mut status = Value::Null;
     for _ in 0..40 {
@@ -948,6 +950,52 @@ fn auto_workflow_cli_starts_deduplicates_queries_cancels_and_continues() {
             .iter()
             .any(|event| event["message"] == "自动工作流显式继续")
     );
+}
+
+#[test]
+fn auto_workflow_cli_validates_profiles_and_draft_options() {
+    let temp = tempdir().unwrap();
+    let media = temp.path().join("auto.wav");
+    let model = temp.path().join("model.bin");
+    let output = temp.path().join("auto.mp4");
+    fs::write(&media, b"audio").unwrap();
+    fs::write(&model, b"model").unwrap();
+
+    let invalid_profile = run_direct_error(
+        temp.path(),
+        &[
+            "auto",
+            "start",
+            "--media",
+            media.to_str().unwrap(),
+            "--model",
+            model.to_str().unwrap(),
+            "--output",
+            output.to_str().unwrap(),
+            "--profile",
+            "unknown",
+        ],
+    );
+    assert_eq!(invalid_profile["code"], "auto_workflow_profile_invalid");
+
+    let draft_translation = run_direct_error(
+        temp.path(),
+        &[
+            "auto",
+            "start",
+            "--media",
+            media.to_str().unwrap(),
+            "--model",
+            model.to_str().unwrap(),
+            "--output",
+            output.to_str().unwrap(),
+            "--profile",
+            "draft",
+            "--translate",
+            "en",
+        ],
+    );
+    assert_eq!(draft_translation["code"], "auto_workflow_profile_invalid");
 }
 
 #[test]

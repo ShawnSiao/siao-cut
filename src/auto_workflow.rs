@@ -1,7 +1,7 @@
 use crate::{
     agent::execution::ExecutionTarget,
-    agent_runner, cuts, db, export, media,
-    model::{AutoWorkflow, AutoWorkflowEvent, SubtitleMode},
+    agent_runner, audio_analysis, cuts, db, export, media,
+    model::{AutoWorkflow, AutoWorkflowEvent, SubtitleMode, WorkflowProfile},
     project, source_import, tasks, translation,
     util::{new_id, now},
     video_export::{self, ExportRequest},
@@ -14,6 +14,12 @@ use std::{
     thread,
     time::Duration,
 };
+
+mod profile;
+use profile::{after_transcription, poll_audio_analysis, stage_start, validate_start_profile};
+#[cfg(test)]
+#[path = "auto_workflow/profile_test.rs"]
+mod profile_test;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 
@@ -38,6 +44,7 @@ pub struct StartRequest {
     pub output: PathBuf,
     pub burn_subtitles: bool,
     pub subtitle_mode: SubtitleMode,
+    pub profile: WorkflowProfile,
     pub start_delay_ms: Option<u64>,
     pub instruction_locale: String,
     pub translation_execution: Option<ExecutionTarget>,
@@ -45,7 +52,7 @@ pub struct StartRequest {
 
 pub fn start(db: &mut Connection, request: StartRequest) -> Result<AutoWorkflow> {
     let start_delay_ms = request.start_delay_ms;
-    let (workflow, created) = insert_with_flag(db, request)?;
+    let (workflow, created) = insert_with_flag(db, request, true)?;
     if !created {
         return Ok(workflow);
     }
@@ -58,10 +65,14 @@ pub fn start(db: &mut Connection, request: StartRequest) -> Result<AutoWorkflow>
 
 #[cfg(test)]
 fn insert(db: &mut Connection, request: StartRequest) -> Result<AutoWorkflow> {
-    insert_with_flag(db, request).map(|(workflow, _)| workflow)
+    insert_with_flag(db, request, false).map(|(workflow, _)| workflow)
 }
 
-fn insert_with_flag(db: &mut Connection, request: StartRequest) -> Result<(AutoWorkflow, bool)> {
+fn insert_with_flag(
+    db: &mut Connection,
+    request: StartRequest,
+    check_local_capability: bool,
+) -> Result<(AutoWorkflow, bool)> {
     let StartRequest {
         input,
         model,
@@ -70,6 +81,7 @@ fn insert_with_flag(db: &mut Connection, request: StartRequest) -> Result<(AutoW
         output,
         burn_subtitles,
         subtitle_mode,
+        profile,
         start_delay_ms: _,
         instruction_locale,
         translation_execution,
@@ -97,6 +109,13 @@ fn insert_with_flag(db: &mut Connection, request: StartRequest) -> Result<(AutoW
     if translation_execution.is_some() && translation_language.is_none() {
         bail!("auto_workflow_translation_required: AI 执行目标只能用于字幕翻译")
     }
+    validate_start_profile(
+        profile,
+        translation_language.is_some(),
+        translation_execution.is_some(),
+        subtitle_mode,
+        check_local_capability,
+    )?;
     if let Some(target) = translation_execution.as_ref() {
         target.validate()?;
     }
@@ -138,7 +157,11 @@ fn insert_with_flag(db: &mut Connection, request: StartRequest) -> Result<(AutoW
         )
         .optional()?;
     if let Some(existing) = existing {
-        return Ok((load(db, &existing)?, false));
+        let existing = load(db, &existing)?;
+        if existing.profile != profile {
+            bail!("auto_workflow_profile_conflict: 同一输入和输出已有其他预设的活动流程")
+        }
+        return Ok((existing, false));
     }
     let id = new_id("auto");
     let timestamp = now();
@@ -146,10 +169,10 @@ fn insert_with_flag(db: &mut Connection, request: StartRequest) -> Result<(AutoW
         "INSERT INTO auto_workflows(
              id,input_kind,input_value,title,confirmed_media_id,model_path,
              transcribe_language,translation_language,output_path,burn_subtitles,
-             subtitle_mode,status,current_stage,progress,created_at,updated_at,attempt_count,
+             subtitle_mode,profile,status,current_stage,progress,created_at,updated_at,attempt_count,
              instruction_locale,ai_execution_kind,ai_service_config_id,
              ai_service_revision,ai_network_revision,ai_model_id,ai_authorized
-         ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'queued','import',0,?12,?12,1,?13,?14,?15,?16,?17,?18,?19)",
+         ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'queued','import',0,?13,?13,1,?14,?15,?16,?17,?18,?19,?20)",
         params![
             &id,
             input_kind,
@@ -162,6 +185,7 @@ fn insert_with_flag(db: &mut Connection, request: StartRequest) -> Result<(AutoW
             output.to_string_lossy(),
             burn_subtitles,
             subtitle_mode.as_str(),
+            profile.as_str(),
             &timestamp,
             instruction_locale,
             translation_execution.as_ref().map(ExecutionTarget::kind),
@@ -188,16 +212,16 @@ pub fn load(db: &Connection, workflow_id: &str) -> Result<AutoWorkflow> {
     db.query_row(
         "SELECT id,input_kind,input_value,title,confirmed_media_id,project_id,source_import_id,
                 model_path,transcribe_language,translation_language,output_path,burn_subtitles,
-                subtitle_mode,status,current_stage,progress,transcript_version_id,agent_task_id,
-                ai_execution_kind,ai_service_config_id,ai_service_revision,ai_network_revision,
+                subtitle_mode,profile,status,current_stage,progress,transcript_version_id,agent_task_id,
+                audio_analysis_job_id,ai_execution_kind,ai_service_config_id,ai_service_revision,ai_network_revision,
                 ai_model_id,ai_authorized,export_job_id,audit_json,cancel_requested_at,error_message,
                 created_at,updated_at,completed_at,worker_pid,attempt_count,instruction_locale
          FROM auto_workflows WHERE id=?1",
         [workflow_id],
         |row| {
-            let audit: Option<String> = row.get(25)?;
-            let status = row.get::<_, String>(13)?;
-            let error_message = row.get::<_, Option<String>>(27)?;
+            let audit: Option<String> = row.get(27)?;
+            let status = row.get::<_, String>(14)?;
+            let error_message = row.get::<_, Option<String>>(29)?;
             Ok(AutoWorkflow {
                 id: row.get(0)?,
                 input_kind: row.get(1)?,
@@ -213,28 +237,31 @@ pub fn load(db: &Connection, workflow_id: &str) -> Result<AutoWorkflow> {
                 burn_subtitles: row.get(11)?,
                 subtitle_mode: SubtitleMode::parse(&row.get::<_, String>(12)?)
                     .ok_or(rusqlite::Error::InvalidQuery)?,
+                profile: WorkflowProfile::parse(&row.get::<_, String>(13)?)
+                    .ok_or(rusqlite::Error::InvalidQuery)?,
                 error_code: crate::model::background_error_code(&status, error_message.as_deref()),
                 status,
-                current_stage: row.get(14)?,
-                progress: row.get(15)?,
-                transcript_version_id: row.get(16)?,
-                agent_task_id: row.get(17)?,
-                ai_execution_kind: row.get(18)?,
-                ai_service_config_id: row.get(19)?,
-                ai_service_revision: row.get::<_, Option<i64>>(20)?.map(|value| value as u64),
-                ai_network_revision: row.get::<_, Option<i64>>(21)?.map(|value| value as u64),
-                ai_model_id: row.get(22)?,
-                ai_authorized: row.get(23)?,
-                export_job_id: row.get(24)?,
+                current_stage: row.get(15)?,
+                progress: row.get(16)?,
+                transcript_version_id: row.get(17)?,
+                agent_task_id: row.get(18)?,
+                audio_analysis_job_id: row.get(19)?,
+                ai_execution_kind: row.get(20)?,
+                ai_service_config_id: row.get(21)?,
+                ai_service_revision: row.get::<_, Option<i64>>(22)?.map(|value| value as u64),
+                ai_network_revision: row.get::<_, Option<i64>>(23)?.map(|value| value as u64),
+                ai_model_id: row.get(24)?,
+                ai_authorized: row.get(25)?,
+                export_job_id: row.get(26)?,
                 audit: audit.and_then(|value| serde_json::from_str(&value).ok()),
-                cancel_requested_at: row.get(26)?,
+                cancel_requested_at: row.get(28)?,
                 error_message,
-                created_at: row.get(28)?,
-                updated_at: row.get(29)?,
-                completed_at: row.get(30)?,
-                worker_pid: row.get(31)?,
-                attempt_count: row.get::<_, i64>(32)? as u32,
-                instruction_locale: row.get(33)?,
+                created_at: row.get(30)?,
+                updated_at: row.get(31)?,
+                completed_at: row.get(32)?,
+                worker_pid: row.get(33)?,
+                attempt_count: row.get::<_, i64>(34)? as u32,
+                instruction_locale: row.get(35)?,
             })
         },
     )
@@ -281,12 +308,13 @@ pub(crate) fn agent_result_ready(db: &Connection, task_id: &str) -> Result<()> {
         )
         .optional()?;
     if let Some(workflow_id) = workflow_id {
+        let workflow = load(db, &workflow_id)?;
         set_state(
             db,
             &workflow_id,
             "review",
             "needs_review",
-            0.7,
+            stage_start(workflow.profile, "review"),
             "Agent 结果和粗剪建议等待人工确认",
         )?;
     }
@@ -317,6 +345,12 @@ pub fn cancel(db: &mut Connection, workflow_id: &str) -> Result<AutoWorkflow> {
             .is_ok_and(|job| matches!(job.status.as_str(), "queued" | "running"))
     {
         let _ = video_export::cancel(db, job_id);
+    }
+    if let Some(job_id) = workflow.audio_analysis_job_id.as_deref()
+        && audio_analysis::load(db, job_id)
+            .is_ok_and(|job| matches!(job.status.as_str(), "queued" | "running"))
+    {
+        let _ = audio_analysis::cancel(db, job_id);
     }
     if let Some(task_id) = workflow.agent_task_id.as_deref()
         && project_id_for_task(db, task_id).is_some()
@@ -383,7 +417,7 @@ pub fn continue_workflow(db: &mut Connection, workflow_id: &str) -> Result<AutoW
                         workflow_id,
                         "review",
                         "needs_review",
-                        0.7,
+                        stage_start(workflow.profile, "review"),
                         "Agent 结果和粗剪建议等待人工确认",
                     )?;
                     return load(db, workflow_id);
@@ -405,7 +439,7 @@ pub fn continue_workflow(db: &mut Connection, workflow_id: &str) -> Result<AutoW
             workflow_id,
             "review",
             "needs_review",
-            0.7,
+            stage_start(workflow.profile, "review"),
             "Agent 结果已审阅；粗剪建议仍等待人工确认",
         )?;
         return load(db, workflow_id);
@@ -420,23 +454,27 @@ pub fn continue_workflow(db: &mut Connection, workflow_id: &str) -> Result<AutoW
     } else {
         workflow.current_stage.as_str()
     };
+    queue_for_resume(db, &workflow, next_stage)?;
+    spawn_worker(workflow_id, None)?;
+    load(db, workflow_id)
+}
+
+fn queue_for_resume(db: &Connection, workflow: &AutoWorkflow, next_stage: &str) -> Result<()> {
     db.execute(
         "UPDATE auto_workflows
-         SET status='queued',current_stage=?2,cancel_requested_at=NULL,error_message=NULL,
-             completed_at=NULL,worker_pid=NULL,attempt_count=attempt_count+1,updated_at=?3
+         SET status='queued',current_stage=?2,progress=?3,cancel_requested_at=NULL,error_message=NULL,
+             completed_at=NULL,worker_pid=NULL,attempt_count=attempt_count+1,updated_at=?4
          WHERE id=?1",
-        params![workflow_id, next_stage, now()],
+        params![&workflow.id, next_stage, stage_start(workflow.profile, next_stage), now()],
     )?;
     append_event(
         db,
-        workflow_id,
+        &workflow.id,
         next_stage,
         "queued",
-        workflow.progress,
+        stage_start(workflow.profile, next_stage),
         "自动工作流显式继续",
-    )?;
-    spawn_worker(workflow_id, None)?;
-    load(db, workflow_id)
+    )
 }
 
 fn resume_cancelled_agent_task(db: &mut Connection, workflow: &AutoWorkflow) -> Result<bool> {
@@ -509,6 +547,18 @@ fn resume_child_job(db: &Connection, workflow: &AutoWorkflow) -> Result<()> {
             && job.cancel_requested_at.is_some()
         {
             bail!("auto_workflow_cancel_pending: 视频导出任务仍在处理取消请求，请稍后再次继续")
+        }
+    }
+    if workflow.current_stage == "analyze"
+        && let Some(job_id) = workflow.audio_analysis_job_id.as_deref()
+    {
+        let job = audio_analysis::load(db, job_id)?;
+        if matches!(job.status.as_str(), "failed" | "interrupted" | "cancelled") {
+            audio_analysis::resume(db, job_id, None)?;
+        } else if matches!(job.status.as_str(), "queued" | "running")
+            && job.cancel_requested_at.is_some()
+        {
+            bail!("auto_workflow_cancel_pending: 音频分析任务仍在处理取消请求，请稍后再次继续")
         }
     }
     Ok(())
@@ -626,6 +676,11 @@ fn run_steps(db: &mut Connection, workflow_id: &str) -> Result<()> {
         match workflow.current_stage.as_str() {
             "import" => run_import(db, &workflow)?,
             "transcribe" => run_transcribe(db, &workflow)?,
+            "analyze" => {
+                if poll_audio_analysis(db, &workflow)? {
+                    return Ok(());
+                }
+            }
             "suggestions" => {
                 if run_suggestions(db, &workflow)? {
                     return Ok(());
@@ -643,12 +698,19 @@ fn run_steps(db: &mut Connection, workflow_id: &str) -> Result<()> {
                         workflow_id,
                         "review",
                         "needs_review",
-                        0.7,
+                        stage_start(workflow.profile, "review"),
                         "Agent 结果和粗剪建议等待人工确认",
                     )?;
                     return Ok(());
                 }
-                set_state(db, workflow_id, "audit", "running", 0.78, "人工确认已完成")?;
+                set_state(
+                    db,
+                    workflow_id,
+                    "audit",
+                    "running",
+                    stage_start(workflow.profile, "audit"),
+                    "人工确认已完成",
+                )?;
             }
             "audit" => run_audit(db, &workflow)?,
             "export" => {
@@ -680,7 +742,7 @@ fn run_import(db: &mut Connection, workflow: &AutoWorkflow) -> Result<()> {
             &workflow.id,
             "transcribe",
             "running",
-            0.15,
+            stage_start(workflow.profile, "transcribe"),
             "本地媒体已导入",
         )?;
         return Ok(());
@@ -710,7 +772,11 @@ fn run_import(db: &mut Connection, workflow: &AutoWorkflow) -> Result<()> {
         let source = source_import::load(db, &job.id)?;
         match source.status.as_str() {
             "queued" | "running" | "finalizing" => {
-                update_progress(db, &workflow.id, 0.02 + source.progress * 0.13)?;
+                update_progress(
+                    db,
+                    &workflow.id,
+                    source.progress * stage_start(workflow.profile, "transcribe"),
+                )?;
                 thread::sleep(POLL_INTERVAL);
             }
             "completed" => {
@@ -726,7 +792,7 @@ fn run_import(db: &mut Connection, workflow: &AutoWorkflow) -> Result<()> {
                     &workflow.id,
                     "transcribe",
                     "running",
-                    0.15,
+                    stage_start(workflow.profile, "transcribe"),
                     "URL 媒体已导入",
                 )?;
                 return Ok(());
@@ -774,13 +840,14 @@ fn run_transcribe(db: &mut Connection, workflow: &AutoWorkflow) -> Result<()> {
             params![&workflow.id, version_id],
         )?;
     }
+    let (next_stage, message) = after_transcription(workflow.profile);
     set_state(
         db,
         &workflow.id,
-        "suggestions",
+        next_stage,
         "running",
-        0.5,
-        "本地转录已完成",
+        stage_start(workflow.profile, next_stage),
+        message,
     )?;
     Ok(())
 }
@@ -796,6 +863,9 @@ fn transcription_version(db: &Connection, project_id: &str) -> Result<Option<Str
 }
 
 fn run_suggestions(db: &mut Connection, workflow: &AutoWorkflow) -> Result<bool> {
+    if workflow.profile == WorkflowProfile::Draft {
+        bail!("auto_workflow_state_invalid: 快速初稿不能进入粗剪建议阶段")
+    }
     let project_id = workflow
         .project_id
         .as_deref()
@@ -804,13 +874,13 @@ fn run_suggestions(db: &mut Connection, workflow: &AutoWorkflow) -> Result<bool>
     if let Some(language) = workflow.translation_language.clone() {
         let project = project::load(db, project_id)?;
         if translation::target_segment_ids(&project, &language).is_empty() {
-            if suggestions.is_empty() {
+            if suggestions.is_empty() && workflow.profile == WorkflowProfile::Balanced {
                 set_state(
                     db,
                     &workflow.id,
                     "audit",
                     "running",
-                    0.78,
+                    stage_start(workflow.profile, "audit"),
                     "现有译文已是最新，未发现粗剪建议",
                 )?;
                 return Ok(false);
@@ -820,10 +890,15 @@ fn run_suggestions(db: &mut Connection, workflow: &AutoWorkflow) -> Result<bool>
                 &workflow.id,
                 "review",
                 "needs_review",
-                0.7,
+                stage_start(workflow.profile, "review"),
                 &format!(
-                    "现有译文已是最新；{} 条粗剪建议等待人工确认",
-                    suggestions.len()
+                    "现有译文已是最新；{} 条粗剪建议等待人工确认{}",
+                    suggestions.len(),
+                    if workflow.profile == WorkflowProfile::Delivery {
+                        "；精细交付必须确认完成审阅"
+                    } else {
+                        ""
+                    }
                 ),
             )?;
             return Ok(true);
@@ -866,20 +941,39 @@ fn run_suggestions(db: &mut Connection, workflow: &AutoWorkflow) -> Result<bool>
                 suggestions.len()
             )
         };
-        set_state(db, &workflow.id, "translate", "needs_agent", 0.62, &message)?;
+        set_state(
+            db,
+            &workflow.id,
+            "translate",
+            "needs_agent",
+            stage_start(workflow.profile, "translate"),
+            &message,
+        )?;
         return Ok(true);
     }
-    if suggestions.is_empty() {
-        set_state(db, &workflow.id, "audit", "running", 0.78, "未发现粗剪建议")?;
+    if suggestions.is_empty() && workflow.profile == WorkflowProfile::Balanced {
+        set_state(
+            db,
+            &workflow.id,
+            "audit",
+            "running",
+            stage_start(workflow.profile, "audit"),
+            "未发现粗剪建议",
+        )?;
         Ok(false)
     } else {
+        let message = if suggestions.is_empty() {
+            "未发现粗剪建议；精细交付仍需人工确认完成审阅".to_owned()
+        } else {
+            format!("{} 条粗剪建议等待人工确认", suggestions.len())
+        };
         set_state(
             db,
             &workflow.id,
             "review",
             "needs_review",
-            0.7,
-            &format!("{} 条粗剪建议等待人工确认", suggestions.len()),
+            stage_start(workflow.profile, "review"),
+            &message,
         )?;
         Ok(true)
     }
@@ -938,7 +1032,7 @@ fn sync_agent_stage(db: &mut Connection, workflow: &AutoWorkflow) -> Result<bool
                 &workflow.id,
                 "translate",
                 "needs_agent",
-                0.62,
+                stage_start(workflow.profile, "translate"),
                 "翻译任务等待 Agent 完成",
             )?;
             Ok(true)
@@ -949,7 +1043,7 @@ fn sync_agent_stage(db: &mut Connection, workflow: &AutoWorkflow) -> Result<bool
                 &workflow.id,
                 "review",
                 "needs_review",
-                0.7,
+                stage_start(workflow.profile, "review"),
                 "Agent 结果和粗剪建议等待人工确认",
             )?;
             Ok(true)
@@ -960,7 +1054,7 @@ fn sync_agent_stage(db: &mut Connection, workflow: &AutoWorkflow) -> Result<bool
                 &workflow.id,
                 "review",
                 "running",
-                0.72,
+                stage_start(workflow.profile, "review"),
                 "Agent 修改已审阅",
             )?;
             Ok(false)
@@ -976,7 +1070,7 @@ fn run_audit(db: &mut Connection, workflow: &AutoWorkflow) -> Result<()> {
         .as_deref()
         .ok_or_else(|| anyhow!("auto_workflow_state_invalid: 审计阶段缺少项目"))?;
     let project = project::load(db, project_id)?;
-    let report = export::audit_for_options(
+    let mut report = export::audit_for_options(
         &project,
         &export::ExportOptions {
             format: "ass",
@@ -986,6 +1080,12 @@ fn run_audit(db: &mut Connection, workflow: &AutoWorkflow) -> Result<()> {
             allow_stale_translation: false,
         },
     );
+    report["workflowProfile"] = serde_json::json!(workflow.profile.as_str());
+    report["suggestionReview"] = serde_json::json!(if workflow.profile == WorkflowProfile::Draft {
+        "not_run"
+    } else {
+        "human_confirmed"
+    });
     db.execute(
         "UPDATE auto_workflows SET audit_json=?2,updated_at=?3 WHERE id=?1",
         params![&workflow.id, serde_json::to_string(&report)?, now()],
@@ -1018,7 +1118,7 @@ fn run_audit(db: &mut Connection, workflow: &AutoWorkflow) -> Result<()> {
         &workflow.id,
         "export",
         "running",
-        0.85,
+        stage_start(workflow.profile, "export"),
         "审计通过，开始导出",
     )?;
     Ok(())
@@ -1043,7 +1143,8 @@ fn poll_export(db: &Connection, workflow: &AutoWorkflow) -> Result<bool> {
         let job = video_export::load(db, job_id)?;
         match job.status.as_str() {
             "queued" | "running" => {
-                update_progress(db, &workflow.id, 0.85 + job.progress * 0.14)?;
+                let start = stage_start(workflow.profile, "export");
+                update_progress(db, &workflow.id, start + job.progress * (0.99 - start))?;
                 thread::sleep(POLL_INTERVAL);
             }
             "completed" => {
@@ -1193,6 +1294,24 @@ mod tests {
         output: &Path,
         translation: Option<&str>,
     ) -> AutoWorkflow {
+        insert_local_profile(
+            db,
+            media,
+            model,
+            output,
+            translation,
+            WorkflowProfile::Balanced,
+        )
+    }
+
+    fn insert_local_profile(
+        db: &mut Connection,
+        media: &Path,
+        model: &Path,
+        output: &Path,
+        translation: Option<&str>,
+        profile: WorkflowProfile,
+    ) -> AutoWorkflow {
         insert(
             db,
             StartRequest {
@@ -1206,6 +1325,7 @@ mod tests {
                 output: output.to_path_buf(),
                 burn_subtitles: false,
                 subtitle_mode: SubtitleMode::Source,
+                profile,
                 start_delay_ms: None,
                 instruction_locale: "zh-CN".into(),
                 translation_execution: None,

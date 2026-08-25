@@ -1117,6 +1117,17 @@ select:focus-visible { border-color: var(--focus-ring) !important; box-shadow: 0
 .focus-review-panel.collapsed > header span { display: none; }
 .focus-review-panel.complete { place-items: center; align-content: center; justify-content: center; text-align: center; }
 .timeline-focus-review { border-color: var(--brand) !important; color: var(--brand) !important; }
+.auto-workflow-profiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; border: 0; margin: 0; padding: 0; }
+.auto-workflow-profiles legend { grid-column: 1 / -1; margin-bottom: 2px; color: var(--text-muted); font-size: 12px; }
+.auto-workflow-profiles > label { min-width: 0; display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; align-items: start; gap: 8px; border: 1px solid var(--border-subtle); border-radius: var(--radius-button); background: var(--bg-panel-raised); padding: 10px; cursor: pointer; }
+.auto-workflow-profiles > label.selected { border-color: var(--brand); background: var(--brand-soft); }
+.auto-workflow-profiles input { margin: 2px 0 0; accent-color: var(--brand); }
+.auto-workflow-profiles > label > svg { margin-top: 1px; color: var(--text-muted); }
+.auto-workflow-profiles > label.selected > svg { color: var(--brand); }
+.auto-workflow-profiles > label span { min-width: 0; display: grid; gap: 4px; }
+.auto-workflow-profiles > label strong { font-size: 12px; }
+.auto-workflow-profiles > label small { color: var(--text-muted); font-size: 12px; line-height: 1.45; }
+.auto-workflow-profiles > p { grid-column: 1 / -1; margin: 0; border-left: 2px solid var(--warning); background: var(--warning-soft); padding: 8px 10px; color: var(--warning); font-size: 12px; line-height: 1.5; }
 
 @media (max-width: 1180px) {
   .focus-review .stage-grid { grid-template-columns: minmax(0, 1fr) minmax(280px, 34%) !important; }

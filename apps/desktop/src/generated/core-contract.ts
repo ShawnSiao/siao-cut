@@ -98,6 +98,7 @@ export type AutoWorkflowStatus = typeof autoWorkflowStatuses[number];
 export const autoWorkflowStages = [
   "import",
   "transcribe",
+  "analyze",
   "suggestions",
   "translate",
   "review",
@@ -106,6 +107,13 @@ export const autoWorkflowStages = [
   "complete"
 ] as const;
 export type AutoWorkflowStage = typeof autoWorkflowStages[number];
+
+export const workflowProfiles = [
+  "draft",
+  "balanced",
+  "delivery"
+] as const;
+export type WorkflowProfile = typeof workflowProfiles[number];
 
 export const coreErrorCodes = [
   "database_version_unsupported",
@@ -284,10 +292,13 @@ export const coreErrorCodes = [
   "auto_workflow_confirmation_required",
   "auto_workflow_translation_required",
   "auto_workflow_subtitle_mode_invalid",
+  "auto_workflow_profile_invalid",
+  "auto_workflow_profile_conflict",
   "auto_workflow_review_pending",
   "auto_workflow_state_invalid",
   "auto_workflow_source_failed",
   "auto_workflow_agent_cancelled",
+  "auto_workflow_audio_analysis_failed",
   "auto_workflow_audit_failed",
   "auto_workflow_export_failed",
   "audio_source_missing",

@@ -26,6 +26,7 @@ SiaoCut 是面向 AI 口播创作者的 Windows 本地优先剪辑工作台。�
 | 文稿剪辑 | 支持字幕定位与编辑、翻译审阅、软剪辑、撤销、重做和版本恢复。原片不会被覆盖。 |
 | 语音证据 | 标记语速、停顿、口头语、低置信度、响度、静音和疑似削波；可选说话人模型用于生成待审阅说话人轨。 |
 | Agent 审阅 | Agent 只接收文本、时间戳和结构约束。结果以三方差异形式待审，不会直接改写项目。 |
+| 一键工作流 | 提供「快速初稿」「平衡审阅」「精细交付」三种固定路径；后台阶段可恢复，建议和译文仍须人工决定。 |
 | 导出 | 支持 SRT、VTT、ASS、Markdown 和 MP4，可烧录字幕并导出原始比例或 9:16 画布。 |
 | 项目完整性 | Rust Core 是唯一写入者；SQLite 保存项目版本，媒体 SHA-256 审计会在原片缺失或变化时阻止导出。 |
 
@@ -103,6 +104,7 @@ tools/                构建、发布和仓库检查工具
 ## 文档
 
 - [用户手册](docs/workbench-user-guide.md)
+- [一键工作流预设](docs/auto-workflow-profiles.md)
 - [系统架构](ARCHITECTURE.md)
 - [0.3 语音智能](docs/voice-intelligence-0.3.md)
 - [快速字幕时间安全模式](docs/quick-transcription-timing.md)

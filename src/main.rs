@@ -630,6 +630,8 @@ enum AutoWorkflowCommand {
 
 #[derive(Args)]
 struct AutoWorkflowStartArgs {
+    #[arg(long, default_value = "balanced")]
+    profile: String,
     #[arg(long)]
     media: Option<PathBuf>,
     #[arg(long)]
@@ -1743,6 +1745,7 @@ fn run(cli: Cli) -> Result<Value> {
         Commands::Auto(command) => match command {
             AutoWorkflowCommand::Start(arguments) => {
                 let AutoWorkflowStartArgs {
+                    profile,
                     media,
                     url,
                     title,
@@ -1786,6 +1789,11 @@ fn run(cli: Cli) -> Result<Value> {
                 };
                 let subtitle_mode = model::SubtitleMode::parse(&subtitle_mode)
                     .ok_or_else(|| anyhow!("auto_workflow_subtitle_mode_invalid: 字幕模式必须为 source、translated 或 bilingual"))?;
+                let profile = model::WorkflowProfile::parse(&profile).ok_or_else(|| {
+                    anyhow!(
+                        "auto_workflow_profile_invalid: 流程预设必须为 draft、balanced 或 delivery"
+                    )
+                })?;
                 let translation_execution = agent::execution::ExecutionTarget::auto_from_cli(
                     &ai_execution,
                     ai_service_config_id,
@@ -1806,6 +1814,7 @@ fn run(cli: Cli) -> Result<Value> {
                         output,
                         burn_subtitles,
                         subtitle_mode,
+                        profile,
                         start_delay_ms,
                         translation_execution,
                     },
