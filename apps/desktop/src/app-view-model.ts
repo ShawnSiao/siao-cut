@@ -68,12 +68,14 @@ export const subtitleCountLabel = (count: number) => tr(count === 1 ? "app.count
 export type ExportPreferencesV1 = {
     version: 1;
     subtitleMode: "source" | "translated" | "bilingual";
+    subtitleDelivery: "burned" | "embedded-mp4" | "embedded-mkv" | "sidecar-srt" | "sidecar-vtt";
     subtitleLanguage: string;
     transcriptFormat: "srt" | "vtt" | "ass" | "markdown" | "json";
 };
 export const DEFAULT_EXPORT_PREFERENCES: ExportPreferencesV1 = {
     version: 1,
     subtitleMode: "source",
+    subtitleDelivery: "burned",
     subtitleLanguage: "en",
     transcriptFormat: "srt",
 };
@@ -85,12 +87,14 @@ export const parseExportPreferences = (raw: string | null): ExportPreferencesV1 
     try {
         const candidate = JSON.parse(raw) as Partial<ExportPreferencesV1>;
         const subtitleModes = ["source", "translated", "bilingual"];
+        const subtitleDeliveries = ["burned", "embedded-mp4", "embedded-mkv", "sidecar-srt", "sidecar-vtt"];
         const transcriptFormats = ["srt", "vtt", "ass", "markdown", "json"];
-        if (candidate.version !== 1 || !subtitleModes.includes(candidate.subtitleMode ?? "") || !transcriptFormats.includes(candidate.transcriptFormat ?? ""))
+        if (candidate.version !== 1 || !subtitleModes.includes(candidate.subtitleMode ?? "") || (candidate.subtitleDelivery != null && !subtitleDeliveries.includes(candidate.subtitleDelivery)) || !transcriptFormats.includes(candidate.transcriptFormat ?? ""))
             return DEFAULT_EXPORT_PREFERENCES;
         return {
             version: 1,
             subtitleMode: candidate.subtitleMode as ExportPreferencesV1["subtitleMode"],
+            subtitleDelivery: (candidate.subtitleDelivery ?? "burned") as ExportPreferencesV1["subtitleDelivery"],
             subtitleLanguage: typeof candidate.subtitleLanguage === "string" ? candidate.subtitleLanguage : "en",
             transcriptFormat: candidate.transcriptFormat as ExportPreferencesV1["transcriptFormat"],
         };

@@ -531,6 +531,7 @@ describe("SiaoCut review workbench", () => {
     expect(parseExportPreferences('{"version":1,"subtitleMode":"bilingual","subtitleLanguage":"ja","transcriptFormat":"vtt"}')).toEqual({
       version: 1,
       subtitleMode: "bilingual",
+      subtitleDelivery: "burned",
       subtitleLanguage: "ja",
       transcriptFormat: "vtt",
     });
@@ -683,6 +684,21 @@ describe("SiaoCut review workbench", () => {
     expect(screen.getByLabelText("字幕模式")).toHaveValue("source");
     expect(language).toBeEnabled();
     expect(language).toHaveValue("en");
+  });
+
+  it("offers burned, embedded, and UTF-8 sidecar subtitle delivery", async () => {
+    render(<App />);
+    await openDrawerTab("导出");
+    const delivery = await screen.findByLabelText("字幕交付方式");
+
+    expect(delivery).toHaveValue("burned");
+    expect(screen.getByLabelText("原文字号")).toBeInTheDocument();
+    fireEvent.change(delivery, { target: { value: "embedded-mkv" } });
+    await waitFor(() => expect(delivery).toHaveValue("embedded-mkv"));
+    expect(screen.getByText(/可开关、可提取的文本字幕轨/)).toBeInTheDocument();
+    expect(screen.queryByLabelText("原文字号")).not.toBeInTheDocument();
+    fireEvent.change(delivery, { target: { value: "sidecar-srt" } });
+    expect(await screen.findByText(/同名 UTF-8 字幕文件/)).toBeInTheDocument();
   });
 
   it("keeps translated subtitle modes selected when the project has no translation yet", async () => {

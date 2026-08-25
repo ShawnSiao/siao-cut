@@ -328,6 +328,7 @@ function WorkbenchController() {
     const [confirmTranscriptionWarnings, setConfirmTranscriptionWarnings] = useState(false);
     const [confirmStaleTranslation, setConfirmStaleTranslation] = useState(false);
     const [confirmUncutExport, setConfirmUncutExport] = useState(false);
+    const [subtitleDelivery, setSubtitleDelivery] = useState<ExportPreferencesV1["subtitleDelivery"]>(() => parseExportPreferences(localStorage.getItem("siaocut.exportPreferences.v1")).subtitleDelivery);
     const [glossaryDraft, setGlossaryDraft] = useState("");
     const [subtitleMode, setSubtitleMode] = useState<"source" | "translated" | "bilingual">(() => parseExportPreferences(localStorage.getItem("siaocut.exportPreferences.v1")).subtitleMode);
     const [subtitleLanguage, setSubtitleLanguage] = useState(() => parseExportPreferences(localStorage.getItem("siaocut.exportPreferences.v1")).subtitleLanguage);
@@ -1123,10 +1124,11 @@ function WorkbenchController() {
         localStorage.setItem("siaocut.exportPreferences.v1", JSON.stringify({
             version: 1,
             subtitleMode,
+            subtitleDelivery,
             subtitleLanguage,
             transcriptFormat: exportFormat,
         } satisfies ExportPreferencesV1));
-    }, [exportFormat, subtitleLanguage, subtitleMode]);
+    }, [exportFormat, subtitleDelivery, subtitleLanguage, subtitleMode]);
     useEffect(() => {
         if (!project || subtitleMode === "source")
             return;
@@ -2423,11 +2425,11 @@ function WorkbenchController() {
     const exportVideo = () => project && withBusy(tr("app.s0186"), async () => {
         if (!capabilities.hasBoundMedia)
             throw new Error(tr("app.capability.mediaRequired"));
-        const output = await pickVideoPath(project.title);
+        const output = await pickVideoPath(project.title, subtitleDelivery);
         if (!output)
             return;
         const subtitle = subtitleExportOptions();
-        const envelope = await exportRuntimeClient.exportVideo(project.id, output, subtitle.mode, subtitle.language, subtitle.confirmStaleTranslation);
+        const envelope = await exportRuntimeClient.exportVideo(project.id, output, subtitleDelivery, subtitle.mode, subtitle.language, subtitle.confirmStaleTranslation);
         if (!envelope.job)
             throw new Error(tr("app.s0187"));
         setActiveExport(envelope.job);
@@ -3208,7 +3210,7 @@ function WorkbenchController() {
                     </section>}
                   </div>}
                   {drawerTab === "history" && <div className="inspector-view"><div className="version-block"><div className="section-title"><div><p className="eyebrow">{tr("app.s0385")}</p><h2>{tr("app.s0386")}</h2></div><History size={16}/></div>{project.versions.slice().reverse().map((version) => <button className="version-row" key={version.id} onClick={() => restoreVersion(version.id)}><span><strong>{versionReasonLabel(version.reason)}</strong><small>{new Date(version.createdAt).toLocaleString(uiLocale)}</small></span><RotateCcw size={14}/></button>)}</div></div>}
-                  {drawerTab === "export" && showExportPanel && <Suspense fallback={null}><ExportPanel embedded ref={exportPanelRef} project={project} busy={Boolean(busy)} subtitleMode={subtitleMode} translationLanguageOptions={translationLanguageOptions} translationLanguages={translationLanguages} selectedSubtitleLanguage={selectedSubtitleLanguage} selectedTranslationPending={selectedTranslationPending} selectedTranslationStale={selectedTranslationStale} confirmStaleTranslation={confirmStaleTranslation} confirmUncutExport={confirmUncutExport} exportFormat={exportFormat} structuredExport={structuredExport} includeSpeakerLabels={includeSpeakerLabels} transcriptionExportErrorCount={transcriptionExportErrors.length} transcriptionExportWarningCount={transcriptionExportWarnings.length} confirmTranscriptionWarnings={confirmTranscriptionWarnings} showSubtitleSafeArea={showSubtitleSafeArea} transcriptionExportBlocked={transcriptionExportBlocked} canExportVideo={capabilities.canExportVideo} activeExportRunning={Boolean(activeExport && ["queued", "running"].includes(activeExport.status))} mediaCapabilityTitle={mediaCapabilityTitle} onClose={() => { setShowExportPanel(false); setDrawerTab("quality"); }} onChangeCanvas={(settings) => void changeCanvas(settings)} onSubtitleModeChange={(mode) => { setSubtitleMode(mode); setConfirmStaleTranslation(false); }} onSubtitleLanguageChange={(language) => { setSubtitleLanguage(language); setConfirmStaleTranslation(false); }} onExportFormatChange={(format) => { setExportFormat(format); setConfirmTranscriptionWarnings(false); }} onIncludeSpeakerLabelsChange={setIncludeSpeakerLabels} onConfirmWarningsChange={setConfirmTranscriptionWarnings} onConfirmStaleTranslationChange={setConfirmStaleTranslation} onConfirmUncutExportChange={setConfirmUncutExport} onSubtitleStyleChange={(preset, position, sourceFontSize, translationFontSize) => void changeSubtitleStyle(preset, position, sourceFontSize, translationFontSize)} onShowSafeAreaChange={setShowSubtitleSafeArea} onExportTranscript={exportTranscript} onExportVideo={exportVideo}/></Suspense>}
+                  {drawerTab === "export" && showExportPanel && <Suspense fallback={null}><ExportPanel embedded ref={exportPanelRef} project={project} busy={Boolean(busy)} subtitleDelivery={subtitleDelivery} subtitleMode={subtitleMode} translationLanguageOptions={translationLanguageOptions} translationLanguages={translationLanguages} selectedSubtitleLanguage={selectedSubtitleLanguage} selectedTranslationPending={selectedTranslationPending} selectedTranslationStale={selectedTranslationStale} confirmStaleTranslation={confirmStaleTranslation} confirmUncutExport={confirmUncutExport} exportFormat={exportFormat} structuredExport={structuredExport} includeSpeakerLabels={includeSpeakerLabels} transcriptionExportErrorCount={transcriptionExportErrors.length} transcriptionExportWarningCount={transcriptionExportWarnings.length} confirmTranscriptionWarnings={confirmTranscriptionWarnings} showSubtitleSafeArea={showSubtitleSafeArea} transcriptionExportBlocked={transcriptionExportBlocked} canExportVideo={capabilities.canExportVideo} activeExportRunning={Boolean(activeExport && ["queued", "running"].includes(activeExport.status))} mediaCapabilityTitle={mediaCapabilityTitle} onClose={() => { setShowExportPanel(false); setDrawerTab("quality"); }} onChangeCanvas={(settings) => void changeCanvas(settings)} onSubtitleDeliveryChange={setSubtitleDelivery} onSubtitleModeChange={(mode) => { setSubtitleMode(mode); setConfirmStaleTranslation(false); }} onSubtitleLanguageChange={(language) => { setSubtitleLanguage(language); setConfirmStaleTranslation(false); }} onExportFormatChange={(format) => { setExportFormat(format); setConfirmTranscriptionWarnings(false); }} onIncludeSpeakerLabelsChange={setIncludeSpeakerLabels} onConfirmWarningsChange={setConfirmTranscriptionWarnings} onConfirmStaleTranslationChange={setConfirmStaleTranslation} onConfirmUncutExportChange={setConfirmUncutExport} onSubtitleStyleChange={(preset, position, sourceFontSize, translationFontSize) => void changeSubtitleStyle(preset, position, sourceFontSize, translationFontSize)} onShowSafeAreaChange={setShowSubtitleSafeArea} onExportTranscript={exportTranscript} onExportVideo={exportVideo}/></Suspense>}
 	                </div>
 	              </aside>
 

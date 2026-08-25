@@ -860,8 +860,10 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
     const now = new Date().toISOString();
     const subtitleModeIndex = args.indexOf("--subtitle-mode");
     const subtitleMode = (subtitleModeIndex >= 0 ? args[subtitleModeIndex + 1] : "source") as ExportJob["subtitleMode"];
+    const subtitleDeliveryIndex = args.indexOf("--subtitle-delivery");
+    const subtitleDelivery = (subtitleDeliveryIndex >= 0 ? args[subtitleDeliveryIndex + 1] : args.includes("--burn-subtitles") ? "burned" : "none") as ExportJob["subtitleDelivery"];
     const language = args.includes("--lang") ? args[args.indexOf("--lang") + 1] : null;
-    const job: ExportJob = { id, projectId: mockProject.id, outputPath: args[args.indexOf("--output") + 1], status: "completed", progress: 1, burnSubtitles: args.includes("--burn-subtitles"), language, bilingual: subtitleMode === "bilingual", subtitleMode, allowStaleTranslation: args.includes("--confirm-stale-translation"), canvasSettings: structuredClone(mockProject.canvasSettings), subtitleStyle: structuredClone(mockProject.subtitleStyle), cancelRequestedAt: null, errorMessage: null, manifestPath: "demo.siaocut.json", createdAt: now, updatedAt: now, completedAt: now };
+    const job: ExportJob = { id, projectId: mockProject.id, outputPath: args[args.indexOf("--output") + 1], status: "completed", progress: 1, burnSubtitles: subtitleDelivery === "burned", subtitleDelivery, language, bilingual: subtitleMode === "bilingual", subtitleMode, allowStaleTranslation: args.includes("--confirm-stale-translation"), canvasSettings: structuredClone(mockProject.canvasSettings), subtitleStyle: structuredClone(mockProject.subtitleStyle), cancelRequestedAt: null, errorMessage: null, manifestPath: "demo.siaocut.json", createdAt: now, updatedAt: now, completedAt: now };
     mockJobs.set(id, job);
     return { apiVersion: "0.1", status: "ok", job, jobId: id };
   }

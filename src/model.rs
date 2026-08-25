@@ -88,6 +88,51 @@ impl SubtitleMode {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum SubtitleDelivery {
+    #[default]
+    None,
+    Burned,
+    EmbeddedMp4,
+    EmbeddedMkv,
+    SidecarSrt,
+    SidecarVtt,
+}
+
+impl SubtitleDelivery {
+    pub fn from_burn_subtitles(burn_subtitles: bool) -> Self {
+        if burn_subtitles {
+            Self::Burned
+        } else {
+            Self::None
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "none" => Some(Self::None),
+            "burned" => Some(Self::Burned),
+            "embedded-mp4" => Some(Self::EmbeddedMp4),
+            "embedded-mkv" => Some(Self::EmbeddedMkv),
+            "sidecar-srt" => Some(Self::SidecarSrt),
+            "sidecar-vtt" => Some(Self::SidecarVtt),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Burned => "burned",
+            Self::EmbeddedMp4 => "embedded-mp4",
+            Self::EmbeddedMkv => "embedded-mkv",
+            Self::SidecarSrt => "sidecar-srt",
+            Self::SidecarVtt => "sidecar-vtt",
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum WorkflowProfile {
     Draft,
@@ -481,6 +526,8 @@ pub struct ExportJob {
     pub stage_code: Option<String>,
     pub progress: f64,
     pub burn_subtitles: bool,
+    #[serde(default)]
+    pub subtitle_delivery: SubtitleDelivery,
     pub language: Option<String>,
     pub bilingual: bool,
     pub subtitle_mode: SubtitleMode,

@@ -2,6 +2,7 @@ import { runCore } from "../core";
 
 type TranscriptFormat = "srt" | "vtt" | "ass" | "markdown" | "json";
 type SubtitleMode = "source" | "translated" | "bilingual";
+type SubtitleDelivery = "burned" | "embedded-mp4" | "embedded-mkv" | "sidecar-srt" | "sidecar-vtt";
 
 export const exportRuntimeClient = {
   listVideoExports: (projectId: string) => runCore(["video", "list", projectId]),
@@ -21,10 +22,10 @@ export const exportRuntimeClient = {
     ...(subtitleMode === "source" ? [] : ["--lang", subtitleLanguage ?? ""]),
     ...(confirmStaleTranslation ? ["--confirm-stale-translation"] : []),
   ]),
-  exportVideo: (projectId: string, output: string, subtitleMode: SubtitleMode, subtitleLanguage?: string, confirmStaleTranslation = false) => runCore([
+  exportVideo: (projectId: string, output: string, subtitleDelivery: SubtitleDelivery, subtitleMode: SubtitleMode, subtitleLanguage?: string, confirmStaleTranslation = false) => runCore([
     "video", "export", projectId,
     "--output", output,
-    "--burn-subtitles",
+    "--subtitle-delivery", subtitleDelivery,
     "--subtitle-mode", subtitleMode,
     ...(subtitleMode === "source" ? [] : ["--lang", subtitleLanguage ?? ""]),
     ...(confirmStaleTranslation ? ["--confirm-stale-translation"] : []),

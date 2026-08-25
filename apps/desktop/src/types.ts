@@ -252,6 +252,7 @@ export type ExportJob = {
   stageCode?: string | null;
   progress: number;
   burnSubtitles: boolean;
+  subtitleDelivery: "none" | "burned" | "embedded-mp4" | "embedded-mkv" | "sidecar-srt" | "sidecar-vtt";
   language: string | null;
   bilingual: boolean;
   subtitleMode: "source" | "translated" | "bilingual";

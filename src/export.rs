@@ -829,19 +829,23 @@ pub fn render(project: &Project, options: &ExportOptions<'_>) -> Result<String> 
                     .join("\n")
             )
         }
-        _ => segments
-            .iter()
-            .enumerate()
-            .map(|(index, (start, end, text, _))| {
-                format!(
-                    "{}\n{} --> {}\n{}\n",
-                    index + 1,
-                    timestamp(*start, ','),
-                    timestamp(*end, ','),
-                    display_subtitle_text(text)
-                )
-            })
-            .collect(),
+        _ => format!(
+            "{}\n",
+            segments
+                .iter()
+                .enumerate()
+                .map(|(index, (start, end, text, _))| {
+                    format!(
+                        "{}\n{} --> {}\n{}",
+                        index + 1,
+                        timestamp(*start, ','),
+                        timestamp(*end, ','),
+                        display_subtitle_text(text)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n")
+        ),
     })
 }
 
@@ -1070,6 +1074,22 @@ mod tests {
         .unwrap();
         assert!(srt.contains("00:00:00,000 --> 00:00:02,000"));
         assert!(!srt.contains("嗯"));
+
+        let mut standard_srt_project = project.clone();
+        standard_srt_project.edits.clear();
+        let standard_srt = render(
+            &standard_srt_project,
+            &ExportOptions {
+                format: "srt",
+                language: None,
+                subtitle_mode: SubtitleMode::Source,
+                include_cuts: false,
+                allow_stale_translation: false,
+            },
+        )
+        .unwrap();
+        assert!(standard_srt.contains("嗯\n\n2\n00:00:01,000 --> 00:00:03,000"));
+        assert_eq!(standard_srt.matches("\n\n").count(), 1);
 
         let mut empty = project.clone();
         empty.transcript.segments.clear();

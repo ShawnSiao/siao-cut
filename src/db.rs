@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 32;
+pub const CURRENT_SCHEMA_VERSION: i64 = 33;
 
 struct Migration {
     version: i64,
@@ -142,6 +142,10 @@ const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 32,
         apply: migration_32_auto_workflow_profiles,
+    },
+    Migration {
+        version: 33,
+        apply: migration_33_subtitle_delivery,
     },
 ];
 
@@ -1079,6 +1083,11 @@ fn migration_31_auto_workflow_ai_target(tx: &Transaction<'_>) -> Result<()> {
 
 fn migration_32_auto_workflow_profiles(tx: &Transaction<'_>) -> Result<()> {
     tx.execute_batch(include_str!("migrations/32_auto_workflow_profiles.sql"))?;
+    Ok(())
+}
+
+fn migration_33_subtitle_delivery(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute_batch(include_str!("migrations/33_subtitle_delivery.sql"))?;
     Ok(())
 }
 

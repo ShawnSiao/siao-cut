@@ -14,6 +14,8 @@ mod canvas;
 mod contracts;
 mod cuts;
 mod db;
+#[cfg(test)]
+mod db_migration_33_tests;
 mod export;
 mod ipc;
 mod local_resources;
@@ -743,6 +745,8 @@ enum VideoCommand {
         output: PathBuf,
         #[arg(long)]
         burn_subtitles: bool,
+        #[arg(long, value_parser = ["none", "burned", "embedded-mp4", "embedded-mkv", "sidecar-srt", "sidecar-vtt"])]
+        subtitle_delivery: Option<String>,
         #[arg(long)]
         lang: Option<String>,
         #[arg(long)]
@@ -2006,6 +2010,7 @@ fn run(cli: Cli) -> Result<Value> {
                 project_id,
                 output,
                 burn_subtitles,
+                subtitle_delivery,
                 lang,
                 bilingual,
                 subtitle_mode,
@@ -2018,12 +2023,24 @@ fn run(cli: Cli) -> Result<Value> {
                     lang.as_deref(),
                     bilingual,
                 )?;
+                let subtitle_delivery = match subtitle_delivery.as_deref() {
+                    Some(value) => model::SubtitleDelivery::parse(value)
+                        .ok_or_else(|| anyhow!("未知字幕交付方式：{value}"))?,
+                    None if burn_subtitles => model::SubtitleDelivery::Burned,
+                    None => model::SubtitleDelivery::None,
+                };
+                if burn_subtitles && subtitle_delivery != model::SubtitleDelivery::Burned {
+                    bail!(
+                        "--burn-subtitles 与 --subtitle-delivery {} 冲突",
+                        subtitle_delivery.as_str()
+                    )
+                }
                 let job = video_export::create(
                     &mut database,
                     &project_id,
                     video_export::ExportRequest {
                         output: &output,
-                        burn_subtitles,
+                        subtitle_delivery,
                         language: lang,
                         subtitle_mode,
                         allow_stale_translation: confirm_stale_translation,

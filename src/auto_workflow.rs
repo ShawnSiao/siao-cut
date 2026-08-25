@@ -1,7 +1,7 @@
 use crate::{
     agent::execution::ExecutionTarget,
     agent_runner, audio_analysis, cuts, db, export, media,
-    model::{AutoWorkflow, AutoWorkflowEvent, SubtitleMode, WorkflowProfile},
+    model::{AutoWorkflow, AutoWorkflowEvent, SubtitleDelivery, SubtitleMode, WorkflowProfile},
     project, source_import, tasks, translation,
     util::{new_id, now},
     video_export::{self, ExportRequest},
@@ -1100,7 +1100,7 @@ fn run_audit(db: &mut Connection, workflow: &AutoWorkflow) -> Result<()> {
             project_id,
             ExportRequest {
                 output: Path::new(&workflow.output_path),
-                burn_subtitles: workflow.burn_subtitles,
+                subtitle_delivery: SubtitleDelivery::from_burn_subtitles(workflow.burn_subtitles),
                 language: workflow.translation_language.clone(),
                 subtitle_mode: workflow.subtitle_mode,
                 allow_stale_translation: false,
