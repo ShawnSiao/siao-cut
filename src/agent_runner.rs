@@ -857,6 +857,11 @@ fn invocation_spec(
 }
 
 fn safe_environment(executable: &Path) -> BTreeMap<String, String> {
+    let codex_home = codex_home();
+    safe_environment_with(executable, codex_home.as_deref())
+}
+
+fn safe_environment_with(executable: &Path, codex_home: Option<&Path>) -> BTreeMap<String, String> {
     let mut values = BTreeMap::new();
     for key in [
         "SystemRoot",
@@ -894,6 +899,12 @@ fn safe_environment(executable: &Path) -> BTreeMap<String, String> {
     values.insert("PATH".to_owned(), path_entries.join(";"));
     values.insert("PATHEXT".to_owned(), ".COM;.EXE;.BAT;.CMD".to_owned());
     values.insert("NO_COLOR".to_owned(), "1".to_owned());
+    if let Some(codex_home) = codex_home {
+        values.insert(
+            "CODEX_HOME".to_owned(),
+            codex_home.to_string_lossy().into_owned(),
+        );
+    }
     values
 }
 
@@ -1821,6 +1832,20 @@ mod tests {
         assert!(!health.available);
         assert!(health.authenticated);
         assert_eq!(health.version.as_deref(), Some("codex-cli 0.144.9"));
+    }
+
+    #[test]
+    fn auth_probe_preserves_the_configured_codex_home() {
+        let environment = safe_environment_with(
+            Path::new(r"C:\Program Files\Codex\codex.exe"),
+            Some(Path::new(r"D:\Codex\home")),
+        );
+        assert_eq!(
+            environment.get("CODEX_HOME").map(String::as_str),
+            Some(r"D:\Codex\home")
+        );
+        assert!(!environment.contains_key("OPENAI_API_KEY"));
+        assert!(!environment.contains_key("CODEX_API_KEY"));
     }
 
     #[test]
