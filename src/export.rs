@@ -542,6 +542,7 @@ fn source_karaoke_text(
 }
 
 pub fn wrap_subtitle_text(text: &str, language: &str) -> String {
+    const ENGLISH_LINE_TARGET: usize = 60;
     if !language.to_ascii_lowercase().starts_with("en") {
         return text.to_owned();
     }
@@ -552,7 +553,7 @@ pub fn wrap_subtitle_text(text: &str, language: &str) -> String {
             .filter(|character| !character.is_whitespace())
             .count()
     };
-    if normalized.lines().count() <= 2 && visible(&normalized) <= 42 {
+    if normalized.lines().count() <= 2 && visible(&normalized) <= ENGLISH_LINE_TARGET {
         return normalized;
     }
     let mut candidates = Vec::new();
@@ -574,7 +575,9 @@ pub fn wrap_subtitle_text(text: &str, language: &str) -> String {
             }
             let left_visible = visible(left);
             let right_visible = visible(right);
-            let overflow = left_visible.max(right_visible).saturating_sub(42);
+            let overflow = left_visible
+                .max(right_visible)
+                .saturating_sub(ENGLISH_LINE_TARGET);
             let imbalance = left_visible.abs_diff(right_visible);
             Some(((overflow, imbalance), format!("{left}\n{right}")))
         })
@@ -867,8 +870,11 @@ mod tests {
             line.chars()
                 .filter(|character| !character.is_whitespace())
                 .count()
-                <= 42
+                <= 60
         }));
+
+        let wide_single_line = "These speeds will become, you know, maybe if not a default.";
+        assert_eq!(wrap_subtitle_text(wide_single_line, "en"), wide_single_line);
 
         let unbreakable = "SupercalifragilisticexpialidociousSupercalifragilisticexpialidocious";
         assert_eq!(wrap_subtitle_text(unbreakable, "en"), unbreakable);

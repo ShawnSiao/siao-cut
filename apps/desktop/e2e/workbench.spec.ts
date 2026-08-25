@@ -362,11 +362,14 @@ test("keeps subtitle styling in export settings and previews the saved bilingual
   await panel.getByLabel("字幕模式").selectOption("bilingual");
   await expect(panel.getByLabel("字幕模式")).toHaveValue("bilingual");
   await expect(panel.getByLabel("译文语言")).toHaveValue("en");
+  const caption = page.locator(".caption-overlay");
+  const [captionBox, videoFrameBox] = await Promise.all([caption.boundingBox(), page.locator(".video-frame").boundingBox()]);
+  expect(captionBox!.width / videoFrameBox!.width).toBeGreaterThan(0.9);
+  expect(await caption.evaluate((element) => (element as HTMLElement).style.bottom)).toBe("4%");
   await panel.getByLabel("字幕样式预设").selectOption("emphasis");
   await expect(page.getByText("字幕样式已更新；正文和时间未修改，可撤销。")).toBeVisible();
   await panel.getByLabel("字幕位置").selectOption("center");
 
-  const caption = page.locator(".caption-overlay");
   await expect(caption).toHaveAttribute("data-preset", "emphasis");
   await expect(caption).toHaveAttribute("data-position", "center");
   await expect(caption.locator(".caption-secondary")).toContainText("Today I want to explain why we are building a local-first editing workbench.");

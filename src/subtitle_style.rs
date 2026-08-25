@@ -60,7 +60,7 @@ pub fn resolve(preset: SubtitleStylePreset, position: SubtitlePosition) -> Subti
             style.secondary_font_size = 42;
             style.outline_width = 2;
             style.shadow_depth = 1;
-            style.safe_margin_percent = 6;
+            style.safe_margin_percent = 3;
         }
         SubtitleStylePreset::Standard => {
             style.font_size = 40;
@@ -71,7 +71,7 @@ pub fn resolve(preset: SubtitleStylePreset, position: SubtitlePosition) -> Subti
             style.secondary_font_size = 60;
             style.outline_width = 4;
             style.shadow_depth = 2;
-            style.safe_margin_percent = 10;
+            style.safe_margin_percent = 5;
         }
     }
     style
@@ -187,6 +187,7 @@ pub fn ass_header_for_media(
     source_dimensions: Option<(u32, u32)>,
 ) -> Result<String> {
     let (play_res_x, play_res_y) = play_resolution_for_media(canvas, source_dimensions);
+    let margin_h = u32::from(play_res_x) * 4 / 100;
     let margin_v = if style.position == SubtitlePosition::Bottom {
         u32::from(play_res_y) * u32::from(style.safe_margin_percent) / 100
     } else {
@@ -203,7 +204,7 @@ pub fn ass_header_for_media(
     let outline = ass_color(&style.outline_color)?;
     let format = "Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding";
     let primary_style = format!(
-        "Style: Primary,{},{},{},{},{},&H80000000,{bold},0,0,0,100,100,0,0,1,{},{},{alignment},80,80,{margin_v},1",
+        "Style: Primary,{},{},{},{},{},&H80000000,{bold},0,0,0,100,100,0,0,1,{},{},{alignment},{margin_h},{margin_h},{margin_v},1",
         style.font_family,
         style.font_size,
         primary,
@@ -213,7 +214,7 @@ pub fn ass_header_for_media(
         style.shadow_depth
     );
     let secondary_style = format!(
-        "Style: Secondary,{},{},{},{},{},&H80000000,{bold},0,0,0,100,100,0,0,1,{},{},{alignment},80,80,{margin_v},1",
+        "Style: Secondary,{},{},{},{},{},&H80000000,{bold},0,0,0,100,100,0,0,1,{},{},{alignment},{margin_h},{margin_h},{margin_v},1",
         style.font_family,
         style.secondary_font_size,
         secondary,
@@ -252,7 +253,7 @@ mod tests {
                 standard.secondary_font_size,
                 standard.safe_margin_percent
             ),
-            (40, 52, 8)
+            (40, 52, 4)
         );
         assert_eq!(
             (
@@ -276,7 +277,7 @@ mod tests {
         assert!(source.contains("PlayResX: 1920\nPlayResY: 1080"));
         assert!(source.contains("Style: Primary,Microsoft YaHei UI,46,&H00F5F4F2,&H00C6BEB5"));
         assert!(source.contains("Style: Secondary,Microsoft YaHei UI,60,&H00C6BEB5"));
-        assert!(source.contains(",4,2,2,80,80,108,1"));
+        assert!(source.contains(",4,2,2,76,76,54,1"));
         let vertical = ass_header_for_media(
             &style,
             CanvasSettings {
@@ -287,7 +288,7 @@ mod tests {
         )
         .unwrap();
         assert!(vertical.contains("PlayResX: 1080\nPlayResY: 1920"));
-        assert!(vertical.contains(",4,2,2,80,80,192,1"));
+        assert!(vertical.contains(",4,2,2,43,43,96,1"));
         let portrait_source =
             ass_header_for_media(&style, CanvasSettings::default(), Some((720, 1280))).unwrap();
         assert!(portrait_source.contains("PlayResX: 1080\nPlayResY: 1920"));

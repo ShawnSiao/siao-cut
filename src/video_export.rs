@@ -1464,7 +1464,7 @@ mod tests {
         )
         .unwrap();
         assert!(ass.contains("Style: Primary,Microsoft YaHei UI,46"));
-        assert!(ass.contains(",4,2,2,80,80,108,1"));
+        assert!(ass.contains(",4,2,2,76,76,54,1"));
         assert_eq!(ass.matches("\\N").count(), 1);
         assert!(ass.contains("{\\kf"));
         fs::write(&subtitle_path, &ass).unwrap();

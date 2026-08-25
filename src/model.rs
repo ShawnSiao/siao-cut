@@ -184,7 +184,7 @@ impl Default for SubtitleStyle {
             outline_color: "#080A0D".to_owned(),
             outline_width: 3,
             shadow_depth: 1,
-            safe_margin_percent: 8,
+            safe_margin_percent: 4,
         }
     }
 }

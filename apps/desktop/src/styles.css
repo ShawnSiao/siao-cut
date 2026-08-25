@@ -153,7 +153,7 @@ h2 { margin: 4px 0 0; font-size: 15px; letter-spacing: -.02em; }
 .video-placeholder { display: grid; place-items: center; gap: 10px; color: #88959e; font-size: 12px; }
 .subtitle-safe-area { position: absolute; z-index: 2; border: 1px dashed color-mix(in srgb, var(--warning) 70%, transparent); border-radius: var(--radius-control); background: color-mix(in srgb, var(--warning) 3%, transparent); pointer-events: none; }
 .subtitle-safe-area::before { content: attr(data-label); position: absolute; top: 4px; right: 6px; color: var(--warning); font-size: 12px; letter-spacing: .04em; }
-.caption-overlay { position: absolute; z-index: 3; left: 8%; right: 8%; display: grid; gap: 3px; text-align: center; line-height: 1.35; pointer-events: none; }
+.caption-overlay { position: absolute; z-index: 3; left: 4%; right: 4%; display: grid; gap: 3px; text-align: center; line-height: 1.35; pointer-events: none; }
 .caption-overlay.center { top: 50%; bottom: auto !important; transform: translateY(-50%); }
 .caption-primary, .caption-secondary { display: block; }
 .caption-primary { position: relative; }

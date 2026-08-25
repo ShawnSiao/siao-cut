@@ -10,10 +10,10 @@ const mockSubtitleStylePresets = [
 
 const resolveMockSubtitleStyle = (preset: Project["subtitleStyle"]["preset"], position: Project["subtitleStyle"]["position"]): Project["subtitleStyle"] => {
   const sizes = preset === "compact"
-    ? { fontSize: 32, secondaryFontSize: 42, outlineWidth: 2, shadowDepth: 1, safeMarginPercent: 6 }
+    ? { fontSize: 32, secondaryFontSize: 42, outlineWidth: 2, shadowDepth: 1, safeMarginPercent: 3 }
     : preset === "emphasis"
-      ? { fontSize: 46, secondaryFontSize: 60, outlineWidth: 4, shadowDepth: 2, safeMarginPercent: 10 }
-      : { fontSize: 40, secondaryFontSize: 52, outlineWidth: 3, shadowDepth: 1, safeMarginPercent: 8 };
+      ? { fontSize: 46, secondaryFontSize: 60, outlineWidth: 4, shadowDepth: 2, safeMarginPercent: 5 }
+      : { fontSize: 40, secondaryFontSize: 52, outlineWidth: 3, shadowDepth: 1, safeMarginPercent: 4 };
   return {
     preset,
     position,

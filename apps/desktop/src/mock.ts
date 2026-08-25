@@ -18,7 +18,7 @@ export const sampleProject: Project = {
     outlineColor: "#080A0D",
     outlineWidth: 3,
     shadowDepth: 1,
-    safeMarginPercent: 8,
+    safeMarginPercent: 4,
   },
   media: { sourcePath: "", extension: ".mp4", durationSeconds: 278 },
   mediaArtifacts: null,

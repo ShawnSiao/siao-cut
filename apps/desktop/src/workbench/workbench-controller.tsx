@@ -3130,7 +3130,9 @@ function WorkbenchController() {
 	                {playerExpanded && <>
 	                <div className="video-frame">
                   {mediaUrl ? <video key={project.id} ref={videoRef} src={mediaUrl} controls preload="metadata" onLoadedMetadata={handleVideoLoadedMetadata} onPlay={() => setPlayback((current) => ({ ...current, playing: true }))} onPause={() => setPlayback((current) => ({ ...current, playing: false }))} onTimeUpdate={handleVideoTimeUpdate}/> : <div className="video-placeholder"><Play size={30}/><span>{tr("app.s0286")}</span></div>}
-                  {showSubtitleSafeArea && <div className="subtitle-safe-area" aria-label={tr("app.s0287")} data-label={tr("app.s0287")} style={{ inset: `${project.subtitleStyle.safeMarginPercent}% 6%` }}/>}
+                  {showSubtitleSafeArea && (
+                    <div className="subtitle-safe-area" aria-label={tr("app.s0287")} data-label={tr("app.s0287")} style={{ inset: `${project.subtitleStyle.safeMarginPercent}% 4%` }}/>
+                  )}
                   {captionSegment && captionPrimaryText && <div className={`caption-overlay ${project.subtitleStyle.position}`} data-preset={project.subtitleStyle.preset} data-position={project.subtitleStyle.position} data-outline-width={project.subtitleStyle.outlineWidth} style={captionPreviewStyle}>
                     <span className={`caption-primary${playback.playing ? " playing" : ""}`} data-caption-text={playback.playing ? captionPrimaryText : undefined} data-progress={captionProgress.toFixed(3)} style={captionPrimaryStyle}>{captionPrimaryText}</span>
                     {captionSecondaryText && <span className="caption-secondary" style={{ color: project.subtitleStyle.secondaryColor, fontSize: `${Math.max(12, Math.round(project.subtitleStyle.secondaryFontSize * 0.36))}px` }}>{captionSecondaryText}</span>}
