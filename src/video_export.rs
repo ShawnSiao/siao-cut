@@ -4,7 +4,7 @@ use crate::{
     contracts, db,
     export::{self, ExportOptions},
     media::{hash_file, tool_path},
-    model::{ExportJob, SubtitleMode, TimelineMap},
+    model::{ExportJob, SubtitleDelivery, SubtitleMode, TimelineMap},
     project, subtitle_style, timeline,
     util::{hidden_command, new_id, now},
 };
@@ -22,9 +22,12 @@ use std::{
     time::Duration,
 };
 
+#[cfg(test)]
+mod subtitle_delivery_test;
+
 pub struct ExportRequest<'a> {
     pub output: &'a Path,
-    pub burn_subtitles: bool,
+    pub subtitle_delivery: SubtitleDelivery,
     pub language: Option<String>,
     pub subtitle_mode: SubtitleMode,
     pub allow_stale_translation: bool,
@@ -40,6 +43,8 @@ struct CommandSpec<'a> {
     has_video: bool,
     has_audio: bool,
     subtitle_path: Option<&'a Path>,
+    subtitle_delivery: SubtitleDelivery,
+    subtitle_language: Option<&'a str>,
     encoder: &'a str,
     canvas_settings: crate::model::CanvasSettings,
 }
@@ -59,16 +64,26 @@ pub fn create(
 ) -> Result<ExportJob> {
     let ExportRequest {
         output,
-        burn_subtitles,
+        subtitle_delivery,
         language,
         subtitle_mode,
         allow_stale_translation,
         start_delay_ms,
         job_id,
     } = request;
-    if output.extension().and_then(|value| value.to_str()) != Some("mp4") {
-        bail!("视频导出路径必须使用 .mp4 扩展名")
+    let output_extension = output
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase);
+    let expected_extension = if subtitle_delivery == SubtitleDelivery::EmbeddedMkv {
+        "mkv"
+    } else {
+        "mp4"
+    };
+    if output_extension.as_deref() != Some(expected_extension) {
+        bail!("所选字幕交付方式要求使用 .{expected_extension} 视频扩展名")
     }
+    let burn_subtitles = subtitle_delivery == SubtitleDelivery::Burned;
     let project = project::load(db, project_id)?;
     let quality_options = ExportOptions {
         format: "ass",
@@ -84,7 +99,7 @@ pub fn create(
     if timeline::build(&project).output_duration <= 0.001 {
         bail!("全部内容都被软剪辑移除，无法导出空视频")
     }
-    if burn_subtitles {
+    if subtitle_delivery != SubtitleDelivery::None {
         export::validate_subtitle_mode(&project, &quality_options)?;
     }
     let source = Path::new(&project.media.source_path).canonicalize()?;
@@ -134,6 +149,7 @@ pub fn create(
         stage_code: Some("queued".into()),
         progress: 0.0,
         burn_subtitles,
+        subtitle_delivery,
         language,
         bilingual: subtitle_mode == SubtitleMode::Bilingual,
         subtitle_mode,
@@ -150,8 +166,8 @@ pub fn create(
         worker_pid: None,
     };
     let inserted = db.execute(
-        "INSERT INTO export_jobs(id,project_id,output_path,status,progress,burn_subtitles,language,bilingual,subtitle_mode,canvas_aspect_ratio,canvas_framing,subtitle_style_json,created_at,updated_at,allow_stale_translation,base_version_id,source_sha256) VALUES(?1,?2,?3,'queued',0,?4,?5,?6,?7,?8,?9,?10,?11,?11,?12,?13,?14)",
-        params![&job.id, &job.project_id, &job.output_path, job.burn_subtitles, &job.language, job.bilingual, job.subtitle_mode.as_str(), job.canvas_settings.aspect_ratio.as_str(), job.canvas_settings.framing.as_str(), subtitle_style::storage_json(&job.subtitle_style)?, &job.created_at, job.allow_stale_translation, base_version_id, source_sha256],
+        "INSERT INTO export_jobs(id,project_id,output_path,status,progress,burn_subtitles,language,bilingual,subtitle_mode,canvas_aspect_ratio,canvas_framing,subtitle_style_json,created_at,updated_at,allow_stale_translation,base_version_id,source_sha256,subtitle_delivery) VALUES(?1,?2,?3,'queued',0,?4,?5,?6,?7,?8,?9,?10,?11,?11,?12,?13,?14,?15)",
+        params![&job.id, &job.project_id, &job.output_path, job.burn_subtitles, &job.language, job.bilingual, job.subtitle_mode.as_str(), job.canvas_settings.aspect_ratio.as_str(), job.canvas_settings.framing.as_str(), subtitle_style::storage_json(&job.subtitle_style)?, &job.created_at, job.allow_stale_translation, base_version_id, source_sha256, job.subtitle_delivery.as_str()],
     );
     match inserted {
         Ok(_) => {}
@@ -175,7 +191,7 @@ pub fn create(
 
 pub fn load(db: &Connection, job_id: &str) -> Result<ExportJob> {
     db.query_row(
-        "SELECT id,project_id,output_path,status,progress,burn_subtitles,language,bilingual,subtitle_mode,canvas_aspect_ratio,canvas_framing,subtitle_style_json,cancel_requested_at,error_message,manifest_path,created_at,updated_at,completed_at,worker_pid,allow_stale_translation FROM export_jobs WHERE id=?1",
+        "SELECT id,project_id,output_path,status,progress,burn_subtitles,language,bilingual,subtitle_mode,canvas_aspect_ratio,canvas_framing,subtitle_style_json,cancel_requested_at,error_message,manifest_path,created_at,updated_at,completed_at,worker_pid,allow_stale_translation,subtitle_delivery FROM export_jobs WHERE id=?1",
         [job_id],
         |row| {
             let status = row.get::<_, String>(3)?;
@@ -188,6 +204,8 @@ pub fn load(db: &Connection, job_id: &str) -> Result<ExportJob> {
                 status: status.clone(),
                 progress: row.get(4)?,
                 burn_subtitles: row.get(5)?,
+                subtitle_delivery: SubtitleDelivery::parse(&row.get::<_, String>(20)?)
+                    .ok_or(rusqlite::Error::InvalidQuery)?,
                 language: row.get(6)?,
                 bilingual: row.get(7)?,
                 subtitle_mode: SubtitleMode::parse(&row.get::<_, String>(8)?)
@@ -346,9 +364,16 @@ pub fn run_worker(job_id: &str, start_delay_ms: Option<u64>) -> Result<()> {
     }
     if let Err(error) = run(&mut db, job_id) {
         if let Ok(job) = load(&db, job_id) {
-            let partial = partial_path(Path::new(&job.output_path), job_id);
+            let output = Path::new(&job.output_path);
+            let partial = partial_path(output, job_id);
             if partial.is_file() {
                 let _ = fs::remove_file(partial);
+            }
+            if let Some(target) = sidecar_target(output, job.subtitle_delivery) {
+                let partial = staging_path(&target, job_id, "subtitle");
+                if partial.is_file() {
+                    let _ = fs::remove_file(partial);
+                }
             }
         }
         if finish_worker_error(&db, job_id, &error)? {
@@ -393,10 +418,25 @@ fn run(db: &mut Connection, job_id: &str) -> Result<()> {
     let encoders = artifacts::available_video_encoders(&ffmpeg)?;
     let has_video = artifacts::has_stream(source, "v:0")?;
     let has_audio = artifacts::has_stream(source, "a:0")?;
-    let subtitle_path = if job.burn_subtitles {
-        let dir = db::home_dir().join("cache").join("exports");
-        fs::create_dir_all(&dir)?;
-        let path = dir.join(format!("{}.ass", staging_token(&job.id)));
+    let sidecar_target = sidecar_target(&output, job.subtitle_delivery);
+    let sidecar_partial = sidecar_target
+        .as_deref()
+        .map(|target| staging_path(target, job_id, "subtitle"));
+    let subtitle_format = match job.subtitle_delivery {
+        SubtitleDelivery::Burned => Some("ass"),
+        SubtitleDelivery::EmbeddedMp4 | SubtitleDelivery::EmbeddedMkv => Some("srt"),
+        SubtitleDelivery::SidecarSrt => Some("srt"),
+        SubtitleDelivery::SidecarVtt => Some("vtt"),
+        SubtitleDelivery::None => None,
+    };
+    let subtitle_path = if let Some(format) = subtitle_format {
+        let path = if let Some(path) = sidecar_partial.clone() {
+            path
+        } else {
+            let dir = db::home_dir().join("cache").join("exports");
+            fs::create_dir_all(&dir)?;
+            dir.join(format!("{}.{}", staging_token(&job.id), format))
+        };
         let mut export_project = project.clone();
         export_project.subtitle_style = job.subtitle_style.clone();
         fs::write(
@@ -404,7 +444,7 @@ fn run(db: &mut Connection, job_id: &str) -> Result<()> {
             export::render(
                 &export_project,
                 &ExportOptions {
-                    format: "ass",
+                    format,
                     language: job.language.as_deref(),
                     subtitle_mode: job.subtitle_mode,
                     include_cuts: false,
@@ -426,6 +466,12 @@ fn run(db: &mut Connection, job_id: &str) -> Result<()> {
             has_video,
             has_audio,
             subtitle_path: subtitle_path.as_deref(),
+            subtitle_delivery: job.subtitle_delivery,
+            subtitle_language: job.language.as_deref().or((!project
+                .transcript
+                .source_language
+                .is_empty())
+            .then_some(project.transcript.source_language.as_str())),
             encoder,
             canvas_settings: job.canvas_settings,
         })?;
@@ -447,6 +493,8 @@ fn run(db: &mut Connection, job_id: &str) -> Result<()> {
         "encoder": encoder,
         "videoEncoding": artifacts::export_video_encoding_manifest(&encoder),
         "burnSubtitles": job.burn_subtitles,
+        "subtitleDelivery": job.subtitle_delivery,
+        "subtitleSidecar": sidecar_target,
         "language": job.language,
         "bilingual": job.bilingual,
         "subtitleMode": job.subtitle_mode,
@@ -474,13 +522,18 @@ fn run(db: &mut Connection, job_id: &str) -> Result<()> {
     if recorded_source != expected_source_sha256 || hash_file(source)? != expected_source_sha256 {
         bail!("export_source_changed: 导出期间原始媒体发生变化，结果未覆盖目标文件")
     }
-    let published_video = publish_staged(&partial, &output, job_id)?;
-    let published_manifest = match publish_staged(&manifest_partial, &manifest_path, job_id) {
-        Ok(published) => published,
-        Err(error) => {
-            return Err(rollback_publications(error, [published_video]));
+    let mut publications = Vec::new();
+    publications.push(publish_staged(&partial, &output, job_id)?);
+    if let (Some(staged), Some(target)) = (sidecar_partial.as_deref(), sidecar_target.as_deref()) {
+        match publish_staged(staged, target, job_id) {
+            Ok(published) => publications.push(published),
+            Err(error) => return Err(rollback_publications(error, publications)),
         }
-    };
+    }
+    match publish_staged(&manifest_partial, &manifest_path, job_id) {
+        Ok(published) => publications.push(published),
+        Err(error) => return Err(rollback_publications(error, publications)),
+    }
     let updated = tx.execute(
         "UPDATE export_jobs SET status='completed',progress=1,manifest_path=?2,worker_pid=NULL,updated_at=?3,completed_at=?3 WHERE id=?1 AND status='running' AND cancel_requested_at IS NULL",
         params![job_id, manifest_path.to_string_lossy(), completed_at],
@@ -490,23 +543,17 @@ fn run(db: &mut Connection, job_id: &str) -> Result<()> {
         Ok(_) => {
             return Err(rollback_publications(
                 anyhow!("export_cancelled: 导出任务在发布结果时状态已变化"),
-                [published_manifest, published_video],
+                publications,
             ));
         }
         Err(error) => {
-            return Err(rollback_publications(
-                error.into(),
-                [published_manifest, published_video],
-            ));
+            return Err(rollback_publications(error.into(), publications));
         }
     }
     if let Err(error) = tx.commit() {
-        return Err(rollback_publications(
-            error.into(),
-            [published_manifest, published_video],
-        ));
+        return Err(rollback_publications(error.into(), publications));
     }
-    finish_publications_after_commit([published_manifest, published_video]);
+    finish_publications_after_commit(publications);
     Ok(())
 }
 
@@ -519,6 +566,8 @@ fn build_command(spec: CommandSpec<'_>) -> Result<Command> {
         has_video,
         has_audio,
         subtitle_path,
+        subtitle_delivery,
+        subtitle_language,
         encoder,
         canvas_settings,
     } = spec;
@@ -527,15 +576,15 @@ fn build_command(spec: CommandSpec<'_>) -> Result<Command> {
     }
     let mut command = hidden_command(ffmpeg);
     command.args(["-y", "-hide_banner", "-loglevel", "error"]);
-    let (video_input, audio_input) = if has_video && has_audio {
+    let (video_input, audio_input, next_input_index) = if has_video && has_audio {
         command.arg("-i").arg(source);
-        (0, 0)
+        (0, 0, 1)
     } else if has_video {
         command
             .arg("-i")
             .arg(source)
             .args(["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]);
-        (0, 1)
+        (0, 1, 2)
     } else {
         command.arg("-i").arg(source).args([
             "-f",
@@ -543,7 +592,17 @@ fn build_command(spec: CommandSpec<'_>) -> Result<Command> {
             "-i",
             "color=c=0x101414:s=1280x720:r=30",
         ]);
-        (1, 0)
+        (1, 0, 2)
+    };
+    let embedded_subtitle_input = if matches!(
+        subtitle_delivery,
+        SubtitleDelivery::EmbeddedMp4 | SubtitleDelivery::EmbeddedMkv
+    ) {
+        let path = subtitle_path.ok_or_else(|| anyhow!("内嵌字幕导出缺少字幕暂存文件"))?;
+        command.arg("-i").arg(path);
+        Some(next_input_index)
+    } else {
+        None
     };
 
     let mut filters = Vec::new();
@@ -572,7 +631,8 @@ fn build_command(spec: CommandSpec<'_>) -> Result<Command> {
         canvas_settings,
         CanvasTarget::Export,
     );
-    let video_label = if let Some(path) = subtitle_path {
+    let video_label = if subtitle_delivery == SubtitleDelivery::Burned {
+        let path = subtitle_path.ok_or_else(|| anyhow!("烧录字幕导出缺少字幕暂存文件"))?;
         filters.push(format!(
             "[vcanvas]subtitles=filename='{}'[vout]",
             escape_filter_path(path)
@@ -585,17 +645,31 @@ fn build_command(spec: CommandSpec<'_>) -> Result<Command> {
         .args(["-filter_complex", &filters.join(";")])
         .args(["-map", video_label, "-map", "[acat]"])
         .args(artifacts::export_video_encoder_args(encoder))
-        .args([
-            "-c:a",
-            "aac",
-            "-b:a",
-            "160k",
-            "-movflags",
-            "+faststart",
-            "-progress",
-            "pipe:1",
-            "-nostats",
-        ])
+        .args(["-c:a", "aac", "-b:a", "160k"]);
+    if let Some(input) = embedded_subtitle_input {
+        command.args(["-map", &format!("{input}:0")]);
+        match subtitle_delivery {
+            SubtitleDelivery::EmbeddedMp4 => {
+                command.args(["-c:s", "mov_text"]);
+            }
+            SubtitleDelivery::EmbeddedMkv => {
+                command.args(["-c:s", "srt"]);
+            }
+            _ => unreachable!(),
+        }
+        command
+            .arg("-metadata:s:s:0")
+            .arg(format!("language={}", subtitle_language.unwrap_or("und")));
+    }
+    if output
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case("mp4"))
+    {
+        command.args(["-movflags", "+faststart"]);
+    }
+    command
+        .args(["-progress", "pipe:1", "-nostats"])
         .arg(output);
     Ok(command)
 }
@@ -792,6 +866,14 @@ fn staging_token(job_id: &str) -> String {
     hash.update(job_id.as_bytes());
     let digest = format!("{:x}", hash.finalize());
     digest[..16].to_owned()
+}
+
+fn sidecar_target(output: &Path, delivery: SubtitleDelivery) -> Option<PathBuf> {
+    match delivery {
+        SubtitleDelivery::SidecarSrt => Some(output.with_extension("srt")),
+        SubtitleDelivery::SidecarVtt => Some(output.with_extension("vtt")),
+        _ => None,
+    }
 }
 
 fn validate_job_id(job_id: &str) -> Result<()> {
@@ -1344,13 +1426,14 @@ mod tests {
             None,
         )
         .unwrap();
-        crate::subtitle_style::set(&mut database, &created.id, "emphasis", "center").unwrap();
+        crate::subtitle_style::set(&mut database, &created.id, "emphasis", "center", None, None)
+            .unwrap();
         let job = create(
             &mut database,
             &created.id,
             ExportRequest {
                 output: &temp.path().join("snapshot.mp4"),
-                burn_subtitles: true,
+                subtitle_delivery: SubtitleDelivery::Burned,
                 language: None,
                 subtitle_mode: SubtitleMode::Source,
                 allow_stale_translation: false,
@@ -1362,7 +1445,8 @@ mod tests {
         assert_eq!(job.subtitle_style.preset, SubtitleStylePreset::Emphasis);
         assert_eq!(job.subtitle_style.position, SubtitlePosition::Center);
 
-        crate::subtitle_style::set(&mut database, &created.id, "compact", "bottom").unwrap();
+        crate::subtitle_style::set(&mut database, &created.id, "compact", "bottom", None, None)
+            .unwrap();
         let reloaded = load(&database, &job.id).unwrap();
         assert_eq!(
             reloaded.subtitle_style.preset,
@@ -1446,7 +1530,8 @@ mod tests {
                 )
                 .unwrap();
         }
-        crate::subtitle_style::set(&mut database, &created.id, "emphasis", "bottom").unwrap();
+        crate::subtitle_style::set(&mut database, &created.id, "emphasis", "bottom", None, None)
+            .unwrap();
         let styled = project::load(&database, &created.id).unwrap();
         let subtitle_path = temp.path().join("styled.ass");
         let ass = export::render(
@@ -1460,8 +1545,8 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(ass.contains("Style: Primary,Microsoft YaHei UI,60"));
-        assert!(ass.contains(",4,2,2,80,80,108,1"));
+        assert!(ass.contains("Style: Primary,Microsoft YaHei UI,46"));
+        assert!(ass.contains(",4,2,2,76,76,54,1"));
         assert_eq!(ass.matches("\\N").count(), 1);
         assert!(ass.contains("{\\kf"));
         fs::write(&subtitle_path, &ass).unwrap();
@@ -1475,6 +1560,8 @@ mod tests {
             has_video: true,
             has_audio: true,
             subtitle_path: Some(&subtitle_path),
+            subtitle_delivery: SubtitleDelivery::Burned,
+            subtitle_language: None,
             encoder: "mpeg4",
             canvas_settings: styled.canvas_settings,
         })
@@ -1528,6 +1615,8 @@ mod tests {
             has_video: true,
             has_audio: true,
             subtitle_path: None,
+            subtitle_delivery: SubtitleDelivery::None,
+            subtitle_language: None,
             encoder: "mpeg4",
             canvas_settings: Default::default(),
         })
@@ -1568,6 +1657,8 @@ mod tests {
             has_video: true,
             has_audio: true,
             subtitle_path: None,
+            subtitle_delivery: SubtitleDelivery::None,
+            subtitle_language: None,
             encoder: "h264_mf",
             canvas_settings: Default::default(),
         })
@@ -1605,6 +1696,8 @@ mod tests {
             has_video: true,
             has_audio: true,
             subtitle_path: None,
+            subtitle_delivery: SubtitleDelivery::None,
+            subtitle_language: None,
             encoder: "mpeg4",
             canvas_settings: crate::model::CanvasSettings {
                 aspect_ratio: crate::model::CanvasAspectRatio::Vertical,
@@ -1729,6 +1822,8 @@ mod tests {
             has_video: true,
             has_audio: true,
             subtitle_path: Some(&subtitle_path),
+            subtitle_delivery: SubtitleDelivery::Burned,
+            subtitle_language: None,
             encoder: "mpeg4",
             canvas_settings: Default::default(),
         })
@@ -1925,6 +2020,8 @@ mod tests {
             has_video: true,
             has_audio: true,
             subtitle_path: Some(&subtitle_path),
+            subtitle_delivery: SubtitleDelivery::Burned,
+            subtitle_language: None,
             encoder: "mpeg4",
             canvas_settings: Default::default(),
         })

@@ -542,6 +542,7 @@ fn source_karaoke_text(
 }
 
 pub fn wrap_subtitle_text(text: &str, language: &str) -> String {
+    const ENGLISH_LINE_TARGET: usize = 60;
     if !language.to_ascii_lowercase().starts_with("en") {
         return text.to_owned();
     }
@@ -552,7 +553,7 @@ pub fn wrap_subtitle_text(text: &str, language: &str) -> String {
             .filter(|character| !character.is_whitespace())
             .count()
     };
-    if normalized.lines().count() <= 2 && visible(&normalized) <= 42 {
+    if normalized.lines().count() <= 2 && visible(&normalized) <= ENGLISH_LINE_TARGET {
         return normalized;
     }
     let mut candidates = Vec::new();
@@ -574,7 +575,9 @@ pub fn wrap_subtitle_text(text: &str, language: &str) -> String {
             }
             let left_visible = visible(left);
             let right_visible = visible(right);
-            let overflow = left_visible.max(right_visible).saturating_sub(42);
+            let overflow = left_visible
+                .max(right_visible)
+                .saturating_sub(ENGLISH_LINE_TARGET);
             let imbalance = left_visible.abs_diff(right_visible);
             Some(((overflow, imbalance), format!("{left}\n{right}")))
         })
@@ -800,13 +803,18 @@ pub fn render(project: &Project, options: &ExportOptions<'_>) -> Result<String> 
                 project.canvas_settings,
                 ffprobe_video_dimensions(Path::new(&project.media.source_path)),
             )?;
+            let dialogue_style = if options.subtitle_mode == SubtitleMode::Translated {
+                "Secondary"
+            } else {
+                "Primary"
+            };
             format!(
                 "{}\n{}\n",
                 header,
                 segments
                     .iter()
                     .map(|(start, end, text, karaoke)| format!(
-                        "Dialogue: 0,{},{},Primary,{}",
+                        "Dialogue: 0,{},{},{dialogue_style},{}",
                         ass_timestamp(*start),
                         ass_timestamp(*end),
                         ass_dialogue_text(
@@ -821,19 +829,23 @@ pub fn render(project: &Project, options: &ExportOptions<'_>) -> Result<String> 
                     .join("\n")
             )
         }
-        _ => segments
-            .iter()
-            .enumerate()
-            .map(|(index, (start, end, text, _))| {
-                format!(
-                    "{}\n{} --> {}\n{}\n",
-                    index + 1,
-                    timestamp(*start, ','),
-                    timestamp(*end, ','),
-                    display_subtitle_text(text)
-                )
-            })
-            .collect(),
+        _ => format!(
+            "{}\n",
+            segments
+                .iter()
+                .enumerate()
+                .map(|(index, (start, end, text, _))| {
+                    format!(
+                        "{}\n{} --> {}\n{}",
+                        index + 1,
+                        timestamp(*start, ','),
+                        timestamp(*end, ','),
+                        display_subtitle_text(text)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n")
+        ),
     })
 }
 
@@ -862,8 +874,11 @@ mod tests {
             line.chars()
                 .filter(|character| !character.is_whitespace())
                 .count()
-                <= 42
+                <= 60
         }));
+
+        let wide_single_line = "These speeds will become, you know, maybe if not a default.";
+        assert_eq!(wrap_subtitle_text(wide_single_line, "en"), wide_single_line);
 
         let unbreakable = "SupercalifragilisticexpialidociousSupercalifragilisticexpialidocious";
         assert_eq!(wrap_subtitle_text(unbreakable, "en"), unbreakable);
@@ -1060,6 +1075,22 @@ mod tests {
         assert!(srt.contains("00:00:00,000 --> 00:00:02,000"));
         assert!(!srt.contains("嗯"));
 
+        let mut standard_srt_project = project.clone();
+        standard_srt_project.edits.clear();
+        let standard_srt = render(
+            &standard_srt_project,
+            &ExportOptions {
+                format: "srt",
+                language: None,
+                subtitle_mode: SubtitleMode::Source,
+                include_cuts: false,
+                allow_stale_translation: false,
+            },
+        )
+        .unwrap();
+        assert!(standard_srt.contains("嗯\n\n2\n00:00:01,000 --> 00:00:03,000"));
+        assert_eq!(standard_srt.matches("\n\n").count(), 1);
+
         let mut empty = project.clone();
         empty.transcript.segments.clear();
         empty.transcript.words.clear();
@@ -1223,11 +1254,26 @@ mod tests {
         )
         .unwrap();
         assert!(bilingual_ass.contains("PlayResX: 1920\nPlayResY: 1080"));
-        assert!(bilingual_ass.contains("Style: Primary,Microsoft YaHei UI,60"));
-        assert!(bilingual_ass.contains("Style: Secondary,Microsoft YaHei UI,46"));
+        assert!(bilingual_ass.contains("Style: Primary,Microsoft YaHei UI,46"));
+        assert!(bilingual_ass.contains("Style: Secondary,Microsoft YaHei UI,60"));
         assert!(bilingual_ass.contains(
             "Dialogue: 0,0:00:00.00,0:00:01.00,Primary,{\\kf100}原文\\N{\\rSecondary}Translation"
         ));
+        let translated_ass = render(
+            &project,
+            &ExportOptions {
+                format: "ass",
+                language: Some("en"),
+                subtitle_mode: SubtitleMode::Translated,
+                include_cuts: false,
+                allow_stale_translation: false,
+            },
+        )
+        .unwrap();
+        assert!(
+            translated_ass
+                .contains("Dialogue: 0,0:00:00.00,0:00:01.00,Secondary,{\\kf100}Translation")
+        );
 
         project.translations.get_mut("en").unwrap().status = "stale".into();
         let error = render(

@@ -1,6 +1,18 @@
 import { runCore } from "../core";
 
 export const translationClient = {
+  editSegment: (
+    projectId: string,
+    segmentId: string,
+    language: string,
+    text: string,
+    expectedVersion: string,
+  ) => runCore([
+    "translation", "edit", projectId, segmentId,
+    "--lang", language,
+    "--text", text,
+    "--expected-version", expectedVersion,
+  ]),
   replaceGlossary: (
     projectId: string,
     language: string,

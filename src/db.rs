@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 31;
+pub const CURRENT_SCHEMA_VERSION: i64 = 33;
 
 struct Migration {
     version: i64,
@@ -138,6 +138,14 @@ const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 31,
         apply: migration_31_auto_workflow_ai_target,
+    },
+    Migration {
+        version: 32,
+        apply: migration_32_auto_workflow_profiles,
+    },
+    Migration {
+        version: 33,
+        apply: migration_33_subtitle_delivery,
     },
 ];
 
@@ -1073,6 +1081,16 @@ fn migration_31_auto_workflow_ai_target(tx: &Transaction<'_>) -> Result<()> {
     Ok(())
 }
 
+fn migration_32_auto_workflow_profiles(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute_batch(include_str!("migrations/32_auto_workflow_profiles.sql"))?;
+    Ok(())
+}
+
+fn migration_33_subtitle_delivery(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute_batch(include_str!("migrations/33_subtitle_delivery.sql"))?;
+    Ok(())
+}
+
 fn migration_24_translation_readiness(tx: &Transaction<'_>) -> Result<()> {
     tx.execute_batch(
         "ALTER TABLE translations ADD COLUMN glossary_version INTEGER NOT NULL DEFAULT 0;
@@ -1763,6 +1781,68 @@ mod tests {
         ] {
             assert!(columns.contains(&required.to_owned()), "missing {required}");
         }
+    }
+
+    #[test]
+    fn migrates_existing_auto_workflows_to_balanced_profiles_without_losing_events() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("schema-31.db");
+        let mut database = Connection::open(&path).unwrap();
+        database
+            .execute_batch(
+                "PRAGMA foreign_keys = ON;
+                 CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);",
+            )
+            .unwrap();
+        for migration in MIGRATIONS
+            .iter()
+            .filter(|migration| migration.version <= 31)
+        {
+            let tx = database.transaction().unwrap();
+            (migration.apply)(&tx).unwrap();
+            tx.execute(
+                "INSERT INTO schema_migrations(version,applied_at) VALUES(?1,'test')",
+                [migration.version],
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+        database
+            .execute(
+                "INSERT INTO auto_workflows(
+                id,input_kind,input_value,model_path,output_path,burn_subtitles,subtitle_mode,
+                status,current_stage,progress,created_at,updated_at
+             ) VALUES('auto-old','local','old.mp4','model.bin','out.mp4',0,'source',
+                'interrupted','review',0.7,'before','before')",
+                [],
+            )
+            .unwrap();
+        database.execute(
+            "INSERT INTO auto_workflow_events(workflow_id,stage,status,progress,message,created_at)
+             VALUES('auto-old','review','interrupted',0.7,'preserved','before')",
+            [],
+        ).unwrap();
+        drop(database);
+
+        let migrated = open_at(&path).unwrap();
+        let (profile, stage): (String, String) = migrated
+            .query_row(
+                "SELECT profile,current_stage FROM auto_workflows WHERE id='auto-old'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(profile, "balanced");
+        assert_eq!(stage, "review");
+        assert_eq!(migrated.query_row(
+            "SELECT COUNT(*) FROM auto_workflow_events WHERE workflow_id='auto-old' AND message='preserved'",
+            [],
+            |row| row.get::<_, i64>(0),
+        ).unwrap(), 1);
+        migrated.execute(
+            "UPDATE auto_workflows SET profile='delivery',current_stage='analyze' WHERE id='auto-old'",
+            [],
+        ).unwrap();
     }
 
     #[test]

@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import App, { AUTO_WORKFLOW_DISMISSED_STORAGE_KEY, PatchReviewCard, TRANSCRIPTION_LANGUAGE_STORAGE_KEY, agentTaskStatusLabel, clearTransientCoreError, getProjectCapabilities, isHttpsSourceUrl, parseDismissedAutoWorkflowIds, parseExportPreferences, parseTranscriptionLanguage, resolveCanvasMedia, resolveCaptionKaraokeStyle, resolveCaptionSegment, resolveImportedProjectMedia, resolvePlaybackDuration, shouldCheckForUpdates, startSerialPolling, taskLabel, upsertAutoWorkflowSnapshot } from "./App";
+import App, { AUTO_WORKFLOW_DISMISSED_STORAGE_KEY, PatchReviewCard, TRANSCRIPTION_LANGUAGE_STORAGE_KEY, agentTaskStatusLabel, clearTransientCoreError, getProjectCapabilities, isHttpsSourceUrl, parseDismissedAutoWorkflowIds, parseExportPreferences, parseTranscriptionLanguage, resolveCanvasMedia, resolveCaptionKaraokeStyle, resolveCaptionSegment, resolveFocusCaptionText, resolveImportedProjectMedia, resolvePlaybackDuration, shouldCheckForUpdates, startSerialPolling, taskLabel, upsertAutoWorkflowSnapshot } from "./App";
 import { mockRun, resetMockLocalResourcesForTest, resetMockProjectForTest, setMockAuthorizedMediaForTest, setMockLocalResourcesForTest, setMockProjectForTest } from "./core.mock";
 import { agentReviewClient } from "./domains/agent-review-client";
 import { projectSessionClient } from "./domains/project-session-client";
@@ -68,11 +68,13 @@ function autoWorkflowFixture(overrides: Partial<AutoWorkflow> = {}): AutoWorkflo
     outputPath: "output.mp4",
     burnSubtitles: true,
     subtitleMode: "source",
+    profile: "balanced",
     status: "running",
     currentStage: "transcribe",
     progress: 0.5,
     transcriptVersionId: null,
     agentTaskId: null,
+    audioAnalysisJobId: null,
     aiExecutionKind: null,
     aiServiceConfigId: null,
     aiServiceRevision: null,
@@ -139,6 +141,12 @@ describe("SiaoCut review workbench", () => {
     expect(resolveCaptionSegment([first, current], first, 5, false)).toBe(current);
     expect(resolveCaptionSegment([first, current], first, 3, false)).toBe(first);
     expect(resolveCaptionSegment([first, current], first, 3, true)).toBeNull();
+  });
+
+  it("does not silently fall back to source text when a focused translation is missing", () => {
+    expect(resolveFocusCaptionText("source", "原文", "", "暂无译文")).toEqual({ primary: "原文", secondary: "", missingTranslation: false });
+    expect(resolveFocusCaptionText("translated", "原文", "", "暂无译文")).toEqual({ primary: "暂无译文", secondary: "", missingTranslation: true });
+    expect(resolveFocusCaptionText("bilingual", "原文", "", "暂无译文")).toEqual({ primary: "原文", secondary: "暂无译文", missingTranslation: true });
   });
 
   it("persists source language independently and creates the selected Agent workflow", async () => {
@@ -523,6 +531,7 @@ describe("SiaoCut review workbench", () => {
     expect(parseExportPreferences('{"version":1,"subtitleMode":"bilingual","subtitleLanguage":"ja","transcriptFormat":"vtt"}')).toEqual({
       version: 1,
       subtitleMode: "bilingual",
+      subtitleDelivery: "burned",
       subtitleLanguage: "ja",
       transcriptFormat: "vtt",
     });
@@ -677,6 +686,21 @@ describe("SiaoCut review workbench", () => {
     expect(language).toHaveValue("en");
   });
 
+  it("offers burned, embedded, and UTF-8 sidecar subtitle delivery", async () => {
+    render(<App />);
+    await openDrawerTab("导出");
+    const delivery = await screen.findByLabelText("字幕交付方式");
+
+    expect(delivery).toHaveValue("burned");
+    expect(screen.getByLabelText("原文字号")).toBeInTheDocument();
+    fireEvent.change(delivery, { target: { value: "embedded-mkv" } });
+    await waitFor(() => expect(delivery).toHaveValue("embedded-mkv"));
+    expect(screen.getByText(/可开关、可提取的文本字幕轨/)).toBeInTheDocument();
+    expect(screen.queryByLabelText("原文字号")).not.toBeInTheDocument();
+    fireEvent.change(delivery, { target: { value: "sidecar-srt" } });
+    expect(await screen.findByText(/同名 UTF-8 字幕文件/)).toBeInTheDocument();
+  });
+
   it("keeps translated subtitle modes selected when the project has no translation yet", async () => {
     render(<App />);
     await screen.findByRole("heading", { name: "发布口播 · 草稿" });
@@ -703,6 +727,22 @@ describe("SiaoCut review workbench", () => {
     fireEvent.change(editor, { target: { value: "这是一段人工修订后的原文。" } });
     fireEvent.blur(editor);
     await waitFor(() => expect(screen.getAllByText("需要更新").length).toBeGreaterThan(0));
+  });
+
+  it("allows correcting a stale translation and links it to the edited source", async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /^发布口播/ }));
+    const sourceEditor = await screen.findByLabelText("00:13 字幕文本");
+    fireEvent.change(sourceEditor, { target: { value: "这是一段人工修订后的原文。" } });
+    fireEvent.blur(sourceEditor);
+    await waitFor(() => expect(screen.getAllByText("需要更新").length).toBeGreaterThan(0));
+
+    const translationEditor = screen.getByLabelText("编辑 00:13 的 EN 译文");
+    fireEvent.change(translationEditor, { target: { value: "This is the corrected translation." } });
+    fireEvent.blur(translationEditor);
+
+    await waitFor(() => expect(screen.getByText("译文已更新，并与当前原文重新关联。")).toBeInTheDocument());
+    expect(screen.getByLabelText("编辑 00:13 的 EN 译文")).toHaveValue("This is the corrected translation.");
   });
 
   it("requires explicit confirmation before exporting stale translation segments", async () => {
@@ -1077,7 +1117,7 @@ describe("SiaoCut review workbench", () => {
     await waitFor(() => expect(within(transcript).getByDisplayValue("导入后的第一条字幕")).toBeInTheDocument());
     await openDrawerTab("质量");
     const quality = screen.getByRole("region", { name: "字幕质量" });
-    expect(within(quality).getByText("1 项质量提醒")).toBeInTheDocument();
+    expect(within(quality).getByText("无阻断问题 · 1 条排版建议已汇总")).toBeInTheDocument();
     fireEvent.click(within(quality).getByRole("button", { name: "提醒 1" }));
     expect(within(transcript).queryByDisplayValue("导入后的第一条字幕")).not.toBeInTheDocument();
     expect(within(transcript).getByDisplayValue("导入后的第二条字幕")).toBeInTheDocument();
@@ -1141,8 +1181,11 @@ describe("SiaoCut review workbench", () => {
       expect(caption).toHaveTextContent("Today I want to explain why we are building a local-first editing workbench.");
     });
     expect(screen.getByLabelText("字幕安全区")).toBeInTheDocument();
-    expect(within(panel).getByText("60 px")).toBeInTheDocument();
-    expect(within(panel).getByText("46 px")).toBeInTheDocument();
+    expect(within(panel).getByLabelText("原文字号")).toHaveValue(46);
+    expect(within(panel).getByLabelText("译文字号")).toHaveValue(60);
+    fireEvent.change(within(panel).getByLabelText("译文字号"), { target: { value: "72" } });
+    fireEvent.blur(within(panel).getByLabelText("译文字号"));
+    await waitFor(() => expect(within(panel).getByLabelText("译文字号")).toHaveValue(72));
     expect(screen.getByLabelText("00:13 字幕文本")).toHaveValue(originalText);
   });
 
@@ -1384,6 +1427,23 @@ describe("SiaoCut review workbench", () => {
     }, { timeout: 4000 });
     expect(screen.getByRole("heading", { name: "第二个本地项目" })).toBeInTheDocument();
   }, 10_000);
+
+  it("switches one-click profiles before showing their fixed configuration", async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "一键成片" }));
+    const dialog = screen.getByRole("dialog", { name: "一键工作流" });
+    expect(within(dialog).getByRole("radio", { name: /平衡审阅/ })).toBeChecked();
+    expect(within(dialog).getByRole("checkbox", { name: "创建 Agent 翻译任务" })).toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole("radio", { name: /快速初稿/ }));
+    expect(within(dialog).getByText(/未经建议审阅的初稿/)).toBeVisible();
+    expect(within(dialog).queryByRole("checkbox", { name: "创建 Agent 翻译任务" })).not.toBeInTheDocument();
+    expect(within(dialog).queryByLabelText("一键翻译语言")).not.toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole("radio", { name: /精细交付/ }));
+    expect(within(dialog).getByText(/必须确认完成审阅/)).toBeVisible();
+    expect(within(dialog).getByRole("checkbox", { name: "创建 Agent 翻译任务" })).toBeInTheDocument();
+  });
 
   it("dismisses a cancelled one-click status without deleting its recovery path", async () => {
     render(<App />);

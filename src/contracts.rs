@@ -72,6 +72,7 @@ pub const AUTO_WORKFLOW_STATUSES: &[&str] = &[
 pub const AUTO_WORKFLOW_STAGES: &[&str] = &[
     "import",
     "transcribe",
+    "analyze",
     "suggestions",
     "translate",
     "review",
@@ -79,6 +80,8 @@ pub const AUTO_WORKFLOW_STAGES: &[&str] = &[
     "export",
     "complete",
 ];
+
+pub const WORKFLOW_PROFILES: &[&str] = &["draft", "balanced", "delivery"];
 
 pub const AGENT_RUN_STATUSES: &[&str] = &[
     "queued",
@@ -275,10 +278,13 @@ pub const CORE_ERROR_CODES: &[&str] = &[
     "auto_workflow_confirmation_required",
     "auto_workflow_translation_required",
     "auto_workflow_subtitle_mode_invalid",
+    "auto_workflow_profile_invalid",
+    "auto_workflow_profile_conflict",
     "auto_workflow_review_pending",
     "auto_workflow_state_invalid",
     "auto_workflow_source_failed",
     "auto_workflow_agent_cancelled",
+    "auto_workflow_audio_analysis_failed",
     "auto_workflow_audit_failed",
     "auto_workflow_export_failed",
     "audio_source_missing",
@@ -380,6 +386,7 @@ pub fn contract() -> Value {
             "workflow": WORKFLOW_STATUSES,
             "autoWorkflow": AUTO_WORKFLOW_STATUSES,
             "autoWorkflowStage": AUTO_WORKFLOW_STAGES,
+            "workflowProfile": WORKFLOW_PROFILES,
             "agentRun": AGENT_RUN_STATUSES,
             "localResource": LOCAL_RESOURCE_STATES,
         },
@@ -436,6 +443,7 @@ mod tests {
             WORKFLOW_STATUSES,
             AUTO_WORKFLOW_STATUSES,
             AUTO_WORKFLOW_STAGES,
+            WORKFLOW_PROFILES,
             CORE_ERROR_CODES,
         ] {
             let unique = statuses

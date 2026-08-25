@@ -193,10 +193,12 @@ export async function pickTranscriptPath(title: string, format: "srt" | "vtt" | 
   return save({ defaultPath: `${safeTitle}.${options.extension}`, filters: [{ name: options.name, extensions: [options.extension] }] });
 }
 
-export async function pickVideoPath(title: string): Promise<string | null> {
+export async function pickVideoPath(title: string, delivery: "burned" | "embedded-mp4" | "embedded-mkv" | "sidecar-srt" | "sidecar-vtt" = "burned"): Promise<string | null> {
   const safeTitle = sanitizeWindowsFileName(title);
-  if (!isTauri()) return `${safeTitle}.mp4`;
-  return save({ defaultPath: `${safeTitle}.mp4`, filters: [{ name: tr("app.dialog.mp4Video"), extensions: ["mp4"] }] });
+  const extension = delivery === "embedded-mkv" ? "mkv" : "mp4";
+  const name = extension === "mkv" ? tr("app.dialog.mkvVideo") : tr("app.dialog.mp4Video");
+  if (!isTauri()) return `${safeTitle}.${extension}`;
+  return save({ defaultPath: `${safeTitle}.${extension}`, filters: [{ name, extensions: [extension] }] });
 }
 
 export async function pickModel(): Promise<string | null> {
