@@ -14,6 +14,7 @@ $desktop = (Resolve-Path -LiteralPath $DesktopPath).Path
 $core = (Resolve-Path -LiteralPath $CorePath).Path
 $process = $null
 $previousHome = $env:SIAOCUT_HOME
+$previousResourceConfigHome = $env:SIAOCUT_RESOURCE_CONFIG_HOME
 
 Add-Type @'
 using System;
@@ -59,7 +60,7 @@ function Get-DescendantProcessIds([int]$RootId) {
             }
         }
     } while ($changed)
-    return $ids
+    return ,$ids
 }
 
 try {
@@ -72,6 +73,7 @@ try {
 
     New-Item -ItemType Directory -Force -Path $testHome | Out-Null
     $env:SIAOCUT_HOME = $testHome
+    $env:SIAOCUT_RESOURCE_CONFIG_HOME = Join-Path $testHome 'config'
     $process = Start-Process -FilePath $desktop -PassThru
     Start-Sleep -Seconds $StartupWaitSeconds
     if ($process.HasExited) {
@@ -110,6 +112,7 @@ try {
         Wait-Process -Id $process.Id -Timeout 5 -ErrorAction SilentlyContinue
     }
     $env:SIAOCUT_HOME = $previousHome
+    $env:SIAOCUT_RESOURCE_CONFIG_HOME = $previousResourceConfigHome
     $resolved = [IO.Path]::GetFullPath($testHome)
     if ($resolved.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase) -and (Test-Path -LiteralPath $resolved)) {
         Remove-Item -LiteralPath $resolved -Recurse -Force
