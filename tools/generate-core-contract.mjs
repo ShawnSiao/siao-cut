@@ -33,6 +33,7 @@ const declarations = [
   ["workflowStatuses", "WorkflowStatus", contract.statusSets.workflow],
   ["autoWorkflowStatuses", "AutoWorkflowStatus", contract.statusSets.autoWorkflow],
   ["autoWorkflowStages", "AutoWorkflowStage", contract.statusSets.autoWorkflowStage],
+  ["workflowProfiles", "WorkflowProfile", contract.statusSets.workflowProfile],
   ["coreErrorCodes", "KnownCoreErrorCode", contract.errorCodes],
 ];
 const source = [

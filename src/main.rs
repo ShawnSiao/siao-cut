@@ -14,6 +14,8 @@ mod canvas;
 mod contracts;
 mod cuts;
 mod db;
+#[cfg(test)]
+mod db_migration_33_tests;
 mod export;
 mod ipc;
 mod local_resources;
@@ -35,6 +37,8 @@ mod tasks;
 mod timeline;
 mod transcription;
 mod translation;
+#[cfg(test)]
+mod translation_edit_tests;
 mod util;
 mod video_export;
 mod workflows;
@@ -72,6 +76,8 @@ enum Commands {
     Project(ProjectCommand),
     #[command(subcommand)]
     Glossary(GlossaryCommand),
+    #[command(subcommand)]
+    Translation(TranslationCommand),
     #[command(subcommand)]
     Canvas(CanvasCommand),
     #[command(subcommand)]
@@ -181,6 +187,20 @@ enum GlossaryCommand {
         version: u32,
         #[arg(long)]
         expected_version: u32,
+    },
+}
+
+#[derive(Subcommand)]
+enum TranslationCommand {
+    Edit {
+        project_id: String,
+        segment_id: String,
+        #[arg(long)]
+        lang: String,
+        #[arg(long)]
+        text: String,
+        #[arg(long)]
+        expected_version: String,
     },
 }
 
@@ -376,6 +396,14 @@ enum TranscriptCommand {
         preset: String,
         #[arg(long, default_value = "bottom")]
         position: String,
+        #[arg(long)]
+        source_font_size: Option<u16>,
+        #[arg(long)]
+        translation_font_size: Option<u16>,
+        #[arg(long)]
+        box_width_percent: Option<u8>,
+        #[arg(long)]
+        box_height_lines: Option<u8>,
     },
     Add {
         project_id: String,
@@ -630,6 +658,8 @@ enum AutoWorkflowCommand {
 
 #[derive(Args)]
 struct AutoWorkflowStartArgs {
+    #[arg(long, default_value = "balanced")]
+    profile: String,
     #[arg(long)]
     media: Option<PathBuf>,
     #[arg(long)]
@@ -719,6 +749,8 @@ enum VideoCommand {
         output: PathBuf,
         #[arg(long)]
         burn_subtitles: bool,
+        #[arg(long, value_parser = ["none", "burned", "embedded-mp4", "embedded-mkv", "sidecar-srt", "sidecar-vtt"])]
+        subtitle_delivery: Option<String>,
         #[arg(long)]
         lang: Option<String>,
         #[arg(long)]
@@ -790,6 +822,9 @@ enum RuntimeCommand {
 #[derive(Subcommand)]
 enum ResourceCommand {
     Status,
+    CheckUpdates {
+        capability: Option<String>,
+    },
     Plan {
         capability: String,
         #[arg(long)]
@@ -1212,6 +1247,29 @@ fn run(cli: Cli) -> Result<Value> {
                 })))
             }
         },
+        Commands::Translation(command) => match command {
+            TranslationCommand::Edit {
+                project_id,
+                segment_id,
+                lang,
+                text,
+                expected_version,
+            } => {
+                let project = translation::edit_segment(
+                    &mut database,
+                    &project_id,
+                    &segment_id,
+                    &lang,
+                    text,
+                    &expected_version,
+                )?;
+                Ok(envelope(json!({
+                    "projectId": project_id,
+                    "project": project,
+                    "message": "译文已更新，并与当前原文版本重新关联。"
+                })))
+            }
+        },
         Commands::Canvas(command) => match command {
             CanvasCommand::Show { project_id } => {
                 let project = project::load(&database, &project_id)?;
@@ -1255,8 +1313,23 @@ fn run(cli: Cli) -> Result<Value> {
                 project_id,
                 preset,
                 position,
+                source_font_size,
+                translation_font_size,
+                box_width_percent,
+                box_height_lines,
             } => {
-                let project = subtitle_style::set(&mut database, &project_id, &preset, &position)?;
+                let project = subtitle_style::set(
+                    &mut database,
+                    &project_id,
+                    &preset,
+                    &position,
+                    subtitle_style::SubtitleStyleOverrides {
+                        source_font_size,
+                        translation_font_size,
+                        box_width_percent,
+                        box_height_lines,
+                    },
+                )?;
                 Ok(envelope(json!({
                     "projectId": project_id,
                     "subtitleStyle": project.subtitle_style,
@@ -1743,6 +1816,7 @@ fn run(cli: Cli) -> Result<Value> {
         Commands::Auto(command) => match command {
             AutoWorkflowCommand::Start(arguments) => {
                 let AutoWorkflowStartArgs {
+                    profile,
                     media,
                     url,
                     title,
@@ -1786,6 +1860,11 @@ fn run(cli: Cli) -> Result<Value> {
                 };
                 let subtitle_mode = model::SubtitleMode::parse(&subtitle_mode)
                     .ok_or_else(|| anyhow!("auto_workflow_subtitle_mode_invalid: 字幕模式必须为 source、translated 或 bilingual"))?;
+                let profile = model::WorkflowProfile::parse(&profile).ok_or_else(|| {
+                    anyhow!(
+                        "auto_workflow_profile_invalid: 流程预设必须为 draft、balanced 或 delivery"
+                    )
+                })?;
                 let translation_execution = agent::execution::ExecutionTarget::auto_from_cli(
                     &ai_execution,
                     ai_service_config_id,
@@ -1806,6 +1885,7 @@ fn run(cli: Cli) -> Result<Value> {
                         output,
                         burn_subtitles,
                         subtitle_mode,
+                        profile,
                         start_delay_ms,
                         translation_execution,
                     },
@@ -1943,6 +2023,7 @@ fn run(cli: Cli) -> Result<Value> {
                 project_id,
                 output,
                 burn_subtitles,
+                subtitle_delivery,
                 lang,
                 bilingual,
                 subtitle_mode,
@@ -1955,12 +2036,24 @@ fn run(cli: Cli) -> Result<Value> {
                     lang.as_deref(),
                     bilingual,
                 )?;
+                let subtitle_delivery = match subtitle_delivery.as_deref() {
+                    Some(value) => model::SubtitleDelivery::parse(value)
+                        .ok_or_else(|| anyhow!("未知字幕交付方式：{value}"))?,
+                    None if burn_subtitles => model::SubtitleDelivery::Burned,
+                    None => model::SubtitleDelivery::None,
+                };
+                if burn_subtitles && subtitle_delivery != model::SubtitleDelivery::Burned {
+                    bail!(
+                        "--burn-subtitles 与 --subtitle-delivery {} 冲突",
+                        subtitle_delivery.as_str()
+                    )
+                }
                 let job = video_export::create(
                     &mut database,
                     &project_id,
                     video_export::ExportRequest {
                         output: &output,
-                        burn_subtitles,
+                        subtitle_delivery,
                         language: lang,
                         subtitle_mode,
                         allow_stale_translation: confirm_stale_translation,
@@ -2222,6 +2315,11 @@ fn run(cli: Cli) -> Result<Value> {
         Commands::Resources(command) => match command {
             ResourceCommand::Status => Ok(envelope(json!({
                 "localResources": local_resources::status()?
+            }))),
+            ResourceCommand::CheckUpdates { capability } => Ok(envelope(json!({
+                "localResources": local_resources::status()?,
+                "resourceUpdateCheck": local_resources::check_updates(capability.as_deref())?,
+                "message": "已检查本地组件更新。"
             }))),
             ResourceCommand::Plan {
                 capability,

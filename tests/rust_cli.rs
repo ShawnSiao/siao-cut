@@ -141,6 +141,16 @@ fn local_resources_can_be_configured_planned_and_checked() {
     assert_eq!(initial["localResources"]["needsSetup"], true);
     assert_eq!(initial["localResources"]["root"], Value::Null);
 
+    let update_check = run_direct(temp.path(), &["resources", "check-updates", "url_import"]);
+    assert_eq!(
+        update_check["resourceUpdateCheck"]["capabilities"][0]["capabilityId"],
+        "url_import"
+    );
+    assert_eq!(
+        update_check["resourceUpdateCheck"]["capabilities"][0]["state"],
+        "not_ready"
+    );
+
     let blocked = run_direct_error(temp.path(), &["resources", "install", "url_import"]);
     assert_eq!(blocked["error"]["code"], "resource_setup_required");
     assert!(!root.exists());
@@ -913,6 +923,8 @@ fn auto_workflow_cli_starts_deduplicates_queries_cancels_and_continues() {
     let workflow_id = started["workflowId"].as_str().unwrap();
     assert_eq!(started["workflow"]["currentStage"], "import");
     assert_eq!(started["workflow"]["instructionLocale"], "en-US");
+    assert_eq!(started["workflow"]["profile"], "balanced");
+    assert!(started["workflow"]["audioAnalysisJobId"].is_null());
 
     let mut status = Value::Null;
     for _ in 0..40 {
@@ -948,6 +960,52 @@ fn auto_workflow_cli_starts_deduplicates_queries_cancels_and_continues() {
             .iter()
             .any(|event| event["message"] == "自动工作流显式继续")
     );
+}
+
+#[test]
+fn auto_workflow_cli_validates_profiles_and_draft_options() {
+    let temp = tempdir().unwrap();
+    let media = temp.path().join("auto.wav");
+    let model = temp.path().join("model.bin");
+    let output = temp.path().join("auto.mp4");
+    fs::write(&media, b"audio").unwrap();
+    fs::write(&model, b"model").unwrap();
+
+    let invalid_profile = run_direct_error(
+        temp.path(),
+        &[
+            "auto",
+            "start",
+            "--media",
+            media.to_str().unwrap(),
+            "--model",
+            model.to_str().unwrap(),
+            "--output",
+            output.to_str().unwrap(),
+            "--profile",
+            "unknown",
+        ],
+    );
+    assert_eq!(invalid_profile["code"], "auto_workflow_profile_invalid");
+
+    let draft_translation = run_direct_error(
+        temp.path(),
+        &[
+            "auto",
+            "start",
+            "--media",
+            media.to_str().unwrap(),
+            "--model",
+            model.to_str().unwrap(),
+            "--output",
+            output.to_str().unwrap(),
+            "--profile",
+            "draft",
+            "--translate",
+            "en",
+        ],
+    );
+    assert_eq!(draft_translation["code"], "auto_workflow_profile_invalid");
 }
 
 #[test]
@@ -1226,6 +1284,51 @@ fn project_agent_and_export_contract_remain_compatible() {
     );
     assert_eq!(confirmed["audit"]["readiness"], "needs_confirmation");
     assert!(fs::read_to_string(stale_output).unwrap().contains("Hello"));
+}
+
+#[test]
+fn srt_export_separates_every_caption_block_with_a_blank_line() {
+    let temp = tempdir().unwrap();
+    let media = temp.path().join("standard-srt.wav");
+    fs::write(&media, b"audio").unwrap();
+    let imported = run_direct(temp.path(), &["import", media.to_str().unwrap()]);
+    let project_id = imported["projectId"].as_str().unwrap();
+    for (start, end, text) in [("0", "1", "第一条"), ("1", "2", "Second caption")] {
+        run_direct(
+            temp.path(),
+            &[
+                "transcript",
+                "add",
+                project_id,
+                "--start",
+                start,
+                "--end",
+                end,
+                "--text",
+                text,
+            ],
+        );
+    }
+    let output = temp.path().join("standard.srt");
+    run_direct(
+        temp.path(),
+        &[
+            "transcript",
+            "export",
+            project_id,
+            "--format",
+            "srt",
+            "--subtitle-mode",
+            "source",
+            "--output",
+            output.to_str().unwrap(),
+        ],
+    );
+
+    let rendered = fs::read_to_string(output).unwrap();
+    assert!(rendered.contains("第一条\n\n2\n00:00:01,000 --> 00:00:02,000"));
+    assert_eq!(rendered.matches(" --> ").count(), 2);
+    assert_eq!(rendered.matches("\n\n").count(), 1);
 }
 
 #[test]
@@ -1554,10 +1657,16 @@ fn subtitle_style_is_recoverable_and_drives_ass_export() {
             "emphasis",
             "--position",
             "center",
+            "--box-width-percent",
+            "88",
+            "--box-height-lines",
+            "5",
         ],
     );
     assert_eq!(styled["subtitleStyle"]["preset"], "emphasis");
     assert_eq!(styled["subtitleStyle"]["position"], "center");
+    assert_eq!(styled["subtitleStyle"]["boxWidthPercent"], 88);
+    assert_eq!(styled["subtitleStyle"]["boxHeightLines"], 5);
     assert_eq!(
         styled["project"]["transcript"],
         before["project"]["transcript"]
@@ -1577,8 +1686,9 @@ fn subtitle_style_is_recoverable_and_drives_ass_export() {
         ],
     );
     let ass = fs::read_to_string(output).unwrap();
-    assert!(ass.contains("Style: Primary,Microsoft YaHei UI,60"));
-    assert!(ass.contains(",4,2,5,80,80,0,1"));
+    assert!(ass.contains("Style: Primary,Microsoft YaHei UI,46"));
+    assert!(ass.contains("Style: Secondary,Microsoft YaHei UI,60"));
+    assert!(ass.contains(",4,2,5,115,115,0,1"));
     assert!(ass.contains("Dialogue: 0,0:00:00.00,0:00:02.00,Primary,{\\kf200}受控字幕样式"));
 
     let undone = run(temp.path(), &["project", "undo", project_id]);
@@ -1779,7 +1889,8 @@ fn voice_subtitle_agent_and_style_changes_share_one_recoverable_time_map() {
         ],
     );
     let ass = fs::read_to_string(output).unwrap();
-    assert!(ass.contains("Style: Primary,Microsoft YaHei UI,60"));
+    assert!(ass.contains("Style: Primary,Microsoft YaHei UI,46"));
+    assert!(ass.contains("Style: Secondary,Microsoft YaHei UI,60"));
     assert!(ass.contains("Dialogue: 0,0:00:02.60,0:00:05.60,Primary,{\\kf300}Final line."));
     let accepted = run_direct(temp.path(), &["project", "show", project_id]);
     assert_eq!(accepted["project"]["speechInsights"]["status"], "ready");

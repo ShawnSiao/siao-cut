@@ -1,6 +1,6 @@
 import { runCore, runCoreStructured } from "../core";
 import type { UiLocale } from "../i18n";
-import type { TranscriptionLanguage } from "../types";
+import type { TranscriptionLanguage, WorkflowProfile } from "../types";
 import type { AiExecutionSelection } from "../features/ai-assistance/types";
 
 type AutoWorkflowInput =
@@ -14,6 +14,7 @@ type StartAutoWorkflowOptions = {
   locale: UiLocale;
   output: string;
   subtitleMode: "source" | "translated" | "bilingual";
+  profile: WorkflowProfile;
   translationLanguage?: string;
   burnSubtitles: boolean;
   aiExecution?: AiExecutionSelection;
@@ -53,6 +54,7 @@ export const backgroundTaskClient = {
       "--locale", options.locale,
       "--output", options.output,
       "--subtitle-mode", options.subtitleMode,
+      "--profile", options.profile,
       ...(options.translationLanguage ? ["--translate", options.translationLanguage] : []),
       ...(options.aiExecution && options.aiExecution.kind !== "copy_prompt" ? [
         "--ai-execution", options.aiExecution.kind,

@@ -27,7 +27,10 @@ export default function AiServicesPanel({ codexHealth, onRefreshCodex }: Props) 
     if (!settings) return;
     if (!initialized.current) {
       initialized.current = true;
-      setSelectionId(initialServiceSelection(settings));
+      setSelectionId((current) => {
+        if (current !== localCodexSelectionId) return current;
+        return initialServiceSelection(settings);
+      });
       return;
     }
     const valid = selectionId === localCodexSelectionId || selectionId.startsWith("provider:") || settings.services.some((service) => service.id === selectionId);

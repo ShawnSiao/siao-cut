@@ -2,13 +2,13 @@ import { changeUiLocale, getUiLocale, tr, type UiLocale } from "../i18n";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type SyntheticEvent } from "react";
 import { Activity, Bot, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Clock3, Copy, Cpu, Database, Download, FileVideo2, FileText, Film, FolderOpen, FolderPlus, HardDrive, History, Link2, LoaderCircle, Play, RefreshCw, RotateCcw, Search, Scissors, Settings2, ShieldCheck, Sparkles, Trash2, Undo2, Redo2, Headphones, ListChecks, MoreHorizontal, MoveHorizontal, Users, X, } from "lucide-react";
 import { authorizeArtifact, authorizeMedia, localFileAvailable, openLogDirectory, pickMedia, pickModel, pickResourceDirectory, pickSubtitleFile, pickTranscriptPath, pickVideoPath, runtimeInfo, selectAsrBackend, updaterPolicy } from "../core";
-import type { AgentRun, AudioAnalysisJob, AudioRisk, AutoWorkflow, CanvasSettings, CodexHealth, CutPreview, ExportJob, LocalCapabilityId, LocalResourceJob, LocalResourcePlan, LocalResourceStatus, LocalTranscriptionProfile, ModelDownloadJob, ModelStatus, Project, ProjectDeletionPreflight, RuntimeInfo, Segment, SourceImportJob, SourcePreview, SpeakerIdentity, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SpeechEvidence, SpeechInsights, SpeechPause, SubtitleImportPreview, SubtitleQualityIssue, Task, TranscriptReplacementPreflight, TranscriptionJob, TranscriptionLanguage, TranscriptionProviderConfig, TranscriptionProviderHealth, TranscriptionReviewItem } from "../types";
+import type { AgentRun, AudioAnalysisJob, AudioRisk, AutoWorkflow, CanvasSettings, CodexHealth, CutPreview, ExportJob, LocalCapabilityId, LocalResourceJob, LocalResourcePlan, LocalResourceStatus, LocalTranscriptionProfile, ModelDownloadJob, ModelStatus, Project, ProjectDeletionPreflight, RuntimeInfo, Segment, SourceImportJob, SourcePreview, SpeakerIdentity, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SpeechEvidence, SpeechInsights, SpeechPause, SubtitleImportPreview, SubtitleQualityIssue, Task, TranscriptReplacementPreflight, TranscriptionJob, TranscriptionLanguage, TranscriptionProviderConfig, TranscriptionProviderHealth, TranscriptionReviewItem, WorkflowProfile } from "../types";
 import { Button, Dialog, IconButton, StatusBadge } from "../components/ui";
 import { JobFailureDetails } from "../components/job-failure";
 import { AudioQualityPanel, PatchReviewCard, RuntimeChecklist, SegmentRow, SpeakerTrackPanel, SpeechInsightsPanel, TranscriptionReviewPanel } from "../components/workbench-panels";
 import { useAppUpdater } from "../hooks/use-app-updater";
 export { AudioQualityPanel, PatchReviewCard, SpeakerPackageManager, SpeakerTrackPanel, SpeechInsightsPanel } from "../components/workbench-panels";
-import { agentTaskStatusLabel, audioRiskLabel, audioUnitLabel, autoStageLabel, autoStatusLabel, clearTransientCoreError, cutSuggestionLabel, DEFAULT_EXPORT_PREFERENCES, editReasonLabel, formatTime, getProjectCapabilities, hasMeaningfulSubtitleText, isHttpsSourceUrl, modelDescription, modelName, parseExportPreferences, parseTranscriptionLanguage, patchReasonLabel, segmentCountLabel, sourceStatusLabel, structureEditLabel, subtitleCountLabel, subtitleIssueLabel, subtitleQualityStatusLabel, taskLabel, TRANSCRIPTION_LANGUAGE_STORAGE_KEY, versionReasonLabel, wordCountLabel, type ExportPreferencesV1, type SegmentSelectionMode, type StructureEditMode } from "../app-view-model";
+import { agentTaskStatusLabel, audioRiskLabel, audioUnitLabel, autoStageLabel, autoStatusLabel, clearTransientCoreError, cutSuggestionLabel, DEFAULT_EXPORT_PREFERENCES, editReasonLabel, formatTime, getProjectCapabilities, hasMeaningfulSubtitleText, isHttpsSourceUrl, modelDescription, modelName, parseExportPreferences, parseTranscriptionLanguage, patchReasonLabel, segmentCountLabel, sourceStatusLabel, structureEditLabel, subtitleCountLabel, subtitleIssueLabel, subtitleQualityStatusLabel, taskLabel, TRANSCRIPTION_LANGUAGE_STORAGE_KEY, versionReasonLabel, wordCountLabel, workflowProfileLabel, type ExportPreferencesV1, type SegmentSelectionMode, type StructureEditMode } from "../app-view-model";
 import { agentReviewClient } from "../domains/agent-review-client";
 import type { AiExecutionSelection } from "../features/ai-assistance/types";
 import { backgroundTaskClient } from "../domains/background-task-client";
@@ -19,9 +19,12 @@ import { translationClient } from "../domains/translation-client";
 import { localResourceClient } from "../domains/local-resource-client";
 import { useBackgroundTaskRegistry } from "../hooks/use-background-task-registry";
 import { useWorkbenchFeedback } from "../hooks/use-workbench-feedback";
-import { SubtitleTimelinePanel, type TimelineReviewMarker } from "./subtitle-timeline-panel";
+import type { TimelineReviewMarker } from "./subtitle-timeline-panel";
 import type { WorkbenchActivity, WorkbenchActivityInputs } from "./workbench-activity";
 import type { WorkbenchActivityAction } from "./workbench-activity-center";
+import type { ReviewQueueItem } from "./review-queue";
+import { groupSubtitleQualityIssues } from "./subtitle-quality-groups";
+import { useFocusReviewState } from "./use-focus-review-state";
 
 const RESOURCE_SETUP_DEFERRED_KEY = "siaocut.localResourcesSetupDeferred.v1";
 
@@ -119,6 +122,19 @@ export function resolveCaptionSegment(
     return timedSegment ?? (playing ? null : selected ?? null);
 }
 
+export function resolveFocusCaptionText(
+    mode: "source" | "translated" | "bilingual",
+    sourceText: string,
+    translatedText: string,
+    missingTranslationText: string,
+) {
+    if (mode === "translated")
+        return { primary: translatedText || missingTranslationText, secondary: "", missingTranslation: !translatedText };
+    if (mode === "bilingual")
+        return { primary: sourceText, secondary: translatedText || missingTranslationText, missingTranslation: !translatedText };
+    return { primary: sourceText, secondary: "", missingTranslation: false };
+}
+
 export function resolvePlaybackDuration(mediaDuration: number, fallbackDuration: number | null | undefined) {
     return Number.isFinite(mediaDuration) && mediaDuration > 0 ? mediaDuration : fallbackDuration ?? 0;
 }
@@ -127,6 +143,9 @@ const isValidAgentIdentity = (value: string) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,63
 const TranscriptionCandidateDialog = lazy(() => import("../components/transcription-candidate-dialog"));
 const ExportPanel = lazy(() => import("../components/export-panel"));
 const WorkbenchActivityCenter = lazy(() => import("./workbench-activity-center"));
+const FocusReviewPanel = lazy(() => import("./focus-review-panel"));
+const FocusReviewToolbar = lazy(() => import("./focus-review-panel").then((module) => ({ default: module.FocusReviewToolbar })));
+const SubtitleTimelinePanel = lazy(() => import("./subtitle-timeline-panel").then((module) => ({ default: module.SubtitleTimelinePanel }))); const AutoWorkflowProfileSelector = lazy(() => import("./auto-workflow-profile-selector"));
 const ProjectDeleteDialog = lazy(() => import("../components/project-delete-dialog"));
 const AppCommandMenu = lazy(() => import("../components/app-command-menu"));
 const RuntimeSettingsDialog = lazy(() => import("../components/runtime-settings-dialog"));
@@ -254,7 +273,7 @@ function WorkbenchController() {
     const [autoUrl, setAutoUrl] = useState("");
     const [autoSourcePreview, setAutoSourcePreview] = useState<SourcePreview | null>(null);
     const [autoAuthorized, setAutoAuthorized] = useState(false);
-    const [autoTranslate, setAutoTranslate] = useState(false);
+    const [autoTranslate, setAutoTranslate] = useState(false); const [autoProfile, setAutoProfile] = useState<WorkflowProfile>("balanced");
     const [autoAiSelection, setAutoAiSelection] = useState<AiExecutionSelection | null>(null);
     const [autoTranslationLanguage, setAutoTranslationLanguage] = useState("en");
     const [transcriptionLanguage, setTranscriptionLanguage] = useState<TranscriptionLanguage>(() => parseTranscriptionLanguage(localStorage.getItem(TRANSCRIPTION_LANGUAGE_STORAGE_KEY)));
@@ -309,6 +328,7 @@ function WorkbenchController() {
     const [confirmTranscriptionWarnings, setConfirmTranscriptionWarnings] = useState(false);
     const [confirmStaleTranslation, setConfirmStaleTranslation] = useState(false);
     const [confirmUncutExport, setConfirmUncutExport] = useState(false);
+    const [subtitleDelivery, setSubtitleDelivery] = useState<ExportPreferencesV1["subtitleDelivery"]>(() => parseExportPreferences(localStorage.getItem("siaocut.exportPreferences.v1")).subtitleDelivery);
     const [glossaryDraft, setGlossaryDraft] = useState("");
     const [subtitleMode, setSubtitleMode] = useState<"source" | "translated" | "bilingual">(() => parseExportPreferences(localStorage.getItem("siaocut.exportPreferences.v1")).subtitleMode);
     const [subtitleLanguage, setSubtitleLanguage] = useState(() => parseExportPreferences(localStorage.getItem("siaocut.exportPreferences.v1")).subtitleLanguage);
@@ -343,6 +363,11 @@ function WorkbenchController() {
     const sourceJobOriginProjectIdsRef = useRef(new Map<string, string | null>());
     const taskActionIdsRef = useRef(new Set<string>());
     const busyRef = useRef(false);
+    const { focusReview, enterFocusReview, exitFocusReview, resetFocusReview } = useFocusReviewState({
+        projectAvailable: Boolean(project), mediaAvailable: Boolean(mediaUrl), mediaMissingMessage: tr("app.focusReview.mediaMissing"),
+        drawerTab, selectedId, selectedSegmentIds, playerExpanded, setDrawerTab, setSelectedId, setSelectedSegmentIds,
+        setSelectionAnchorId, setPlayerExpanded, setShowExportPanel, setError,
+    });
     const beginProjectLoad = useCallback((projectId: string) => {
         const sequence = (projectLoadSequenceRef.current.get(projectId) ?? 0) + 1;
         projectLoadSequenceRef.current.set(projectId, sequence);
@@ -371,7 +396,8 @@ function WorkbenchController() {
         setTaskActions({});
         setWordRange(null);
         setCutPreview(null);
-    }, []);
+        resetFocusReview();
+    }, [resetFocusReview]);
     const refreshLatestExport = useCallback(async (projectId: string, loadSequence?: number) => {
         const envelope = await exportRuntimeClient.listVideoExports(projectId);
         if (activeProjectIdRef.current === projectId && (loadSequence === undefined || isCurrentProjectLoad(projectId, loadSequence)))
@@ -902,6 +928,7 @@ function WorkbenchController() {
         return project?.transcript.segments.filter((segment) => segment.text.toLowerCase().includes(search.toLowerCase()) && (!issueSegmentIds || issueSegmentIds.has(segment.id))) ?? [];
     }, [project, qualityFilter, search]);
     const visibleQualityIssues = project?.subtitleQuality.issues.filter((issue) => qualityFilter === "all" || issue.severity === qualityFilter) ?? [];
+    const visibleQualityIssueGroups = groupSubtitleQualityIssues(visibleQualityIssues);
     const selectedSegments = useMemo(() => project?.transcript.segments.filter((segment) => selectedSegmentIds.includes(segment.id)) ?? [], [project, selectedSegmentIds]);
     const allVisibleSegmentsSelected = filteredSegments.length > 0 && filteredSegments.every((segment) => selectedSegmentIds.includes(segment.id));
     const selectedScopeLabel = selectedSegments.length
@@ -991,8 +1018,9 @@ function WorkbenchController() {
     );
     const captionWords = project?.transcript.words.filter((word) => word.segmentId === captionSegment?.id) ?? [];
     const selectedTranslationText = selectedTranslation?.segments.find((segment) => segment.segmentId === captionSegment?.id)?.text ?? "";
-    const captionPrimaryText = subtitleMode === "translated" ? selectedTranslationText : captionSegment?.text ?? "";
-    const captionSecondaryText = subtitleMode === "bilingual" ? selectedTranslationText : "";
+    const focusCaptionText = resolveFocusCaptionText(subtitleMode, captionSegment?.text ?? "", selectedTranslationText, tr("app.focusReview.noTranslation"));
+    const captionPrimaryText = focusReview ? focusCaptionText.primary : subtitleMode === "translated" ? selectedTranslationText : captionSegment?.text ?? "";
+    const captionSecondaryText = focusReview ? focusCaptionText.secondary : subtitleMode === "bilingual" ? selectedTranslationText : "";
     const captionProgress = (() => {
         if (!playback.playing || !captionSegment)
             return 1;
@@ -1023,8 +1051,14 @@ function WorkbenchController() {
         fontSize: `${Math.max(14, Math.round(project.subtitleStyle.fontSize * 0.36))}px`,
         fontWeight: project.subtitleStyle.bold ? 700 : 400,
         bottom: project.subtitleStyle.position === "bottom" ? `${project.subtitleStyle.safeMarginPercent}%` : undefined,
+        left: `${(100 - project.subtitleStyle.boxWidthPercent) / 2}%`,
+        right: `${(100 - project.subtitleStyle.boxWidthPercent) / 2}%`,
+        maxHeight: `${Math.round(Math.max(project.subtitleStyle.fontSize, captionSecondaryText ? project.subtitleStyle.secondaryFontSize : 0) * 0.36 * 1.35 * project.subtitleStyle.boxHeightLines + (captionSecondaryText ? 3 : 0))}px`,
         textShadow: `0 ${project.subtitleStyle.shadowDepth}px ${Math.max(1, project.subtitleStyle.shadowDepth * 2)}px ${project.subtitleStyle.outlineColor}, 0 0 ${project.subtitleStyle.outlineWidth * 2}px ${project.subtitleStyle.outlineColor}`,
     } : undefined;
+    const captionPrimaryStyle = project && subtitleMode === "translated"
+        ? { ...captionKaraokeStyle, fontSize: `${Math.max(12, Math.round(project.subtitleStyle.secondaryFontSize * 0.36))}px` }
+        : captionKaraokeStyle;
     const currentDeleteCandidate = deleteCandidate ? projects.find((item) => item.id === deleteCandidate.id) ?? deleteCandidate : null;
     const deleteBlockMessage = deletionPreflight?.blockers.length
         ? deletionPreflight.blockers.map((blocker) => ({
@@ -1079,6 +1113,11 @@ function WorkbenchController() {
     const speakerById = new Map(speakerTrack?.speakers.map((speaker) => [speaker.id, speaker]) ?? []);
     const associationBySegment = new Map(speakerTrack?.associations.map((association) => [association.segmentId, association]) ?? []);
     const actionableReviewCount = orderedPatchSets.reduce((count, set) => count + set.items.length, 0) + pendingEdits.length + failedTasks.length + audioRisks.length + transcriptionReviews.length + Number(Boolean(projectSpeakerJob && ["failed", "interrupted"].includes(projectSpeakerJob.status)));
+    const focusReviewCount = (project?.subtitleQuality.issues.filter((issue) => issue.severity === "error").length ?? 0)
+        + orderedPatchSets.reduce((count, set) => count + set.items.length, 0)
+        + pendingEdits.length
+        + transcriptionReviews.filter((item) => item.status === "open").length
+        + audioRisks.length;
     const mossWordTimingUnavailable = speakerTrack?.providerId === "moss_openai" && speakerTrack.sourceKind === "end_to_end";
     const transcriptionExportErrors = transcriptionReviews.filter((item) => item.status === "open" && item.severity === "error");
     const transcriptionExportWarnings = transcriptionReviews.filter((item) => item.status === "open" && item.severity === "warning");
@@ -1088,10 +1127,11 @@ function WorkbenchController() {
         localStorage.setItem("siaocut.exportPreferences.v1", JSON.stringify({
             version: 1,
             subtitleMode,
+            subtitleDelivery,
             subtitleLanguage,
             transcriptFormat: exportFormat,
         } satisfies ExportPreferencesV1));
-    }, [exportFormat, subtitleLanguage, subtitleMode]);
+    }, [exportFormat, subtitleDelivery, subtitleLanguage, subtitleMode]);
     useEffect(() => {
         if (!project || subtitleMode === "source")
             return;
@@ -1125,7 +1165,8 @@ function WorkbenchController() {
         setQuickRetranscriptionError(null);
         setStructureEditMode(null);
         setShowTranscriptionCandidate(false);
-    }, [project?.id]);
+        resetFocusReview();
+    }, [project?.id, resetFocusReview]);
     useEffect(() => {
         if (!showExportPanel)
             return;
@@ -1753,7 +1794,7 @@ function WorkbenchController() {
             language: transcriptionLanguage,
             locale: uiLocale,
             output,
-            subtitleMode: autoTranslate ? autoSubtitleMode : "source",
+            subtitleMode: autoTranslate ? autoSubtitleMode : "source", profile: autoProfile,
             translationLanguage: autoTranslate ? autoTranslationLanguage : undefined,
             burnSubtitles: autoBurnSubtitles,
             aiExecution: autoTranslate ? autoAiSelection ?? undefined : undefined,
@@ -2087,6 +2128,21 @@ function WorkbenchController() {
         await refreshProject(project.id);
         setNotice(tr("app.s0154"));
     });
+    const editTranslationSegment = (segment: Segment, text: string) => {
+        const translated = selectedTranslation?.segments.find((item) => item.segmentId === segment.id);
+        const expectedVersion = project?.history.currentVersionId;
+        if (!project || !selectedSubtitleLanguage || !translated || text.trim() === translated.text)
+            return;
+        if (!expectedVersion) {
+            setError(tr("app.creator.translation.versionUnavailable"));
+            return;
+        }
+        void withBusy(tr("app.creator.translation.editing"), async () => {
+            await translationClient.editSegment(project.id, segment.id, selectedSubtitleLanguage, text.trim(), expectedVersion);
+            await refreshProject(project.id);
+            setNotice(tr("app.creator.translation.edited"));
+        });
+    };
     const replaceAll = () => project && search && (replacement || emptyReplacementConfirmed) && withBusy(tr("app.s0155"), async () => {
         const result = await transcriptEditingClient.replaceAll(project.id, search, replacement);
         await refreshProject(project.id);
@@ -2354,8 +2410,8 @@ function WorkbenchController() {
             }
         });
     };
-    const changeSubtitleStyle = (preset: Project["subtitleStyle"]["preset"], position: Project["subtitleStyle"]["position"]) => project && withBusy(tr("app.s0181"), async () => {
-        const envelope = await transcriptEditingClient.setSubtitleStyle(project.id, preset, position);
+    const changeSubtitleStyle = (preset: Project["subtitleStyle"]["preset"], position: Project["subtitleStyle"]["position"], sourceFontSize?: number, translationFontSize?: number, boxWidthPercent?: number, boxHeightLines?: number) => project && withBusy(tr("app.s0181"), async () => {
+        const envelope = await transcriptEditingClient.setSubtitleStyle(project.id, preset, position, sourceFontSize, translationFontSize, boxWidthPercent, boxHeightLines);
         if (!envelope.project)
             throw new Error(tr("app.s0182"));
         setProject(envelope.project);
@@ -2372,11 +2428,11 @@ function WorkbenchController() {
     const exportVideo = () => project && withBusy(tr("app.s0186"), async () => {
         if (!capabilities.hasBoundMedia)
             throw new Error(tr("app.capability.mediaRequired"));
-        const output = await pickVideoPath(project.title);
+        const output = await pickVideoPath(project.title, subtitleDelivery);
         if (!output)
             return;
         const subtitle = subtitleExportOptions();
-        const envelope = await exportRuntimeClient.exportVideo(project.id, output, subtitle.mode, subtitle.language, subtitle.confirmStaleTranslation);
+        const envelope = await exportRuntimeClient.exportVideo(project.id, output, subtitleDelivery, subtitle.mode, subtitle.language, subtitle.confirmStaleTranslation);
         if (!envelope.job)
             throw new Error(tr("app.s0187"));
         setActiveExport(envelope.job);
@@ -2494,6 +2550,8 @@ function WorkbenchController() {
         return () => document.removeEventListener("pointerdown", closeOnOutsidePointer);
     }, [showMoreMenu]);
     useEffect(() => {
+        if (focusReview)
+            return;
         const handleShortcut = (event: KeyboardEvent) => {
             const target = event.target;
             const modifier = event.ctrlKey || event.metaKey;
@@ -2576,7 +2634,7 @@ function WorkbenchController() {
         };
         window.addEventListener("keydown", handleShortcut);
         return () => window.removeEventListener("keydown", handleShortcut);
-    }, [busy, currentDeleteCandidate, mergeCandidatesAdjacent, project, selectedSegmentIds, showAgentHandoff, showAiExecutionConfirm, showAutoWorkflow, showMoreMenu, showResourceSetup, showRuntime, showSourceImport, showSubtitleImport, showTranscriptionCandidate, structureEditMode]);
+    }, [busy, currentDeleteCandidate, focusReview, mergeCandidatesAdjacent, project, selectedSegmentIds, showAgentHandoff, showAiExecutionConfirm, showAutoWorkflow, showMoreMenu, showResourceSetup, showRuntime, showSourceImport, showSubtitleImport, showTranscriptionCandidate, structureEditMode]);
     const chooseModel = () => withBusy(tr("app.s0214"), async () => {
         const path = await pickModel();
         if (!path)
@@ -2923,6 +2981,26 @@ function WorkbenchController() {
         else
             video.pause();
     };
+    const locateFocusReviewItem = (item: ReviewQueueItem) => {
+        const segment = item.segmentId ? project?.transcript.segments.find((candidate) => candidate.id === item.segmentId) : null;
+        if (segment)
+            selectSegment(segment);
+        else
+            seekTimeline(item.start);
+    };
+    const openFocusReviewEditor = (item: ReviewQueueItem) => {
+        locateFocusReviewItem(item);
+        if (item.kind === "quality") {
+            setQualityFilter("all");
+            setReviewFocusDetailId(`quality:${item.sourceId}`);
+            setDrawerTab("quality");
+        }
+        else {
+            setDrawerTab("analysis");
+        }
+        setShowExportPanel(false);
+        exitFocusReview(false);
+    };
     const nudgeTimelineSegment = async (segmentId: string, delta: number) => {
         if (!project || structureBusy || busy)
             return;
@@ -2978,7 +3056,15 @@ function WorkbenchController() {
             void transcribe();
             return;
         }
-        if (agentRunActive || actionableReviewCount > 0) {
+        if (agentRunActive) {
+            openCreatorDrawer("review");
+            return;
+        }
+        if (focusReviewCount > 0) {
+            enterFocusReview();
+            return;
+        }
+        if (actionableReviewCount > 0) {
             openCreatorDrawer("review");
             return;
         }
@@ -2988,7 +3074,7 @@ function WorkbenchController() {
         : !capabilities.hasTranscript ? tr("app.creator.action.transcribe")
             : agentRunActive ? tr("app.creator.action.viewAgent")
                 : actionableReviewCount > 0 ? tr("app.creator.action.review") : tr("app.creator.action.checkExport");
-    return (<main className="app-shell">
+    return (<main className={`app-shell${focusReview ? " focus-review" : ""}`}>
       <aside className="rail">
         <div className="brand"><span className="brand-mark">S</span><span>SiaoCut</span></div>
         <div className="new-project-actions">
@@ -3018,6 +3104,7 @@ function WorkbenchController() {
       </aside>
 
       <section className={`workbench${project ? "" : " empty-workbench"}`}>
+        {focusReview && project && <Suspense fallback={null}><FocusReviewToolbar remaining={focusReviewCount} subtitleMode={subtitleMode} translationPending={selectedTranslationPending} translationStale={selectedTranslationStale} onSubtitleModeChange={(mode) => { setSubtitleMode(mode); setConfirmStaleTranslation(false); }} onExit={() => exitFocusReview()}/></Suspense>}
         <header className="topbar">
           <div className="topbar-heading"><p className="eyebrow">{tr("app.s0247")}</p><h1>{project?.title ?? tr("app.s0248")}</h1></div>
 	          <div className="command-bar creator-command-bar" aria-label={tr("app.s0249")}>
@@ -3026,7 +3113,7 @@ function WorkbenchController() {
 	              <IconButton label={tr("app.s0251")} shortcut="Ctrl+Z" disabled={!project?.history.canUndo || Boolean(busy)} onClick={() => navigateHistory("undo")}><Undo2 size={15}/></IconButton>
 	              <IconButton label={tr("app.s0252")} shortcut="Ctrl+Shift+Z" disabled={!project?.history.canRedo || Boolean(busy)} onClick={() => navigateHistory("redo")}><Redo2 size={15}/></IconButton>
 	            </div>
-	            <Button variant="primary" className="creator-primary-action" disabled={Boolean(busy) || (creatorPhase === "transcribe" && (!canStartTranscription || transcriptionActive))} title={creatorPhase === "transcribe" ? transcribeCapabilityTitle : undefined} onClick={runCreatorPrimaryAction}>{creatorPhase === "review" ? <ListChecks size={15}/> : creatorPhase === "export" ? <Download size={15}/> : <Sparkles size={15}/>} {creatorPrimaryLabel}</Button>
+	            <Button variant="primary" className="creator-primary-action" disabled={Boolean(busy) || (creatorPhase === "transcribe" && (!canStartTranscription || transcriptionActive)) || (creatorPhase === "review" && focusReviewCount > 0 && !mediaUrl)} title={creatorPhase === "transcribe" ? transcribeCapabilityTitle : creatorPhase === "review" && focusReviewCount > 0 && !mediaUrl ? tr("app.focusReview.mediaMissing") : undefined} onClick={runCreatorPrimaryAction}>{creatorPhase === "review" ? <ListChecks size={15}/> : creatorPhase === "export" ? <Download size={15}/> : <Sparkles size={15}/>} {creatorPrimaryLabel}</Button>
 	            <div className="command-more" ref={commandMoreRef}><IconButton label={tr("app.s0256")} onClick={() => setShowMoreMenu((current) => !current)}><MoreHorizontal size={17}/></IconButton>{showMoreMenu && <Suspense fallback={null}><AppCommandMenu canDetectSuggestions={Boolean(project?.transcript.words.length) && !busy} canPreparePreview={capabilities.canPreparePreview && !busy} canRelinkMedia={capabilities.canRelinkMedia && !busy} canRetranscribe={Boolean(project?.transcript.segments.length) && capabilities.hasBoundMedia && !busy} mediaCapabilityTitle={mediaCapabilityTitle} onDetectSuggestions={() => { setShowMoreMenu(false); void detectSuggestions(); }} onPreparePreview={() => { setShowMoreMenu(false); void preparePreview(); }} onRelinkMedia={() => { setShowMoreMenu(false); void relinkMedia(); }} onRetranscribe={() => { setShowMoreMenu(false); void openQuickRetranscription(); }}/></Suspense>}</div>
 	          </div>
 	        </header>
@@ -3048,9 +3135,11 @@ function WorkbenchController() {
 	                {playerExpanded && <>
 	                <div className="video-frame">
                   {mediaUrl ? <video key={project.id} ref={videoRef} src={mediaUrl} controls preload="metadata" onLoadedMetadata={handleVideoLoadedMetadata} onPlay={() => setPlayback((current) => ({ ...current, playing: true }))} onPause={() => setPlayback((current) => ({ ...current, playing: false }))} onTimeUpdate={handleVideoTimeUpdate}/> : <div className="video-placeholder"><Play size={30}/><span>{tr("app.s0286")}</span></div>}
-                  {showSubtitleSafeArea && <div className="subtitle-safe-area" aria-label={tr("app.s0287")} data-label={tr("app.s0287")} style={{ inset: `${project.subtitleStyle.safeMarginPercent}% 6%` }}/>}
-                  {captionSegment && captionPrimaryText && <div className={`caption-overlay ${project.subtitleStyle.position}`} data-preset={project.subtitleStyle.preset} data-position={project.subtitleStyle.position} data-outline-width={project.subtitleStyle.outlineWidth} style={captionPreviewStyle}>
-                    <span className={`caption-primary${playback.playing ? " playing" : ""}`} data-caption-text={playback.playing ? captionPrimaryText : undefined} data-progress={captionProgress.toFixed(3)} style={captionKaraokeStyle}>{captionPrimaryText}</span>
+                  {showSubtitleSafeArea && (
+                    <div className="subtitle-safe-area" aria-label={tr("app.s0287")} data-label={tr("app.s0287")} style={{ top: `${project.subtitleStyle.safeMarginPercent}%`, bottom: `${project.subtitleStyle.safeMarginPercent}%`, left: `${(100 - project.subtitleStyle.boxWidthPercent) / 2}%`, right: `${(100 - project.subtitleStyle.boxWidthPercent) / 2}%` }}/>
+                  )}
+                  {captionSegment && captionPrimaryText && <div className={`caption-overlay ${project.subtitleStyle.position}`} data-preset={project.subtitleStyle.preset} data-position={project.subtitleStyle.position} data-outline-width={project.subtitleStyle.outlineWidth} data-box-width={project.subtitleStyle.boxWidthPercent} data-box-height-lines={project.subtitleStyle.boxHeightLines} aria-label={tr("app.creator.preview.subtitleBox")} style={captionPreviewStyle}>
+                    <span className={`caption-primary${playback.playing ? " playing" : ""}`} data-caption-text={playback.playing ? captionPrimaryText : undefined} data-progress={captionProgress.toFixed(3)} style={captionPrimaryStyle}>{captionPrimaryText}</span>
                     {captionSecondaryText && <span className="caption-secondary" style={{ color: project.subtitleStyle.secondaryColor, fontSize: `${Math.max(12, Math.round(project.subtitleStyle.secondaryFontSize * 0.36))}px` }}>{captionSecondaryText}</span>}
                   </div>}
                 </div>
@@ -3060,8 +3149,9 @@ function WorkbenchController() {
 	              </article>
 
 	              <aside className="creator-drawer" aria-label={tr("app.creator.drawer.label")}>
+	                {focusReview && <Suspense fallback={null}><FocusReviewPanel project={project} transcriptionReviews={transcriptionReviews} audioRisks={audioRisks} busy={Boolean(busy)} error={error} onLocate={locateFocusReviewItem} onAgentReview={(item, action) => void reviewPatch(item.sourceId, action)} onCutReview={(item, action) => void updateCut(item.sourceId, action)} onTranscriptionReview={(item, action) => void resolveTranscriptionReview(item.sourceId, action)} onOpenEditor={openFocusReviewEditor} onTogglePlayback={toggleTimelinePlayback} onSeekDelta={(delta) => seekTimeline(playback.currentTime + delta)} onExit={() => exitFocusReview()}/></Suspense>}
 	                <div className="creator-drawer-tabs" role="tablist" aria-label={tr("app.creator.drawer.tabs")}>
-	                  {drawerTabs.map((tab) => <button id={`creator-drawer-tab-${tab}`} key={tab} role="tab" aria-controls={`creator-drawer-panel-${tab}`} aria-selected={drawerTab === tab} tabIndex={drawerTab === tab ? 0 : -1} className={drawerTab === tab ? "active" : ""} onKeyDown={(event) => changeDrawerTabFromKeyboard(event, tab)} onClick={() => openCreatorDrawer(tab)}>{tr(({ review: "app.creator.drawer.review", quality: "app.creator.drawer.quality", analysis: "app.creator.drawer.analysis", history: "app.creator.drawer.history", export: "app.creator.drawer.export" } as const)[tab])}{tab === "review" && actionableReviewCount > 0 ? <i>{actionableReviewCount}</i> : null}{tab === "quality" && project.subtitleQuality.issueCount > 0 ? <i>{project.subtitleQuality.issueCount}</i> : null}</button>)}
+	                  {drawerTabs.map((tab) => <button id={`creator-drawer-tab-${tab}`} key={tab} role="tab" aria-controls={`creator-drawer-panel-${tab}`} aria-selected={drawerTab === tab} tabIndex={drawerTab === tab ? 0 : -1} className={drawerTab === tab ? "active" : ""} onKeyDown={(event) => changeDrawerTabFromKeyboard(event, tab)} onClick={() => openCreatorDrawer(tab)}>{tr(({ review: "app.creator.drawer.review", quality: "app.creator.drawer.quality", analysis: "app.creator.drawer.analysis", history: "app.creator.drawer.history", export: "app.creator.drawer.export" } as const)[tab])}{tab === "review" && actionableReviewCount > 0 ? <i>{actionableReviewCount}</i> : null}{tab === "quality" && project.subtitleQuality.errorCount > 0 ? <i>{project.subtitleQuality.errorCount}</i> : null}</button>)}
 	                </div>
 	                <div className="creator-drawer-body" id={`creator-drawer-panel-${drawerTab}`} role="tabpanel" aria-labelledby={`creator-drawer-tab-${drawerTab}`}>
 	                  {drawerTab === "review" && <>
@@ -3111,7 +3201,7 @@ function WorkbenchController() {
                       {actionableReviewCount === 0 && processingTasks.length === 0 && !agentRunActive && <div className="all-clear"><Check size={20}/><span>{tr("app.s0329")}</span></div>}
                     </div>
                   </>}
-                  {drawerTab === "quality" && <section className={`subtitle-quality-summary creator-quality ${project.subtitleQuality.status}`} aria-label={tr("app.s0357")}><div className="subtitle-quality-state">{project.subtitleQuality.status === "good" ? <Check size={15}/> : <CircleAlert size={15}/>}<span><strong>{subtitleQualityStatusLabel(project.subtitleQuality)}</strong><small>{project.subtitleQuality.errorCount}{tr("app.s0358") + " "}{project.subtitleQuality.warningCount}{tr("app.s0359")}</small></span></div><div className="subtitle-quality-filters" aria-label={tr("app.s0360")}><button className={qualityFilter === "all" ? "active" : ""} onClick={() => setQualityFilter("all")}>{tr("app.s0361")}</button><button className={qualityFilter === "error" ? "active" : ""} disabled={!project.subtitleQuality.errorCount} onClick={() => setQualityFilter("error")}>{tr("app.s0362") + " "}{project.subtitleQuality.errorCount}</button><button className={qualityFilter === "warning" ? "active" : ""} disabled={!project.subtitleQuality.warningCount} onClick={() => setQualityFilter("warning")}>{tr("app.s0363") + " "}{project.subtitleQuality.warningCount}</button></div>{visibleQualityIssues.length > 0 ? <div className="subtitle-quality-issues">{visibleQualityIssues.map((issue) => <button className={issue.severity} key={issue.id} data-review-detail-id={`quality:${issue.id}`} onClick={() => locateSubtitleIssue(issue)}><CircleAlert size={12}/><span><strong>{subtitleIssueLabel(issue.kind)}</strong><small>{formatTime(issue.start)}{tr("app.s0364")}</small></span></button>)}</div> : <div className="all-clear"><Check size={20}/><span>{tr("app.creator.quality.ready")}</span></div>}<button className="button primary full" onClick={() => openCreatorDrawer("export")}>{tr("app.creator.quality.continue")}</button></section>}
+                  {drawerTab === "quality" && <section className={`subtitle-quality-summary creator-quality ${project.subtitleQuality.status}`} aria-label={tr("app.s0357")}><div className="subtitle-quality-state">{project.subtitleQuality.status === "good" ? <Check size={15}/> : <CircleAlert size={15}/>}<span><strong>{project.subtitleQuality.errorCount > 0 ? subtitleQualityStatusLabel(project.subtitleQuality) : project.subtitleQuality.warningCount > 0 ? tr("app.creator.quality.advisorySummary", { count: project.subtitleQuality.warningCount }) : subtitleQualityStatusLabel(project.subtitleQuality)}</strong><small>{project.subtitleQuality.errorCount}{tr("app.s0358") + " "}{project.subtitleQuality.warningCount}{tr("app.s0359")}</small></span></div><div className="subtitle-quality-filters" aria-label={tr("app.s0360")}><button className={qualityFilter === "all" ? "active" : ""} onClick={() => setQualityFilter("all")}>{tr("app.s0361")}</button><button className={qualityFilter === "error" ? "active" : ""} disabled={!project.subtitleQuality.errorCount} onClick={() => setQualityFilter("error")}>{tr("app.s0362") + " "}{project.subtitleQuality.errorCount}</button><button className={qualityFilter === "warning" ? "active" : ""} disabled={!project.subtitleQuality.warningCount} onClick={() => setQualityFilter("warning")}>{tr("app.s0363") + " "}{project.subtitleQuality.warningCount}</button></div>{visibleQualityIssueGroups.length > 0 ? <><p className="quality-review-policy">{tr("app.creator.quality.reviewPolicy")}</p><div className="subtitle-quality-issues">{visibleQualityIssueGroups.map((group) => <button className={group.severity} key={group.id} data-review-detail-id={`quality:${group.first.id}`} onClick={() => locateSubtitleIssue(group.first)}><CircleAlert size={12}/><span><strong>{subtitleIssueLabel(group.kind)}{group.count > 1 ? ` · ${tr("app.creator.quality.groupCount", { count: group.count })}` : ""}</strong><small>{formatTime(group.start)} — {formatTime(group.end)}</small></span></button>)}</div></> : <div className="all-clear"><Check size={20}/><span>{tr("app.creator.quality.ready")}</span></div>}<button className="button primary full" onClick={() => openCreatorDrawer("export")}>{tr("app.creator.quality.continue")}</button></section>}
                   {drawerTab === "analysis" && <div className="inspector-view creator-analysis">
                     <SpeechInsightsPanel insights={project.speechInsights} onLocateEvidence={locateSpeechEvidence} onLocatePause={locateSpeechPause}/>
                     <AudioQualityPanel job={audioAnalysisJob} onStart={startAudioAnalysis} onCancel={cancelAudioAnalysis} onResume={resumeAudioAnalysis} onLocate={locateAudioRisk} disabled={!capabilities.canAnalyzeAudio || Boolean(busy)}/>
@@ -3123,7 +3213,7 @@ function WorkbenchController() {
                     </section>}
                   </div>}
                   {drawerTab === "history" && <div className="inspector-view"><div className="version-block"><div className="section-title"><div><p className="eyebrow">{tr("app.s0385")}</p><h2>{tr("app.s0386")}</h2></div><History size={16}/></div>{project.versions.slice().reverse().map((version) => <button className="version-row" key={version.id} onClick={() => restoreVersion(version.id)}><span><strong>{versionReasonLabel(version.reason)}</strong><small>{new Date(version.createdAt).toLocaleString(uiLocale)}</small></span><RotateCcw size={14}/></button>)}</div></div>}
-                  {drawerTab === "export" && showExportPanel && <Suspense fallback={null}><ExportPanel embedded ref={exportPanelRef} project={project} busy={Boolean(busy)} subtitleMode={subtitleMode} translationLanguageOptions={translationLanguageOptions} translationLanguages={translationLanguages} selectedSubtitleLanguage={selectedSubtitleLanguage} selectedTranslationPending={selectedTranslationPending} selectedTranslationStale={selectedTranslationStale} confirmStaleTranslation={confirmStaleTranslation} confirmUncutExport={confirmUncutExport} exportFormat={exportFormat} structuredExport={structuredExport} includeSpeakerLabels={includeSpeakerLabels} transcriptionExportErrorCount={transcriptionExportErrors.length} transcriptionExportWarningCount={transcriptionExportWarnings.length} confirmTranscriptionWarnings={confirmTranscriptionWarnings} showSubtitleSafeArea={showSubtitleSafeArea} transcriptionExportBlocked={transcriptionExportBlocked} canExportVideo={capabilities.canExportVideo} activeExportRunning={Boolean(activeExport && ["queued", "running"].includes(activeExport.status))} mediaCapabilityTitle={mediaCapabilityTitle} onClose={() => { setShowExportPanel(false); setDrawerTab("quality"); }} onChangeCanvas={(settings) => void changeCanvas(settings)} onSubtitleModeChange={(mode) => { setSubtitleMode(mode); setConfirmStaleTranslation(false); }} onSubtitleLanguageChange={(language) => { setSubtitleLanguage(language); setConfirmStaleTranslation(false); }} onExportFormatChange={(format) => { setExportFormat(format); setConfirmTranscriptionWarnings(false); }} onIncludeSpeakerLabelsChange={setIncludeSpeakerLabels} onConfirmWarningsChange={setConfirmTranscriptionWarnings} onConfirmStaleTranslationChange={setConfirmStaleTranslation} onConfirmUncutExportChange={setConfirmUncutExport} onSubtitleStyleChange={(preset, position) => void changeSubtitleStyle(preset, position)} onShowSafeAreaChange={setShowSubtitleSafeArea} onExportTranscript={exportTranscript} onExportVideo={exportVideo}/></Suspense>}
+                  {drawerTab === "export" && showExportPanel && <Suspense fallback={null}><ExportPanel embedded ref={exportPanelRef} project={project} busy={Boolean(busy)} subtitleDelivery={subtitleDelivery} subtitleMode={subtitleMode} translationLanguageOptions={translationLanguageOptions} translationLanguages={translationLanguages} selectedSubtitleLanguage={selectedSubtitleLanguage} selectedTranslationPending={selectedTranslationPending} selectedTranslationStale={selectedTranslationStale} confirmStaleTranslation={confirmStaleTranslation} confirmUncutExport={confirmUncutExport} exportFormat={exportFormat} structuredExport={structuredExport} includeSpeakerLabels={includeSpeakerLabels} transcriptionExportErrorCount={transcriptionExportErrors.length} transcriptionExportWarningCount={transcriptionExportWarnings.length} confirmTranscriptionWarnings={confirmTranscriptionWarnings} showSubtitleSafeArea={showSubtitleSafeArea} transcriptionExportBlocked={transcriptionExportBlocked} canExportVideo={capabilities.canExportVideo} activeExportRunning={Boolean(activeExport && ["queued", "running"].includes(activeExport.status))} mediaCapabilityTitle={mediaCapabilityTitle} onClose={() => { setShowExportPanel(false); setDrawerTab("quality"); }} onChangeCanvas={(settings) => void changeCanvas(settings)} onSubtitleDeliveryChange={setSubtitleDelivery} onSubtitleModeChange={(mode) => { setSubtitleMode(mode); setConfirmStaleTranslation(false); }} onSubtitleLanguageChange={(language) => { setSubtitleLanguage(language); setConfirmStaleTranslation(false); }} onExportFormatChange={(format) => { setExportFormat(format); setConfirmTranscriptionWarnings(false); }} onIncludeSpeakerLabelsChange={setIncludeSpeakerLabels} onConfirmWarningsChange={setConfirmTranscriptionWarnings} onConfirmStaleTranslationChange={setConfirmStaleTranslation} onConfirmUncutExportChange={setConfirmUncutExport} onSubtitleStyleChange={(preset, position, sourceFontSize, translationFontSize, boxWidthPercent, boxHeightLines) => void changeSubtitleStyle(preset, position, sourceFontSize, translationFontSize, boxWidthPercent, boxHeightLines)} onShowSafeAreaChange={setShowSubtitleSafeArea} onExportTranscript={exportTranscript} onExportVideo={exportVideo}/></Suspense>}
 	                </div>
 	              </aside>
 
@@ -3161,17 +3251,18 @@ function WorkbenchController() {
                   </div>
                 </section>
                 <div className="segment-list" aria-label={tr("app.s0365")}>
-                  {filteredSegments.map((segment) => { const association = associationBySegment.get(segment.id); return <SegmentRow key={segment.id} segment={segment} speaker={association ? speakerById.get(association.speakerId) : undefined} speakerManual={association?.source === "manual"} selected={selectedSegmentIds.includes(segment.id)} active={segment.id === selectedId} translation={translation?.[1]} onSelect={(mode) => selectSegmentInWorkbench(segment, mode)} onSave={(text) => editSegment(segment, text)} onSplitAt={(text, offset) => void splitSegmentFromEditor(segment, text, offset)} onMergePrevious={(text) => void mergePreviousFromEditor(segment, text)}/>; })}
+                  {filteredSegments.map((segment) => { const association = associationBySegment.get(segment.id); return <SegmentRow key={segment.id} segment={segment} speaker={association ? speakerById.get(association.speakerId) : undefined} speakerManual={association?.source === "manual"} selected={selectedSegmentIds.includes(segment.id)} active={segment.id === selectedId} translation={translation?.[1]} translationLanguage={translation?.[0]} onSelect={(mode) => selectSegmentInWorkbench(segment, mode)} onSave={(text) => editSegment(segment, text)} onSaveTranslation={(text) => editTranslationSegment(segment, text)} onSplitAt={(text, offset) => void splitSegmentFromEditor(segment, text, offset)} onMergePrevious={(text) => void mergePreviousFromEditor(segment, text)}/>; })}
                   {!filteredSegments.length && <p className="empty-list">{project.transcript.segments.length ? tr("app.s0366") : tr("app.s0367")}</p>}
                 </div>
               </article>
 
 	            </section>
 
-            <SubtitleTimelinePanel
+            <Suspense fallback={null}><SubtitleTimelinePanel
               project={project}
               speakerTrack={speakerTrack}
               transcriptionReviews={transcriptionReviews}
+              audioRisks={audioRisks}
               waveformUrl={waveformUrl}
               playback={playback}
               selectedId={selectedId}
@@ -3187,7 +3278,9 @@ function WorkbenchController() {
               }}
               onOpenReviewDetail={openTimelineReviewDetail}
               onRestoreCut={(editId) => void updateCut(editId, "restore")}
-            />
+              canEnterFocusReview={Boolean(mediaUrl)}
+              onEnterFocusReview={enterFocusReview}
+            /></Suspense>
           </>)}
       </section>
       {showAiExecutionConfirm && project && <Suspense fallback={null}><AiExecutionConfirm
@@ -3263,7 +3356,7 @@ function WorkbenchController() {
         {recentAutoWorkflows.length > 0 && <section className="auto-history" aria-label={tr("app.auto.history.title")}>
           <header><span><strong>{tr("app.auto.history.title")}</strong><small>{tr("app.auto.history.help")}</small></span><History size={15}/></header>
           <div>{recentAutoWorkflows.map((workflow) => <article key={workflow.id}>
-            <span><strong>{autoStatusLabel(workflow.status)} · {autoStageLabel(workflow.currentStage)}</strong><small>{workflow.title ?? workflow.outputPath} · {new Date(workflow.updatedAt).toLocaleString(uiLocale)}</small></span>
+            <span><strong>{workflowProfileLabel(workflow.profile)} · {autoStatusLabel(workflow.status)} · {autoStageLabel(workflow.currentStage)}</strong><small>{workflow.title ?? workflow.outputPath} · {new Date(workflow.updatedAt).toLocaleString(uiLocale)}</small></span>
             <div>
               <button className="button quiet" onClick={() => { showAutoWorkflowStatus(workflow); setShowAutoWorkflow(false); }}>{tr("app.auto.history.show")}</button>
               {workflow.projectId && <button className="button quiet" onClick={() => { setShowAutoWorkflow(false); void openAutoProject(workflow); }}>{tr("app.s0276")}</button>}
@@ -3272,6 +3365,7 @@ function WorkbenchController() {
           </article>)}</div>
         </section>}
         <div className="auto-form">
+          <Suspense fallback={null}><AutoWorkflowProfileSelector value={autoProfile} onChange={(profile) => { setAutoProfile(profile); if (profile === "draft") { setAutoTranslate(false); setAutoSubtitleMode("source"); setAutoAiSelection(null); } }}/></Suspense>
           <label><span>{tr("app.s0482")}</span><select aria-label={tr("app.s0483")} value={autoInputKind} disabled={Boolean(autoBusy)} onChange={(event) => { setAutoInputKind(event.target.value as "local" | "url"); setAutoSourcePreview(null); setAutoAuthorized(false); setAutoError(null); }}><option value="local">{tr("app.s0484")}</option><option value="url">{tr("app.s0485")}</option></select></label>
           {autoInputKind === "local" ? <div className="auto-file-row"><span><small>{tr("app.s0486")}</small><strong title={autoMediaPath}>{autoMediaPath || tr("app.s0468")}</strong></span><button className="button quiet" disabled={Boolean(autoBusy)} onClick={() => void chooseAutoMedia()}><FolderOpen size={14}/>{tr("app.s0470")}</button></div> : <>
             <form className="source-form" onSubmit={(event) => { event.preventDefault(); void inspectAutoSource(); }}><label><span>{tr("app.s0487")}</span><input autoComplete="url" aria-label={tr("app.s0488")} placeholder="https://…" value={autoUrl} disabled={Boolean(autoBusy)} onChange={(event) => { setAutoUrl(event.target.value); setAutoSourcePreview(null); setAutoAuthorized(false); setAutoError(null); }}/></label><button className="button quiet" type="submit" disabled={Boolean(autoBusy) || !autoUrl.trim()}><Search size={14}/>{tr("app.s0489")}</button></form>
@@ -3280,10 +3374,10 @@ function WorkbenchController() {
           <div className="auto-file-row"><span><small>{tr("app.s0494")}</small><strong title={modelPath ?? undefined}>{modelPath ?? tr("app.s0468")}</strong></span><button className="button quiet" onClick={() => { setShowAutoWorkflow(false); setShowRuntime(true); }}>{tr("app.s0495")}</button></div>
           <div className="auto-options">
             <label><span>{tr("app.transcription.language")}</span><select aria-label={`${tr("app.transcription.language")} · ${tr("app.s0236")}`} value={transcriptionLanguage} disabled={Boolean(autoBusy)} onChange={(event) => selectTranscriptionLanguage(event.target.value as TranscriptionLanguage)}><option value="auto">{tr("app.transcription.auto")}</option><option value="en">{tr("app.transcription.english")}</option><option value="zh">{tr("app.transcription.chinese")}</option></select></label>
-            <label className="auto-check"><input type="checkbox" checked={autoTranslate} onChange={(event) => { setAutoTranslate(event.target.checked); if (!event.target.checked)
+            {autoProfile !== "draft" && <><label className="auto-check"><input type="checkbox" checked={autoTranslate} onChange={(event) => { setAutoTranslate(event.target.checked); if (!event.target.checked)
             setAutoSubtitleMode("source"); setAutoAiSelection(null); }}/><span>{tr("app.s0496")}</span></label>
             <label><span>{tr("app.s0497")}</span><input aria-label={tr("app.s0498")} value={autoTranslationLanguage} disabled={!autoTranslate} onChange={(event) => setAutoTranslationLanguage(event.target.value)}/></label>
-            <label><span>{tr("app.s0499")}</span><select aria-label={tr("app.s0500")} value={autoSubtitleMode} disabled={!autoTranslate} onChange={(event) => setAutoSubtitleMode(event.target.value as typeof autoSubtitleMode)}><option value="source">{tr("app.s0406")}</option><option value="translated">{tr("app.s0407")}</option><option value="bilingual">{tr("app.s0408")}</option></select></label>
+            <label><span>{tr("app.s0499")}</span><select aria-label={tr("app.s0500")} value={autoSubtitleMode} disabled={!autoTranslate} onChange={(event) => setAutoSubtitleMode(event.target.value as typeof autoSubtitleMode)}><option value="source">{tr("app.s0406")}</option><option value="translated">{tr("app.s0407")}</option><option value="bilingual">{tr("app.s0408")}</option></select></label></>}
             <label className="auto-check"><input type="checkbox" checked={autoBurnSubtitles} onChange={(event) => setAutoBurnSubtitles(event.target.checked)}/><span>{tr("app.s0501")}</span></label>
           </div>
           {autoTranslate && <Suspense fallback={null}><AutoWorkflowAiTarget codexReady={Boolean(codexHealth?.available && codexHealth.authenticated)} onChange={setAutoAiSelection}/></Suspense>}
@@ -3332,6 +3426,7 @@ function WorkbenchController() {
         onInstallUpdate={() => void confirmUpdateInstall()}
         onRefresh={() => void initialize()}
         onPrepareResource={(capability) => void openResourcePreparation(capability, "manage")}
+        onLocalResourcesChange={setLocalResources}
         onChangeResourceLocation={() => void openResourcePreparation("basic_media", "manage")}
         onRemoveResource={(capability) => void removeResourceCapability(capability)}
         onRollbackResource={(capability) => void rollbackResourceCapability(capability)}

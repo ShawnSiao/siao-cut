@@ -1,19 +1,19 @@
 import { sampleProject } from "./mock";
-import type { AgentRun, AudioAnalysisJob, AutoWorkflow, CoreEnvelope, ExportJob, LocalCapabilityId, LocalResourceJob, LocalResourceStatus, LocalTranscriptionProfile, ModelDownloadJob, ModelStatus, Project, RuntimeInfo, SourceImportJob, SourcePreview, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SubtitleImportPreview, SubtitleStructureEdit, TranscriptionJob, TranscriptionProviderConfig, TranscriptionProviderHealth, TranscriptionReviewItem, UpdateDownloadEvent, UpdateMetadata, UpdatePolicy } from "./types";
+import type { AgentRun, AudioAnalysisJob, AutoWorkflow, CoreEnvelope, ExportJob, LocalCapabilityId, LocalResourceJob, LocalResourceStatus, LocalTranscriptionProfile, ModelDownloadJob, ModelStatus, Project, ResourceUpdateCheck, RuntimeInfo, SourceImportJob, SourcePreview, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SubtitleImportPreview, SubtitleStructureEdit, TranscriptionJob, TranscriptionProviderConfig, TranscriptionProviderHealth, TranscriptionReviewItem, UpdateDownloadEvent, UpdateMetadata, UpdatePolicy } from "./types";
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
 const mockSubtitleStylePresets = [
-  { id: "compact", label: "紧凑", description: "42 px，适合信息密度较高的双语字幕" },
-  { id: "standard", label: "清晰", description: "52 px，默认口播字幕，兼顾可读性和画面占用" },
-  { id: "emphasis", label: "强调", description: "60 px，加粗描边，适合短句和重点表达" },
+  { id: "compact", label: "紧凑", description: "译文 42 px、原文 32 px，适合信息密度较高的双语字幕" },
+  { id: "standard", label: "清晰", description: "译文 52 px、原文 40 px，默认突出目标受众语言" },
+  { id: "emphasis", label: "强调", description: "译文 60 px、原文 46 px，加粗描边突出目标语言" },
 ] satisfies Array<{ id: Project["subtitleStyle"]["preset"]; label: string; description: string }>;
 
 const resolveMockSubtitleStyle = (preset: Project["subtitleStyle"]["preset"], position: Project["subtitleStyle"]["position"]): Project["subtitleStyle"] => {
   const sizes = preset === "compact"
-    ? { fontSize: 42, secondaryFontSize: 32, outlineWidth: 2, shadowDepth: 1, safeMarginPercent: 6 }
+    ? { fontSize: 32, secondaryFontSize: 42, outlineWidth: 2, shadowDepth: 1, safeMarginPercent: 3, boxWidthPercent: 92, boxHeightLines: 4 }
     : preset === "emphasis"
-      ? { fontSize: 60, secondaryFontSize: 46, outlineWidth: 4, shadowDepth: 2, safeMarginPercent: 10 }
-      : { fontSize: 52, secondaryFontSize: 40, outlineWidth: 3, shadowDepth: 1, safeMarginPercent: 8 };
+      ? { fontSize: 46, secondaryFontSize: 60, outlineWidth: 4, shadowDepth: 2, safeMarginPercent: 5, boxWidthPercent: 92, boxHeightLines: 4 }
+      : { fontSize: 40, secondaryFontSize: 52, outlineWidth: 3, shadowDepth: 1, safeMarginPercent: 4, boxWidthPercent: 92, boxHeightLines: 4 };
   return {
     preset,
     position,
@@ -197,8 +197,8 @@ const mockSourcePreview: SourcePreview = {
   fileSizeBytes: 12075092,
   fileSizeKnown: false,
   thumbnailUrl: null,
-  toolVersion: "2026.06.09",
-  toolSha256: "3a48cb955d55c8821b60ccbdbbc6f61bc958f2f3d3b7ad5eaf3d83a543293a27",
+  toolVersion: "2026.08.19",
+  toolSha256: "66674953fe251b89f4d08c5f0e35e0728679bd67ab3d7d05c0562af101dd3e7a",
   requiresConfirmation: true,
 };
 const mockSubtitlePreview: SubtitleImportPreview = {
@@ -339,6 +339,18 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
     if (!root) throw new Error("resource_setup_required: 请先选择本地资源保存位置");
     mockLocalResources = { ...mockLocalResources, configured: true, root, rootAvailable: true, writable: true, needsSetup: false };
     return { apiVersion: "0.1", status: "ok", localResources: structuredClone(mockLocalResources) };
+  }
+  if (command === "resources" && subcommand === "check-updates") {
+    const selected = args[2] as LocalCapabilityId | undefined;
+    const capabilities: ResourceUpdateCheck["capabilities"] = mockLocalResources.capabilities
+      .filter((capability) => !selected || capability.id === selected)
+      .map((capability) => ({ capabilityId: capability.id, state: capability.state === "ready" ? "current" : capability.state }));
+    return {
+      apiVersion: "0.1",
+      status: "ok",
+      localResources: structuredClone(mockLocalResources),
+      resourceUpdateCheck: { checkedAt: new Date().toISOString(), capabilities },
+    };
   }
   if (command === "resources" && subcommand === "migrate") {
     const root = valueAfter("--root");
@@ -533,12 +545,44 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
   if (command === "transcript" && subcommand === "set-style") {
     const preset = args[args.indexOf("--preset") + 1] as Project["subtitleStyle"]["preset"];
     const position = args[args.indexOf("--position") + 1] as Project["subtitleStyle"]["position"];
-    mockProject.subtitleStyle = resolveMockSubtitleStyle(preset, position);
+    const sourceFontSize = valueAfter("--source-font-size");
+    const translationFontSize = valueAfter("--translation-font-size");
+    const boxWidthPercent = valueAfter("--box-width-percent");
+    const boxHeightLines = valueAfter("--box-height-lines");
+    recordMockSnapshot();
+    mockProject.subtitleStyle = {
+      ...resolveMockSubtitleStyle(preset, position),
+      ...(sourceFontSize == null ? {} : { fontSize: Number(sourceFontSize) }),
+      ...(translationFontSize == null ? {} : { secondaryFontSize: Number(translationFontSize) }),
+      ...(boxWidthPercent == null ? {} : { boxWidthPercent: Number(boxWidthPercent) }),
+      ...(boxHeightLines == null ? {} : { boxHeightLines: Number(boxHeightLines) }),
+    };
     const versionId = `v${mockProject.versions.length + 1}`;
     mockProject.versions.push({ id: versionId, reason: "更新字幕样式", createdAt: new Date().toISOString() });
     mockProject.history = { canUndo: true, canRedo: false, currentVersionId: versionId };
     mockProjects = mockProjects.map((item) => item.id === mockProject.id ? mockProject : item);
     return { apiVersion: "0.1", status: "ok", project: mockProject, subtitleStyle: mockProject.subtitleStyle, subtitleStylePresets: mockSubtitleStylePresets, message: "字幕样式已更新；正文和时间未修改，可通过项目历史撤销。" };
+  }
+  if (command === "translation" && subcommand === "edit") {
+    const segmentId = args[3];
+    const language = valueAfter("--lang") ?? "";
+    const text = valueAfter("--text")?.trim() ?? "";
+    if (valueAfter("--expected-version") !== mockProject.history.currentVersionId)
+      throw new Error("translation_version_conflict: 项目版本已变化，请刷新后重试");
+    const next = structuredClone(mockProject);
+    const translation = next.translations[language];
+    const translated = translation?.segments.find((segment) => segment.segmentId === segmentId);
+    if (!translation || !translated) throw new Error("translation_not_found: 译文不存在");
+    if (!text) throw new Error("translation_text_empty: 译文不能为空");
+    recordMockSnapshot();
+    translated.text = text;
+    translated.sourceHash = `manual:${next.transcript.segments.find((segment) => segment.id === segmentId)?.text ?? ""}`;
+    translated.status = "current";
+    translation.status = translation.segments.every((segment) => segment.status === "current") ? "current" : "stale";
+    const versionId = `v${next.versions.length + 1}`;
+    next.versions.push({ id: versionId, reason: "编辑译文", createdAt: new Date().toISOString() });
+    next.history = { canUndo: true, canRedo: false, currentVersionId: versionId };
+    return { apiVersion: "0.1", status: "ok", project: syncMockProject(next), message: "译文已更新，并与当前原文版本重新关联。" };
   }
   if (command === "transcript" && subcommand === "edit") {
     const segmentId = args[3];
@@ -832,8 +876,10 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
     const now = new Date().toISOString();
     const subtitleModeIndex = args.indexOf("--subtitle-mode");
     const subtitleMode = (subtitleModeIndex >= 0 ? args[subtitleModeIndex + 1] : "source") as ExportJob["subtitleMode"];
+    const subtitleDeliveryIndex = args.indexOf("--subtitle-delivery");
+    const subtitleDelivery = (subtitleDeliveryIndex >= 0 ? args[subtitleDeliveryIndex + 1] : args.includes("--burn-subtitles") ? "burned" : "none") as ExportJob["subtitleDelivery"];
     const language = args.includes("--lang") ? args[args.indexOf("--lang") + 1] : null;
-    const job: ExportJob = { id, projectId: mockProject.id, outputPath: args[args.indexOf("--output") + 1], status: "completed", progress: 1, burnSubtitles: args.includes("--burn-subtitles"), language, bilingual: subtitleMode === "bilingual", subtitleMode, allowStaleTranslation: args.includes("--confirm-stale-translation"), canvasSettings: structuredClone(mockProject.canvasSettings), subtitleStyle: structuredClone(mockProject.subtitleStyle), cancelRequestedAt: null, errorMessage: null, manifestPath: "demo.siaocut.json", createdAt: now, updatedAt: now, completedAt: now };
+    const job: ExportJob = { id, projectId: mockProject.id, outputPath: args[args.indexOf("--output") + 1], status: "completed", progress: 1, burnSubtitles: subtitleDelivery === "burned", subtitleDelivery, language, bilingual: subtitleMode === "bilingual", subtitleMode, allowStaleTranslation: args.includes("--confirm-stale-translation"), canvasSettings: structuredClone(mockProject.canvasSettings), subtitleStyle: structuredClone(mockProject.subtitleStyle), cancelRequestedAt: null, errorMessage: null, manifestPath: "demo.siaocut.json", createdAt: now, updatedAt: now, completedAt: now };
     mockJobs.set(id, job);
     return { apiVersion: "0.1", status: "ok", job, jobId: id };
   }
@@ -1075,11 +1121,13 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
       outputPath: valueAfter("--output") ?? "SiaoCut-auto.mp4",
       burnSubtitles: args.includes("--burn-subtitles"),
       subtitleMode: (valueAfter("--subtitle-mode") ?? "source") as AutoWorkflow["subtitleMode"],
+      profile: (valueAfter("--profile") ?? "balanced") as AutoWorkflow["profile"],
       status: "running",
       currentStage: "import",
       progress: 0.08,
       transcriptVersionId: null,
       agentTaskId: null,
+      audioAnalysisJobId: null,
       aiExecutionKind: valueAfter("--ai-execution") as AutoWorkflow["aiExecutionKind"],
       aiServiceConfigId: valueAfter("--ai-service-config-id"),
       aiServiceRevision: valueAfter("--ai-service-revision") ? Number(valueAfter("--ai-service-revision")) : null,
@@ -1119,22 +1167,37 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
         workflow.progress = 0.68;
       } else if (polls === 1) {
         workflow.currentStage = "transcribe";
-        workflow.progress = 0.32;
+        workflow.progress = workflow.profile === "delivery" ? 0.10 : 0.15;
         workflow.projectId = "p-auto";
-        mockProject = { ...structuredClone(sampleProject), id: workflow.projectId, title: workflow.title ?? (workflow.inputKind === "url" ? mockSourcePreview.title : "一键成片项目"), tasks: [], patchSets: [], edits: structuredClone(sampleProject.edits.slice(0, 1)) };
+        mockProject = { ...structuredClone(sampleProject), id: workflow.projectId, title: workflow.title ?? (workflow.inputKind === "url" ? mockSourcePreview.title : "一键成片项目"), tasks: [], patchSets: [], edits: workflow.profile === "draft" ? [] : structuredClone(sampleProject.edits.slice(0, 1)) };
+      } else if (polls === 2 && workflow.profile === "draft") {
+        workflow.currentStage = "audit";
+        workflow.progress = 0.70;
+        workflow.transcriptVersionId = "v-auto-transcript";
+      } else if (polls >= 3 && workflow.profile === "draft") {
+        workflow.currentStage = "export";
+        workflow.progress = 0.75;
+      } else if (polls === 2 && workflow.profile === "delivery") {
+        workflow.currentStage = "analyze";
+        workflow.progress = 0.40;
+        workflow.audioAnalysisJobId = `audio-${workflow.id}`;
+        workflow.transcriptVersionId = "v-auto-transcript";
+      } else if (polls === 3 && workflow.profile === "delivery") {
+        workflow.currentStage = "suggestions";
+        workflow.progress = 0.55;
       } else if (polls === 2) {
         workflow.currentStage = "suggestions";
-        workflow.progress = 0.52;
+        workflow.progress = 0.45;
         workflow.transcriptVersionId = "v-auto-transcript";
       } else if (workflow.translationLanguage) {
         workflow.status = "needs_agent";
         workflow.currentStage = "translate";
-        workflow.progress = 0.58;
+        workflow.progress = workflow.profile === "delivery" ? 0.60 : 0.50;
         workflow.agentTaskId = "t-auto-translate";
       } else {
         workflow.status = "needs_review";
         workflow.currentStage = "review";
-        workflow.progress = 0.68;
+        workflow.progress = workflow.profile === "delivery" ? 0.60 : 0.50;
       }
       workflow.updatedAt = new Date().toISOString();
     }
@@ -1161,7 +1224,7 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
     if (workflow) {
       workflow.status = "running";
       workflow.currentStage = "export";
-      workflow.progress = 0.86;
+      workflow.progress = workflow.profile === "delivery" ? 0.85 : workflow.profile === "draft" ? 0.75 : 0.80;
       workflow.errorMessage = null;
       workflow.attemptCount += 1;
       workflow.updatedAt = new Date().toISOString();

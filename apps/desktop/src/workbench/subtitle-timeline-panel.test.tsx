@@ -44,7 +44,7 @@ describe("subtitle timeline model", () => {
     expect(timelineTickInterval(0, 0)).toBe(10);
   });
 
-  it("derives de-duplicated quality, Agent, transcription, and edit markers", () => {
+  it("keeps distinct quality, Agent, transcription, edit, and audio markers", () => {
     const project = structuredClone(sampleProject);
     project.subtitleQuality.issues.push({ ...project.subtitleQuality.issues[0], id: "duplicate-gap" });
     const markers = deriveTimelineReviewMarkers(project, [{
@@ -58,12 +58,13 @@ describe("subtitle timeline model", () => {
       status: "open",
       createdAt: "2026-07-29T00:00:00Z",
       resolvedAt: null,
-    }]);
+    }], [{ kind: "silence", start: 20, end: 22, measuredValue: 2, threshold: 1.5, unit: "seconds", toolVersion: "test" }]);
 
-    expect(markers.filter((marker) => marker.source === "quality")).toHaveLength(3);
+    expect(markers.filter((marker) => marker.source === "quality")).toHaveLength(4);
     expect(markers.some((marker) => marker.source === "agent" && marker.segmentId === "s2")).toBe(true);
     expect(markers.some((marker) => marker.source === "transcription" && marker.segmentId === "s3")).toBe(true);
     expect(markers.some((marker) => marker.source === "edit" && marker.segmentId === "s1")).toBe(true);
+    expect(markers.some((marker) => marker.source === "audio" && marker.detailTarget === "analysis")).toBe(true);
   });
 });
 
@@ -86,6 +87,8 @@ describe("SubtitleTimelinePanel", () => {
       onOpenTiming={vi.fn()}
       onOpenReviewDetail={onOpenReviewDetail}
       onRestoreCut={vi.fn()}
+      canEnterFocusReview
+      onEnterFocusReview={vi.fn()}
     />);
 
     expect(screen.getByRole("button", { name: "精细编辑" })).toHaveAttribute("aria-pressed", "true");
@@ -94,6 +97,7 @@ describe("SubtitleTimelinePanel", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /高级审校/ }));
     expect(screen.getByRole("region", { name: "字幕时间轴" })).toHaveClass("review");
+    expect(screen.getByRole("button", { name: "专注审阅" })).toBeEnabled();
     fireEvent.click(screen.getByRole("button", { name: "收起时间线" }));
     expect(screen.getByRole("region", { name: "字幕时间轴" })).toHaveClass("collapsed", "overview");
     fireEvent.click(screen.getByRole("button", { name: "展开时间线" }));

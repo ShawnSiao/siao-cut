@@ -15,7 +15,7 @@ SiaoCut is a Windows-local-first editing workbench for AI talking-head creators.
 1. Import local media, or import a public single-video URL after confirming that you have permission to process it.
 2. Select a local Whisper model for quick transcription, or explicitly connect a local MOSS service for long-form segments and anonymous speaker labels.
 3. Edit subtitles and review Agent suggestions, speech evidence, and soft cuts before applying changes.
-4. Export subtitles or an MP4. Video export and subtitle retiming use the same timeline mapping.
+4. Export subtitles, MP4, or MKV. Video export and subtitle retiming use the same timeline mapping.
 
 ## Current capabilities
 
@@ -26,7 +26,8 @@ SiaoCut is a Windows-local-first editing workbench for AI talking-head creators.
 | Transcript editing | Provides positioned subtitle editing, translation review, soft cuts, undo, redo, and version restore. Source media is never overwritten. |
 | Speech evidence | Flags pace, pauses, filler words, low confidence, loudness, silence, and possible clipping. An optional local model can create a speaker track for review. |
 | Agent review | Agents receive only text, timestamps, and structural constraints. Results remain reviewable three-way patches and do not modify the project directly. |
-| Export | Exports SRT, VTT, ASS, Markdown, and MP4, with optional burned-in subtitles and source or 9:16 canvas layouts. |
+| One-click workflows | Provides fixed Draft, Balanced, and Delivery routes with recoverable background stages; suggestions and translations still require human decisions. |
+| Export | Exports SRT, VTT, ASS, Markdown, MP4, and MKV. Subtitles can be burned in, embedded as a text track, or written beside the video as UTF-8 SRT/VTT; video can use the source ratio or a `9:16` canvas. |
 | Project integrity | The Rust Core is the only writer. SQLite stores project versions, and media SHA-256 audits block export if source files are missing or changed. |
 
 ## Design boundaries
@@ -68,7 +69,7 @@ Development mode starts the local UI. Before transcription or export, check the 
 
 The default data directory is `%LOCALAPPDATA%\SiaoCut`. Development and tests can override it with `SIAOCUT_HOME`. Use `SIAOCUT_FFMPEG`, `SIAOCUT_FFPROBE`, `SIAOCUT_WHISPER_CLI`, `SIAOCUT_WHISPER_VAD_MODEL`, and `SIAOCUT_YTDLP` to select audited local components. Component metadata and verification details are included in `notices/runtime-manifest.json`.
 
-See [`skills/siaocut/SKILL.md`](skills/siaocut/SKILL.md) for the complete CLI workflow.
+See [`skills/siaocut/SKILL.md`](skills/siaocut/SKILL.md) for the complete CLI workflow and [`docs/auto-workflow-profiles.md`](docs/auto-workflow-profiles.md) for the profile contract.
 
 Invitation-only English creators should follow the [English Creator Source Beta guide](docs/english-creator-beta.md), including its external Agent, recovery, privacy, and feedback requirements.
 

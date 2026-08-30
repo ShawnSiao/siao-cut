@@ -1,5 +1,5 @@
-import type { AgentRunStatus, AutoWorkflowStage, AutoWorkflowStatus, BackgroundJobStatus, CoreErrorCode, LocalResourceState, TaskStatus, TranscriptionJobStage, TranscriptionJobStatus, WorkflowStatus } from "./generated/core-contract";
-export type { AgentRunStatus, AutoWorkflowStage, AutoWorkflowStatus, BackgroundJobStatus, CoreErrorCode, KnownCoreErrorCode, LocalResourceState, TaskStatus, TranscriptionJobStage, TranscriptionJobStatus, WorkflowStatus } from "./generated/core-contract";
+import type { AgentRunStatus, AutoWorkflowStage, AutoWorkflowStatus, BackgroundJobStatus, CoreErrorCode, LocalResourceState, TaskStatus, TranscriptionJobStage, TranscriptionJobStatus, WorkflowProfile, WorkflowStatus } from "./generated/core-contract";
+export type { AgentRunStatus, AutoWorkflowStage, AutoWorkflowStatus, BackgroundJobStatus, CoreErrorCode, KnownCoreErrorCode, LocalResourceState, TaskStatus, TranscriptionJobStage, TranscriptionJobStatus, WorkflowProfile, WorkflowStatus } from "./generated/core-contract";
 
 export type Segment = {
   id: string;
@@ -252,6 +252,7 @@ export type ExportJob = {
   stageCode?: string | null;
   progress: number;
   burnSubtitles: boolean;
+  subtitleDelivery: "none" | "burned" | "embedded-mp4" | "embedded-mkv" | "sidecar-srt" | "sidecar-vtt";
   language: string | null;
   bilingual: boolean;
   subtitleMode: "source" | "translated" | "bilingual";
@@ -289,6 +290,8 @@ export type SubtitleStyle = {
   outlineWidth: number;
   shadowDepth: number;
   safeMarginPercent: number;
+  boxWidthPercent: number;
+  boxHeightLines: number;
 };
 
 export type SubtitleStylePresetOption = {
@@ -353,6 +356,14 @@ export type LocalResourceStatus = {
   transcriptionProfile: LocalTranscriptionProfile;
   capabilities: LocalCapabilityStatus[];
   needsSetup: boolean;
+};
+
+export type ResourceUpdateCheck = {
+  checkedAt: string;
+  capabilities: Array<{
+    capabilityId: LocalCapabilityId;
+    state: "current" | LocalResourceState;
+  }>;
 };
 
 export type LocalResourcePlan = {
@@ -574,12 +585,14 @@ export type AutoWorkflow = {
   outputPath: string;
   burnSubtitles: boolean;
   subtitleMode: "source" | "translated" | "bilingual";
+  profile: WorkflowProfile;
   status: AutoWorkflowStatus;
   currentStage: AutoWorkflowStage;
   stageCode?: string | null;
   progress: number;
   transcriptVersionId: string | null;
   agentTaskId: string | null;
+  audioAnalysisJobId: string | null;
   aiExecutionKind: "codex" | "api" | null;
   aiServiceConfigId: string | null;
   aiServiceRevision: number | null;
@@ -815,6 +828,7 @@ export type CoreEnvelope = {
   resourcePlan?: LocalResourcePlan;
   resourceJob?: LocalResourceJob;
   resourceJobs?: LocalResourceJob[];
+  resourceUpdateCheck?: ResourceUpdateCheck;
   source?: SourcePreview;
   sourceJob?: SourceImportJob;
   sourceJobs?: SourceImportJob[];

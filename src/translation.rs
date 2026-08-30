@@ -1,5 +1,6 @@
 use crate::{
     model::{Glossary, GlossaryEntry, Project, Segment, TranslationSegment},
+    project,
     util::now,
 };
 use anyhow::{Result, anyhow, bail};
@@ -182,6 +183,67 @@ pub fn restore(
     )?;
     tx.commit()?;
     load_glossary(db, project_id)
+}
+
+pub fn edit_segment(
+    db: &mut Connection,
+    project_id: &str,
+    segment_id: &str,
+    language: &str,
+    text: String,
+    expected_version_id: &str,
+) -> Result<Project> {
+    validate_language(language)?;
+    let text = text.trim().to_owned();
+    if text.is_empty() {
+        bail!("translation_text_empty: 译文不能为空")
+    }
+    if text.chars().count() > 4_000 {
+        bail!("translation_text_too_long: 单段译文不得超过 4000 个字符")
+    }
+
+    let timestamp = now();
+    project::mutate_with_snapshot_at_version(
+        db,
+        project_id,
+        Some(expected_version_id),
+        "translation_version_conflict: 项目版本已变化，请刷新后重试",
+        "编辑译文",
+        |tx| {
+            let source_text: String = tx
+                .query_row(
+                    "SELECT text FROM segments WHERE project_id=?1 AND id=?2",
+                    params![project_id, segment_id],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .ok_or_else(|| {
+                    anyhow!("translation_segment_not_found: 字幕段不存在：{segment_id}")
+                })?;
+            let glossary_version: i64 = tx
+                .query_row(
+                    "SELECT glossary_version FROM translations WHERE project_id=?1 AND language=?2",
+                    params![project_id, language],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .ok_or_else(|| anyhow!("translation_not_found: 项目中没有 {language} 译文"))?;
+            tx.execute(
+                "INSERT INTO translation_segments(project_id,language,segment_id,text,source_hash,status,updated_at)
+                 VALUES(?1,?2,?3,?4,?5,'current',?6)
+                 ON CONFLICT(project_id,language,segment_id) DO UPDATE SET
+                   text=excluded.text,source_hash=excluded.source_hash,status='current',updated_at=excluded.updated_at",
+                params![project_id, language, segment_id, &text, source_hash(&source_text), &timestamp],
+            )?;
+            refresh_language_status(tx, project_id, language, glossary_version.max(0) as u32)?;
+            tx.execute(
+                "UPDATE projects SET updated_at=?2 WHERE id=?1",
+                params![project_id, &timestamp],
+            )?;
+            Ok(())
+        },
+    )?;
+    project::load(db, project_id)
 }
 
 pub fn effective_segment_status(

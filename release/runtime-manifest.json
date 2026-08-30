@@ -1,36 +1,36 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-08-08",
+  "updatedAt": "2026-08-26",
   "packageProfile": "app-only",
   "components": [
     {
       "id": "ffmpeg-cpu",
       "name": "FFmpeg 8.1 LGPL shared",
-      "version": "8.1",
+      "version": "8.1.2-34-g9b6c8969e0",
       "kind": "on-demand-runtime",
       "backend": "cpu",
       "source": "https://github.com/BtbN/FFmpeg-Builds",
-      "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-07-27-14-00/ffmpeg-n8.1.2-31-g8c9502e9b0-win64-lgpl-shared-8.1.zip",
-      "size": 70510962,
-      "sha256": "0c434d097268f8ee61c96eab3faf048ead646f4ff38ee21027012d23f84e5c19",
+      "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-07-31-14-10/ffmpeg-n8.1.2-34-g9b6c8969e0-win64-lgpl-shared-8.1.zip",
+      "size": 70508781,
+      "sha256": "c222a490dde4e7059f45495deef6bfb98dbcacc2b43df5b607546252037aa95c",
       "license": "LGPL-2.1-or-later",
       "bundled": false
     },
     {
       "id": "yt-dlp",
       "name": "yt-dlp Windows x64",
-      "version": "2026.06.09",
+      "version": "2026.08.19",
       "kind": "on-demand-source-import-sidecar",
       "source": "https://github.com/yt-dlp/yt-dlp",
-      "url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.06.09/yt-dlp.exe",
-      "size": 18202192,
-      "sha256": "3a48cb955d55c8821b60ccbdbbc6f61bc958f2f3d3b7ad5eaf3d83a543293a27",
+      "url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp.exe",
+      "size": 17840399,
+      "sha256": "66674953fe251b89f4d08c5f0e35e0728679bd67ab3d7d05c0562af101dd3e7a",
       "license": "GPL-3.0-or-later for the combined Windows executable; yt-dlp source is Unlicense",
       "licenseFiles": [
         {
           "id": "yt-dlp-unlicense",
           "name": "yt-dlp source license",
-          "url": "https://raw.githubusercontent.com/yt-dlp/yt-dlp/2026.06.09/LICENSE",
+          "url": "https://raw.githubusercontent.com/yt-dlp/yt-dlp/2026.08.19/LICENSE",
           "size": 1211,
           "sha256": "7e12e5df4bae12cb21581ba157ced20e1986a0508dd10d0e8a4ab9a4cf94e85c",
           "target": "yt-dlp-Unlicense.txt"
@@ -38,9 +38,9 @@
         {
           "id": "yt-dlp-third-party",
           "name": "yt-dlp combined executable third-party licenses",
-          "url": "https://raw.githubusercontent.com/yt-dlp/yt-dlp/2026.06.09/THIRD_PARTY_LICENSES.txt",
-          "size": 231397,
-          "sha256": "b085c65586a953cdb4b13c6390d63ec984d66912e4b6a19e66ba3582f2ed104b",
+          "url": "https://raw.githubusercontent.com/yt-dlp/yt-dlp/2026.08.19/THIRD_PARTY_LICENSES.txt",
+          "size": 243550,
+          "sha256": "472aefe951c7db35e1657c1d13fd337140511ed6f2b329205105ad441c5a02b7",
           "target": "yt-dlp-GPL-3.0-and-third-party.txt"
         }
       ],

@@ -25,6 +25,9 @@ Use this Skill when the user asks to 转写、润色字幕、翻译字幕、剪�
 - Preserve `before` exactly as supplied in the claimed segment. This enables SiaoCut to show the task baseline, the Agent suggestion, and the current human text side by side.
 - If the project changes while an Agent is working, still submit the result. SiaoCut marks affected items as conflicts for review instead of overwriting human edits.
 - A soft cut is only a proposal until the user asks to apply it. Always report the spoken text and time range, never internal cut ids.
+- `cut dismiss <projectId> <cutId>` records an explicit 「保留原片」 decision without changing the timeline or making translations stale. Use `cut restore` to undo either an applied or dismissed cut decision.
+- `auto start` defaults to the `balanced` profile for backward compatibility. Select `draft` or `delivery` only when the user explicitly asks for that workflow outcome. Never add translation, AI execution, or a non-source subtitle mode to `draft`.
+- An automatic workflow may stop at `needs_agent` or `needs_review`. Resolve every pending proposal through the existing review commands, then use `auto continue`; this confirmation never authorizes automatic application.
 - Before export, run `audit`. A stale translation is a warning: ask whether the user wants to refresh it or export the last reviewed translation.
 - Run `media prepare <projectId>` once when the user wants proxy playback, waveform evidence, or thumbnails. Reuse `ready` artifacts while their `sourceSha256` still matches the imported media.
 - Final video export is a background Core job. Report its progress from `video status`; use `video cancel` only when the user asks to stop. A cancelled job must not be described as a completed export.
@@ -106,6 +109,27 @@ siaocut --json workflow create <projectId> --kind cut
 ```
 
 Run `workflow continue <workflowId>` after an interruption or when the App asks the Agent to continue. It retries interrupted work, reports pending review, or confirms completion; it does not silently apply patches.
+
+## Automatic workflow profiles
+
+All profiles require an output path and export MP4. The Core owns the route and recovery state; do not reproduce the stage sequence in an Agent script.
+
+```powershell
+# Fast draft: import, transcribe, audit, export. Source subtitles only.
+siaocut --json auto start --profile draft --media "C:\Videos\talk.mp4" --model "C:\Models\ggml-base.bin" --output "C:\Exports\draft.mp4" --subtitle-mode source
+
+# Balanced review: the legacy/default path. --profile may be omitted.
+siaocut --json auto start --profile balanced --media "C:\Videos\talk.mp4" --model "C:\Models\ggml-base.bin" --translate en --output "C:\Exports\reviewed.mp4" --subtitle-mode bilingual
+
+# Delivery: includes local audio analysis and always pauses for final review confirmation.
+siaocut --json auto start --profile delivery --media "C:\Videos\talk.mp4" --model "C:\Models\ggml-base.bin" --output "C:\Exports\delivery.mp4" --subtitle-mode source
+```
+
+- `draft`: does not create cut suggestions or Agent tasks. Its result is an unreviewed draft.
+- `balanced`: runs cut suggestions and optional translation, and pauses only when a decision is pending.
+- `delivery`: checks local FFmpeg capability before starting, reuses one recorded audio-analysis child task, and reaches audit only after `auto continue` confirms the review gate.
+
+Poll with `auto status <workflowId>` and read durable events with `auto events <workflowId> --after <eventId>`. Use `auto cancel` and `auto continue` for explicit cancellation and recovery. A remote failure or child-task failure must be reported as such; do not silently switch execution targets.
 
 ## Cut and export flow
 

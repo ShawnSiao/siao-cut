@@ -73,6 +73,20 @@ pub struct LocalResourceStatus {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CapabilityUpdateCheck {
+    pub capability_id: &'static str,
+    pub state: &'static str,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResourceUpdateCheck {
+    pub checked_at: String,
+    pub capabilities: Vec<CapabilityUpdateCheck>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ResourcePlan {
     pub capability_id: String,
     pub capability_name: &'static str,
@@ -558,6 +572,33 @@ fn status_at(config_path: &Path) -> Result<LocalResourceStatus> {
 
 pub fn status() -> Result<LocalResourceStatus> {
     status_at(&config_path())
+}
+
+fn check_updates_at(config_path: &Path, capability: Option<&str>) -> Result<ResourceUpdateCheck> {
+    if let Some(capability) = capability {
+        capability_name(capability)?;
+    }
+    let status = status_at(config_path)?;
+    let capabilities = status
+        .capabilities
+        .iter()
+        .filter(|item| capability.is_none_or(|selected| item.id == selected))
+        .map(|item| CapabilityUpdateCheck {
+            capability_id: item.id,
+            state: match item.state {
+                "ready" => "current",
+                other => other,
+            },
+        })
+        .collect();
+    Ok(ResourceUpdateCheck {
+        checked_at: util::now(),
+        capabilities,
+    })
+}
+
+pub fn check_updates(capability: Option<&str>) -> Result<ResourceUpdateCheck> {
+    check_updates_at(&config_path(), capability)
 }
 
 pub(crate) fn write_probe(root: &Path) -> Result<()> {
@@ -1178,7 +1219,7 @@ fn capability_up_to_date(config: &LocalResourceConfig, capability: &str) -> Resu
         .all(|(component, version)| config.active_versions.get(component) == Some(version)))
 }
 
-pub fn plan(capability: &str, profile: Option<&str>) -> Result<ResourcePlan> {
+fn plan_at(config_path: &Path, capability: &str, profile: Option<&str>) -> Result<ResourcePlan> {
     let capability_name = capability_name(capability)?;
     let profile = profile.unwrap_or(DEFAULT_PROFILE);
     validate_profile(profile)?;
@@ -1196,7 +1237,7 @@ pub fn plan(capability: &str, profile: Option<&str>) -> Result<ResourcePlan> {
         .and_then(|package| package.get("downloadSize"))
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    let config = read_config_at(&config_path())?;
+    let config = read_config_at(config_path)?;
     let expected = expected_versions(capability, profile)?;
     let needs_basic = config.as_ref().is_none_or(|config| {
         !capability_ready(config, "basic_media")
@@ -1252,6 +1293,10 @@ pub fn plan(capability: &str, profile: Option<&str>) -> Result<ResourcePlan> {
     })
 }
 
+pub fn plan(capability: &str, profile: Option<&str>) -> Result<ResourcePlan> {
+    plan_at(&config_path(), capability, profile)
+}
+
 pub fn health() -> Result<ResourceHealth> {
     let config_path = config_path();
     let status = status_at(&config_path)?;
@@ -1282,6 +1327,7 @@ pub fn health() -> Result<ResourceHealth> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Datelike;
     use tempfile::tempdir;
 
     #[test]
@@ -1297,6 +1343,20 @@ mod tests {
         assert_eq!(status.root, None);
         assert!(!config.exists());
         assert!(!root.exists());
+    }
+
+    #[test]
+    fn component_update_check_filters_capabilities_and_rejects_unknown_ids() {
+        let temp = tempdir().unwrap();
+        let config = temp.path().join("config/local-resources.json");
+
+        let check = check_updates_at(&config, Some("url_import")).unwrap();
+
+        assert_eq!(check.capabilities.len(), 1);
+        assert_eq!(check.capabilities[0].capability_id, "url_import");
+        assert_eq!(check.capabilities[0].state, "not_ready");
+        assert!(check_updates_at(&config, Some("unknown")).is_err());
+        assert!(!config.exists());
     }
 
     #[test]
@@ -1695,9 +1755,11 @@ mod tests {
 
     #[test]
     fn plans_product_capabilities_without_exposing_component_details() {
-        let fast = plan("local_transcription", Some("fast")).unwrap();
-        let quality = plan("local_transcription", Some("quality")).unwrap();
-        let url = plan("url_import", None).unwrap();
+        let temp = tempdir().unwrap();
+        let config = temp.path().join("config/local-resources.json");
+        let fast = plan_at(&config, "local_transcription", Some("fast")).unwrap();
+        let quality = plan_at(&config, "local_transcription", Some("quality")).unwrap();
+        let url = plan_at(&config, "url_import", None).unwrap();
 
         assert_eq!(fast.capability_name, "本地转录");
         assert!(!fast.unknown_size);
@@ -1724,6 +1786,22 @@ mod tests {
                     .as_str()
                     .is_some_and(|value| !value.is_empty())
             );
+            if component["id"] == "ffmpeg-cpu" {
+                let url = component["url"].as_str().unwrap();
+                let tag = url
+                    .split("/download/")
+                    .nth(1)
+                    .unwrap()
+                    .split('/')
+                    .next()
+                    .unwrap();
+                let date = chrono::NaiveDate::parse_from_str(
+                    tag.strip_prefix("autobuild-").unwrap().get(..10).unwrap(),
+                    "%Y-%m-%d",
+                )
+                .unwrap();
+                assert_ne!(date.month(), date.succ_opt().unwrap().month());
+            }
         }
         for model in catalog["models"].as_array().unwrap() {
             assert!(

@@ -89,6 +89,79 @@ impl SubtitleMode {
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
+pub enum SubtitleDelivery {
+    #[default]
+    None,
+    Burned,
+    EmbeddedMp4,
+    EmbeddedMkv,
+    SidecarSrt,
+    SidecarVtt,
+}
+
+impl SubtitleDelivery {
+    pub fn from_burn_subtitles(burn_subtitles: bool) -> Self {
+        if burn_subtitles {
+            Self::Burned
+        } else {
+            Self::None
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "none" => Some(Self::None),
+            "burned" => Some(Self::Burned),
+            "embedded-mp4" => Some(Self::EmbeddedMp4),
+            "embedded-mkv" => Some(Self::EmbeddedMkv),
+            "sidecar-srt" => Some(Self::SidecarSrt),
+            "sidecar-vtt" => Some(Self::SidecarVtt),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Burned => "burned",
+            Self::EmbeddedMp4 => "embedded-mp4",
+            Self::EmbeddedMkv => "embedded-mkv",
+            Self::SidecarSrt => "sidecar-srt",
+            Self::SidecarVtt => "sidecar-vtt",
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum WorkflowProfile {
+    Draft,
+    #[default]
+    Balanced,
+    Delivery,
+}
+
+impl WorkflowProfile {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "draft" => Some(Self::Draft),
+            "balanced" => Some(Self::Balanced),
+            "delivery" => Some(Self::Delivery),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Draft => "draft",
+            Self::Balanced => "balanced",
+            Self::Delivery => "delivery",
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
 pub enum SubtitleStylePreset {
     Compact,
     #[default]
@@ -140,6 +213,8 @@ pub struct SubtitleStyle {
     pub outline_width: u8,
     pub shadow_depth: u8,
     pub safe_margin_percent: u8,
+    pub box_width_percent: u8,
+    pub box_height_lines: u8,
 }
 
 impl Default for SubtitleStyle {
@@ -149,14 +224,16 @@ impl Default for SubtitleStyle {
             position: SubtitlePosition::Bottom,
             font_family: "Microsoft YaHei UI".to_owned(),
             bold: true,
-            font_size: 52,
-            secondary_font_size: 40,
+            font_size: 40,
+            secondary_font_size: 52,
             primary_color: "#F2F4F5".to_owned(),
             secondary_color: "#B5BEC6".to_owned(),
             outline_color: "#080A0D".to_owned(),
             outline_width: 3,
             shadow_depth: 1,
-            safe_margin_percent: 8,
+            safe_margin_percent: 4,
+            box_width_percent: 92,
+            box_height_lines: 4,
         }
     }
 }
@@ -453,6 +530,8 @@ pub struct ExportJob {
     pub stage_code: Option<String>,
     pub progress: f64,
     pub burn_subtitles: bool,
+    #[serde(default)]
+    pub subtitle_delivery: SubtitleDelivery,
     pub language: Option<String>,
     pub bilingual: bool,
     pub subtitle_mode: SubtitleMode,
@@ -687,11 +766,13 @@ pub struct AutoWorkflow {
     pub output_path: String,
     pub burn_subtitles: bool,
     pub subtitle_mode: SubtitleMode,
+    pub profile: WorkflowProfile,
     pub status: String,
     pub current_stage: String,
     pub progress: f64,
     pub transcript_version_id: Option<String>,
     pub agent_task_id: Option<String>,
+    pub audio_analysis_job_id: Option<String>,
     pub ai_execution_kind: Option<String>,
     pub ai_service_config_id: Option<String>,
     pub ai_service_revision: Option<u64>,

@@ -338,6 +338,7 @@ fn validate_core_args_with_limit(args: &[String], default_max_args: usize) -> Re
         "project",
         "glossary",
         "transcript",
+        "translation",
         "task",
         "agent",
         "workflow",
@@ -943,6 +944,25 @@ mod tests {
         assert!(
             validate_core_args(&["resources".into(), "install".into(), "url_import".into()])
                 .is_ok()
+        );
+    }
+
+    #[test]
+    fn allows_public_translation_edit_command() {
+        assert!(
+            validate_core_args(&[
+                "translation".into(),
+                "edit".into(),
+                "project-1".into(),
+                "segment-1".into(),
+                "--lang".into(),
+                "zh".into(),
+                "--text".into(),
+                "确实是通过 ChatGPT 为全世界打造产品，而且我们".into(),
+                "--expected-version".into(),
+                "version-1".into(),
+            ])
+            .is_ok()
         );
     }
 

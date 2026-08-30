@@ -1,5 +1,5 @@
 import { tr } from "./i18n";
-import type { AudioRisk, ModelStatus, Project, SubtitleQualityIssue, TranscriptionLanguage } from "./types";
+import type { AudioRisk, ModelStatus, Project, SubtitleQualityIssue, TranscriptionLanguage, WorkflowProfile } from "./types";
 type HumanState = string;
 export type SegmentSelectionMode = "replace" | "toggle" | "range";
 export type StructureEditMode = "split" | "merge" | "timing" | "offset";
@@ -68,12 +68,14 @@ export const subtitleCountLabel = (count: number) => tr(count === 1 ? "app.count
 export type ExportPreferencesV1 = {
     version: 1;
     subtitleMode: "source" | "translated" | "bilingual";
+    subtitleDelivery: "burned" | "embedded-mp4" | "embedded-mkv" | "sidecar-srt" | "sidecar-vtt";
     subtitleLanguage: string;
     transcriptFormat: "srt" | "vtt" | "ass" | "markdown" | "json";
 };
 export const DEFAULT_EXPORT_PREFERENCES: ExportPreferencesV1 = {
     version: 1,
     subtitleMode: "source",
+    subtitleDelivery: "burned",
     subtitleLanguage: "en",
     transcriptFormat: "srt",
 };
@@ -85,12 +87,14 @@ export const parseExportPreferences = (raw: string | null): ExportPreferencesV1 
     try {
         const candidate = JSON.parse(raw) as Partial<ExportPreferencesV1>;
         const subtitleModes = ["source", "translated", "bilingual"];
+        const subtitleDeliveries = ["burned", "embedded-mp4", "embedded-mkv", "sidecar-srt", "sidecar-vtt"];
         const transcriptFormats = ["srt", "vtt", "ass", "markdown", "json"];
-        if (candidate.version !== 1 || !subtitleModes.includes(candidate.subtitleMode ?? "") || !transcriptFormats.includes(candidate.transcriptFormat ?? ""))
+        if (candidate.version !== 1 || !subtitleModes.includes(candidate.subtitleMode ?? "") || (candidate.subtitleDelivery != null && !subtitleDeliveries.includes(candidate.subtitleDelivery)) || !transcriptFormats.includes(candidate.transcriptFormat ?? ""))
             return DEFAULT_EXPORT_PREFERENCES;
         return {
             version: 1,
             subtitleMode: candidate.subtitleMode as ExportPreferencesV1["subtitleMode"],
+            subtitleDelivery: (candidate.subtitleDelivery ?? "burned") as ExportPreferencesV1["subtitleDelivery"],
             subtitleLanguage: typeof candidate.subtitleLanguage === "string" ? candidate.subtitleLanguage : "en",
             transcriptFormat: candidate.transcriptFormat as ExportPreferencesV1["transcriptFormat"],
         };
@@ -152,6 +156,7 @@ export const sourceStatusLabel = (status: string) => ({
 export const autoStageLabel = (stage: string) => ({
     import: tr("app.s0021"),
     transcribe: tr("app.s0022"),
+    analyze: tr("app.workflowProfile.stage.analyze"),
     suggestions: tr("app.s0023"),
     translate: tr("app.s0024"),
     review: tr("app.s0025"),
@@ -159,6 +164,11 @@ export const autoStageLabel = (stage: string) => ({
     export: tr("app.s0027"),
     complete: tr("app.s0028"),
 }[stage] ?? stage);
+export const workflowProfileLabel = (profile: WorkflowProfile) => ({
+    draft: tr("app.workflowProfile.draft"),
+    balanced: tr("app.workflowProfile.balanced"),
+    delivery: tr("app.workflowProfile.delivery"),
+})[profile];
 export const autoStatusLabel = (status: string) => ({
     queued: tr("app.s0029"),
     running: tr("app.s0001"),
@@ -197,6 +207,7 @@ export const versionReasonLabel = (reason: string) => {
     const fixed = ({
         "项目创建": tr("app.reason.projectCreated"),
         "编辑原文": tr("app.reason.transcriptEdited"),
+        "编辑译文": tr("app.reason.translationEdited"),
         "重新定位原片": tr("app.version.relinkedMedia"),
         "更新画布设置": tr("app.version.canvasUpdated"),
         "新增字幕段": tr("app.version.segmentAdded"),

@@ -16,6 +16,10 @@ pub const CLIPPING_PEAK_DBFS: f64 = -0.1;
 pub const QUIET_LOUDNESS_LUFS: f64 = -24.0;
 pub const LOUD_LOUDNESS_LUFS: f64 = -14.0;
 
+pub fn ensure_available() -> Result<()> {
+    ffmpeg_version(&tool_path("SIAOCUT_FFMPEG", "ffmpeg")).map(|_| ())
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AudioAnalysisThresholds {
