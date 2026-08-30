@@ -213,6 +213,8 @@ pub struct SubtitleStyle {
     pub outline_width: u8,
     pub shadow_depth: u8,
     pub safe_margin_percent: u8,
+    pub box_width_percent: u8,
+    pub box_height_lines: u8,
 }
 
 impl Default for SubtitleStyle {
@@ -230,6 +232,8 @@ impl Default for SubtitleStyle {
             outline_width: 3,
             shadow_depth: 1,
             safe_margin_percent: 4,
+            box_width_percent: 92,
+            box_height_lines: 4,
         }
     }
 }

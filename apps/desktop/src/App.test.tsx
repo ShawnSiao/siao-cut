@@ -1183,9 +1183,20 @@ describe("SiaoCut review workbench", () => {
     expect(screen.getByLabelText("字幕安全区")).toBeInTheDocument();
     expect(within(panel).getByLabelText("原文字号")).toHaveValue(46);
     expect(within(panel).getByLabelText("译文字号")).toHaveValue(60);
+    expect(within(panel).getByLabelText("字幕语言摘要")).toHaveTextContent("中文 · ZH");
+    expect(within(panel).getByLabelText("字幕语言摘要")).toHaveTextContent("English · EN");
     fireEvent.change(within(panel).getByLabelText("译文字号"), { target: { value: "72" } });
     fireEvent.blur(within(panel).getByLabelText("译文字号"));
     await waitFor(() => expect(within(panel).getByLabelText("译文字号")).toHaveValue(72));
+    const width = within(panel).getByLabelText("字幕框宽度");
+    fireEvent.change(width, { target: { value: "96" } });
+    fireEvent.pointerUp(width);
+    await waitFor(() => expect(screen.getByLabelText("字幕预览框")).toHaveAttribute("data-box-width", "96"));
+    const height = within(panel).getByLabelText("字幕框高度");
+    fireEvent.change(height, { target: { value: "6" } });
+    fireEvent.pointerUp(height);
+    await waitFor(() => expect(screen.getByLabelText("字幕预览框")).toHaveAttribute("data-box-height-lines", "6"));
+    expect(screen.getByLabelText("字幕预览框")).toHaveStyle({ left: "2%", right: "2%" });
     expect(screen.getByLabelText("00:13 字幕文本")).toHaveValue(originalText);
   });
 

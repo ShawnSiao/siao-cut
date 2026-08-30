@@ -703,9 +703,28 @@ test("edits stale translations directly and gives the target language an indepen
   await exportPanel.getByLabel("字幕模式").selectOption("bilingual");
   await expect(exportPanel.getByLabel("原文字号")).toHaveValue("40");
   await expect(exportPanel.getByLabel("译文字号")).toHaveValue("52");
+  await expect(exportPanel.getByLabel("字幕语言摘要")).toContainText("中文 · ZH");
+  await expect(exportPanel.getByLabel("字幕语言摘要")).toContainText("English · EN");
   await exportPanel.getByLabel("译文字号").fill("72");
   await exportPanel.getByLabel("译文字号").blur();
   await expect(exportPanel.getByLabel("译文字号")).toHaveValue("72");
+
+  const caption = page.getByLabel("字幕预览框");
+  const initialBox = await caption.boundingBox();
+  const initialMaxHeight = Number.parseFloat(await caption.evaluate((element) => getComputedStyle(element).maxHeight));
+  await exportPanel.getByLabel("字幕框宽度").fill("96");
+  await exportPanel.getByLabel("字幕框宽度").blur();
+  await expect(caption).toHaveAttribute("data-box-width", "96");
+  const widerBox = await caption.boundingBox();
+  expect(initialBox).not.toBeNull();
+  expect(widerBox).not.toBeNull();
+  expect(widerBox!.width).toBeGreaterThan(initialBox!.width);
+
+  await exportPanel.getByLabel("字幕框高度").fill("6");
+  await exportPanel.getByLabel("字幕框高度").blur();
+  await expect(caption).toHaveAttribute("data-box-height-lines", "6");
+  const tallerMaxHeight = Number.parseFloat(await caption.evaluate((element) => getComputedStyle(element).maxHeight));
+  expect(tallerMaxHeight).toBeGreaterThan(initialMaxHeight);
 });
 
 test("versions glossary terms and requires stale-translation export confirmation", async ({ page }) => {

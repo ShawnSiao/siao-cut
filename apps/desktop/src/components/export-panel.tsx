@@ -1,6 +1,6 @@
 import { forwardRef, useEffect, useState } from "react";
 import { CircleAlert, Download, Film, ShieldCheck, X } from "lucide-react";
-import { tr } from "../i18n";
+import { getUiLocale, tr } from "../i18n";
 import type { CanvasSettings, Project } from "../types";
 import { Button, IconButton } from "./ui";
 
@@ -38,11 +38,36 @@ type Props = {
   onConfirmWarningsChange: (confirmed: boolean) => void;
   onConfirmStaleTranslationChange: (confirmed: boolean) => void;
   onConfirmUncutExportChange: (confirmed: boolean) => void;
-  onSubtitleStyleChange: (preset: Project["subtitleStyle"]["preset"], position: Project["subtitleStyle"]["position"], sourceFontSize?: number, translationFontSize?: number) => void;
+  onSubtitleStyleChange: (preset: Project["subtitleStyle"]["preset"], position: Project["subtitleStyle"]["position"], sourceFontSize?: number, translationFontSize?: number, boxWidthPercent?: number, boxHeightLines?: number) => void;
   onShowSafeAreaChange: (show: boolean) => void;
   onExportTranscript: () => void;
   onExportVideo: () => void;
 };
+
+const subtitleBoxCopy = {
+  "zh-CN": {
+    languageSummary: "字幕语言摘要",
+    sourceLanguage: "原文语言",
+    boxSize: "字幕框尺寸",
+    boxWidth: "字幕框宽度",
+    boxHeight: "字幕框高度",
+    linesSuffix: " 行",
+    boxHelp: "拉宽会减少换行；拉高会增加预览可见行数。导出始终保留完整字幕正文。",
+  },
+  "en-US": {
+    languageSummary: "Subtitle language summary",
+    sourceLanguage: "Source language",
+    boxSize: "Subtitle box size",
+    boxWidth: "Subtitle box width",
+    boxHeight: "Subtitle box height",
+    linesSuffix: " lines",
+    boxHelp: "A wider box reduces wrapping; a taller box shows more preview lines. Export always keeps the complete subtitle text.",
+  },
+} as const;
+
+function subtitleCopy(key: keyof (typeof subtitleBoxCopy)["zh-CN"]) {
+  return subtitleBoxCopy[getUiLocale()][key];
+}
 
 function FontSizeInput({ label, value, disabled, onCommit }: { label: string; value: number; disabled: boolean; onCommit: (value: number) => void }) {
   const [draft, setDraft] = useState(String(value));
@@ -56,6 +81,23 @@ function FontSizeInput({ label, value, disabled, onCommit }: { label: string; va
     if (next !== value) onCommit(next);
   };
   return <label className="subtitle-font-size"><span>{label}</span><span><input type="number" min="24" max="120" step="1" value={draft} disabled={disabled} aria-label={label} onChange={(event) => setDraft(event.target.value)} onBlur={commit} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }}/><i>px</i></span></label>;
+}
+
+function SubtitleBoxRange({ label, value, min, max, suffix, disabled, onCommit }: { label: string; value: number; min: number; max: number; suffix: string; disabled: boolean; onCommit: (value: number) => void }) {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => setDraft(value), [value]);
+  const commit = () => {
+    if (draft !== value) onCommit(draft);
+  };
+  return <label className="subtitle-box-range"><span><span>{label}</span><strong>{draft}{suffix}</strong></span><input type="range" min={min} max={max} step="1" value={draft} disabled={disabled} aria-label={label} aria-valuetext={`${draft}${suffix}`} onChange={(event) => setDraft(Number(event.target.value))} onPointerUp={commit} onKeyUp={commit} onBlur={commit}/></label>;
+}
+
+function languageLabel(language: string) {
+  const normalized = language.toLowerCase();
+  if (normalized.startsWith("zh")) return `${tr("app.transcription.chinese")} · ${language.toUpperCase()}`;
+  if (normalized.startsWith("en")) return `${tr("app.transcription.english")} · ${language.toUpperCase()}`;
+  if (normalized === "auto") return tr("app.transcription.auto");
+  return language.toUpperCase();
 }
 
 const ExportPanel = forwardRef<HTMLElement, Props>(function ExportPanel(props, ref) {
@@ -75,7 +117,11 @@ const ExportPanel = forwardRef<HTMLElement, Props>(function ExportPanel(props, r
         <label><span>{tr("app.creator.export.subtitleDelivery")}</span><select aria-label={tr("app.creator.export.subtitleDelivery")} value={subtitleDelivery} onChange={(event) => onSubtitleDeliveryChange(event.target.value as Props["subtitleDelivery"])}><option value="burned">{tr("app.creator.export.delivery.burned")}</option><option value="embedded-mp4">{tr("app.creator.export.delivery.embeddedMp4")}</option><option value="embedded-mkv">{tr("app.creator.export.delivery.embeddedMkv")}</option><option value="sidecar-srt">{tr("app.creator.export.delivery.sidecarSrt")}</option><option value="sidecar-vtt">{tr("app.creator.export.delivery.sidecarVtt")}</option></select></label>
         <p className="runtime-disclosure">{tr(`app.creator.export.delivery.${subtitleDelivery === "burned" ? "burnedHelp" : subtitleDelivery === "embedded-mp4" ? "embeddedMp4Help" : subtitleDelivery === "embedded-mkv" ? "embeddedMkvHelp" : "sidecarHelp"}`)}</p>
         <label><span>{tr("app.s0404")}</span><select aria-label={tr("app.s0405")} value={subtitleMode} onChange={(event) => onSubtitleModeChange(event.target.value as Props["subtitleMode"])}><option value="source">{tr("app.s0406")}</option><option value="translated">{tr("app.s0407")}</option><option value="bilingual">{tr("app.s0408")}</option></select></label>
-        <label><span>{tr("app.s0409")}</span><select aria-label={tr("app.s0409")} disabled={!translationLanguageOptions.length} value={selectedSubtitleLanguage} onChange={(event) => onSubtitleLanguageChange(event.target.value)}>{translationLanguageOptions.length ? translationLanguageOptions.map((language) => <option value={language} key={language}>{language.toUpperCase()}{translationLanguages.includes(language) ? "" : tr("app.s0410")}</option>) : <option value="">{tr("app.s0411")}</option>}</select></label>
+        <div className="subtitle-language-summary" aria-label={subtitleCopy("languageSummary")}>
+          <span><small>{subtitleCopy("sourceLanguage")}</small><strong>{languageLabel(project.transcript.sourceLanguage)}</strong></span>
+          {subtitleMode !== "source" && <span><small>{tr("app.s0409")}</small><strong>{selectedSubtitleLanguage ? languageLabel(selectedSubtitleLanguage) : tr("app.s0411")}</strong></span>}
+        </div>
+        <label><span>{tr("app.s0409")}</span><select aria-label={tr("app.s0409")} disabled={!translationLanguageOptions.length} value={selectedSubtitleLanguage} onChange={(event) => onSubtitleLanguageChange(event.target.value)}>{translationLanguageOptions.length ? translationLanguageOptions.map((language) => <option value={language} key={language}>{languageLabel(language)}{translationLanguages.includes(language) ? "" : tr("app.s0410")}</option>) : <option value="">{tr("app.s0411")}</option>}</select></label>
         <label><span>{tr("app.s0412")}</span><select aria-label={tr("app.s0413")} value={exportFormat} onChange={(event) => onExportFormatChange(event.target.value as Props["exportFormat"])}><option value="srt">SRT</option><option value="vtt">VTT</option><option value="ass">ASS</option><option value="markdown">Markdown</option><option value="json">JSON</option></select></label>
         {selectedTranslationUnavailable && <p className="export-warning" role="alert"><CircleAlert size={14}/>{tr("app.s0176")}</p>}
         {selectedTranslationPending && <p className="export-warning"><CircleAlert size={14}/>{selectedSubtitleLanguage.toUpperCase()}{tr("app.s0414")}</p>}
@@ -89,10 +135,15 @@ const ExportPanel = forwardRef<HTMLElement, Props>(function ExportPanel(props, r
       </section>
       {subtitleDelivery === "burned" && <section className="export-group subtitle-style-group" aria-labelledby="export-subtitle-style-heading">
         <div><h3 id="export-subtitle-style-heading">{tr("app.s0415")}</h3><p>{tr("app.s0416")}</p></div>
-        <label><span>{tr("app.s0417")}</span><select aria-label={tr("app.s0418")} disabled={busy} value={project.subtitleStyle.preset} onChange={(event) => onSubtitleStyleChange(event.target.value as Project["subtitleStyle"]["preset"], project.subtitleStyle.position)}><option value="compact">{tr("app.s0419")}</option><option value="standard">{tr("app.s0420")}</option><option value="emphasis">{tr("app.s0421")}</option></select></label>
-        <label><span>{tr("app.s0422")}</span><select aria-label={tr("app.s0422")} disabled={busy} value={project.subtitleStyle.position} onChange={(event) => onSubtitleStyleChange(project.subtitleStyle.preset, event.target.value as Project["subtitleStyle"]["position"])}><option value="bottom">{tr("app.s0423")}</option><option value="center">{tr("app.s0424")}</option></select></label>
-        <div className="subtitle-font-size-controls"><FontSizeInput label={tr("app.creator.export.sourceFontSize")} value={project.subtitleStyle.fontSize} disabled={busy} onCommit={(size) => onSubtitleStyleChange(project.subtitleStyle.preset, project.subtitleStyle.position, size, project.subtitleStyle.secondaryFontSize)}/><FontSizeInput label={tr("app.creator.export.translationFontSize")} value={project.subtitleStyle.secondaryFontSize} disabled={busy} onCommit={(size) => onSubtitleStyleChange(project.subtitleStyle.preset, project.subtitleStyle.position, project.subtitleStyle.fontSize, size)}/></div>
+        <label><span>{tr("app.s0417")}</span><select aria-label={tr("app.s0418")} disabled={busy} value={project.subtitleStyle.preset} onChange={(event) => onSubtitleStyleChange(event.target.value as Project["subtitleStyle"]["preset"], project.subtitleStyle.position, undefined, undefined, project.subtitleStyle.boxWidthPercent, project.subtitleStyle.boxHeightLines)}><option value="compact">{tr("app.s0419")}</option><option value="standard">{tr("app.s0420")}</option><option value="emphasis">{tr("app.s0421")}</option></select></label>
+        <label><span>{tr("app.s0422")}</span><select aria-label={tr("app.s0422")} disabled={busy} value={project.subtitleStyle.position} onChange={(event) => onSubtitleStyleChange(project.subtitleStyle.preset, event.target.value as Project["subtitleStyle"]["position"], project.subtitleStyle.fontSize, project.subtitleStyle.secondaryFontSize, project.subtitleStyle.boxWidthPercent, project.subtitleStyle.boxHeightLines)}><option value="bottom">{tr("app.s0423")}</option><option value="center">{tr("app.s0424")}</option></select></label>
+        <div className="subtitle-font-size-controls"><FontSizeInput label={tr("app.creator.export.sourceFontSize")} value={project.subtitleStyle.fontSize} disabled={busy} onCommit={(size) => onSubtitleStyleChange(project.subtitleStyle.preset, project.subtitleStyle.position, size, project.subtitleStyle.secondaryFontSize, project.subtitleStyle.boxWidthPercent, project.subtitleStyle.boxHeightLines)}/><FontSizeInput label={tr("app.creator.export.translationFontSize")} value={project.subtitleStyle.secondaryFontSize} disabled={busy} onCommit={(size) => onSubtitleStyleChange(project.subtitleStyle.preset, project.subtitleStyle.position, project.subtitleStyle.fontSize, size, project.subtitleStyle.boxWidthPercent, project.subtitleStyle.boxHeightLines)}/></div>
         <p className="runtime-disclosure">{tr("app.creator.export.translationEmphasis")}</p>
+        <div className="subtitle-box-controls" aria-label={subtitleCopy("boxSize")}>
+          <SubtitleBoxRange label={subtitleCopy("boxWidth")} value={project.subtitleStyle.boxWidthPercent} min={50} max={96} suffix="%" disabled={busy} onCommit={(width) => onSubtitleStyleChange(project.subtitleStyle.preset, project.subtitleStyle.position, project.subtitleStyle.fontSize, project.subtitleStyle.secondaryFontSize, width, project.subtitleStyle.boxHeightLines)}/>
+          <SubtitleBoxRange label={subtitleCopy("boxHeight")} value={project.subtitleStyle.boxHeightLines} min={2} max={6} suffix={subtitleCopy("linesSuffix")} disabled={busy} onCommit={(lines) => onSubtitleStyleChange(project.subtitleStyle.preset, project.subtitleStyle.position, project.subtitleStyle.fontSize, project.subtitleStyle.secondaryFontSize, project.subtitleStyle.boxWidthPercent, lines)}/>
+        </div>
+        <p className="runtime-disclosure">{subtitleCopy("boxHelp")}</p>
         <label className="subtitle-safe-toggle"><input type="checkbox" checked={showSubtitleSafeArea} onChange={(event) => onShowSafeAreaChange(event.target.checked)}/><span>{tr("app.s0425")}</span></label>
         <p className="runtime-disclosure">{tr("app.creator.export.karaoke")}</p>
         <div className="subtitle-style-summary compact"><span><strong>{project.subtitleStyle.outlineWidth} px</strong><small>{tr("app.s0428")}</small></span><span><strong>{project.subtitleStyle.safeMarginPercent}%</strong><small>{tr("app.s0429")}</small></span></div>

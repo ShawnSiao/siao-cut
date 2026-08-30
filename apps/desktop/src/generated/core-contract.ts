@@ -201,6 +201,8 @@ export const coreErrorCodes = [
   "subtitle_style_position_invalid",
   "subtitle_style_content_changed",
   "subtitle_style_color_invalid",
+  "subtitle_style_box_width_invalid",
+  "subtitle_style_box_height_invalid",
   "transcription_provider_invalid",
   "transcription_provider_unavailable",
   "transcription_job_not_found",

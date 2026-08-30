@@ -18,6 +18,10 @@ struct StoredSubtitleStyle {
     source_font_size: Option<u16>,
     #[serde(default)]
     translation_font_size: Option<u16>,
+    #[serde(default)]
+    box_width_percent: Option<u8>,
+    #[serde(default)]
+    box_height_lines: Option<u8>,
 }
 
 #[derive(Debug, Serialize)]
@@ -87,6 +91,12 @@ pub fn from_storage(value: &str) -> Result<SubtitleStyle> {
     if let Some(size) = stored.translation_font_size {
         style.secondary_font_size = validate_font_size(size)?;
     }
+    if let Some(width) = stored.box_width_percent {
+        style.box_width_percent = validate_box_width(width)?;
+    }
+    if let Some(lines) = stored.box_height_lines {
+        style.box_height_lines = validate_box_height(lines)?;
+    }
     Ok(style)
 }
 
@@ -96,6 +106,8 @@ pub fn storage_json(style: &SubtitleStyle) -> Result<String> {
         position: style.position,
         source_font_size: Some(style.font_size),
         translation_font_size: Some(style.secondary_font_size),
+        box_width_percent: Some(style.box_width_percent),
+        box_height_lines: Some(style.box_height_lines),
     })?)
 }
 
@@ -106,13 +118,34 @@ fn validate_font_size(size: u16) -> Result<u16> {
     Ok(size)
 }
 
+fn validate_box_width(width: u8) -> Result<u8> {
+    if !(50..=96).contains(&width) {
+        bail!("subtitle_style_box_width_invalid: 字幕框宽度必须在画面的 50% 至 96% 之间")
+    }
+    Ok(width)
+}
+
+fn validate_box_height(lines: u8) -> Result<u8> {
+    if !(2..=6).contains(&lines) {
+        bail!("subtitle_style_box_height_invalid: 字幕框高度必须在 2 至 6 行之间")
+    }
+    Ok(lines)
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SubtitleStyleOverrides {
+    pub source_font_size: Option<u16>,
+    pub translation_font_size: Option<u16>,
+    pub box_width_percent: Option<u8>,
+    pub box_height_lines: Option<u8>,
+}
+
 pub fn set(
     db: &mut Connection,
     project_id: &str,
     preset: &str,
     position: &str,
-    source_font_size: Option<u16>,
-    translation_font_size: Option<u16>,
+    overrides: SubtitleStyleOverrides,
 ) -> Result<Project> {
     let preset = SubtitleStylePreset::parse(preset).ok_or_else(|| {
         anyhow!("subtitle_style_preset_invalid: 字幕预设只支持 compact、standard 或 emphasis")
@@ -121,11 +154,17 @@ pub fn set(
         anyhow!("subtitle_style_position_invalid: 字幕位置只支持 bottom 或 center")
     })?;
     let mut next = resolve(preset, position);
-    if let Some(size) = source_font_size {
+    if let Some(size) = overrides.source_font_size {
         next.font_size = validate_font_size(size)?;
     }
-    if let Some(size) = translation_font_size {
+    if let Some(size) = overrides.translation_font_size {
         next.secondary_font_size = validate_font_size(size)?;
+    }
+    if let Some(width) = overrides.box_width_percent {
+        next.box_width_percent = validate_box_width(width)?;
+    }
+    if let Some(lines) = overrides.box_height_lines {
+        next.box_height_lines = validate_box_height(lines)?;
     }
     let current = project::load(db, project_id)?;
     if current.subtitle_style == next {
@@ -187,7 +226,7 @@ pub fn ass_header_for_media(
     source_dimensions: Option<(u32, u32)>,
 ) -> Result<String> {
     let (play_res_x, play_res_y) = play_resolution_for_media(canvas, source_dimensions);
-    let margin_h = u32::from(play_res_x) * 4 / 100;
+    let margin_h = u32::from(play_res_x) * u32::from(100 - style.box_width_percent) / 200;
     let margin_v = if style.position == SubtitlePosition::Bottom {
         u32::from(play_res_y) * u32::from(style.safe_margin_percent) / 100
     } else {
@@ -267,6 +306,10 @@ mod tests {
             from_storage(&storage_json(&emphasis).unwrap()).unwrap(),
             emphasis
         );
+        assert_eq!(
+            from_storage(r#"{"preset":"standard","position":"bottom"}"#).unwrap(),
+            SubtitleStyle::default()
+        );
         assert_eq!(catalog().len(), 3);
     }
 
@@ -309,8 +352,12 @@ mod tests {
             &created.id,
             "emphasis",
             "center",
-            Some(44),
-            Some(68),
+            SubtitleStyleOverrides {
+                source_font_size: Some(44),
+                translation_font_size: Some(68),
+                box_width_percent: Some(88),
+                box_height_lines: Some(5),
+            },
         )
         .unwrap();
         assert_eq!(updated.transcript, before.transcript);
@@ -319,9 +366,11 @@ mod tests {
         assert_eq!(
             (
                 updated.subtitle_style.font_size,
-                updated.subtitle_style.secondary_font_size
+                updated.subtitle_style.secondary_font_size,
+                updated.subtitle_style.box_width_percent,
+                updated.subtitle_style.box_height_lines
             ),
-            (44, 68)
+            (44, 68, 88, 5)
         );
         let undone = project::undo(&mut db, &created.id).unwrap();
         assert_eq!(undone.subtitle_style, SubtitleStyle::default());

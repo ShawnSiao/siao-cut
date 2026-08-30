@@ -290,6 +290,8 @@ export type SubtitleStyle = {
   outlineWidth: number;
   shadowDepth: number;
   safeMarginPercent: number;
+  boxWidthPercent: number;
+  boxHeightLines: number;
 };
 
 export type SubtitleStylePresetOption = {

@@ -10,10 +10,10 @@ const mockSubtitleStylePresets = [
 
 const resolveMockSubtitleStyle = (preset: Project["subtitleStyle"]["preset"], position: Project["subtitleStyle"]["position"]): Project["subtitleStyle"] => {
   const sizes = preset === "compact"
-    ? { fontSize: 32, secondaryFontSize: 42, outlineWidth: 2, shadowDepth: 1, safeMarginPercent: 3 }
+    ? { fontSize: 32, secondaryFontSize: 42, outlineWidth: 2, shadowDepth: 1, safeMarginPercent: 3, boxWidthPercent: 92, boxHeightLines: 4 }
     : preset === "emphasis"
-      ? { fontSize: 46, secondaryFontSize: 60, outlineWidth: 4, shadowDepth: 2, safeMarginPercent: 5 }
-      : { fontSize: 40, secondaryFontSize: 52, outlineWidth: 3, shadowDepth: 1, safeMarginPercent: 4 };
+      ? { fontSize: 46, secondaryFontSize: 60, outlineWidth: 4, shadowDepth: 2, safeMarginPercent: 5, boxWidthPercent: 92, boxHeightLines: 4 }
+      : { fontSize: 40, secondaryFontSize: 52, outlineWidth: 3, shadowDepth: 1, safeMarginPercent: 4, boxWidthPercent: 92, boxHeightLines: 4 };
   return {
     preset,
     position,
@@ -547,11 +547,15 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
     const position = args[args.indexOf("--position") + 1] as Project["subtitleStyle"]["position"];
     const sourceFontSize = valueAfter("--source-font-size");
     const translationFontSize = valueAfter("--translation-font-size");
+    const boxWidthPercent = valueAfter("--box-width-percent");
+    const boxHeightLines = valueAfter("--box-height-lines");
     recordMockSnapshot();
     mockProject.subtitleStyle = {
       ...resolveMockSubtitleStyle(preset, position),
       ...(sourceFontSize == null ? {} : { fontSize: Number(sourceFontSize) }),
       ...(translationFontSize == null ? {} : { secondaryFontSize: Number(translationFontSize) }),
+      ...(boxWidthPercent == null ? {} : { boxWidthPercent: Number(boxWidthPercent) }),
+      ...(boxHeightLines == null ? {} : { boxHeightLines: Number(boxHeightLines) }),
     };
     const versionId = `v${mockProject.versions.length + 1}`;
     mockProject.versions.push({ id: versionId, reason: "更新字幕样式", createdAt: new Date().toISOString() });

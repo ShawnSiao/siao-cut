@@ -400,6 +400,10 @@ enum TranscriptCommand {
         source_font_size: Option<u16>,
         #[arg(long)]
         translation_font_size: Option<u16>,
+        #[arg(long)]
+        box_width_percent: Option<u8>,
+        #[arg(long)]
+        box_height_lines: Option<u8>,
     },
     Add {
         project_id: String,
@@ -1311,14 +1315,20 @@ fn run(cli: Cli) -> Result<Value> {
                 position,
                 source_font_size,
                 translation_font_size,
+                box_width_percent,
+                box_height_lines,
             } => {
                 let project = subtitle_style::set(
                     &mut database,
                     &project_id,
                     &preset,
                     &position,
-                    source_font_size,
-                    translation_font_size,
+                    subtitle_style::SubtitleStyleOverrides {
+                        source_font_size,
+                        translation_font_size,
+                        box_width_percent,
+                        box_height_lines,
+                    },
                 )?;
                 Ok(envelope(json!({
                     "projectId": project_id,

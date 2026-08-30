@@ -1657,10 +1657,16 @@ fn subtitle_style_is_recoverable_and_drives_ass_export() {
             "emphasis",
             "--position",
             "center",
+            "--box-width-percent",
+            "88",
+            "--box-height-lines",
+            "5",
         ],
     );
     assert_eq!(styled["subtitleStyle"]["preset"], "emphasis");
     assert_eq!(styled["subtitleStyle"]["position"], "center");
+    assert_eq!(styled["subtitleStyle"]["boxWidthPercent"], 88);
+    assert_eq!(styled["subtitleStyle"]["boxHeightLines"], 5);
     assert_eq!(
         styled["project"]["transcript"],
         before["project"]["transcript"]
@@ -1682,7 +1688,7 @@ fn subtitle_style_is_recoverable_and_drives_ass_export() {
     let ass = fs::read_to_string(output).unwrap();
     assert!(ass.contains("Style: Primary,Microsoft YaHei UI,46"));
     assert!(ass.contains("Style: Secondary,Microsoft YaHei UI,60"));
-    assert!(ass.contains(",4,2,5,76,76,0,1"));
+    assert!(ass.contains(",4,2,5,115,115,0,1"));
     assert!(ass.contains("Dialogue: 0,0:00:00.00,0:00:02.00,Primary,{\\kf200}受控字幕样式"));
 
     let undone = run(temp.path(), &["project", "undo", project_id]);

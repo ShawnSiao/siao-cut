@@ -19,6 +19,8 @@ export const sampleProject: Project = {
     outlineWidth: 3,
     shadowDepth: 1,
     safeMarginPercent: 4,
+    boxWidthPercent: 92,
+    boxHeightLines: 4,
   },
   media: { sourcePath: "", extension: ".mp4", durationSeconds: 278 },
   mediaArtifacts: null,

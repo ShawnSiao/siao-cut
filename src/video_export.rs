@@ -1426,8 +1426,14 @@ mod tests {
             None,
         )
         .unwrap();
-        crate::subtitle_style::set(&mut database, &created.id, "emphasis", "center", None, None)
-            .unwrap();
+        crate::subtitle_style::set(
+            &mut database,
+            &created.id,
+            "emphasis",
+            "center",
+            Default::default(),
+        )
+        .unwrap();
         let job = create(
             &mut database,
             &created.id,
@@ -1445,8 +1451,14 @@ mod tests {
         assert_eq!(job.subtitle_style.preset, SubtitleStylePreset::Emphasis);
         assert_eq!(job.subtitle_style.position, SubtitlePosition::Center);
 
-        crate::subtitle_style::set(&mut database, &created.id, "compact", "bottom", None, None)
-            .unwrap();
+        crate::subtitle_style::set(
+            &mut database,
+            &created.id,
+            "compact",
+            "bottom",
+            Default::default(),
+        )
+        .unwrap();
         let reloaded = load(&database, &job.id).unwrap();
         assert_eq!(
             reloaded.subtitle_style.preset,
@@ -1530,8 +1542,14 @@ mod tests {
                 )
                 .unwrap();
         }
-        crate::subtitle_style::set(&mut database, &created.id, "emphasis", "bottom", None, None)
-            .unwrap();
+        crate::subtitle_style::set(
+            &mut database,
+            &created.id,
+            "emphasis",
+            "bottom",
+            Default::default(),
+        )
+        .unwrap();
         let styled = project::load(&database, &created.id).unwrap();
         let subtitle_path = temp.path().join("styled.ass");
         let ass = export::render(
