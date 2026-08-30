@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { changeUiLocale } from "../i18n";
 import type { LocalResourcePlan, LocalResourceStatus } from "../types";
@@ -151,5 +151,35 @@ describe("local resource setup", () => {
     expect(onPrepare).toHaveBeenCalledWith("basic_media");
     expect(onRollback).toHaveBeenCalledWith("basic_media");
     expect(document.body).not.toHaveTextContent(/FFmpeg|SHA-?256|v\d/);
+  });
+
+  it("checks all installed capabilities or one card without exposing component details", async () => {
+    const checkUpdates = vi.fn();
+    const ready: LocalResourceStatus = {
+      ...unconfiguredStatus,
+      configured: true,
+      root: "D:\\SiaoCut Resources",
+      rootAvailable: true,
+      writable: true,
+      needsSetup: false,
+      capabilities: unconfiguredStatus.capabilities.map((capability) => ({ ...capability, state: "ready" as const, enabled: true })),
+    };
+
+    checkUpdates.mockResolvedValue({
+      apiVersion: "0.1",
+      status: "ok",
+      localResources: ready,
+      resourceUpdateCheck: {
+        checkedAt: "2026-08-26T12:00:00Z",
+        capabilities: ready.capabilities.map((capability) => ({ capabilityId: capability.id, state: "current" as const })),
+      },
+    });
+    render(<LocalResourcePanel status={ready} job={null} busy={false} checkUpdates={checkUpdates} onPrepare={vi.fn()} onChangeLocation={vi.fn()} onRemove={vi.fn()} onRollback={vi.fn()} onCleanup={vi.fn()}/>);
+    fireEvent.click(screen.getByRole("button", { name: "检查全部" }));
+    await waitFor(() => expect(screen.getAllByText("已是最新版本")).toHaveLength(4));
+    fireEvent.click(screen.getByRole("button", { name: "URL 导入：检查更新" }));
+    expect(checkUpdates).toHaveBeenNthCalledWith(1, undefined);
+    expect(checkUpdates).toHaveBeenNthCalledWith(2, "url_import");
+    expect(document.body).not.toHaveTextContent(/FFmpeg|FFprobe|yt-dlp|whisper\.cpp|SHA-?256/);
   });
 });

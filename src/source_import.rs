@@ -28,9 +28,9 @@ use std::{
 
 pub const MAX_DURATION_SECONDS: f64 = 2.0 * 60.0 * 60.0;
 pub const MAX_FILE_SIZE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
-pub const PINNED_YTDLP_VERSION: &str = "2026.06.09";
+pub const PINNED_YTDLP_VERSION: &str = "2026.08.19";
 pub const PINNED_YTDLP_SHA256: &str =
-    "3a48cb955d55c8821b60ccbdbbc6f61bc958f2f3d3b7ad5eaf3d83a543293a27";
+    "66674953fe251b89f4d08c5f0e35e0728679bd67ab3d7d05c0562af101dd3e7a";
 const MAX_REDIRECTS: usize = 8;
 const INSPECTION_TIMEOUT: Duration = Duration::from_secs(45);
 const TOOL_VERSION_TIMEOUT: Duration = Duration::from_secs(10);

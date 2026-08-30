@@ -537,9 +537,13 @@ h2 { margin: 4px 0 0; font-size: 15px; letter-spacing: -.02em; }
 .local-resource-panel > header strong { color: var(--text-primary); font-size: 14px; }
 .local-resource-panel > header small { color: var(--text-muted); font-size: 12px; line-height: 1.5; }
 .local-resource-panel > header svg { color: var(--brand); }
+.local-resource-header-actions { display: flex; align-items: center; gap: 10px; }
+.local-resource-header-actions .button { min-height: 30px; padding: 5px 9px; }
+.resource-update-check-error { display: flex; align-items: center; gap: 7px; border: 1px solid var(--warning); border-radius: var(--radius-control); background: var(--warning-soft); padding: 8px 10px; color: var(--warning); font-size: 12px; }
 .local-capability-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .local-capability-grid article { display: grid; gap: 12px; border: 1px solid var(--border-default); border-radius: var(--radius-panel); background: var(--bg-panel-raised); padding: 11px; }
 .local-capability-grid article.ready { border-color: color-mix(in srgb, var(--success) 38%, var(--border-default)); }
+.local-capability-grid article.update_available { border-color: var(--warning); }
 .local-capability-grid article.needs_repair { border-color: var(--warning); }
 .local-capability-grid article > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
 .local-capability-grid article > header span { display: grid; gap: 4px; }
@@ -549,7 +553,8 @@ h2 { margin: 4px 0 0; font-size: 15px; letter-spacing: -.02em; }
 .local-capability-grid article.ready i { color: var(--success); }
 .local-capability-grid article footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-top: 1px solid var(--border-subtle); padding-top: 8px; }
 .local-capability-grid article footer > span { color: var(--text-secondary); font-size: 12px; }
-.local-capability-grid article footer > div { display: flex; align-items: center; gap: 7px; }
+.local-capability-grid article footer > span.check-failed { color: var(--warning); }
+.local-capability-grid article footer > div { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 7px; }
 .local-capability-grid article footer button { display: inline-flex; align-items: center; gap: 4px; border: 0; background: transparent; color: var(--brand); padding: 2px; font-size: 12px; }
 .local-capability-grid article footer button.danger-link { color: var(--danger); }
 .resource-diagnostics { margin-top: 16px; border: 1px solid var(--border-subtle); border-radius: var(--radius-panel); background: var(--bg-panel-raised); }

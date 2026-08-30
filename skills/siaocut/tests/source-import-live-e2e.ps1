@@ -110,7 +110,7 @@ try {
     if ([string]$completed.siteMediaId -ne [string]$preview.source.siteMediaId) {
         throw 'Site media ID was not preserved.'
     }
-    if ([string]$completed.toolVersion -ne '2026.06.09') { throw 'Pinned tool version was not preserved.' }
+    if ([string]$completed.toolVersion -ne '2026.08.19') { throw 'Pinned tool version was not preserved.' }
     if ([string]$completed.projectId -ne [string]$project.id) { throw 'Source job project link mismatch.' }
 
     [pscustomobject]@{

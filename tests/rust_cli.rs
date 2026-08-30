@@ -141,6 +141,16 @@ fn local_resources_can_be_configured_planned_and_checked() {
     assert_eq!(initial["localResources"]["needsSetup"], true);
     assert_eq!(initial["localResources"]["root"], Value::Null);
 
+    let update_check = run_direct(temp.path(), &["resources", "check-updates", "url_import"]);
+    assert_eq!(
+        update_check["resourceUpdateCheck"]["capabilities"][0]["capabilityId"],
+        "url_import"
+    );
+    assert_eq!(
+        update_check["resourceUpdateCheck"]["capabilities"][0]["state"],
+        "not_ready"
+    );
+
     let blocked = run_direct_error(temp.path(), &["resources", "install", "url_import"]);
     assert_eq!(blocked["error"]["code"], "resource_setup_required");
     assert!(!root.exists());

@@ -3423,6 +3423,7 @@ function WorkbenchController() {
         onInstallUpdate={() => void confirmUpdateInstall()}
         onRefresh={() => void initialize()}
         onPrepareResource={(capability) => void openResourcePreparation(capability, "manage")}
+        onLocalResourcesChange={setLocalResources}
         onChangeResourceLocation={() => void openResourcePreparation("basic_media", "manage")}
         onRemoveResource={(capability) => void removeResourceCapability(capability)}
         onRollbackResource={(capability) => void rollbackResourceCapability(capability)}

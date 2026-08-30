@@ -1,9 +1,33 @@
 import { CheckCircle2, CircleAlert, Download, FolderOpen, HardDrive, LoaderCircle, RefreshCw, ShieldCheck, Trash2, X } from "lucide-react";
-import type { RefObject } from "react";
+import { useState, type RefObject } from "react";
 import { formatBytes } from "../app-view-model";
-import { tr } from "../i18n";
+import { getUiLocale, tr } from "../i18n";
 import type { LocalCapabilityId, LocalCapabilityStatus, LocalResourceJob, LocalResourcePlan, LocalResourceStatus, LocalTranscriptionProfile } from "../types";
+import { localResourceClient } from "../domains/local-resource-client";
 import { Dialog } from "./ui";
+
+const resourceUpdateCopy = {
+  "zh-CN": {
+    check: "检查更新",
+    checkAll: "检查全部",
+    checking: "正在检查更新",
+    current: "已是最新版本",
+    failed: "检查失败，现有组件仍可使用。",
+    download: "下载并更新",
+  },
+  "en-US": {
+    check: "Check updates",
+    checkAll: "Check all",
+    checking: "Checking for updates",
+    current: "Latest compatible version",
+    failed: "The check failed. The current component remains available.",
+    download: "Download and update",
+  },
+} as const;
+
+function updateCopy(key: keyof (typeof resourceUpdateCopy)["zh-CN"]) {
+  return resourceUpdateCopy[getUiLocale()][key];
+}
 
 function capabilityLabel(id: LocalCapabilityId) {
   return {
@@ -66,7 +90,8 @@ export function LocalResourceSetupDialog(props: LocalResourceSetupDialogProps) {
   const resumable = props.job && ["cancelled", "failed", "interrupted"].includes(props.job.status);
   const pendingLocation = Boolean(props.selectedRoot) && props.selectedRoot !== props.status?.root;
   const canStart = Boolean(props.status?.configured && props.status.rootAvailable && !pendingLocation && !props.job && !props.busy);
-  const actionLabel = props.reason === "on_demand" ? tr("app.resources.prepareAndContinue") : tr("app.resources.prepareRecommended");
+  const updating = props.status?.capabilities.some((capability) => capability.id === props.capability && capability.state === "update_available");
+  const actionLabel = updating ? updateCopy("download") : props.reason === "on_demand" ? tr("app.resources.prepareAndContinue") : tr("app.resources.prepareRecommended");
   return <Dialog label={tr("app.resources.setupTitle")} className="runtime-dialog resource-setup-dialog" onClose={props.onClose} returnFocusRef={props.returnFocusRef}>
     <button autoFocus className="dialog-close" aria-label={tr("app.resources.close")} onClick={props.onClose}><X size={18}/></button>
     <div className="resource-setup-mark"><HardDrive size={22}/></div>
@@ -114,21 +139,56 @@ type LocalResourcePanelProps = {
   job: LocalResourceJob | null;
   busy: boolean;
   onPrepare: (capability: LocalCapabilityId) => void;
+  checkUpdates?: typeof localResourceClient.checkUpdates;
+  onStatusChange?: (status: LocalResourceStatus) => void;
   onChangeLocation: () => void;
   onRemove: (capability: LocalCapabilityId) => void;
   onRollback: (capability: LocalCapabilityId) => void;
   onCleanup: () => void;
 };
 
-export function LocalResourcePanel({ status, job, busy, onPrepare, onChangeLocation, onRemove, onRollback, onCleanup }: LocalResourcePanelProps) {
+export function LocalResourcePanel({ status, job, busy, checkUpdates = localResourceClient.checkUpdates, onStatusChange, onPrepare, onChangeLocation, onRemove, onRollback, onCleanup }: LocalResourcePanelProps) {
+  const [updateCheckTarget, setUpdateCheckTarget] = useState<LocalCapabilityId | "all" | null>(null);
+  const [updateCheckedAt, setUpdateCheckedAt] = useState<Partial<Record<LocalCapabilityId, string>>>({});
+  const [updateCheckError, setUpdateCheckError] = useState<LocalCapabilityId | null | undefined>(undefined);
+  const activeResourceJob = Boolean(job && ["queued", "running"].includes(job.status));
+  const updateCheckBusy = updateCheckTarget !== null;
+  const handleCheckUpdates = async (capability?: LocalCapabilityId) => {
+    if (updateCheckBusy) return;
+    setUpdateCheckTarget(capability ?? "all");
+    setUpdateCheckError(undefined);
+    try {
+      const envelope = await checkUpdates(capability);
+      if (envelope.localResources) onStatusChange?.(envelope.localResources);
+      const checkedAt = envelope.resourceUpdateCheck?.checkedAt ?? new Date().toISOString();
+      const checkedCapabilities = envelope.resourceUpdateCheck?.capabilities.map((item) => item.capabilityId)
+        ?? (capability ? [capability] : status?.capabilities.map((item) => item.id) ?? []);
+      setUpdateCheckedAt((current) => ({ ...current, ...Object.fromEntries(checkedCapabilities.map((item) => [item, checkedAt])) }));
+    } catch {
+      setUpdateCheckError(capability ?? null);
+    } finally {
+      setUpdateCheckTarget(null);
+    }
+  };
   return <section className="local-resource-panel" aria-label={tr("app.resources.title")}>
-    <header><span><strong>{tr("app.resources.title")}</strong><small>{tr("app.resources.panelDescription")}</small></span><HardDrive size={19}/></header>
+    <header><span><strong>{tr("app.resources.title")}</strong><small>{tr("app.resources.panelDescription")}</small></span><div className="local-resource-header-actions"><button className="button quiet" disabled={busy || activeResourceJob || updateCheckBusy} onClick={() => void handleCheckUpdates()}>{updateCheckTarget === "all" ? <LoaderCircle className="spin" size={14}/> : <RefreshCw size={14}/>} {updateCopy("checkAll")}</button><HardDrive size={19}/></div></header>
+    {updateCheckError === null && <div className="resource-update-check-error" role="alert"><CircleAlert size={14}/><span>{updateCopy("failed")}</span></div>}
     <div className="local-resource-location"><span><small>{tr("app.resources.location")}</small><strong title={status?.root ?? undefined}>{status?.root ?? tr("app.resources.locationMissing")}</strong></span><button className="button quiet" disabled={busy || Boolean(job && ["queued", "running"].includes(job.status))} onClick={onChangeLocation}><FolderOpen size={14}/>{status?.configured ? tr("app.resources.changeLocation") : tr("app.resources.chooseLocation")}</button></div>
     <div className="local-capability-grid">{status?.capabilities.map((capability) => {
       const activeJob = job?.capabilityId === capability.id && ["queued", "running"].includes(job.status);
+      const checking = updateCheckTarget === "all" || updateCheckTarget === capability.id;
+      const checked = Boolean(updateCheckedAt[capability.id]);
+      const checkFailed = updateCheckError === capability.id;
+      const statusText = checking
+        ? updateCopy("checking")
+        : checkFailed
+          ? updateCopy("failed")
+          : checked && capability.state === "ready"
+            ? updateCopy("current")
+            : stateLabel(capability);
       return <article key={capability.id} className={capability.state}>
-        <header><span><strong>{capabilityLabel(capability.id)}</strong><small>{capabilityDescription(capability.id)}</small></span><i>{capability.state === "ready" ? <CheckCircle2 size={16}/> : activeJob ? <LoaderCircle className="spin" size={16}/> : <CircleAlert size={16}/>}</i></header>
-        <footer><span>{activeJob ? tr("app.resources.state.preparing") : stateLabel(capability)}</span><div>{capability.state !== "ready" && <button disabled={busy || Boolean(job)} onClick={() => onPrepare(capability.id)}>{capability.state === "needs_repair" ? tr("app.resources.repair") : capability.state === "update_available" ? tr("app.resources.update") : tr("app.resources.prepare")}</button>}{capability.canRollback && <button className="quiet" disabled={busy || Boolean(job)} onClick={() => onRollback(capability.id)}><RefreshCw size={13}/>{tr("app.resources.rollback")}</button>}{capability.state === "ready" && <button className="danger-link" disabled={busy || Boolean(job)} onClick={() => onRemove(capability.id)}><Trash2 size={13}/>{tr("app.resources.remove")}</button>}</div></footer>
+        <header><span><strong>{capabilityLabel(capability.id)}</strong><small>{capabilityDescription(capability.id)}</small></span><i>{checking || activeJob ? <LoaderCircle className="spin" size={16}/> : capability.state === "ready" ? <CheckCircle2 size={16}/> : <CircleAlert size={16}/>}</i></header>
+        <footer><span className={checkFailed ? "check-failed" : ""} aria-live="polite">{activeJob ? tr("app.resources.state.preparing") : statusText}</span><div>{capability.state !== "ready" && <button disabled={busy || Boolean(job) || updateCheckBusy} onClick={() => onPrepare(capability.id)}>{capability.state === "needs_repair" ? tr("app.resources.repair") : capability.state === "update_available" ? tr("app.resources.update") : tr("app.resources.prepare")}</button>}{capability.enabled && <button className="quiet" aria-label={`${capabilityLabel(capability.id)}：${updateCopy("check")}`} disabled={busy || Boolean(job) || updateCheckBusy} onClick={() => void handleCheckUpdates(capability.id)}><RefreshCw size={13}/>{updateCopy("check")}</button>}{capability.canRollback && <button className="quiet" disabled={busy || Boolean(job) || updateCheckBusy} onClick={() => onRollback(capability.id)}><RefreshCw size={13}/>{tr("app.resources.rollback")}</button>}{capability.state === "ready" && <button className="danger-link" disabled={busy || Boolean(job) || updateCheckBusy} onClick={() => onRemove(capability.id)}><Trash2 size={13}/>{tr("app.resources.remove")}</button>}</div></footer>
       </article>;
     })}</div>
     {status?.configured && <button className="button quiet full" disabled={busy || Boolean(job && ["queued", "running"].includes(job.status))} onClick={onCleanup}><Trash2 size={14}/>{tr("app.resources.cleanup")}</button>}

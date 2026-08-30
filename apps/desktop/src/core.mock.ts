@@ -1,5 +1,5 @@
 import { sampleProject } from "./mock";
-import type { AgentRun, AudioAnalysisJob, AutoWorkflow, CoreEnvelope, ExportJob, LocalCapabilityId, LocalResourceJob, LocalResourceStatus, LocalTranscriptionProfile, ModelDownloadJob, ModelStatus, Project, RuntimeInfo, SourceImportJob, SourcePreview, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SubtitleImportPreview, SubtitleStructureEdit, TranscriptionJob, TranscriptionProviderConfig, TranscriptionProviderHealth, TranscriptionReviewItem, UpdateDownloadEvent, UpdateMetadata, UpdatePolicy } from "./types";
+import type { AgentRun, AudioAnalysisJob, AutoWorkflow, CoreEnvelope, ExportJob, LocalCapabilityId, LocalResourceJob, LocalResourceStatus, LocalTranscriptionProfile, ModelDownloadJob, ModelStatus, Project, ResourceUpdateCheck, RuntimeInfo, SourceImportJob, SourcePreview, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SubtitleImportPreview, SubtitleStructureEdit, TranscriptionJob, TranscriptionProviderConfig, TranscriptionProviderHealth, TranscriptionReviewItem, UpdateDownloadEvent, UpdateMetadata, UpdatePolicy } from "./types";
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
 const mockSubtitleStylePresets = [
@@ -197,8 +197,8 @@ const mockSourcePreview: SourcePreview = {
   fileSizeBytes: 12075092,
   fileSizeKnown: false,
   thumbnailUrl: null,
-  toolVersion: "2026.06.09",
-  toolSha256: "3a48cb955d55c8821b60ccbdbbc6f61bc958f2f3d3b7ad5eaf3d83a543293a27",
+  toolVersion: "2026.08.19",
+  toolSha256: "66674953fe251b89f4d08c5f0e35e0728679bd67ab3d7d05c0562af101dd3e7a",
   requiresConfirmation: true,
 };
 const mockSubtitlePreview: SubtitleImportPreview = {
@@ -339,6 +339,18 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
     if (!root) throw new Error("resource_setup_required: 请先选择本地资源保存位置");
     mockLocalResources = { ...mockLocalResources, configured: true, root, rootAvailable: true, writable: true, needsSetup: false };
     return { apiVersion: "0.1", status: "ok", localResources: structuredClone(mockLocalResources) };
+  }
+  if (command === "resources" && subcommand === "check-updates") {
+    const selected = args[2] as LocalCapabilityId | undefined;
+    const capabilities: ResourceUpdateCheck["capabilities"] = mockLocalResources.capabilities
+      .filter((capability) => !selected || capability.id === selected)
+      .map((capability) => ({ capabilityId: capability.id, state: capability.state === "ready" ? "current" : capability.state }));
+    return {
+      apiVersion: "0.1",
+      status: "ok",
+      localResources: structuredClone(mockLocalResources),
+      resourceUpdateCheck: { checkedAt: new Date().toISOString(), capabilities },
+    };
   }
   if (command === "resources" && subcommand === "migrate") {
     const root = valueAfter("--root");

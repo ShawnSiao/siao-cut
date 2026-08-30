@@ -70,6 +70,7 @@ type RuntimeSettingsDialogProps = {
   onInstallUpdate: () => void;
   onRefresh: () => void;
   onPrepareResource: (capability: LocalCapabilityId) => void;
+  onLocalResourcesChange: (status: LocalResourceStatus) => void;
   onChangeResourceLocation: () => void;
   onRemoveResource: (capability: LocalCapabilityId) => void;
   onRollbackResource: (capability: LocalCapabilityId) => void;
@@ -87,7 +88,7 @@ export default function RuntimeSettingsDialog(props: RuntimeSettingsDialogProps)
       </header>
       {tab === "local" ? <div className="runtime-dialog-content environment-local-content" role="tabpanel" aria-label="本地功能">
         <p className="dialog-copy">{tr("app.resources.panelDescription")}</p>
-        <LocalResourcePanel status={props.localResources} job={props.resourceJob} busy={props.resourceBusy} onPrepare={props.onPrepareResource} onChangeLocation={props.onChangeResourceLocation} onRemove={props.onRemoveResource} onRollback={props.onRollbackResource} onCleanup={props.onCleanupResources}/>
+        <LocalResourcePanel status={props.localResources} job={props.resourceJob} busy={props.resourceBusy} onStatusChange={props.onLocalResourcesChange} onPrepare={props.onPrepareResource} onChangeLocation={props.onChangeResourceLocation} onRemove={props.onRemoveResource} onRollback={props.onRollbackResource} onCleanup={props.onCleanupResources}/>
         <details className="resource-diagnostics"><summary><span><strong>{tr("app.resources.diagnostics")}</strong><small>{tr("app.resources.diagnosticsDescription")}</small></span></summary><div>
           <RuntimeChecklist runtime={props.runtime} modelPath={props.modelPath} modelAvailable={props.modelAvailable} onChooseModel={props.onChooseModel}/>
           <section className="creator-advanced-transcription" aria-label={tr("app.creator.advancedTranscription")}><header><strong>{tr("app.creator.advancedTranscription")}</strong><small>{tr("app.creator.advancedTranscriptionHelp")}</small></header><div><label><span>{tr("app.moss.mode.label")}</span><select aria-label={tr("app.moss.mode.label")} value={props.transcriptionMode} onChange={(event) => props.onSelectTranscriptionMode(event.target.value as "quick" | "multispeaker")}><option value="quick">{tr("app.moss.mode.quick")}</option><option value="multispeaker">{tr("app.moss.mode.multispeaker")}</option></select></label><label><span>{tr("app.transcription.language")}</span><select aria-label={tr("app.transcription.language")} value={props.transcriptionLanguage} onChange={(event) => props.onSelectTranscriptionLanguage(event.target.value as "auto" | "en" | "zh")}><option value="auto">{tr("app.transcription.auto")}</option><option value="en">{tr("app.transcription.english")}</option><option value="zh">{tr("app.transcription.chinese")}</option></select></label></div></section>

@@ -356,6 +356,14 @@ export type LocalResourceStatus = {
   needsSetup: boolean;
 };
 
+export type ResourceUpdateCheck = {
+  checkedAt: string;
+  capabilities: Array<{
+    capabilityId: LocalCapabilityId;
+    state: "current" | LocalResourceState;
+  }>;
+};
+
 export type LocalResourcePlan = {
   capabilityId: LocalCapabilityId;
   capabilityName: string;
@@ -818,6 +826,7 @@ export type CoreEnvelope = {
   resourcePlan?: LocalResourcePlan;
   resourceJob?: LocalResourceJob;
   resourceJobs?: LocalResourceJob[];
+  resourceUpdateCheck?: ResourceUpdateCheck;
   source?: SourcePreview;
   sourceJob?: SourceImportJob;
   sourceJobs?: SourceImportJob[];

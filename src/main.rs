@@ -818,6 +818,9 @@ enum RuntimeCommand {
 #[derive(Subcommand)]
 enum ResourceCommand {
     Status,
+    CheckUpdates {
+        capability: Option<String>,
+    },
     Plan {
         capability: String,
         #[arg(long)]
@@ -2302,6 +2305,11 @@ fn run(cli: Cli) -> Result<Value> {
         Commands::Resources(command) => match command {
             ResourceCommand::Status => Ok(envelope(json!({
                 "localResources": local_resources::status()?
+            }))),
+            ResourceCommand::CheckUpdates { capability } => Ok(envelope(json!({
+                "localResources": local_resources::status()?,
+                "resourceUpdateCheck": local_resources::check_updates(capability.as_deref())?,
+                "message": "已检查本地组件更新。"
             }))),
             ResourceCommand::Plan {
                 capability,

@@ -3,6 +3,7 @@ import type { LocalCapabilityId, LocalTranscriptionProfile } from "../types";
 
 export const localResourceClient = {
   status: () => runCore(["resources", "status"]),
+  checkUpdates: (capability?: LocalCapabilityId) => runCore(["resources", "check-updates", ...(capability ? [capability] : [])]),
   plan: (capability: LocalCapabilityId, profile?: LocalTranscriptionProfile) => runCore(["resources", "plan", capability, ...(profile ? ["--profile", profile] : [])]),
   configure: (root: string) => runCore(["resources", "configure", "--root", root]),
   migrate: (root: string) => runCore(["resources", "migrate", "--root", root]),
