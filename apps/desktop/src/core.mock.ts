@@ -201,6 +201,26 @@ const mockSourcePreview: SourcePreview = {
   toolSha256: "66674953fe251b89f4d08c5f0e35e0728679bd67ab3d7d05c0562af101dd3e7a",
   requiresConfirmation: true,
 };
+const mockSourcePreviewForUrl = (url: string): SourcePreview => {
+  let host = "";
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    // Invalid URL behavior is exercised by the real input validator, not the mock Core.
+  }
+  if (["x.com", "www.x.com", "twitter.com", "www.twitter.com", "mobile.twitter.com"].includes(host)) {
+    return {
+      ...mockSourcePreview,
+      originalUrl: url,
+      webpageUrl: url,
+      siteMediaId: "2091957857650716672",
+      extractor: "Twitter",
+      title: "Public X video",
+      fileSizeBytes: null,
+    };
+  }
+  return { ...mockSourcePreview, originalUrl: url, webpageUrl: url };
+};
 const mockSubtitlePreview: SubtitleImportPreview = {
   format: "srt",
   sourcePath: "demo.srt",
@@ -1012,14 +1032,15 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
   if (command === "transcription" && subcommand === "resolve") { const item = mockTranscriptionReviews.find((candidate) => candidate.id === args[2]); if (item) { item.status = valueAfter("--action") as TranscriptionReviewItem["status"]; item.resolvedAt = new Date().toISOString(); } return { apiVersion: "0.1", status: "ok", reviewItem: structuredClone(item) }; }
   if (command === "transcription" && subcommand === "export") return { apiVersion: "0.1", status: "ok", projectId: args[2], output: valueAfter("--output"), format: valueAfter("--format"), audit: { ready: true, openErrorCount: 0, openWarningCount: mockTranscriptionReviews.filter((item) => item.status === "open" && item.severity === "warning").length, warningsConfirmed: args.includes("--confirm-warnings") } };
   if (command === "source" && subcommand === "inspect") {
-    return { apiVersion: "0.1", status: "ok", source: { ...mockSourcePreview, originalUrl: args[2], webpageUrl: args[2] }, message: "已读取公开单视频信息；确认前不会下载或创建项目。" };
+    return { apiVersion: "0.1", status: "ok", source: mockSourcePreviewForUrl(args[2]), message: "已读取公开单视频信息；确认前不会下载或创建项目。" };
   }
   if (command === "source" && subcommand === "jobs") {
     return { apiVersion: "0.1", status: "ok", sourceJobs: Array.from(mockSourceJobs.values()).reverse() };
   }
   if (command === "source" && subcommand === "start") {
+    const sourcePreview = mockSourcePreviewForUrl(args[2]);
     const confirmedId = args[args.indexOf("--confirm-media-id") + 1];
-    if (confirmedId !== mockSourcePreview.siteMediaId) {
+    if (confirmedId !== sourcePreview.siteMediaId) {
       return { apiVersion: "0.1", status: "error", error: { code: "source_confirmation_mismatch", message: "站点媒体 ID 已变化，请重新确认。" } };
     }
     const now = new Date().toISOString();
@@ -1029,14 +1050,14 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
       originalUrl: args[2],
       webpageUrl: args[2],
       siteMediaId: confirmedId,
-      extractor: "youtube",
-      title: mockSourcePreview.title,
-      durationSeconds: mockSourcePreview.durationSeconds,
-      fileSizeBytes: mockSourcePreview.fileSizeBytes,
+      extractor: sourcePreview.extractor,
+      title: sourcePreview.title,
+      durationSeconds: sourcePreview.durationSeconds,
+      fileSizeBytes: sourcePreview.fileSizeBytes,
       status: "running",
       progress: 0.18,
       bytesDownloaded: 2173516,
-      totalBytes: mockSourcePreview.fileSizeBytes,
+      totalBytes: sourcePreview.fileSizeBytes,
       outputDirectory: "C:\\SiaoCut\\imports\\src-1",
       outputPath: null,
       outputSha256: null,

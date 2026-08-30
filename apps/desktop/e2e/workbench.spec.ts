@@ -747,17 +747,19 @@ test("versions glossary terms and requires stale-translation export confirmation
   await expect(exportButton).toBeEnabled();
 });
 
-test("confirms and controls an audited URL import", async ({ page }) => {
+test("confirms and controls an audited X video URL import", async ({ page }) => {
   await page.goto("/");
   await page.getByText("更多导入方式").click();
   await page.getByRole("button", { name: "从 URL 导入" }).click();
   const dialog = page.getByRole("dialog", { name: "URL 导入" });
   await expect(dialog).toBeVisible();
-  await dialog.getByLabel("公开视频 URL").fill("https://www.youtube.com/watch?v=HOfdboHvshg");
+  await expect(dialog.getByRole("heading", { name: "从 X 或公开视频 URL 下载" })).toBeVisible();
+  await dialog.getByLabel("公开视频 URL").fill("https://x.com/i/status/2091959711423996249");
   await dialog.getByRole("button", { name: "读取视频信息" }).click();
   const preview = dialog.getByRole("region", { name: "待确认视频信息" });
-  await expect(preview.getByText("Sintel Trailer, Durian Open Movie Project")).toBeVisible();
-  await expect(preview.getByText("HOfdboHvshg", { exact: true })).toBeVisible();
+  await expect(preview.getByText("X", { exact: true })).toBeVisible();
+  await expect(preview.getByText("Public X video")).toBeVisible();
+  await expect(preview.getByText("2091957857650716672", { exact: true })).toBeVisible();
   const start = preview.getByRole("button", { name: "确认信息并开始下载" });
   await expect(start).toBeDisabled();
   await preview.getByRole("checkbox").check();

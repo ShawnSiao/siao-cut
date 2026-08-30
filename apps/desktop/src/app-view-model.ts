@@ -61,6 +61,8 @@ export const isHttpsSourceUrl = (value: string) => {
         return false;
     }
 };
+export const sourcePlatformLabel = (extractor: string) =>
+    extractor.trim().toLowerCase() === "twitter" ? "X" : extractor;
 export const hasMeaningfulSubtitleText = (value: string) => /[\p{L}\p{N}\p{S}]/u.test(value);
 export const segmentCountLabel = (count: number) => tr(count === 1 ? "app.count.segment.one" : "app.count.segment.other", { count });
 export const wordCountLabel = (count: number) => tr(count === 1 ? "app.count.word.one" : "app.count.word.other", { count });

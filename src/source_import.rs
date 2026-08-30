@@ -1998,6 +1998,40 @@ mod tests {
     }
 
     #[test]
+    fn source_import_accepts_x_single_video_metadata_for_confirmation() {
+        let original =
+            validate_public_https_url("https://x.com/example/status/2091959711423996249?s=20")
+                .unwrap();
+        let arguments = inspection_arguments(&original);
+        assert_eq!(
+            arguments.last().map(String::as_str),
+            Some("https://x.com/example/status/2091959711423996249?s=20")
+        );
+
+        let preview = parse_metadata(
+            original,
+            &json!({
+                "_type": "video",
+                "id": "2091957857650716672",
+                "extractor_key": "Twitter",
+                "title": "Public X video",
+                "duration": 52.5,
+                "webpage_url": "https://x.com/example/status/2091959711423996249"
+            }),
+            &tool(),
+        )
+        .unwrap();
+
+        assert_eq!(preview.extractor, "Twitter");
+        assert_eq!(preview.site_media_id, "2091957857650716672");
+        assert_eq!(
+            preview.webpage_url,
+            "https://x.com/example/status/2091959711423996249"
+        );
+        assert!(preview.requires_confirmation);
+    }
+
+    #[test]
     fn source_import_refuses_a_media_identity_changed_after_confirmation() {
         let preview = SourcePreview {
             original_url: "https://93.184.216.34/watch/123".to_owned(),

@@ -1302,7 +1302,7 @@ describe("SiaoCut review workbench", () => {
     });
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "从 URL 导入" }));
-    fireEvent.change(await screen.findByLabelText("公开视频 URL"), { target: { value: "https://www.youtube.com/watch?v=HOfdboHvshg" } });
+    fireEvent.change(await screen.findByLabelText("公开视频 URL"), { target: { value: "https://x.com/i/status/2091959711423996249" } });
     fireEvent.click(screen.getByRole("button", { name: "读取视频信息" }));
 
     const setup = await screen.findByRole("dialog", { name: "准备 SiaoCut" });
@@ -1311,7 +1311,8 @@ describe("SiaoCut review workbench", () => {
     fireEvent.click(within(setup).getByRole("button", { name: "准备并继续" }));
 
     const preview = await screen.findByRole("region", { name: "待确认视频信息" });
-    expect(within(preview).getByText("Sintel Trailer, Durian Open Movie Project")).toBeInTheDocument();
+    expect(within(preview).getByText("X")).toBeInTheDocument();
+    expect(within(preview).getByText("Public X video")).toBeInTheDocument();
     expect(screen.queryByRole("dialog", { name: "准备 SiaoCut" })).not.toBeInTheDocument();
   });
 
