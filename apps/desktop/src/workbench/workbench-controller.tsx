@@ -2,7 +2,7 @@ import { changeUiLocale, getUiLocale, tr, type UiLocale } from "../i18n";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type SyntheticEvent } from "react";
 import { Activity, Bot, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Clock3, Copy, Cpu, Database, Download, FileVideo2, FileText, Film, FolderOpen, FolderPlus, HardDrive, History, Link2, LoaderCircle, Play, RefreshCw, RotateCcw, Search, Scissors, Settings2, ShieldCheck, Sparkles, Trash2, Undo2, Redo2, Headphones, ListChecks, MoreHorizontal, MoveHorizontal, Users, X, } from "lucide-react";
 import { authorizeArtifact, authorizeMedia, localFileAvailable, openLogDirectory, pickMedia, pickModel, pickResourceDirectory, pickSubtitleFile, pickTranscriptPath, pickVideoPath, runtimeInfo, selectAsrBackend, updaterPolicy } from "../core";
-import type { AgentRun, AudioAnalysisJob, AudioRisk, AutoWorkflow, CanvasSettings, CodexHealth, CutPreview, ExportJob, LocalCapabilityId, LocalResourceJob, LocalResourcePlan, LocalResourceStatus, LocalTranscriptionProfile, ModelDownloadJob, ModelStatus, Project, ProjectDeletionPreflight, RuntimeInfo, Segment, SourceImportJob, SourcePreview, SpeakerIdentity, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SpeechEvidence, SpeechInsights, SpeechPause, SubtitleImportPreview, SubtitleQualityIssue, Task, TranscriptReplacementPreflight, TranscriptionJob, TranscriptionLanguage, TranscriptionProviderConfig, TranscriptionProviderHealth, TranscriptionReviewItem, WorkflowProfile } from "../types";
+import type { AgentRun, AudioAnalysisJob, AudioRisk, AutoWorkflow, CanvasSettings, CodexHealth, CutPreview, ExportJob, LocalCapabilityId, LocalResourceJob, LocalResourcePlan, LocalResourceStatus, LocalTranscriptionProfile, ModelDownloadJob, ModelStatus, Project, ProjectDeletionPreflight, RuntimeInfo, Segment, SourceBrowser, SourceImportJob, SourcePreview, SpeakerIdentity, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SpeechEvidence, SpeechInsights, SpeechPause, SubtitleImportPreview, SubtitleQualityIssue, Task, TranscriptReplacementPreflight, TranscriptionJob, TranscriptionLanguage, TranscriptionProviderConfig, TranscriptionProviderHealth, TranscriptionReviewItem, WorkflowProfile } from "../types";
 import { Button, Dialog, IconButton, StatusBadge } from "../components/ui";
 import { JobFailureDetails } from "../components/job-failure";
 import { AudioQualityPanel, PatchReviewCard, RuntimeChecklist, SegmentRow, SpeakerTrackPanel, SpeechInsightsPanel, TranscriptionReviewPanel } from "../components/workbench-panels";
@@ -260,6 +260,9 @@ function WorkbenchController() {
     const [sourceJob, setSourceJob] = useState<SourceImportJob | null>(null);
     const [sourceUrl, setSourceUrl] = useState("");
     const [sourceAuthorized, setSourceAuthorized] = useState(false);
+    const [sourceAuthMode, setSourceAuthMode] = useState<"anonymous" | "browser">("anonymous");
+    const [sourceBrowser, setSourceBrowser] = useState<SourceBrowser>("chrome");
+    const [sourceBrowserAuthorized, setSourceBrowserAuthorized] = useState(false);
     const [sourceBusy, setSourceBusy] = useState<string | null>(null);
     const [sourceError, setSourceError] = useState<string | null>(null);
     const [showSourceImport, setShowSourceImport] = useState(false);
@@ -1607,7 +1610,9 @@ function WorkbenchController() {
             await openResourcePreparation("url_import", "on_demand");
             return;
         }
-        const envelope = await backgroundTaskClient.inspectSource(url);
+        if (sourceAuthMode === "browser" && !sourceBrowserAuthorized)
+            throw new Error("source_browser_consent_required");
+        const envelope = await backgroundTaskClient.inspectSource(url, sourceAuthMode === "browser" ? sourceBrowser : undefined);
         if (!envelope.source)
             throw new Error(tr("app.s0086"));
         setSourcePreview(envelope.source);
@@ -1617,7 +1622,7 @@ function WorkbenchController() {
     const startSourceImport = () => sourcePreview && withSourceBusy(tr("app.s0087"), async () => {
         if (!sourceAuthorized)
             throw new Error(tr("app.s0088"));
-        const envelope = await backgroundTaskClient.startSourceImport(sourcePreview.originalUrl, sourcePreview.siteMediaId);
+        const envelope = await backgroundTaskClient.startSourceImport(sourcePreview.originalUrl, sourcePreview.siteMediaId, sourcePreview.browser ?? undefined);
         if (!envelope.sourceJob)
             throw new Error(tr("app.s0089"));
         sourceJobOriginProjectIdsRef.current.set(envelope.sourceJob.id, activeProjectIdRef.current);
@@ -1645,6 +1650,7 @@ function WorkbenchController() {
         setSourceJob(null);
         setSourceUrl("");
         setSourceAuthorized(false);
+        setSourceBrowserAuthorized(false);
         setSourceError(null);
     };
     useEffect(() => {
@@ -3460,11 +3466,17 @@ function WorkbenchController() {
         sourcePreview={sourcePreview}
         sourceJob={sourceJob}
         sourceAuthorized={sourceAuthorized}
+        sourceAuthMode={sourceAuthMode}
+        sourceBrowser={sourceBrowser}
+        sourceBrowserAuthorized={sourceBrowserAuthorized}
         sourceBusy={sourceBusy}
         sourceError={sourceError}
-        onClose={() => setShowSourceImport(false)}
-        onSourceUrlChange={(value) => { setSourceUrl(value); setSourcePreview(null); setSourceAuthorized(false); setSourceError(null); }}
+        onClose={() => { setShowSourceImport(false); setSourceBrowserAuthorized(false); }}
+        onSourceUrlChange={(value) => { setSourceUrl(value); setSourcePreview(null); setSourceAuthorized(false); setSourceBrowserAuthorized(false); setSourceError(null); }}
         onAuthorizedChange={setSourceAuthorized}
+        onAuthModeChange={(value) => { setSourceAuthMode(value); setSourcePreview(null); setSourceAuthorized(false); setSourceBrowserAuthorized(false); setSourceError(null); }}
+        onBrowserChange={(value) => { setSourceBrowser(value); setSourcePreview(null); setSourceAuthorized(false); setSourceBrowserAuthorized(false); setSourceError(null); }}
+        onBrowserAuthorizedChange={setSourceBrowserAuthorized}
         onInspect={() => void inspectSource()}
         onStart={() => void startSourceImport()}
         onCancel={() => void cancelSourceImport()}

@@ -199,6 +199,8 @@ const mockSourcePreview: SourcePreview = {
   thumbnailUrl: null,
   toolVersion: "2026.08.19",
   toolSha256: "66674953fe251b89f4d08c5f0e35e0728679bd67ab3d7d05c0562af101dd3e7a",
+  authMode: "anonymous",
+  browser: null,
   requiresConfirmation: true,
 };
 const mockSourcePreviewForUrl = (url: string): SourcePreview => {
@@ -1032,13 +1034,15 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
   if (command === "transcription" && subcommand === "resolve") { const item = mockTranscriptionReviews.find((candidate) => candidate.id === args[2]); if (item) { item.status = valueAfter("--action") as TranscriptionReviewItem["status"]; item.resolvedAt = new Date().toISOString(); } return { apiVersion: "0.1", status: "ok", reviewItem: structuredClone(item) }; }
   if (command === "transcription" && subcommand === "export") return { apiVersion: "0.1", status: "ok", projectId: args[2], output: valueAfter("--output"), format: valueAfter("--format"), audit: { ready: true, openErrorCount: 0, openWarningCount: mockTranscriptionReviews.filter((item) => item.status === "open" && item.severity === "warning").length, warningsConfirmed: args.includes("--confirm-warnings") } };
   if (command === "source" && subcommand === "inspect") {
-    return { apiVersion: "0.1", status: "ok", source: mockSourcePreviewForUrl(args[2]), message: "已读取公开单视频信息；确认前不会下载或创建项目。" };
+    const browser = valueAfter("--browser") as SourcePreview["browser"];
+    return { apiVersion: "0.1", status: "ok", source: { ...mockSourcePreviewForUrl(args[2]), authMode: browser ? "browser" : "anonymous", browser: browser || null }, message: "已读取单视频信息；确认前不会下载或创建项目。" };
   }
   if (command === "source" && subcommand === "jobs") {
     return { apiVersion: "0.1", status: "ok", sourceJobs: Array.from(mockSourceJobs.values()).reverse() };
   }
   if (command === "source" && subcommand === "start") {
     const sourcePreview = mockSourcePreviewForUrl(args[2]);
+    const browser = valueAfter("--browser") as SourceImportJob["browser"];
     const confirmedId = args[args.indexOf("--confirm-media-id") + 1];
     if (confirmedId !== sourcePreview.siteMediaId) {
       return { apiVersion: "0.1", status: "error", error: { code: "source_confirmation_mismatch", message: "站点媒体 ID 已变化，请重新确认。" } };
@@ -1063,6 +1067,8 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
       outputSha256: null,
       toolVersion: mockSourcePreview.toolVersion,
       toolSha256: mockSourcePreview.toolSha256,
+      authMode: browser ? "browser" : "anonymous",
+      browser: browser || null,
       cancelRequestedAt: null,
       errorMessage: null,
       createdAt: now,

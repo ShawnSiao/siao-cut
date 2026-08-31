@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 33;
+pub const CURRENT_SCHEMA_VERSION: i64 = 34;
 
 struct Migration {
     version: i64,
@@ -146,6 +146,10 @@ const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 33,
         apply: migration_33_subtitle_delivery,
+    },
+    Migration {
+        version: 34,
+        apply: migration_34_source_browser_auth,
     },
 ];
 
@@ -1091,6 +1095,11 @@ fn migration_33_subtitle_delivery(tx: &Transaction<'_>) -> Result<()> {
     Ok(())
 }
 
+fn migration_34_source_browser_auth(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute_batch(include_str!("migrations/34_source_browser_auth.sql"))?;
+    Ok(())
+}
+
 fn migration_24_translation_readiness(tx: &Transaction<'_>) -> Result<()> {
     tx.execute_batch(
         "ALTER TABLE translations ADD COLUMN glossary_version INTEGER NOT NULL DEFAULT 0;
@@ -1456,6 +1465,14 @@ mod tests {
             )
             .unwrap();
         assert!(source_import_table);
+        let source_auth_columns: i64 = second
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('source_imports') WHERE name IN ('auth_mode','browser')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(source_auth_columns, 2);
         let auto_workflow_table: bool = second
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='auto_workflows')",

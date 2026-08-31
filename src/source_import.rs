@@ -52,6 +52,8 @@ pub struct SourcePreview {
     pub thumbnail_url: Option<String>,
     pub tool_version: String,
     pub tool_sha256: String,
+    pub auth_mode: String,
+    pub browser: Option<String>,
     pub requires_confirmation: bool,
 }
 
@@ -77,6 +79,8 @@ pub struct SourceImportJob {
     pub output_sha256: Option<String>,
     pub tool_version: String,
     pub tool_sha256: String,
+    pub auth_mode: String,
+    pub browser: Option<String>,
     pub cancel_requested_at: Option<String>,
     pub error_message: Option<String>,
     pub error_code: Option<String>,
@@ -92,6 +96,52 @@ struct ToolIdentity {
     path: PathBuf,
     version: String,
     sha256: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum SourceAuth {
+    Anonymous,
+    Browser(String),
+}
+
+impl SourceAuth {
+    fn from_browser(browser: Option<&str>) -> Result<Self> {
+        let Some(browser) = browser else {
+            return Ok(Self::Anonymous);
+        };
+        let browser = browser.trim().to_ascii_lowercase();
+        if !matches!(browser.as_str(), "chrome" | "edge" | "firefox") {
+            bail!("source_browser_invalid: 登录态导入只支持 Chrome、Edge 或 Firefox")
+        }
+        Ok(Self::Browser(browser))
+    }
+
+    fn mode(&self) -> &'static str {
+        match self {
+            Self::Anonymous => "anonymous",
+            Self::Browser(_) => "browser",
+        }
+    }
+
+    fn browser(&self) -> Option<&str> {
+        match self {
+            Self::Anonymous => None,
+            Self::Browser(browser) => Some(browser),
+        }
+    }
+
+    fn add_arguments(&self, arguments: &mut Vec<String>) {
+        if let Self::Browser(browser) = self {
+            let separator = arguments
+                .iter()
+                .position(|argument| argument == "--")
+                .unwrap_or(arguments.len());
+            arguments.splice(
+                separator..separator,
+                ["--cookies-from-browser".to_owned(), browser.clone()],
+            );
+        }
+    }
 }
 
 pub fn yt_dlp_path() -> PathBuf {
@@ -111,15 +161,28 @@ pub fn configured() -> bool {
 }
 
 pub fn inspect(input: &str) -> Result<SourcePreview> {
-    let original = validate_public_https_url(input)?;
-    let tool = verify_tool(&yt_dlp_path())?;
-    inspect_with_tool(original, &tool)
+    inspect_internal(input, SourceAuth::Anonymous)
 }
 
-fn inspect_with_tool(original: Url, tool: &ToolIdentity) -> Result<SourcePreview> {
+pub fn inspect_with_browser(input: &str, browser: &str) -> Result<SourcePreview> {
+    inspect_internal(input, SourceAuth::from_browser(Some(browser))?)
+}
+
+fn inspect_internal(input: &str, auth: SourceAuth) -> Result<SourcePreview> {
+    let original = validate_public_https_url(input)?;
+    let tool = verify_tool(&yt_dlp_path())?;
+    inspect_with_tool(original, &tool, &auth)
+}
+
+fn inspect_with_tool(
+    original: Url,
+    tool: &ToolIdentity,
+    auth: &SourceAuth,
+) -> Result<SourcePreview> {
     preflight_public_url(&original)?;
     let proxy = SafeConnectProxy::start()?;
     let mut arguments = inspection_arguments(&original);
+    auth.add_arguments(&mut arguments);
     add_proxy_argument(&mut arguments, &proxy.url());
     let mut command = hidden_command(&tool.path);
     command.args(arguments);
@@ -131,14 +194,61 @@ fn inspect_with_tool(original: Url, tool: &ToolIdentity) -> Result<SourcePreview
     .context("无法启动固定版本的 yt-dlp")?;
     if !output.status.success() {
         let detail = String::from_utf8_lossy(&output.stderr);
+        let detail = detail.trim();
+        if browser_cookie_error(detail) {
+            bail!(
+                "source_browser_auth_failed: 无法从 {} 读取有效登录态。请确认该浏览器已登录 X 后重试。",
+                browser_display_name(auth.browser().unwrap_or_default())
+            )
+        }
+        if x_media_unavailable(detail) {
+            if matches!(auth, SourceAuth::Anonymous) {
+                bail!("source_login_required: X 未向公开访问返回此视频；可改用浏览器登录态重试")
+            }
+            bail!(
+                "source_browser_media_unavailable: 当前浏览器登录态仍未返回可下载视频；请确认该账号能够正常播放此视频"
+            )
+        }
         bail!(
-            "source_inspection_failed: yt-dlp 无法读取此公开单视频：{}",
-            detail.trim()
+            "source_inspection_failed: yt-dlp 无法读取此单视频：{}",
+            detail
         )
     }
     let metadata: Value = serde_json::from_slice(&output.stdout)
         .context("source_metadata_invalid: yt-dlp 返回了无效 JSON")?;
-    parse_metadata(original, &metadata, tool)
+    parse_metadata_with_auth(original, &metadata, tool, auth)
+}
+
+fn browser_display_name(browser: &str) -> &str {
+    match browser {
+        "chrome" => "Chrome",
+        "edge" => "Edge",
+        "firefox" => "Firefox",
+        _ => "所选浏览器",
+    }
+}
+
+fn browser_cookie_error(detail: &str) -> bool {
+    let detail = detail.to_ascii_lowercase();
+    [
+        "could not copy chrome cookie database",
+        "could not copy edge cookie database",
+        "could not copy firefox cookie database",
+        "could not find chrome cookies database",
+        "could not find edge cookies database",
+        "could not find firefox cookies database",
+        "failed to decrypt with dpapi",
+        "failed to decrypt cookie",
+        "no cookies could be loaded",
+    ]
+    .iter()
+    .any(|message| detail.contains(message))
+}
+
+fn x_media_unavailable(detail: &str) -> bool {
+    let detail = detail.to_ascii_lowercase();
+    detail.contains("video #") && detail.contains("is unavailable")
+        || detail.contains("no video could be found in this tweet")
 }
 
 pub fn start(
@@ -147,7 +257,31 @@ pub fn start(
     confirmed_media_id: &str,
     start_delay_ms: Option<u64>,
 ) -> Result<SourceImportJob> {
-    start_internal(db, input, confirmed_media_id, start_delay_ms, None)
+    start_internal(
+        db,
+        input,
+        confirmed_media_id,
+        start_delay_ms,
+        None,
+        SourceAuth::Anonymous,
+    )
+}
+
+pub fn start_with_browser(
+    db: &Connection,
+    input: &str,
+    confirmed_media_id: &str,
+    start_delay_ms: Option<u64>,
+    browser: &str,
+) -> Result<SourceImportJob> {
+    start_internal(
+        db,
+        input,
+        confirmed_media_id,
+        start_delay_ms,
+        None,
+        SourceAuth::from_browser(Some(browser))?,
+    )
 }
 
 pub(crate) fn start_with_job_id(
@@ -160,7 +294,14 @@ pub(crate) fn start_with_job_id(
     if let Ok(existing) = load(db, job_id) {
         return Ok(existing);
     }
-    start_internal(db, input, confirmed_media_id, start_delay_ms, Some(job_id))
+    start_internal(
+        db,
+        input,
+        confirmed_media_id,
+        start_delay_ms,
+        Some(job_id),
+        SourceAuth::Anonymous,
+    )
 }
 
 fn start_internal(
@@ -169,8 +310,11 @@ fn start_internal(
     confirmed_media_id: &str,
     start_delay_ms: Option<u64>,
     job_id: Option<&str>,
+    auth: SourceAuth,
 ) -> Result<SourceImportJob> {
-    let preview = inspect(input)?;
+    let original = validate_public_https_url(input)?;
+    let tool = verify_tool(&yt_dlp_path())?;
+    let preview = inspect_with_tool(original, &tool, &auth)?;
     if preview.site_media_id != confirmed_media_id {
         bail!(
             "source_confirmation_mismatch: 当前站点媒体 ID 为 {}，与确认值不一致",
@@ -257,6 +401,8 @@ fn insert_job_with_id_at(
         output_sha256: None,
         tool_version: preview.tool_version.clone(),
         tool_sha256: preview.tool_sha256.clone(),
+        auth_mode: preview.auth_mode.clone(),
+        browser: preview.browser.clone(),
         cancel_requested_at: None,
         error_message: None,
         error_code: None,
@@ -270,8 +416,8 @@ fn insert_job_with_id_at(
         "INSERT INTO source_imports(
              id,original_url,webpage_url,site_media_id,extractor,title,duration_seconds,
              file_size_bytes,status,progress,bytes_downloaded,total_bytes,output_directory,
-             tool_version,tool_sha256,created_at,updated_at,attempt_count
-         ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'queued',0,0,?8,?9,?10,?11,?12,?12,1)",
+             tool_version,tool_sha256,auth_mode,browser,created_at,updated_at,attempt_count
+         ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'queued',0,0,?8,?9,?10,?11,?12,?13,?14,?14,1)",
         params![
             &job.id,
             &job.original_url,
@@ -284,6 +430,8 @@ fn insert_job_with_id_at(
             &job.output_directory,
             &job.tool_version,
             &job.tool_sha256,
+            &job.auth_mode,
+            &job.browser,
             &job.created_at,
         ],
     );
@@ -317,12 +465,13 @@ pub fn load(db: &Connection, job_id: &str) -> Result<SourceImportJob> {
         "SELECT id,project_id,original_url,webpage_url,site_media_id,extractor,title,
                 duration_seconds,file_size_bytes,status,progress,bytes_downloaded,total_bytes,
                 output_directory,output_path,output_sha256,tool_version,tool_sha256,
-                cancel_requested_at,error_message,created_at,updated_at,completed_at,worker_pid,attempt_count
+                auth_mode,browser,cancel_requested_at,error_message,created_at,updated_at,
+                completed_at,worker_pid,attempt_count
          FROM source_imports WHERE id=?1",
         [job_id],
         |row| {
             let status = row.get::<_, String>(9)?;
-            let error_message = row.get::<_, Option<String>>(19)?;
+            let error_message = row.get::<_, Option<String>>(21)?;
             Ok(SourceImportJob {
                 id: row.get(0)?,
                 project_id: row.get(1)?,
@@ -343,17 +492,16 @@ pub fn load(db: &Connection, job_id: &str) -> Result<SourceImportJob> {
                 output_sha256: row.get(15)?,
                 tool_version: row.get(16)?,
                 tool_sha256: row.get(17)?,
-                cancel_requested_at: row.get(18)?,
-                error_code: crate::model::background_error_code(
-                    &status,
-                    error_message.as_deref(),
-                ),
+                auth_mode: row.get(18)?,
+                browser: row.get(19)?,
+                cancel_requested_at: row.get(20)?,
+                error_code: crate::model::background_error_code(&status, error_message.as_deref()),
                 error_message,
-                created_at: row.get(20)?,
-                updated_at: row.get(21)?,
-                completed_at: row.get(22)?,
-                worker_pid: row.get(23)?,
-                attempt_count: row.get::<_, i64>(24)? as u32,
+                created_at: row.get(22)?,
+                updated_at: row.get(23)?,
+                completed_at: row.get(24)?,
+                worker_pid: row.get(25)?,
+                attempt_count: row.get::<_, i64>(26)? as u32,
             })
         },
     )
@@ -514,18 +662,22 @@ fn run_download(db: &mut Connection, job_id: &str) -> Result<()> {
         return Ok(());
     }
     let original_url = validate_public_https_url(&job.original_url)?;
+    let auth = SourceAuth::from_browser(job.browser.as_deref())?;
+    if job.auth_mode != auth.mode() {
+        bail!("source_auth_state_invalid: URL 导入任务的登录态配置无效")
+    }
     let tool = verify_tool(&yt_dlp_path())?;
     if tool.version != job.tool_version || tool.sha256 != job.tool_sha256 {
         bail!("source_tool_changed: URL 导入任务绑定的 yt-dlp 版本或哈希已变化")
     }
-    let refreshed = inspect_with_tool(original_url.clone(), &tool)?;
+    let refreshed = inspect_with_tool(original_url.clone(), &tool, &auth)?;
     assert_source_identity(&job.site_media_id, &job.extractor, &refreshed)?;
     let tool = verify_tool(&tool.path)?;
     if tool.version != job.tool_version || tool.sha256 != job.tool_sha256 {
         bail!("source_tool_changed: URL 导入任务绑定的 yt-dlp 版本或哈希已变化")
     }
     let ffmpeg = tool_path("SIAOCUT_FFMPEG", "ffmpeg");
-    run_download_command(db, job_id, &original_url, &tool, &ffmpeg)
+    run_download_command(db, job_id, &original_url, &tool, &ffmpeg, &auth)
 }
 
 fn assert_source_identity(
@@ -549,9 +701,18 @@ fn run_download_command(
     original_url: &Url,
     tool: &ToolIdentity,
     ffmpeg: &str,
+    auth: &SourceAuth,
 ) -> Result<()> {
     let proxy = SafeConnectProxy::start()?;
-    run_download_command_with_proxy(db, job_id, original_url, tool, ffmpeg, Some(proxy.url()))
+    run_download_command_with_proxy(
+        db,
+        job_id,
+        original_url,
+        tool,
+        ffmpeg,
+        Some(proxy.url()),
+        auth,
+    )
 }
 
 fn run_download_command_with_proxy(
@@ -561,11 +722,13 @@ fn run_download_command_with_proxy(
     tool: &ToolIdentity,
     ffmpeg: &str,
     proxy_url: Option<String>,
+    auth: &SourceAuth,
 ) -> Result<()> {
     let job = load(db, job_id)?;
     let output_directory = PathBuf::from(&job.output_directory);
     fs::create_dir_all(&output_directory)?;
     let mut arguments = download_arguments(original_url, &output_directory, ffmpeg);
+    auth.add_arguments(&mut arguments);
     if let Some(proxy_url) = proxy_url {
         add_proxy_argument(&mut arguments, &proxy_url);
     }
@@ -1255,10 +1418,20 @@ fn validate_selected_download_urls(metadata: &Value) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn parse_metadata(
     original_url: Url,
     metadata: &Value,
     tool: &ToolIdentity,
+) -> Result<SourcePreview> {
+    parse_metadata_with_auth(original_url, metadata, tool, &SourceAuth::Anonymous)
+}
+
+fn parse_metadata_with_auth(
+    original_url: Url,
+    metadata: &Value,
+    tool: &ToolIdentity,
+    auth: &SourceAuth,
 ) -> Result<SourcePreview> {
     let source_type = metadata
         .get("_type")
@@ -1271,15 +1444,16 @@ fn parse_metadata(
     if source_type != "video" || has_entries {
         bail!("source_playlist_not_allowed: URL 必须指向一个视频，不能是播放列表或合集")
     }
-    if metadata
-        .get("availability")
-        .and_then(Value::as_str)
-        .is_some_and(|value| {
-            matches!(
-                value,
-                "private" | "premium_only" | "subscriber_only" | "needs_auth"
-            )
-        })
+    if matches!(auth, SourceAuth::Anonymous)
+        && metadata
+            .get("availability")
+            .and_then(Value::as_str)
+            .is_some_and(|value| {
+                matches!(
+                    value,
+                    "private" | "premium_only" | "subscriber_only" | "needs_auth"
+                )
+            })
     {
         bail!("source_auth_not_allowed: 不支持登录、订阅或私有内容")
     }
@@ -1326,6 +1500,8 @@ fn parse_metadata(
         thumbnail_url,
         tool_version: tool.version.clone(),
         tool_sha256: tool.sha256.clone(),
+        auth_mode: auth.mode().to_owned(),
+        browser: auth.browser().map(str::to_owned),
         requires_confirmation: true,
     })
 }
@@ -1889,7 +2065,15 @@ mod tests {
             params![job_id, std::process::id(), now()],
         )?;
         let tool = verify_tool(yt_dlp)?;
-        run_download_command_with_proxy(&mut database, job_id, url, &tool, ffmpeg, None)
+        run_download_command_with_proxy(
+            &mut database,
+            job_id,
+            url,
+            &tool,
+            ffmpeg,
+            None,
+            &SourceAuth::Anonymous,
+        )
     }
 
     #[test]
@@ -2032,6 +2216,50 @@ mod tests {
     }
 
     #[test]
+    fn source_import_browser_auth_is_explicit_and_bound_to_the_preview() {
+        let auth = SourceAuth::from_browser(Some("Chrome")).unwrap();
+        let mut inspect = inspection_arguments(&public_url());
+        auth.add_arguments(&mut inspect);
+        let browser_index = inspect
+            .iter()
+            .position(|argument| argument == "--cookies-from-browser")
+            .unwrap();
+        let separator_index = inspect
+            .iter()
+            .position(|argument| argument == "--")
+            .unwrap();
+        assert!(browser_index < separator_index);
+        assert_eq!(inspect[browser_index + 1], "chrome");
+
+        let preview = parse_metadata_with_auth(
+            public_url(),
+            &json!({
+                "_type": "video",
+                "id": "login-media",
+                "extractor_key": "Twitter",
+                "title": "Login-visible X video",
+                "duration": 124.0,
+                "availability": "needs_auth",
+                "webpage_url": "https://93.184.216.34/watch/123"
+            }),
+            &tool(),
+            &auth,
+        )
+        .unwrap();
+
+        assert_eq!(preview.auth_mode, "browser");
+        assert_eq!(preview.browser.as_deref(), Some("chrome"));
+        assert!(SourceAuth::from_browser(Some("safari")).is_err());
+        assert!(x_media_unavailable(
+            "ERROR: [twitter] 123: Video #1 is unavailable"
+        ));
+        assert!(browser_cookie_error(
+            "ERROR: Could not copy Chrome cookie database"
+        ));
+        assert_eq!(browser_display_name("edge"), "Edge");
+    }
+
+    #[test]
     fn source_import_refuses_a_media_identity_changed_after_confirmation() {
         let preview = SourcePreview {
             original_url: "https://93.184.216.34/watch/123".to_owned(),
@@ -2045,6 +2273,8 @@ mod tests {
             thumbnail_url: None,
             tool_version: PINNED_YTDLP_VERSION.to_owned(),
             tool_sha256: PINNED_YTDLP_SHA256.to_owned(),
+            auth_mode: "anonymous".to_owned(),
+            browser: None,
             requires_confirmation: true,
         };
 
@@ -2132,6 +2362,11 @@ mod tests {
             .unwrap();
         assert!(proxy_index < separator_index);
         assert_eq!(proxied[proxy_index + 1], "http://127.0.0.1:43123");
+        assert!(
+            !proxied
+                .iter()
+                .any(|argument| argument == "--cookies-from-browser")
+        );
     }
 
     #[test]
@@ -2391,6 +2626,8 @@ mod tests {
             thumbnail_url: None,
             tool_version: tool.version.clone(),
             tool_sha256: tool.sha256.clone(),
+            auth_mode: "anonymous".to_owned(),
+            browser: None,
             requires_confirmation: true,
         };
         let job = insert_job_at(&db, &preview, &temp.path().join("imports")).unwrap();

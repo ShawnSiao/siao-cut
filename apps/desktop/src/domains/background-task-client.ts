@@ -1,6 +1,6 @@
 import { runCore, runCoreStructured } from "../core";
 import type { UiLocale } from "../i18n";
-import type { TranscriptionLanguage, WorkflowProfile } from "../types";
+import type { SourceBrowser, TranscriptionLanguage, WorkflowProfile } from "../types";
 import type { AiExecutionSelection } from "../features/ai-assistance/types";
 
 type AutoWorkflowInput =
@@ -36,8 +36,8 @@ export const backgroundTaskClient = {
   removeModel: (modelId: string) => runCore(["model", "remove", modelId]),
 
   listSourceJobs: () => runCore(["source", "jobs"]),
-  inspectSource: (url: string) => runCore(["source", "inspect", url]),
-  startSourceImport: (url: string, confirmedMediaId: string) => runCore(["source", "start", url, "--confirm-media-id", confirmedMediaId]),
+  inspectSource: (url: string, browser?: SourceBrowser) => runCore(["source", "inspect", url, ...(browser ? ["--browser", browser] : [])]),
+  startSourceImport: (url: string, confirmedMediaId: string, browser?: SourceBrowser) => runCore(["source", "start", url, "--confirm-media-id", confirmedMediaId, ...(browser ? ["--browser", browser] : [])]),
   getSourceJob: (jobId: string) => runCore(["source", "status", jobId]),
   cancelSourceImport: (jobId: string) => runCore(["source", "cancel", jobId]),
   resumeSourceImport: (jobId: string) => runCore(["source", "resume", jobId]),

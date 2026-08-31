@@ -1221,6 +1221,22 @@ describe("SiaoCut review workbench", () => {
     expect(start).toBeEnabled();
   });
 
+  it("requires explicit browser-cookie authorization for a signed-in X import", async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "从 URL 导入" }));
+    const dialog = await screen.findByRole("dialog", { name: "URL 导入" });
+    fireEvent.click(within(dialog).getByRole("radio", { name: /使用浏览器登录态/ }));
+    fireEvent.change(within(dialog).getByLabelText("已登录浏览器"), { target: { value: "edge" } });
+    fireEvent.change(within(dialog).getByLabelText("公开视频 URL"), { target: { value: "https://x.com/i/status/2091959711423996249" } });
+    const inspect = within(dialog).getByRole("button", { name: "读取视频信息" });
+    expect(inspect).toBeDisabled();
+    fireEvent.click(within(dialog).getByRole("checkbox", { name: /允许本次预检和下载/ }));
+    expect(inspect).toBeEnabled();
+    fireEvent.click(inspect);
+    const preview = await within(dialog).findByRole("region", { name: "待确认视频信息" });
+    expect(within(preview).getByText(/edge 登录态/)).toBeInTheDocument();
+  });
+
   it("opens first-run preparation without a default root and supports deferral", async () => {
     setMockLocalResourcesForTest({
       configured: false,
@@ -1311,7 +1327,7 @@ describe("SiaoCut review workbench", () => {
     fireEvent.click(within(setup).getByRole("button", { name: "准备并继续" }));
 
     const preview = await screen.findByRole("region", { name: "待确认视频信息" });
-    expect(within(preview).getByText("X")).toBeInTheDocument();
+    expect(within(preview).getByText(/X · 公开访问/)).toBeInTheDocument();
     expect(within(preview).getByText("Public X video")).toBeInTheDocument();
     expect(screen.queryByRole("dialog", { name: "准备 SiaoCut" })).not.toBeInTheDocument();
   });

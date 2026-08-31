@@ -208,6 +208,8 @@ enum TranslationCommand {
 enum SourceCommand {
     Inspect {
         url: String,
+        #[arg(long)]
+        browser: Option<String>,
     },
     Start {
         url: String,
@@ -215,6 +217,8 @@ enum SourceCommand {
         confirm_media_id: String,
         #[arg(long, hide = true)]
         start_delay_ms: Option<u64>,
+        #[arg(long)]
+        browser: Option<String>,
     },
     Status {
         job_id: String,
@@ -1058,19 +1062,38 @@ fn run(cli: Cli) -> Result<Value> {
             ))
         }
         Commands::Source(command) => match command {
-            SourceCommand::Inspect { url } => {
-                let source = source_import::inspect(&url)?;
+            SourceCommand::Inspect { url, browser } => {
+                let source = match browser.as_deref() {
+                    Some(browser) => source_import::inspect_with_browser(&url, browser)?,
+                    None => source_import::inspect(&url)?,
+                };
                 Ok(envelope(json!({
                     "source": source,
-                    "message": "已读取公开单视频信息；确认前不会下载或创建项目。"
+                    "message": if browser.is_some() {
+                        "已使用浏览器登录态读取单视频信息；确认前不会下载或创建项目。"
+                    } else {
+                        "已读取公开单视频信息；确认前不会下载或创建项目。"
+                    }
                 })))
             }
             SourceCommand::Start {
                 url,
                 confirm_media_id,
                 start_delay_ms,
+                browser,
             } => {
-                let job = source_import::start(&database, &url, &confirm_media_id, start_delay_ms)?;
+                let job = match browser.as_deref() {
+                    Some(browser) => source_import::start_with_browser(
+                        &database,
+                        &url,
+                        &confirm_media_id,
+                        start_delay_ms,
+                        browser,
+                    )?,
+                    None => {
+                        source_import::start(&database, &url, &confirm_media_id, start_delay_ms)?
+                    }
+                };
                 Ok(envelope(json!({
                     "sourceJobId": job.id,
                     "sourceJob": job,

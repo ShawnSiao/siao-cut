@@ -406,8 +406,12 @@ export type SourcePreview = {
   thumbnailUrl: string | null;
   toolVersion: string;
   toolSha256: string;
+  authMode: "anonymous" | "browser";
+  browser: SourceBrowser | null;
   requiresConfirmation: boolean;
 };
+
+export type SourceBrowser = "chrome" | "edge" | "firefox";
 
 export type SourceImportJob = {
   id: string;
@@ -429,6 +433,8 @@ export type SourceImportJob = {
   outputSha256: string | null;
   toolVersion: string;
   toolSha256: string;
+  authMode: "anonymous" | "browser";
+  browser: SourceBrowser | null;
   cancelRequestedAt: string | null;
   errorMessage: string | null;
   errorCode?: CoreErrorCode | null;

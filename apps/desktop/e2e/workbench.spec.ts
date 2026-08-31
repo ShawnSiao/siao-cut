@@ -754,10 +754,15 @@ test("confirms and controls an audited X video URL import", async ({ page }) => 
   const dialog = page.getByRole("dialog", { name: "URL 导入" });
   await expect(dialog).toBeVisible();
   await expect(dialog.getByRole("heading", { name: "从 X 或公开视频 URL 下载" })).toBeVisible();
+  await dialog.getByRole("radio", { name: /使用浏览器登录态/ }).check();
+  await dialog.getByLabel("已登录浏览器").selectOption("chrome");
   await dialog.getByLabel("公开视频 URL").fill("https://x.com/i/status/2091959711423996249");
-  await dialog.getByRole("button", { name: "读取视频信息" }).click();
+  const inspect = dialog.getByRole("button", { name: "读取视频信息" });
+  await expect(inspect).toBeDisabled();
+  await dialog.getByRole("checkbox", { name: /允许本次预检和下载/ }).check();
+  await inspect.click();
   const preview = dialog.getByRole("region", { name: "待确认视频信息" });
-  await expect(preview.getByText("X", { exact: true })).toBeVisible();
+  await expect(preview.getByText("X · chrome 登录态", { exact: true })).toBeVisible();
   await expect(preview.getByText("Public X video")).toBeVisible();
   await expect(preview.getByText("2091957857650716672", { exact: true })).toBeVisible();
   const start = preview.getByRole("button", { name: "确认信息并开始下载" });
