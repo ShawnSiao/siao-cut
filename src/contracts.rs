@@ -226,6 +226,7 @@ pub const CORE_ERROR_CODES: &[&str] = &[
     "source_browser_auth_failed",
     "source_browser_media_unavailable",
     "source_auth_state_invalid",
+    "source_x_resolver_failed",
     "source_metadata_invalid",
     "source_playlist_not_allowed",
     "source_auth_not_allowed",

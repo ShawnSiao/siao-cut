@@ -902,7 +902,7 @@ export const zhCN = {
   "app.s0515": "关闭 URL 导入 · Esc",
   "app.s0516": "受审计的网络导入",
   "app.s0517": "从 X 或公开视频 URL 下载",
-  "app.s0518": "支持 X（x.com、twitter.com）及其他 HTTPS 单视频 URL。可公开访问，也可在明确授权后临时使用浏览器登录态；上限 2 小时或 4 GB。媒体完整校验后才创建本地项目。",
+  "app.s0518": "支持 X（x.com、twitter.com）及其他 HTTPS 单视频 URL。X 提取失败时，可将帖子 ID 发送给 FxTwitter 获取公开媒体地址；也可明确授权临时使用浏览器登录态。上限 2 小时或 4 GB。",
   "app.s0519": "待确认视频信息",
   "app.s0520": "文件大小",
   "app.s0521": "预估大小",
@@ -1251,7 +1251,7 @@ export const zhCN = {
   "app.resources.cleanupConfirm": "将清理不再需要的旧版本、已完成的下载文件和未完成的临时文件；当前版本、可恢复版本与可续传下载会保留。确认继续？",
   "app.resources.cleanupNotice": "无用的本地资源文件已清理。",
   "app.resources.urlEngine": "URL 导入能力",
-  "app.resources.urlDisclosure": "公开访问仅处理无需登录的单视频；不读取浏览器 Cookie、用户配置或插件，也不会自行更新。"
+  "app.resources.urlDisclosure": "公开访问不读取浏览器 Cookie、用户配置或插件。X 提取失败时，仅将帖子 ID 发送给 FxTwitter；视频文件仍从 X 媒体地址下载。"
 } as const;
 
 export type TranslationKey = keyof typeof zhCN;
@@ -2160,7 +2160,7 @@ export const enUS: Record<TranslationKey, string> = {
   "app.s0515": "Close URL import · Esc",
   "app.s0516": "Audited network import",
   "app.s0517": "Download from X or a public video URL",
-  "app.s0518": "X (x.com and twitter.com) and other HTTPS single-video URLs are supported. Use public access or explicitly authorize temporary browser-session access. The limit is 2 hours or 4 GB. A local project is created only after the media is verified.",
+  "app.s0518": "X (x.com and twitter.com) and other HTTPS single-video URLs are supported. If X extraction fails, the post ID can be sent to FxTwitter for a public media URL; temporary browser-session access can also be explicitly authorized. The limit is 2 hours or 4 GB.",
   "app.s0519": "Video information to be confirmed",
   "app.s0520": "file size",
   "app.s0521": "Estimated size",
@@ -2509,5 +2509,5 @@ export const enUS: Record<TranslationKey, string> = {
   "app.resources.cleanupConfirm": "This removes unneeded old versions, completed downloads, and abandoned temporary files. Current and restorable versions plus resumable downloads are preserved. Continue?",
   "app.resources.cleanupNotice": "Unused local resource files were removed.",
   "app.resources.urlEngine": "URL import capability",
-  "app.resources.urlDisclosure": "Public access handles only single videos that require no sign-in. It does not read browser cookies, user configuration, or extensions, and it cannot update itself."
+  "app.resources.urlDisclosure": "Public access does not read browser cookies, user configuration, or extensions. If X extraction fails, only the post ID is sent to FxTwitter; the video file is still downloaded from an X media URL."
 };

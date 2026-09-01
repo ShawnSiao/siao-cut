@@ -754,6 +754,7 @@ test("confirms and controls an audited X video URL import", async ({ page }) => 
   const dialog = page.getByRole("dialog", { name: "URL 导入" });
   await expect(dialog).toBeVisible();
   await expect(dialog.getByRole("heading", { name: "从 X 或公开视频 URL 下载" })).toBeVisible();
+  await expect(dialog.getByText(/仅将帖子 ID 发送给 FxTwitter/)).toBeVisible();
   await dialog.getByRole("radio", { name: /使用浏览器登录态/ }).check();
   await dialog.getByLabel("已登录浏览器").selectOption("chrome");
   await dialog.getByLabel("公开视频 URL").fill("https://x.com/i/status/2091959711423996249");

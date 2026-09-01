@@ -1204,6 +1204,7 @@ describe("SiaoCut review workbench", () => {
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "从 URL 导入" }));
     expect(await screen.findByRole("dialog", { name: "URL 导入" })).toBeInTheDocument();
+    expect(screen.getByText(/仅将帖子 ID 发送给 FxTwitter/)).toBeInTheDocument();
     const inspect = screen.getByRole("button", { name: "读取视频信息" });
     fireEvent.change(screen.getByLabelText("公开视频 URL"), { target: { value: "http://example.com/video" } });
     expect(inspect).toBeDisabled();

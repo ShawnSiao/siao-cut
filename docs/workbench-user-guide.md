@@ -343,6 +343,7 @@ SRT 字幕块之间使用一个空行分隔，VTT 文件包含标准 `WEBVTT` �
 - Agent 结果必须进入人工审阅。
 - 模型和运行时只有在明确选择后才会下载。
 - URL 导入默认使用公开访问，不读取浏览器 Cookie、浏览器配置或插件。
+- 如果 yt-dlp 无法读取公开 X 视频，SiaoCut 会仅将帖子 ID 发送给 FxTwitter 获取公开媒体地址；视频文件仍从 `video.twimg.com` 下载。可通过 `SIAOCUT_X_PUBLIC_RESOLVER` 更换兼容解析服务。
 - 对于需要登录的 X 视频，可在「URL 导入」中明确选择 Chrome、Edge 或 Firefox，并授权本次预检和下载临时读取浏览器 Cookie；SiaoCut 不导出 Cookie 文件，也不把 Cookie 写入日志、数据库或 Agent 任务。
 - 浏览器登录态只扩展到当前账号有权正常播放的内容；已删除、无访问权、DRM 或地区限制内容仍无法导入。
 - 原片缺失或内容变化时，SHA-256 审计会阻止不可靠导出。

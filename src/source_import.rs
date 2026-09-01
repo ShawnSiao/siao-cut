@@ -55,6 +55,8 @@ pub struct SourcePreview {
     pub auth_mode: String,
     pub browser: Option<String>,
     pub requires_confirmation: bool,
+    #[serde(skip)]
+    pub(crate) resolved_download_url: Option<Url>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -195,6 +197,9 @@ fn inspect_with_tool(
     if !output.status.success() {
         let detail = String::from_utf8_lossy(&output.stderr);
         let detail = detail.trim();
+        if let Some(resolved) = crate::x_public_video::resolve(&original)? {
+            return fallback_preview(original, resolved, tool, auth);
+        }
         if browser_cookie_error(detail) {
             bail!(
                 "source_browser_auth_failed: 无法从 {} 读取有效登录态。请确认该浏览器已登录 X 后重试。",
@@ -217,6 +222,44 @@ fn inspect_with_tool(
     let metadata: Value = serde_json::from_slice(&output.stdout)
         .context("source_metadata_invalid: yt-dlp 返回了无效 JSON")?;
     parse_metadata_with_auth(original, &metadata, tool, auth)
+}
+
+fn fallback_preview(
+    original: Url,
+    resolved: crate::x_public_video::ResolvedXVideo,
+    tool: &ToolIdentity,
+    auth: &SourceAuth,
+) -> Result<SourcePreview> {
+    if resolved.video_id.trim().is_empty() {
+        bail!("source_x_resolver_failed: X 公开解析服务未返回视频标识")
+    }
+    if resolved.duration_seconds > MAX_DURATION_SECONDS {
+        bail!("source_duration_limit: 视频时长超过 2 小时上限")
+    }
+    if resolved
+        .file_size_bytes
+        .is_some_and(|size| size > MAX_FILE_SIZE_BYTES)
+    {
+        bail!("source_size_limit: 视频大小超过 4 GB 上限")
+    }
+    let title = sanitize_windows_filename_component(&resolved.title);
+    Ok(SourcePreview {
+        original_url: original.to_string(),
+        webpage_url: resolved.webpage_url.to_string(),
+        site_media_id: resolved.video_id,
+        extractor: "Twitter".to_owned(),
+        title,
+        duration_seconds: resolved.duration_seconds,
+        file_size_bytes: resolved.file_size_bytes,
+        file_size_known: resolved.file_size_bytes.is_some(),
+        thumbnail_url: None,
+        tool_version: tool.version.clone(),
+        tool_sha256: tool.sha256.clone(),
+        auth_mode: auth.mode().to_owned(),
+        browser: auth.browser().map(str::to_owned),
+        requires_confirmation: true,
+        resolved_download_url: Some(resolved.media_url),
+    })
 }
 
 fn browser_display_name(browser: &str) -> &str {
@@ -677,7 +720,16 @@ fn run_download(db: &mut Connection, job_id: &str) -> Result<()> {
         bail!("source_tool_changed: URL 导入任务绑定的 yt-dlp 版本或哈希已变化")
     }
     let ffmpeg = tool_path("SIAOCUT_FFMPEG", "ffmpeg");
-    run_download_command(db, job_id, &original_url, &tool, &ffmpeg, &auth)
+    let download_url = refreshed
+        .resolved_download_url
+        .as_ref()
+        .unwrap_or(&original_url);
+    let download_auth = if refreshed.resolved_download_url.is_some() {
+        SourceAuth::Anonymous
+    } else {
+        auth
+    };
+    run_download_command(db, job_id, download_url, &tool, &ffmpeg, &download_auth)
 }
 
 fn assert_source_identity(
@@ -1008,14 +1060,14 @@ fn add_proxy_argument(arguments: &mut Vec<String>, proxy_url: &str) {
     arguments.splice(index..index, ["--proxy".to_owned(), proxy_url.to_owned()]);
 }
 
-struct SafeConnectProxy {
+pub(crate) struct SafeConnectProxy {
     address: SocketAddr,
     stop: Arc<AtomicBool>,
     worker: Option<thread::JoinHandle<()>>,
 }
 
 impl SafeConnectProxy {
-    fn start() -> Result<Self> {
+    pub(crate) fn start() -> Result<Self> {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
             .context("source_proxy_failed: 无法启动 URL 安全代理")?;
         listener.set_nonblocking(true)?;
@@ -1047,7 +1099,7 @@ impl SafeConnectProxy {
         })
     }
 
-    fn url(&self) -> String {
+    pub(crate) fn url(&self) -> String {
         format!("http://{}", self.address)
     }
 }
@@ -1503,6 +1555,7 @@ fn parse_metadata_with_auth(
         auth_mode: auth.mode().to_owned(),
         browser: auth.browser().map(str::to_owned),
         requires_confirmation: true,
+        resolved_download_url: None,
     })
 }
 
@@ -1580,7 +1633,7 @@ fn selected_file_size(metadata: &Value) -> Option<u64> {
     })
 }
 
-fn validate_public_https_url(input: &str) -> Result<Url> {
+pub(crate) fn validate_public_https_url(input: &str) -> Result<Url> {
     let url = Url::parse(input).map_err(|_| anyhow!("source_url_invalid: URL 格式无效"))?;
     if url.scheme() != "https" {
         bail!("source_https_required: 只接受公开 HTTPS URL")
@@ -2260,6 +2313,36 @@ mod tests {
     }
 
     #[test]
+    fn source_import_x_fallback_binds_the_resolved_media_url() {
+        let original =
+            Url::parse("https://x.com/example/status/2093953961590231113/video/1").unwrap();
+        let media_url = Url::parse(
+            "https://video.twimg.com/amplify_video/2093953852827664384/vid/avc1/1280x720/video.mp4",
+        )
+        .unwrap();
+        let preview = fallback_preview(
+            original,
+            crate::x_public_video::ResolvedXVideo {
+                webpage_url: Url::parse("https://x.com/example/status/2093953961590231113")
+                    .unwrap(),
+                media_url: media_url.clone(),
+                video_id: "2093953852827664384".to_owned(),
+                title: "Public X video".to_owned(),
+                duration_seconds: 54.868,
+                file_size_bytes: Some(5_526_471),
+            },
+            &tool(),
+            &SourceAuth::Anonymous,
+        )
+        .unwrap();
+
+        assert_eq!(preview.extractor, "Twitter");
+        assert_eq!(preview.site_media_id, "2093953852827664384");
+        assert_eq!(preview.resolved_download_url, Some(media_url));
+        assert_eq!(preview.auth_mode, "anonymous");
+    }
+
+    #[test]
     fn source_import_refuses_a_media_identity_changed_after_confirmation() {
         let preview = SourcePreview {
             original_url: "https://93.184.216.34/watch/123".to_owned(),
@@ -2276,6 +2359,7 @@ mod tests {
             auth_mode: "anonymous".to_owned(),
             browser: None,
             requires_confirmation: true,
+            resolved_download_url: None,
         };
 
         let error = assert_source_identity("media-123", "Example", &preview)
@@ -2629,6 +2713,7 @@ mod tests {
             auth_mode: "anonymous".to_owned(),
             browser: None,
             requires_confirmation: true,
+            resolved_download_url: None,
         };
         let job = insert_job_at(&db, &preview, &temp.path().join("imports")).unwrap();
         let job_id = job.id.clone();

@@ -42,6 +42,7 @@ mod translation_edit_tests;
 mod util;
 mod video_export;
 mod workflows;
+mod x_public_video;
 
 const API_VERSION: &str = "0.1";
 

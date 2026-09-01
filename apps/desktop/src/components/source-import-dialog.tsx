@@ -39,10 +39,11 @@ const sourceCopy = {
     browserDescription: "临时读取所选浏览器的登录 Cookie，适用于账号可正常播放的视频。",
     browserLabel: "已登录浏览器",
     browserConsent: "允许本次预检和下载临时读取所选浏览器的登录 Cookie。SiaoCut 不导出 Cookie 文件，也不把 Cookie 写入日志、数据库或 Agent 任务。",
-    browserDisclosure: "登录态导入仅在预检和下载子进程中临时读取浏览器 Cookie；SiaoCut 不导出 Cookie 文件，也不把 Cookie 交给 Agent。已删除、无访问权、DRM 或地区限制内容仍无法导入。",
+    browserDisclosure: "登录态导入仅在预检和下载子进程中临时读取浏览器 Cookie。X 提取失败时，仅将帖子 ID 发送给 FxTwitter 获取公开媒体地址。SiaoCut 不导出 Cookie 文件，也不把 Cookie 交给 Agent。",
     loginRequired: "公开访问没有返回此 X 视频。可改用浏览器登录态重试。",
     browserAuthFailed: "无法读取有效的浏览器登录态。请确认所选浏览器已登录 X。",
     browserMediaUnavailable: "当前登录账号仍无法取得此视频。请确认该账号可以正常播放。",
+    resolverFailed: "X 公开解析服务未返回可下载视频。请确认帖子仍可访问，或稍后重试。",
   },
   "en-US": {
     authTitle: "Access method",
@@ -52,10 +53,11 @@ const sourceCopy = {
     browserDescription: "Temporarily reads cookies from the selected browser for videos the account can play.",
     browserLabel: "Signed-in browser",
     browserConsent: "Allow this inspection and download to temporarily read sign-in cookies from the selected browser. SiaoCut does not export cookies or write them to logs, its database, or Agent tasks.",
-    browserDisclosure: "Browser-session import reads cookies only inside the inspection and download subprocesses. SiaoCut does not export cookies or give them to an Agent. Deleted, unauthorized, DRM-protected, or region-restricted content still cannot be imported.",
+    browserDisclosure: "Browser-session import reads cookies only inside the inspection and download subprocesses. If X extraction fails, only the post ID is sent to FxTwitter to obtain a public media URL. SiaoCut does not export cookies or give them to an Agent.",
     loginRequired: "Public access did not return this X video. Try again with a browser session.",
     browserAuthFailed: "A valid browser session could not be read. Confirm that the selected browser is signed in to X.",
     browserMediaUnavailable: "The current signed-in account still cannot retrieve this video. Confirm that the account can play it.",
+    resolverFailed: "The public X resolver did not return a downloadable video. Confirm that the post is still accessible or try again later.",
   },
 } as const;
 
@@ -63,6 +65,7 @@ function sourceInspectionSummary(error: string, copy: typeof sourceCopy["zh-CN"]
   if (error.startsWith("source_login_required:")) return copy.loginRequired;
   if (error.startsWith("source_browser_auth_failed:")) return copy.browserAuthFailed;
   if (error.startsWith("source_browser_media_unavailable:")) return copy.browserMediaUnavailable;
+  if (error.startsWith("source_x_resolver_failed:")) return copy.resolverFailed;
   return null;
 }
 
