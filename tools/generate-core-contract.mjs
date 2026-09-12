@@ -45,6 +45,7 @@ const source = [
     `export type ${typeName} = typeof ${constantName}[number];`,
     "",
   ]),
+  ...(contract.typeDeclarations ?? []).map((declaration) => `export ${declaration}`.split("\n").map((line) => line.trimEnd()).join("\n")),
   "export type CoreErrorCode = KnownCoreErrorCode | (string & {});",
   "",
 ].join("\n");

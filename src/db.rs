@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 34;
+pub const CURRENT_SCHEMA_VERSION: i64 = 35;
 
 struct Migration {
     version: i64,
@@ -151,6 +151,10 @@ const MIGRATIONS: &[Migration] = &[
         version: 34,
         apply: migration_34_source_browser_auth,
     },
+    Migration {
+        version: 35,
+        apply: migration_35_editing_sessions,
+    },
 ];
 
 pub fn home_dir() -> PathBuf {
@@ -175,6 +179,19 @@ pub fn open() -> Result<Connection> {
 }
 
 pub(crate) fn open_at(path: &Path) -> Result<Connection> {
+    // Serialize backup and migration together across Core workers and app windows.
+    // The file is scoped to this database and is released when initialization ends.
+    let lock_path = path.with_file_name(format!(
+        "{}.migration.lock",
+        path.file_name().unwrap_or_default().to_string_lossy()
+    ));
+    let migration_lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(lock_path)?;
+    fs2::FileExt::lock_exclusive(&migration_lock).context("无法取得数据库升级锁")?;
     backup_before_upgrade(path)?;
     let mut db = Connection::open(path).context("无法打开 SiaoCut SQLite 数据库")?;
     db.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")?;
@@ -256,6 +273,18 @@ fn migrate(db: &mut Connection) -> Result<()> {
 
     for migration in MIGRATIONS.iter().filter(|item| item.version > installed) {
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(version),0) FROM schema_migrations",
+            [],
+            |row| row.get(0),
+        )?;
+        if current > CURRENT_SCHEMA_VERSION {
+            bail!("database_version_unsupported: 数据库已由较新版本升级")
+        }
+        if current >= migration.version {
+            tx.commit()?;
+            continue;
+        }
         (migration.apply)(&tx).with_context(|| {
             format!(
                 "database_migration_failed: 迁移 {} 执行失败",
@@ -1380,10 +1409,66 @@ fn migration_29_local_resource_profiles(tx: &Transaction<'_>) -> Result<()> {
     Ok(())
 }
 
+fn migration_35_editing_sessions(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute_batch(include_str!("migrations/35_editing_sessions.sql"))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn concurrent_open_upgrades_the_previous_schema_once_and_keeps_backup() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("concurrent.db");
+        let mut old = Connection::open(&path).unwrap();
+        old.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,applied_at TEXT NOT NULL)").unwrap();
+        for migration in MIGRATIONS
+            .iter()
+            .filter(|m| m.version < CURRENT_SCHEMA_VERSION)
+        {
+            let tx = old.transaction().unwrap();
+            (migration.apply)(&tx).unwrap();
+            tx.execute(
+                "INSERT INTO schema_migrations VALUES(?1,'test')",
+                [migration.version],
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+        drop(old);
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let workers: Vec<_> = (0..2)
+            .map(|_| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let db = open_at(&path).unwrap();
+                    db.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .unwrap()
+                })
+            })
+            .collect();
+        for worker in workers {
+            assert_eq!(worker.join().unwrap(), CURRENT_SCHEMA_VERSION);
+        }
+        let backup = Connection::open(temp.path().join(format!(
+            "concurrent.db.schema-{}.bak",
+            CURRENT_SCHEMA_VERSION - 1
+        )))
+        .unwrap();
+        let old_version: i64 = backup
+            .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(old_version, CURRENT_SCHEMA_VERSION - 1);
+    }
 
     #[test]
     fn initializes_and_reopens_current_schema() {

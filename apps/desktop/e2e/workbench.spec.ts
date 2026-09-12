@@ -671,7 +671,7 @@ test("reviews and edits a transcript from the workbench", async ({ page }) => {
   const editor = page.getByLabel("00:13 字幕文本");
   await editor.fill("人工修订后的原文。");
   await editor.blur();
-  await expect(page.getByText("原文已更新；对应译文需要更新。")).toBeVisible();
+  await expect(page.getByLabel("编辑保存状态").getByRole("status")).toHaveText("已保存");
   await expect(page.getByText("需要更新", { exact: true }).first()).toBeVisible();
   await page.getByRole("tab", { name: "导出" }).click();
   const exportPanel = page.getByLabel("导出设置");
@@ -690,12 +690,12 @@ test("edits stale translations directly and gives the target language an indepen
   const source = page.getByLabel("00:13 字幕文本");
   await source.fill("人工修订后的原文。");
   await source.blur();
-  await expect(page.getByText("原文已更新；对应译文需要更新。")).toBeVisible();
+  await expect(page.getByLabel("编辑保存状态").getByRole("status")).toHaveText("已保存");
 
   const translated = page.getByLabel("编辑 00:13 的 EN 译文");
   await translated.fill("The manually corrected translation.");
   await translated.blur();
-  await expect(page.getByText("译文已更新，并与当前原文重新关联。")).toBeVisible();
+  await expect(translated.locator("..").locator(".field-save-status")).toHaveText("已保存");
   await expect(translated).toHaveValue("The manually corrected translation.");
 
   await page.getByRole("tab", { name: "导出" }).click();

@@ -1,3 +1,6 @@
+import { useEditingSession } from "../features/editing/use-editing-session";
+import { EditingStatus } from "../features/editing/EditingStatus";
+import { fieldKey } from "../features/editing/editing-session";
 import { changeUiLocale, getUiLocale, tr, type UiLocale } from "../i18n";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type SyntheticEvent } from "react";
 import { Activity, Bot, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Clock3, Copy, Cpu, Database, Download, FileVideo2, FileText, Film, FolderOpen, FolderPlus, HardDrive, History, Link2, LoaderCircle, Play, RefreshCw, RotateCcw, Search, Scissors, Settings2, ShieldCheck, Sparkles, Trash2, Undo2, Redo2, Headphones, ListChecks, MoreHorizontal, MoveHorizontal, Users, X, } from "lucide-react";
@@ -238,6 +241,7 @@ function WorkbenchController() {
     const [transcriptionPrompt, setTranscriptionPrompt] = useState("");
     const [transcriptionHotwords, setTranscriptionHotwords] = useState("");
     const { busy, notice, error, setBusy, setNotice, setError } = useWorkbenchFeedback(tr("app.s0038"));
+    const editing = useEditingSession(project, (receipt) => refreshProject(receipt.projectId));
     const [runtime, setRuntime] = useState<RuntimeInfo | null>(null);
     const [localResources, setLocalResources] = useState<LocalResourceStatus | null>(null);
     const [resourcePlan, setResourcePlan] = useState<LocalResourcePlan | null>(null);
@@ -1316,7 +1320,8 @@ function WorkbenchController() {
         setMediaUrl(await authorizeMedia(envelope.project.id));
         setNotice(tr("app.s0080"));
     });
-    const switchProject = (projectId: string) => {
+    const switchProject = async (projectId: string) => {
+        try { await editing.session.flush(project?.id); } catch (error) { setError(String(error)); return; }
         if (project?.id === projectId || busyRef.current || structureBusy || Boolean(subtitleImportBusy) || deleteBusy || deletePreflightBusy || Boolean(autoBusy) || Boolean(sourceBusy))
             return;
         setNotice(null);
@@ -2106,7 +2111,7 @@ function WorkbenchController() {
         setNotice(tr("app.s0144", { "0": envelope.speakerJob.attemptCount }));
     });
     const renameSpeaker = (speakerId: string, name: string) => project && withBusy(tr("app.s0145"), async () => {
-        const envelope = await transcriptEditingClient.renameSpeaker(project.id, speakerId, name);
+        const envelope = await editing.session.mutate(project.id, { kind: "rename_speaker", speakerId, name });
         if (!envelope.speakerTrack)
             throw new Error(tr("app.s0146"));
         setSpeakerTrack(envelope.speakerTrack);
@@ -2114,7 +2119,7 @@ function WorkbenchController() {
         setNotice(tr("app.s0147"));
     });
     const mergeSpeaker = (fromId: string, intoId: string) => project && withBusy(tr("app.s0148"), async () => {
-        const envelope = await transcriptEditingClient.mergeSpeaker(project.id, fromId, intoId);
+        const envelope = await editing.session.mutate(project.id, { kind: "merge_speaker", fromId, intoId });
         if (!envelope.speakerTrack)
             throw new Error(tr("app.s0149"));
         setSpeakerTrack(envelope.speakerTrack);
@@ -2122,35 +2127,27 @@ function WorkbenchController() {
         setNotice(tr("app.s0150"));
     });
     const assignSpeaker = (segmentId: string, speakerId: string) => project && withBusy(tr("app.s0151"), async () => {
-        const envelope = await transcriptEditingClient.assignSpeaker(project.id, segmentId, speakerId);
+        const envelope = await editing.session.mutate(project.id, { kind: "assign_speaker", segmentId, speakerId });
         if (!envelope.speakerTrack)
             throw new Error(tr("app.s0146"));
         setSpeakerTrack(envelope.speakerTrack);
         await refreshProject(project.id);
         setNotice(tr("app.s0152"));
     });
-    const editSegment = (segment: Segment, text: string) => project && text.trim() !== segment.text && withBusy(tr("app.s0153"), async () => {
-        await transcriptEditingClient.editSegment(project.id, segment.id, text.trim());
-        await refreshProject(project.id);
-        setNotice(tr("app.s0154"));
-    });
-    const editTranslationSegment = (segment: Segment, text: string) => {
-        const translated = selectedTranslation?.segments.find((item) => item.segmentId === segment.id);
-        const expectedVersion = project?.history.currentVersionId;
-        if (!project || !selectedSubtitleLanguage || !translated || text.trim() === translated.text)
-            return;
-        if (!expectedVersion) {
-            setError(tr("app.creator.translation.versionUnavailable"));
-            return;
-        }
-        void withBusy(tr("app.creator.translation.editing"), async () => {
-            await translationClient.editSegment(project.id, segment.id, selectedSubtitleLanguage, text.trim(), expectedVersion);
-            await refreshProject(project.id);
-            setNotice(tr("app.creator.translation.edited"));
-        });
+    const editSegment = async (segment: Segment, text: string) => {
+        if (!project) return;
+        const key = fieldKey(project.id, segment.id, "source");
+        if (editing.session.state(key)?.draft.text !== text) editing.session.change(key, text);
+        await editing.session.save(key, true);
+    };
+    const editTranslationSegment = async (segment: Segment, text: string) => {
+        if (!project || !selectedSubtitleLanguage) return;
+        const key = fieldKey(project.id, segment.id, `translation:${selectedSubtitleLanguage}`);
+        if (editing.session.state(key)?.draft.text !== text) editing.session.change(key, text);
+        await editing.session.save(key, true);
     };
     const replaceAll = () => project && search && (replacement || emptyReplacementConfirmed) && withBusy(tr("app.s0155"), async () => {
-        const result = await transcriptEditingClient.replaceAll(project.id, search, replacement);
+        const result = await editing.session.mutate(project.id, { kind: "replace", search, replacement });
         await refreshProject(project.id);
         setEmptyReplacementConfirmed(false);
         setNotice(Number(result.changedSegments ?? 0) === 0 ? tr("app.s0156") : tr("app.s0157", { "0": result.changedSegments }));
@@ -2200,7 +2197,7 @@ function WorkbenchController() {
             return { saved: true, segment };
         let saved = false;
         await withBusy(tr("app.s0153"), async () => {
-            await transcriptEditingClient.editSegment(project.id, segment.id, text);
+            await editSegment(segment, text);
             await refreshProject(project.id);
             setNotice(tr("app.s0154"));
             saved = true;
@@ -2246,12 +2243,12 @@ function WorkbenchController() {
                     throw new Error(tr("app.s0158"));
                 if (!hasMeaningfulSubtitleText(splitLeftText) || !hasMeaningfulSubtitleText(splitRightText))
                     throw new Error(tr("app.structure.splitMeaningful"));
-                request = transcriptEditingClient.splitSegment(project.id, selectedSegments[0].id, textOffset, at);
+                request = editing.session.mutate(project.id, { kind: "split", segmentId: selectedSegments[0].id, textOffset, at });
             }
             else if (structureEditMode === "merge") {
                 if (!mergeCandidatesAdjacent)
                     throw new Error(tr("app.s0159"));
-                request = transcriptEditingClient.mergeSegments(project.id, selectedSegments[0].id, selectedSegments[1].id);
+                request = editing.session.mutate(project.id, { kind: "merge", firstId: selectedSegments[0].id, secondId: selectedSegments[1].id });
             }
             else if (structureEditMode === "timing") {
                 const start = Number(structureStart);
@@ -2260,13 +2257,13 @@ function WorkbenchController() {
                     throw new Error(tr("app.s0160"));
                 if (!timingChanged)
                     throw new Error(tr("app.structure.timingUnchanged"));
-                request = transcriptEditingClient.updateTiming(project.id, selectedSegments[0].id, start, end);
+                request = editing.session.mutate(project.id, { kind: "timing", segmentId: selectedSegments[0].id, start, end });
             }
             else {
                 const delta = Number(structureDelta);
                 if (!Number.isFinite(delta) || delta === 0)
                     throw new Error(tr("app.s0161"));
-                request = transcriptEditingClient.offsetSegments(project.id, selectedSegments.map((segment) => segment.id), delta);
+                request = editing.session.mutate(project.id, { kind: "offset", segmentIds: selectedSegments.map((segment) => segment.id), delta });
             }
             const envelope = await request;
             if (!envelope.structureEdit?.project)
@@ -2400,7 +2397,7 @@ function WorkbenchController() {
         updateCanvasState(settings);
         return withBusy(tr("app.s0178"), async () => {
             try {
-                const envelope = await transcriptEditingClient.setCanvas(projectId, settings);
+                const envelope = await editing.session.mutate(projectId, { kind: "canvas", aspectRatio: settings.aspectRatio, framing: settings.framing });
                 if (!envelope.project)
                     throw new Error(tr("app.canvas.projectMissing"));
                 setProject(envelope.project);
@@ -2417,7 +2414,7 @@ function WorkbenchController() {
         });
     };
     const changeSubtitleStyle = (preset: Project["subtitleStyle"]["preset"], position: Project["subtitleStyle"]["position"], sourceFontSize?: number, translationFontSize?: number, boxWidthPercent?: number, boxHeightLines?: number) => project && withBusy(tr("app.s0181"), async () => {
-        const envelope = await transcriptEditingClient.setSubtitleStyle(project.id, preset, position, sourceFontSize, translationFontSize, boxWidthPercent, boxHeightLines);
+        const envelope = await editing.session.mutate(project.id, { kind: "style", preset, position, sourceFontSize: sourceFontSize ?? null, translationFontSize: translationFontSize ?? null, boxWidthPercent: boxWidthPercent ?? null, boxHeightLines: boxHeightLines ?? null });
         if (!envelope.project)
             throw new Error(tr("app.s0182"));
         setProject(envelope.project);
@@ -2458,12 +2455,12 @@ function WorkbenchController() {
         setNotice(tr("app.s0192"));
     });
     const updateCut = (editId: string, action: "apply" | "restore" | "dismiss") => project && withBusy(action === "apply" ? tr("app.s0193") : action === "dismiss" ? tr("app.cut.dismissing") : tr("app.s0194"), async () => {
-        await transcriptEditingClient.updateCut(project.id, editId, action);
+        await editing.session.mutate(project.id, { kind: "set_cut_status", editId, action });
         await refreshProject(project.id);
         setNotice(action === "apply" ? tr("app.s0195") : action === "dismiss" ? tr("app.cut.dismissed") : tr("app.s0196"));
     });
     const detectSuggestions = () => project && withBusy(tr("app.s0197"), async () => {
-        const envelope = await transcriptEditingClient.detectCuts(project.id);
+        const envelope = await editing.session.mutate(project.id, { kind: "detect_cuts" });
         const count = envelope.suggestions?.length ?? 0;
         await refreshProject(project.id);
         setNotice(count ? tr("app.s0198", { "0": count }) : tr("app.s0199"));
@@ -2492,7 +2489,7 @@ function WorkbenchController() {
         const to = selectedWords[activeWordRange.end];
         if (!from || !to)
             throw new Error(tr("app.s0205"));
-        const envelope = await transcriptEditingClient.createWordCut(project.id, selected.id, from.id, to.id, cutPadding);
+        const envelope = await editing.session.mutate(project.id, { kind: "create_word_cut", segmentId: selected.id, fromWordId: from.id, toWordId: to.id, paddingMs: cutPadding });
         if (!envelope.cut)
             throw new Error(tr("app.s0206"));
         await refreshProject(project.id);
@@ -2534,12 +2531,12 @@ function WorkbenchController() {
         }));
     };
     const restoreVersion = (versionId: string) => project && withBusy(tr("app.s0207"), async () => {
-        await projectSessionClient.restoreVersion(project.id, versionId);
+        await editing.session.mutate(project.id, { kind: "restore", versionId });
         await refreshProject(project.id, true);
         setNotice(tr("app.s0208"));
     });
     const navigateHistory = (action: "undo" | "redo") => project && withBusy(action === "undo" ? tr("app.s0209") : tr("app.s0210"), async () => {
-        const envelope = await projectSessionClient.navigateHistory(project.id, action);
+        const envelope = await editing.session.mutate(project.id, { kind: action });
         if (!envelope.project)
             throw new Error(tr("app.s0211"));
         await refreshProject(project.id, true);
@@ -3013,7 +3010,7 @@ function WorkbenchController() {
         setStructureBusy(true);
         setError(null);
         try {
-            const envelope = await transcriptEditingClient.offsetSegments(project.id, [segmentId], delta);
+            const envelope = await editing.session.mutate(project.id, { kind: "offset", segmentIds: [segmentId], delta });
             if (!envelope.structureEdit?.project)
                 throw new Error(tr("app.s0162"));
             const nextProject = envelope.structureEdit.project;
@@ -3110,6 +3107,7 @@ function WorkbenchController() {
       </aside>
 
       <section className={`workbench${project ? "" : " empty-workbench"}`}>
+        <EditingStatus session={editing.session} projectId={project?.id} closeError={editing.closeError} onCancelClose={editing.clearCloseError} onCloseWithDrafts={editing.closeWithDrafts}/>
         {focusReview && project && <Suspense fallback={null}><FocusReviewToolbar remaining={focusReviewCount} subtitleMode={subtitleMode} translationPending={selectedTranslationPending} translationStale={selectedTranslationStale} onSubtitleModeChange={(mode) => { setSubtitleMode(mode); setConfirmStaleTranslation(false); }} onExit={() => exitFocusReview()}/></Suspense>}
         <header className="topbar">
           <div className="topbar-heading"><p className="eyebrow">{tr("app.s0247")}</p><h1>{project?.title ?? tr("app.s0248")}</h1></div>
@@ -3257,7 +3255,7 @@ function WorkbenchController() {
                   </div>
                 </section>
                 <div className="segment-list" aria-label={tr("app.s0365")}>
-                  {filteredSegments.map((segment) => { const association = associationBySegment.get(segment.id); return <SegmentRow key={segment.id} segment={segment} speaker={association ? speakerById.get(association.speakerId) : undefined} speakerManual={association?.source === "manual"} selected={selectedSegmentIds.includes(segment.id)} active={segment.id === selectedId} translation={translation?.[1]} translationLanguage={translation?.[0]} onSelect={(mode) => selectSegmentInWorkbench(segment, mode)} onSave={(text) => editSegment(segment, text)} onSaveTranslation={(text) => editTranslationSegment(segment, text)} onSplitAt={(text, offset) => void splitSegmentFromEditor(segment, text, offset)} onMergePrevious={(text) => void mergePreviousFromEditor(segment, text)}/>; })}
+                  {filteredSegments.map((segment) => { const association = associationBySegment.get(segment.id); return <SegmentRow editingSession={editing.session} projectId={project.id} key={segment.id} segment={segment} speaker={association ? speakerById.get(association.speakerId) : undefined} speakerManual={association?.source === "manual"} selected={selectedSegmentIds.includes(segment.id)} active={segment.id === selectedId} translation={translation?.[1]} translationLanguage={translation?.[0]} onSelect={(mode) => selectSegmentInWorkbench(segment, mode)} onSave={(text) => editSegment(segment, text)} onSaveTranslation={(text) => editTranslationSegment(segment, text)} onSplitAt={(text, offset) => void splitSegmentFromEditor(segment, text, offset)} onMergePrevious={(text) => void mergePreviousFromEditor(segment, text)}/>; })}
                   {!filteredSegments.length && <p className="empty-list">{project.transcript.segments.length ? tr("app.s0366") : tr("app.s0367")}</p>}
                 </div>
               </article>

@@ -16,6 +16,8 @@ mod cuts;
 mod db;
 #[cfg(test)]
 mod db_migration_33_tests;
+mod editing;
+mod editing_contract;
 mod export;
 mod ipc;
 mod local_resources;
@@ -42,6 +44,7 @@ mod translation_edit_tests;
 mod util;
 mod video_export;
 mod workflows;
+mod write_transaction;
 mod x_public_video;
 
 const API_VERSION: &str = "0.1";
@@ -121,6 +124,8 @@ enum Commands {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", deny_unknown_fields)]
 enum DesktopRequest {
+    #[serde(rename = "editing")]
+    Editing { request: editing::EditingRequest },
     #[serde(rename = "transcript_offset")]
     TranscriptOffset {
         #[serde(rename = "projectId")]
@@ -917,6 +922,7 @@ fn run_desktop_request(database: &mut rusqlite::Connection, input: &PathBuf) -> 
     let request: DesktopRequest = serde_json::from_slice(&payload)
         .map_err(|_| anyhow!("invalid_request: Desktop 结构化请求 JSON 无效"))?;
     match request {
+        DesktopRequest::Editing { request } => Ok(envelope(editing::execute(database, request)?)),
         DesktopRequest::TranscriptOffset {
             project_id,
             segment_ids,

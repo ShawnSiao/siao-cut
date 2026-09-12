@@ -1,3 +1,4 @@
+import { editingClient } from "./domains/editing-client";
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -741,7 +742,7 @@ describe("SiaoCut review workbench", () => {
     fireEvent.change(translationEditor, { target: { value: "This is the corrected translation." } });
     fireEvent.blur(translationEditor);
 
-    await waitFor(() => expect(screen.getByText("译文已更新，并与当前原文重新关联。")).toBeInTheDocument());
+    await waitFor(() => expect(translationEditor.closest(".translation-editor")?.querySelector(".field-save-status")?.textContent).toBe("已保存"));
     expect(screen.getByLabelText("编辑 00:13 的 EN 译文")).toHaveValue("This is the corrected translation.");
   });
 
@@ -886,7 +887,8 @@ describe("SiaoCut review workbench", () => {
 
     fireEvent.change(editor, { target: { value: "通过快捷键保存的人工修订。" } });
     fireEvent.keyDown(editor, { key: "s", code: "KeyS", ctrlKey: true });
-    await waitFor(() => expect(screen.getByText("原文已更新；对应译文需要更新。")).toBeInTheDocument());
+    await waitFor(() => expect(editor.closest(".segment-row")?.querySelector(".field-save-status")?.textContent).toBe("已保存"));
+    expect(editor).toHaveValue("通过快捷键保存的人工修订。");
   });
 
   it("opens a time-confirmed split directly from Enter in the transcript", async () => {
@@ -1008,7 +1010,7 @@ describe("SiaoCut review workbench", () => {
   });
 
   it("keeps subtitle timing unchanged when a timeline nudge fails", async () => {
-    vi.spyOn(transcriptEditingClient, "offsetSegments").mockRejectedValueOnce(new Error("时间微调失败"));
+    vi.spyOn(editingClient, "mutate").mockRejectedValueOnce(new Error("时间微调失败"));
     render(<App />);
     const timeline = await screen.findByRole("region", { name: "字幕时间轴" });
     fireEvent.click(within(timeline).getByRole("button", { name: /字幕 2，00:13\.2 至 00:18\.6/ }));

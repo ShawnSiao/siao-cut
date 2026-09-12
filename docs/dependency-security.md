@@ -25,3 +25,16 @@ cargo tree --manifest-path tools/updater-contract/Cargo.toml --target x86_64-pc-
 - 上游发布兼容的已修复版本。
 
 告警关闭不等于依赖已经升级，也不扩大当前平台支持范围。
+
+
+## 桌面契约生成依赖
+
+2026 年 9 月 12 日新增并锁定 `ts-rs 12.0.1`，用于从 Rust 编辑请求与响应 DTO
+生成 TypeScript 类型，沿用 `tools/generate-core-contract.mjs --check` 检查漂移。
+`ts-rs` 和 `ts-rs-macros` 使用 MIT 许可证；新增间接依赖 `termcolor`、
+`winapi-util` 使用 Unlicense 或 MIT 许可证。
+
+本次根目录 `Cargo.lock` 的 `cargo audit` 检查未发现已知安全漏洞；审计另报告原有
+`chacha20 0.10.1` 已撤回发布，该提示不属于本次新增依赖。此结果不覆盖桌面端独立锁文件。
+生成器不为 Serde 的 `deny_unknown_fields` 生成 TypeScript 运行时校验；该约束仍由
+Core 反序列化执行，不能以生成类型代替输入校验。

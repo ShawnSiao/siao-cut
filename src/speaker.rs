@@ -7,9 +7,7 @@ use crate::{
 use anyhow::{Context, Result, anyhow, bail};
 use bzip2::read::BzDecoder;
 use reqwest::{StatusCode, blocking::Client, header::RANGE};
-use rusqlite::{
-    Connection, ErrorCode, OptionalExtension, Transaction, TransactionBehavior, params,
-};
+use rusqlite::{Connection, ErrorCode, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -1094,7 +1092,7 @@ fn analyze_project(db: &mut Connection, job_id: &str) -> Result<()> {
     if hash_file(&source)? != expected_source_sha256 {
         bail!("speaker_source_changed: 说话人分析期间原始媒体内容发生变化")
     }
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = crate::write_transaction::WriteTransaction::begin(db)?;
     if project::current_version_id(&tx, project_id)?.as_deref() != Some(base_version_id.as_str()) {
         bail!("speaker_project_changed: 说话人分析期间项目已被修改，结果未发布")
     }
@@ -1324,13 +1322,13 @@ pub fn load_track(db: &Connection, project_id: &str) -> Result<SpeakerTrack> {
 
 #[cfg(test)]
 fn replace_track(db: &mut Connection, project_id: &str, track: &SpeakerTrack) -> Result<()> {
-    let tx = db.transaction()?;
+    let tx = crate::write_transaction::WriteTransaction::begin(db)?;
     replace_track_tx(&tx, project_id, Some(track))?;
     tx.commit()?;
     Ok(())
 }
 
-pub(crate) fn clear_track_tx(tx: &Transaction<'_>, project_id: &str) -> Result<()> {
+pub(crate) fn clear_track_tx(tx: &Connection, project_id: &str) -> Result<()> {
     tx.execute(
         "DELETE FROM segment_speakers WHERE project_id=?1",
         [project_id],
@@ -1348,7 +1346,7 @@ pub(crate) fn clear_track_tx(tx: &Transaction<'_>, project_id: &str) -> Result<(
 }
 
 pub(crate) fn replace_track_tx(
-    tx: &Transaction<'_>,
+    tx: &Connection,
     project_id: &str,
     track: Option<&SpeakerTrack>,
 ) -> Result<()> {
@@ -1431,7 +1429,7 @@ pub fn merge(
     if count != 2 {
         bail!("speaker_not_found: 合并的说话人不存在")
     }
-    let tx = db.transaction()?;
+    let tx = crate::write_transaction::WriteTransaction::begin(db)?;
     tx.execute(
         "UPDATE speaker_turns SET speaker_id=?3 WHERE project_id=?1 AND speaker_id=?2",
         params![project_id, from_id, into_id],

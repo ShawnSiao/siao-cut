@@ -2,12 +2,17 @@ import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { tr } from "./i18n";
 import type { CoreEnvelope, Project, RuntimeInfo, UpdateDownloadEvent, UpdateMetadata, UpdatePolicy } from "./types";
+import type { EditingRequest } from "./generated/core-contract";
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
 
+export class CoreRequestError extends Error {
+  constructor(public readonly code: string, message: string, public readonly technicalDetails?: string | null) { super(message); this.name = "CoreRequestError"; }
+}
+
 function ensureOk(envelope: CoreEnvelope): CoreEnvelope {
   if (envelope.status === "error") {
-    throw new Error(envelope.error?.message ?? envelope.message ?? tr("app.core.requestFailed"));
+    throw new CoreRequestError(envelope.error?.code ?? envelope.code ?? "request_failed", envelope.error?.message ?? envelope.message ?? tr("app.core.requestFailed"), envelope.error?.technicalDetails);
   }
   return envelope;
 }
@@ -22,10 +27,12 @@ export async function runCore(args: string[]): Promise<CoreEnvelope> {
 }
 
 export type StructuredCoreRequest =
+  | { kind: "editing"; request: EditingRequest }
   | { kind: "transcript_offset"; projectId: string; segmentIds: string[]; delta: number }
   | { kind: "transcription_start"; projectId: string; language: "auto" | "en" | "zh"; prompt?: string; hotwords: string[] };
 
 function expandStructuredCoreRequest(request: StructuredCoreRequest): string[] {
+  if (request.kind === "editing") throw new Error("Editing requests use the structured mock adapter");
   if (request.kind === "transcript_offset") {
     return ["transcript", "offset", request.projectId, ...request.segmentIds.flatMap((segmentId) => ["--segment", segmentId]), "--delta", String(request.delta)];
   }
@@ -52,9 +59,10 @@ export async function runCoreStructured(request: StructuredCoreRequest): Promise
   try {
     const envelope = isTauri()
       ? await invoke<CoreEnvelope>("run_core_structured", { payload: JSON.stringify(request) })
-      : await runMockCore(expandStructuredCoreRequest(request));
+      : request.kind === "editing" ? await (await import("./core.mock")).mockEditingRequest(request.request) : await runMockCore(expandStructuredCoreRequest(request));
     return ensureOk(envelope);
   } catch (error) {
+    if (error instanceof CoreRequestError) throw error;
     throw new Error(structuredCoreErrorMessage(error));
   }
 }

@@ -4,7 +4,7 @@ use crate::{
     util::now,
 };
 use anyhow::{Result, anyhow, bail};
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
@@ -71,7 +71,7 @@ pub fn replace_language(
     }
 
     let timestamp = now();
-    let tx = db.transaction()?;
+    let tx = crate::write_transaction::WriteTransaction::begin(db)?;
     let current: i64 = tx
         .query_row(
             "SELECT current_version FROM project_glossaries WHERE project_id=?1",
@@ -130,7 +130,7 @@ pub fn restore(
     expected_version: u32,
 ) -> Result<Glossary> {
     let timestamp = now();
-    let tx = db.transaction()?;
+    let tx = crate::write_transaction::WriteTransaction::begin(db)?;
     let current: i64 = tx
         .query_row(
             "SELECT current_version FROM project_glossaries WHERE project_id=?1",
@@ -202,48 +202,58 @@ pub fn edit_segment(
         bail!("translation_text_too_long: 单段译文不得超过 4000 个字符")
     }
 
-    let timestamp = now();
     project::mutate_with_snapshot_at_version(
         db,
         project_id,
         Some(expected_version_id),
         "translation_version_conflict: 项目版本已变化，请刷新后重试",
         "编辑译文",
-        |tx| {
-            let source_text: String = tx
-                .query_row(
-                    "SELECT text FROM segments WHERE project_id=?1 AND id=?2",
-                    params![project_id, segment_id],
-                    |row| row.get(0),
-                )
-                .optional()?
-                .ok_or_else(|| {
-                    anyhow!("translation_segment_not_found: 字幕段不存在：{segment_id}")
-                })?;
-            let glossary_version: i64 = tx
-                .query_row(
-                    "SELECT glossary_version FROM translations WHERE project_id=?1 AND language=?2",
-                    params![project_id, language],
-                    |row| row.get(0),
-                )
-                .optional()?
-                .ok_or_else(|| anyhow!("translation_not_found: 项目中没有 {language} 译文"))?;
-            tx.execute(
+        |tx| edit_segment_in_transaction(tx, project_id, segment_id, language, &text),
+    )?;
+    project::load(db, project_id)
+}
+
+pub(crate) fn edit_segment_in_transaction(
+    tx: &Connection,
+    project_id: &str,
+    segment_id: &str,
+    language: &str,
+    text: &str,
+) -> Result<()> {
+    validate_language(language)?;
+    if text.trim().is_empty() || text.chars().count() > 4000 {
+        bail!("translation_text_too_long: 译文必须为 1 至 4000 个字符")
+    }
+    let timestamp = now();
+    let source_text: String = tx
+        .query_row(
+            "SELECT text FROM segments WHERE project_id=?1 AND id=?2",
+            params![project_id, segment_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| anyhow!("translation_segment_not_found: 字幕段不存在：{segment_id}"))?;
+    let glossary_version: i64 = tx
+        .query_row(
+            "SELECT glossary_version FROM translations WHERE project_id=?1 AND language=?2",
+            params![project_id, language],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| anyhow!("translation_not_found: 项目中没有 {language} 译文"))?;
+    tx.execute(
                 "INSERT INTO translation_segments(project_id,language,segment_id,text,source_hash,status,updated_at)
                  VALUES(?1,?2,?3,?4,?5,'current',?6)
                  ON CONFLICT(project_id,language,segment_id) DO UPDATE SET
                    text=excluded.text,source_hash=excluded.source_hash,status='current',updated_at=excluded.updated_at",
                 params![project_id, language, segment_id, &text, source_hash(&source_text), &timestamp],
             )?;
-            refresh_language_status(tx, project_id, language, glossary_version.max(0) as u32)?;
-            tx.execute(
-                "UPDATE projects SET updated_at=?2 WHERE id=?1",
-                params![project_id, &timestamp],
-            )?;
-            Ok(())
-        },
+    refresh_language_status(tx, project_id, language, glossary_version.max(0) as u32)?;
+    tx.execute(
+        "UPDATE projects SET updated_at=?2 WHERE id=?1",
+        params![project_id, &timestamp],
     )?;
-    project::load(db, project_id)
+    Ok(())
 }
 
 pub fn effective_segment_status(
@@ -300,7 +310,7 @@ pub fn task_segment_ids(db: &Connection, task_id: &str) -> Result<Vec<String>> {
 }
 
 pub fn invalidate_segments(
-    tx: &Transaction<'_>,
+    tx: &Connection,
     project_id: &str,
     segment_ids: &[&str],
 ) -> Result<usize> {
@@ -329,7 +339,7 @@ pub fn invalidate_segments(
 }
 
 pub fn refresh_language_status(
-    tx: &Transaction<'_>,
+    tx: &Connection,
     project_id: &str,
     language: &str,
     glossary_version: u32,

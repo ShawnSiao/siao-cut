@@ -811,6 +811,10 @@ export type TranscriptReplacementPreflight = {
 };
 
 export type CoreEnvelope = {
+  versionId?: string | null;
+  mutationId?: string;
+  editReceipt?: import("./generated/core-contract").EditReceipt;
+  drafts?: import("./generated/core-contract").Draft[];
   apiVersion: string;
   status: "ok" | "error";
   error?: { code: CoreErrorCode; message: string; technicalDetails?: string | null };

@@ -102,6 +102,10 @@ pub const LOCAL_RESOURCE_STATES: &[&str] = &[
 ];
 
 pub const CORE_ERROR_CODES: &[&str] = &[
+    "editing_version_conflict",
+    "editing_content_conflict",
+    "editing_mutation_reused",
+    "editing_text_empty",
     "database_version_unsupported",
     "database_migration_failed",
     "project_version_conflict",
@@ -385,7 +389,11 @@ pub const CORE_ERROR_CODES: &[&str] = &[
 ];
 
 pub fn contract() -> Value {
+    use ts_rs::TS;
+    let config = ts_rs::Config::default();
     json!({
+        "typeDeclarations": [crate::editing::Draft::decl(&config), crate::editing::SaveEdit::decl(&config), crate::editing::EditReceipt::decl(&config), crate::editing::ProjectOperation::decl(&config), crate::editing::ProjectMutation::decl(&config), crate::editing::EditingRequest::decl(&config)],
+        "capabilities": ["editing-v1"],
         "statusSets": {
             "backgroundJob": BACKGROUND_JOB_STATUSES,
             "transcriptionJob": TRANSCRIPTION_JOB_STATUSES,

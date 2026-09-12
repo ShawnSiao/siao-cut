@@ -116,6 +116,10 @@ export const workflowProfiles = [
 export type WorkflowProfile = typeof workflowProfiles[number];
 
 export const coreErrorCodes = [
+  "editing_version_conflict",
+  "editing_content_conflict",
+  "editing_mutation_reused",
+  "editing_text_empty",
   "database_version_unsupported",
   "database_migration_failed",
   "project_version_conflict",
@@ -399,4 +403,14 @@ export const coreErrorCodes = [
 ] as const;
 export type KnownCoreErrorCode = typeof coreErrorCodes[number];
 
+export type Draft = { projectId: string, sessionId: string, segmentId: string,
+/**
+ * `source` or `translation:<language>`.
+ */
+field: string, baseVersionId: string | null, baseText: string, text: string, revision: number, };
+export type SaveEdit = { mutationId: string, expectedVersionId: string | null, groupId: string, draft: Draft, };
+export type EditReceipt = { mutationId: string, projectId: string, versionId: string, segmentId: string, field: string, text: string, changedDomains: Array<string>, };
+export type ProjectOperation = { "kind": "detect_cuts" } | { "kind": "set_cut_status", editId: string, action: string, } | { "kind": "create_word_cut", segmentId: string, fromWordId: string, toWordId: string, paddingMs: number, } | { "kind": "split", segmentId: string, textOffset: number, at: number, } | { "kind": "merge", firstId: string, secondId: string, } | { "kind": "timing", segmentId: string, start: number, end: number, } | { "kind": "offset", segmentIds: Array<string>, delta: number, } | { "kind": "replace", search: string, replacement: string, } | { "kind": "undo" } | { "kind": "redo" } | { "kind": "restore", versionId: string, } | { "kind": "canvas", aspectRatio: string, framing: string, } | { "kind": "style", preset: string, position: string, sourceFontSize: number | null, translationFontSize: number | null, boxWidthPercent: number | null, boxHeightLines: number | null, } | { "kind": "rename_speaker", speakerId: string, name: string, } | { "kind": "merge_speaker", fromId: string, intoId: string, } | { "kind": "assign_speaker", segmentId: string, speakerId: string, };
+export type ProjectMutation = { projectId: string, mutationId: string, expectedVersionId: string | null, operation: ProjectOperation, };
+export type EditingRequest = { "action": "mutate", mutation: ProjectMutation, } | { "action": "journal", draft: Draft, } | { "action": "list", projectId: string, } | { "action": "discard", draft: Draft, } | { "action": "save", edit: SaveEdit, };
 export type CoreErrorCode = KnownCoreErrorCode | (string & {});

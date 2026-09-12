@@ -1495,3 +1495,79 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
     },
   };
 }
+
+
+// Browser preview only. Production journals and receipts are owned by Rust/SQLite.
+const previewMutationReceipts = new Map<string, { request: string; response: CoreEnvelope }>();
+const previewReceipts = new Map<string, { request: string; receipt: import("./generated/core-contract").EditReceipt }>();
+export async function mockEditingRequest(request: import("./generated/core-contract").EditingRequest): Promise<CoreEnvelope> {
+  const storageKey = "siaocut.preview.editing-journal.v1";
+  type Journal = import("./generated/core-contract").Draft & { discarded?: boolean };
+  const drafts: Journal[] = JSON.parse(localStorage.getItem(storageKey) ?? "[]");
+  const ok = (value: Partial<CoreEnvelope> = {}): CoreEnvelope => ({ apiVersion: "0.1", status: "ok", ...value });
+  const fail = (code: string, message: string): CoreEnvelope => ({ apiVersion: "0.1", status: "error", error: { code, message } });
+  if (request.action === "list") return ok({ drafts: drafts.filter((d) => d.projectId === request.projectId && !d.discarded) });
+  if (request.action === "mutate") {
+    const m = request.mutation, op = m.operation, id = m.projectId;
+    const previous = previewMutationReceipts.get(m.mutationId);
+    if (previous) return previous.request === JSON.stringify(m) ? structuredClone(previous.response) : fail("editing_mutation_reused", "操作标识已被使用");
+    const p = mockProject.id === id ? mockProject : mockProjects.find((item) => item.id === id);
+    if (!p || p.history.currentVersionId !== m.expectedVersionId) return fail("editing_version_conflict", "项目版本已变化");
+    let args: string[];
+    switch (op.kind) {
+      case "detect_cuts": args = ["cut", "detect", id]; break;
+      case "set_cut_status": args = ["cut", op.action, id, op.editId]; break;
+      case "create_word_cut": args = ["cut", "create", id, "--segment", op.segmentId, "--from-word", op.fromWordId, "--to-word", op.toWordId, "--padding-ms", String(op.paddingMs)]; break;
+      case "split": args = ["transcript","split",id,op.segmentId,"--text-offset",String(op.textOffset),"--at",String(op.at)]; break;
+      case "merge": args = ["transcript","merge",id,op.firstId,op.secondId]; break;
+      case "timing": args = ["transcript","timing",id,op.segmentId,"--start",String(op.start),"--end",String(op.end)]; break;
+      case "offset": args = ["transcript","offset",id,...op.segmentIds.flatMap((segmentId) => ["--segment",segmentId]),"--delta",String(op.delta)]; break;
+      case "replace": args = ["transcript","replace",id,"--find",op.search,"--replace",op.replacement]; break;
+      case "undo": case "redo": args = ["project",op.kind,id]; break;
+      case "restore": args = ["project","restore",id,op.versionId]; break;
+      case "canvas": args = ["canvas","set",id,"--aspect-ratio",op.aspectRatio,"--framing",op.framing]; break;
+      case "style": args = ["transcript","set-style",id,"--preset",op.preset,"--position",op.position,...(op.sourceFontSize == null ? [] : ["--source-font-size",String(op.sourceFontSize)]),...(op.translationFontSize == null ? [] : ["--translation-font-size",String(op.translationFontSize)]),...(op.boxWidthPercent == null ? [] : ["--box-width-percent",String(op.boxWidthPercent)]),...(op.boxHeightLines == null ? [] : ["--box-height-lines",String(op.boxHeightLines)])]; break;
+      case "rename_speaker": args = ["speaker","rename",id,op.speakerId,"--name",op.name]; break;
+      case "merge_speaker": args = ["speaker","merge",id,"--from",op.fromId,"--into",op.intoId]; break;
+      case "assign_speaker": args = ["speaker","assign",id,op.segmentId,op.speakerId]; break;
+    }
+    const response = await mockRun(args);
+    if (response.status === "error") return response;
+    response.versionId = mockProject.history.currentVersionId; response.mutationId = m.mutationId;
+    previewMutationReceipts.set(m.mutationId, { request: JSON.stringify(m), response: structuredClone(response) });
+    return response;
+  }
+  const d = request.action === "save" ? request.edit.draft : request.draft;
+  const same = (item: Journal) => item.projectId === d.projectId && item.sessionId === d.sessionId && item.segmentId === d.segmentId && item.field === d.field;
+  const updateJournal = (discarded: boolean) => {
+    const old = drafts.find(same);
+    if (old && (discarded ? old.revision > d.revision : old.revision >= d.revision)) return;
+    localStorage.setItem(storageKey, JSON.stringify([...drafts.filter((item) => !same(item)), { ...d, ...(discarded ? { text: "", baseText: "", discarded: true } : {}) }]));
+  };
+  if (request.action === "journal") { updateJournal(false); return ok(); }
+  if (request.action === "discard") { updateJournal(true); return ok(); }
+  const raw = JSON.stringify(request.edit), key = `${d.projectId}:${request.edit.mutationId}`;
+  const previous = previewReceipts.get(key);
+  if (previous) return previous.request === raw ? ok({ editReceipt: previous.receipt }) : fail("editing_mutation_reused", "保存标识已被使用");
+  const project = mockProject.id === d.projectId ? mockProject : mockProjects.find((p) => p.id === d.projectId);
+  if (!project) return fail("project_not_found", "项目不存在");
+  if (project.history.currentVersionId !== request.edit.expectedVersionId) return fail("editing_version_conflict", "项目版本已变化，请核对草稿");
+  const segment = d.field === "source" ? project.transcript.segments.find((s) => s.id === d.segmentId) : project.translations[d.field.slice(12)]?.segments.find((s) => s.segmentId === d.segmentId);
+  if (!segment || segment.text !== d.baseText) return fail("editing_content_conflict", "字幕已变化，请核对草稿");
+  if (!d.text.trim()) return fail("editing_text_empty", "字幕文本不能为空");
+  recordMockSnapshot(); segment.text = d.text;
+  if (d.field === "source") markTextDependentsStale(project, [d.segmentId]);
+  else {
+    const translation = project.translations[d.field.slice(12)];
+    const translated = translation.segments.find((item) => item.segmentId === d.segmentId)!;
+    translated.status = "current"; translated.sourceHash = `manual:${project.transcript.segments.find((item) => item.id === d.segmentId)?.text ?? ""}`;
+    translated.updatedAt = new Date().toISOString();
+    translation.status = translation.segments.some((item) => item.status !== "current") ? "stale" : "current";
+  }
+  const versionId = `v-${crypto.randomUUID()}`;
+  project.history = { currentVersionId: versionId, canUndo: true, canRedo: false };
+  project.versions.push({ id: versionId, reason: "编辑字幕", createdAt: new Date().toISOString() });
+  syncMockProject(project); updateJournal(true);
+  const receipt = { mutationId: request.edit.mutationId, projectId: d.projectId, versionId, segmentId: d.segmentId, field: d.field, text: d.text, changedDomains: ["transcript", "translations", "history", "quality", "edits"] };
+  previewReceipts.set(key, { request: raw, receipt }); return ok({ editReceipt: receipt });
+}

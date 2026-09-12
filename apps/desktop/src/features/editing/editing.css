@@ -1,0 +1,10 @@
+.editing-status { padding: 8px 12px; font-size: 12px; border-bottom: 1px solid var(--line, #3b424a); }
+.editing-status > button { margin-left: 12px; }
+.editing-conflict { padding: 10px; margin: 8px 0; border: 1px solid #aa8143; border-radius: 6px; }
+.editing-conflict pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+.editing-conflict label { display: block; }
+.editing-conflict textarea { width: 100%; min-height: 60px; }
+.editing-conflict button { margin: 8px 8px 0 0; }
+.field-save-status { display: block; font-size: 11px; line-height: 1.6; color: #bfcbd4; }
+.field-save-status.conflict, .field-save-status.failed { color: #f7ba89; }
+.editing-close-error { position: fixed; z-index: 1000; inset: 25% 20% auto; padding: 24px; background: #1b2228; border: 1px solid #af8850; box-shadow: 0 8px 60px #0009; }
