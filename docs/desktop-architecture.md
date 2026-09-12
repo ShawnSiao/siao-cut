@@ -29,6 +29,8 @@
 
 `desktop_api.rs` 是结构化桌面请求的应用入口；文件读取、大小限制和 JSON 解码保留在传输入口。`editing.rs`、`ai_approval.rs`、`transcription/desktop.rs` 和 `project_query.rs` 分别执行领域命令或查询。
 
+`desktop_query.rs` 定义任务、视频导出、模型、资源、说话人和审核预检的读取契约。桌面领域客户端发送结构化请求，Core 直接调用领域服务。浏览器预览的旧命令映射只存在于模拟适配器中，不参与桌面生产调用。
+
 项目编辑包含 `mutationId`、`expectedVersionId` 和操作参数。版本检查、领域修改、快照与幂等回执在同一事务内完成。相同标识重复提交返回原回执，复用标识提交不同内容会被拒绝。无版本的旧 CLI 编辑入口保留兼容性，不提供桌面陈旧编辑检测保证。
 
 `src/model.rs` 和各领域 Rust DTO 是 TypeScript 字段契约的来源。`ts-rs` 生成 `apps/desktop/src/generated/core-contract.ts`；修改 Rust 类型后先构建 Core，再运行：
@@ -38,7 +40,7 @@ node tools/generate-core-contract.mjs
 node tools/generate-core-contract.mjs --check
 ```
 
-桌面首次调用检查 Core 能力集合。缺少编辑、AI 授权、后台转写、项目查询或保存回执能力时显示版本不匹配，不回退到无保护写入。运行环境、资源安装及部分旧任务控制仍通过集中领域客户端调用兼容 CLI，不能把类型生成视为这些接口全部迁移的证明。
+桌面首次调用检查 Core 能力集合。缺少编辑、AI 授权、后台转写、项目查询、桌面查询或保存回执能力时显示版本不匹配，不回退到无保护写入。资源安装及部分旧任务控制仍通过集中领域客户端调用兼容 CLI，不能把类型生成视为这些控制接口全部迁移的证明。
 
 ## 回归与验收边界
 

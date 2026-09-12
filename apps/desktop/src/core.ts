@@ -46,7 +46,7 @@ export async function runCore(args: string[]): Promise<CoreEnvelope> {
 export type StructuredCoreRequest = DesktopRequest;
 
 function expandStructuredCoreRequest(request: StructuredCoreRequest): string[] {
-  if (request.kind === "editing" || request.kind === "ai_approval" || request.kind === "transcription_job" || request.kind === "project_query") throw new Error("Editing requests use the structured mock adapter");
+  if (request.kind === "editing" || request.kind === "ai_approval" || request.kind === "transcription_job" || request.kind === "project_query" || request.kind === "desktop_query") throw new Error("Editing requests use the structured mock adapter");
   if (request.kind === "transcript_offset") {
     return ["transcript", "offset", request.projectId, ...request.segmentIds.flatMap((segmentId) => ["--segment", segmentId]), "--delta", String(request.delta)];
   }
@@ -74,7 +74,7 @@ export async function runCoreStructured(request: StructuredCoreRequest): Promise
     await verifyCoreCapabilities();
     const envelope = isTauri()
       ? await invoke<CoreEnvelope>("run_core_structured", { payload: JSON.stringify(request) })
-      : request.kind === "project_query" ? await (await import("./core.mock")).mockProjectQuery(request.request) : request.kind === "transcription_job" ? await (await import("./core.mock")).mockTranscriptionCommand(request.request) : request.kind === "ai_approval" ? await (await import("./features/ai-assistance/mock-ai-approval")).mockAiApproval(request.request) : request.kind === "editing" ? await (await import("./core.mock")).mockEditingRequest(request.request) : await runMockCore(expandStructuredCoreRequest(request));
+      : request.kind === "desktop_query" ? await (await import("./mock-desktop-query")).mockDesktopQuery(request.request) : request.kind === "project_query" ? await (await import("./core.mock")).mockProjectQuery(request.request) : request.kind === "transcription_job" ? await (await import("./core.mock")).mockTranscriptionCommand(request.request) : request.kind === "ai_approval" ? await (await import("./features/ai-assistance/mock-ai-approval")).mockAiApproval(request.request) : request.kind === "editing" ? await (await import("./core.mock")).mockEditingRequest(request.request) : await runMockCore(expandStructuredCoreRequest(request));
     return ensureOk(envelope);
   } catch (error) {
     if (error instanceof CoreRequestError) throw error;

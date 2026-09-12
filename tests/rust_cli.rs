@@ -133,6 +133,27 @@ fn invalid_arguments_still_return_usage_error() {
 }
 
 #[test]
+fn desktop_query_uses_the_same_result_through_direct_and_service_transports() {
+    let temp = tempdir().unwrap();
+    let request_path = temp.path().join("查询任务.json");
+    fs::write(&request_path,serde_json::to_vec(&json!({"kind":"desktop_query","request":{"action":"video_exports","projectId":"项目一"}})).unwrap()).unwrap();
+    let args = ["desktop-request", request_path.to_str().unwrap()];
+    let direct = run_direct(temp.path(), &args);
+    let service = run(temp.path(), &args);
+    assert_eq!(direct["jobs"], json!([]));
+    assert_eq!(service["jobs"], direct["jobs"]);
+    fs::write(
+        &request_path,
+        br#"{"kind":"desktop_query","request":{"action":"unknown_query"}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        run_direct_error(temp.path(), &args)["error"]["code"],
+        "invalid_request"
+    );
+}
+
+#[test]
 fn local_resources_can_be_configured_planned_and_checked() {
     let temp = tempdir().unwrap();
     let root = temp.path().join("managed-resources");

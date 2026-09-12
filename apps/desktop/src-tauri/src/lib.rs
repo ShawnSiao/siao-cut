@@ -381,6 +381,8 @@ fn validate_core_args(args: &[String]) -> Result<(), String> {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", deny_unknown_fields)]
 enum StructuredCoreRequest {
+    #[serde(rename = "desktop_query")]
+    Query { request: Value },
     #[serde(rename = "project_query")]
     ProjectQuery { request: Value },
     #[serde(rename = "ai_approval")]
@@ -423,10 +425,14 @@ fn validate_structured_core_request(payload: &str) -> Result<(), String> {
     let request: StructuredCoreRequest = serde_json::from_str(payload)
         .map_err(|error| format!("structured_core_payload_invalid: {error}"))?;
     match request {
-        StructuredCoreRequest::Editing { request } | StructuredCoreRequest::AiApproval { request } | StructuredCoreRequest::TranscriptionJob { request } | StructuredCoreRequest::ProjectQuery { request } => {
+        StructuredCoreRequest::Editing { request }
+        | StructuredCoreRequest::AiApproval { request }
+        | StructuredCoreRequest::TranscriptionJob { request }
+        | StructuredCoreRequest::ProjectQuery { request }
+        | StructuredCoreRequest::Query { request } => {
             if !request.is_object() {
                 return Err(
-                    "structured_core_request_invalid: editing request must be an object".into(),
+                    "structured_core_request_invalid: domain request must be an object".into(),
                 );
             }
         }
@@ -961,6 +967,14 @@ mod tests {
         assert!(
             validate_core_args(&["resources".into(), "install".into(), "url_import".into()])
                 .is_ok()
+        );
+    }
+
+    #[test]
+    fn structured_desktop_query_keeps_unicode_and_rejects_non_object_body() {
+        assert!(validate_structured_core_request(r#"{"kind":"desktop_query","request":{"action":"inspect_subtitle","projectId":"项目一","path":"D:/字幕/最终版本.srt"}}"#).is_ok());
+        assert!(
+            validate_structured_core_request(r#"{"kind":"desktop_query","request":[]}"#).is_err()
         );
     }
 

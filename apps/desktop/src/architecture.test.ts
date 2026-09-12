@@ -14,6 +14,13 @@ function sourceFiles(directory: string): string[] {
 }
 
 describe("desktop architecture boundaries", () => {
+  it("keeps migrated desktop reads on the generated structured query contract", () => {
+    const forbidden = /runCore\(\["(?:model",\s*"(?:list|jobs|status)|source",\s*"(?:jobs|status)|video",\s*"(?:list|status)|speaker",\s*"(?:package|jobs|job-status|track)|agent",\s*"(?:health|list|status)|resources",\s*"(?:status|plan|job|jobs))"/;
+    for (const file of sourceFiles(join(sourceRoot,"domains"))) {
+      expect(readFileSync(file,"utf8"), file).not.toMatch(forbidden);
+    }
+    expect(readFileSync(join(sourceRoot,"core.ts"),"utf8")).toContain("export type StructuredCoreRequest = DesktopRequest");
+  });
   it("checks the actual workbench and one Project owner, not only the App wrapper", () => {
     const controller=readFileSync(join(sourceRoot,"workbench/workbench-controller.tsx"),"utf8");
     for(const session of ["useProjectSession","useEditingSession","usePlaybackSession","useAiReviewSession","useBackgroundSession","useExportSession"]) expect(controller).toContain(`${session}(`);

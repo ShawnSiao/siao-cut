@@ -1,3 +1,4 @@
+import { desktopQuery } from "./desktop-query-client";
 import { runCore } from "../core";
 
 type TranscriptFormat = "srt" | "vtt" | "ass" | "markdown" | "json";
@@ -5,8 +6,8 @@ type SubtitleMode = "source" | "translated" | "bilingual";
 type SubtitleDelivery = "burned" | "embedded-mp4" | "embedded-mkv" | "sidecar-srt" | "sidecar-vtt";
 
 export const exportRuntimeClient = {
-  listVideoExports: (projectId: string) => runCore(["video", "list", projectId]),
-  getVideoExport: (jobId: string) => runCore(["video", "status", jobId]),
+  listVideoExports: (projectId: string) => desktopQuery({action:"video_exports",projectId}),
+  getVideoExport: (jobId: string) => desktopQuery({action:"video_export",jobId}),
   exportStructuredTranscript: (projectId: string, format: TranscriptFormat, output: string, includeSpeakerLabels: boolean, confirmWarnings: boolean) => runCore([
     "transcription", "export", projectId,
     "--format", format,

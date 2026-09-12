@@ -1,3 +1,4 @@
+import { desktopQuery } from "./desktop-query-client";
 import { runCore, runCoreStructured } from "../core";
 import type { UiLocale } from "../i18n";
 import type { SourceBrowser, TranscriptionLanguage, WorkflowProfile } from "../types";
@@ -28,21 +29,21 @@ type StartTranscriptionOptions = {
 };
 
 export const backgroundTaskClient = {
-  listModels: (verify = false) => runCore(["model", "list", ...(verify ? ["--verify"] : [])]),
-  listModelJobs: () => runCore(["model", "jobs"]),
-  getModelJob: (jobId: string) => runCore(["model", "status", jobId]),
+  listModels: (verify = false) => desktopQuery({action:"models",verify}),
+  listModelJobs: () => desktopQuery({action:"model_jobs"}),
+  getModelJob: (jobId: string) => desktopQuery({action:"model_job",jobId}),
   installModel: (modelId: string) => runCore(["model", "install", modelId]),
   cancelModel: (jobId: string) => runCore(["model", "cancel", jobId]),
   removeModel: (modelId: string) => runCore(["model", "remove", modelId]),
 
-  listSourceJobs: () => runCore(["source", "jobs"]),
+  listSourceJobs: () => desktopQuery({action:"source_jobs"}),
   inspectSource: (url: string, browser?: SourceBrowser) => runCore(["source", "inspect", url, ...(browser ? ["--browser", browser] : [])]),
   startSourceImport: (url: string, confirmedMediaId: string, browser?: SourceBrowser) => runCore(["source", "start", url, "--confirm-media-id", confirmedMediaId, ...(browser ? ["--browser", browser] : [])]),
-  getSourceJob: (jobId: string) => runCore(["source", "status", jobId]),
+  getSourceJob: (jobId: string) => desktopQuery({action:"source_job",jobId}),
   cancelSourceImport: (jobId: string) => runCore(["source", "cancel", jobId]),
   resumeSourceImport: (jobId: string) => runCore(["source", "resume", jobId]),
 
-  listAutoWorkflows: () => runCore(["auto", "list"]),
+  listAutoWorkflows: () => desktopQuery({action:"auto_workflows"}),
   startAutoWorkflow: (options: StartAutoWorkflowOptions) => {
     const inputArgs = options.input.kind === "local"
       ? ["--media", options.input.mediaPath, "--title", options.input.title]
@@ -69,19 +70,19 @@ export const backgroundTaskClient = {
       ...(options.burnSubtitles ? ["--burn-subtitles"] : []),
     ]);
   },
-  getAutoWorkflow: (workflowId: string) => runCore(["auto", "status", workflowId]),
+  getAutoWorkflow: (workflowId: string) => desktopQuery({action:"auto_workflow",workflowId}),
   cancelAutoWorkflow: (workflowId: string) => runCore(["auto", "cancel", workflowId]),
   continueAutoWorkflow: (workflowId: string) => runCore(["auto", "continue", workflowId]),
 
-  latestAudioAnalysis: (projectId: string) => runCore(["speech", "audio-latest", projectId]),
-  getAudioAnalysis: (jobId: string) => runCore(["speech", "audio-status", jobId]),
+  latestAudioAnalysis: (projectId: string) => desktopQuery({action:"audio_latest",projectId}),
+  getAudioAnalysis: (jobId: string) => desktopQuery({action:"audio_job",jobId}),
   startAudioAnalysis: (projectId: string) => runCore(["speech", "audio-start", projectId]),
   cancelAudioAnalysis: (jobId: string) => runCore(["speech", "audio-cancel", jobId]),
   resumeAudioAnalysis: (jobId: string) => runCore(["speech", "audio-resume", jobId]),
 
-  getSpeakerPackage: () => runCore(["speaker", "package", "--verify"]),
-  listSpeakerJobs: () => runCore(["speaker", "jobs"]),
-  getSpeakerJob: (jobId: string) => runCore(["speaker", "job-status", jobId]),
+  getSpeakerPackage: () => desktopQuery({action:"speaker_package",verify:true}),
+  listSpeakerJobs: () => desktopQuery({action:"speaker_jobs"}),
+  getSpeakerJob: (jobId: string) => desktopQuery({action:"speaker_job",jobId}),
   installSpeakerPackage: () => runCore(["speaker", "install"]),
   startSpeakerAnalysis: (projectId: string) => runCore(["speaker", "analyze", projectId]),
   cancelSpeakerJob: (jobId: string) => runCore(["speaker", "cancel", jobId]),
@@ -90,9 +91,9 @@ export const backgroundTaskClient = {
   startWhisper: (projectId: string, modelPath: string, language: string, expectedVersionId: string, mutationId: string) => runCoreStructured({ kind: "transcription_job", request: { action: "start", projectId, modelPath, language, expectedVersionId, mutationId } }),
   previewTranscription: (jobId: string, offset = 0) => runCoreStructured({ kind: "transcription_job", request: { action: "preview", jobId, offset } }),
   listTranscriptions: () => runCoreStructured({ kind: "transcription_job", request: { action: "list", projectId: null } }),
-  getTranscriptionHealth: () => runCore(["transcription", "health"]),
-  latestTranscription: (projectId: string) => runCore(["transcription", "latest", projectId]),
-  listTranscriptionReviews: (projectId: string) => runCore(["transcription", "review", projectId]),
+  getTranscriptionHealth: () => desktopQuery({action:"transcription_health"}),
+  latestTranscription: (projectId: string) => desktopQuery({action:"latest_transcription",projectId}),
+  listTranscriptionReviews: (projectId: string) => desktopQuery({action:"transcription_reviews",projectId}),
   getTranscriptionJob: (jobId: string) => runCoreStructured({ kind: "transcription_job", request: { action: "get", jobId } }),
   startTranscription: (options: StartTranscriptionOptions) => runCoreStructured({
     kind: "transcription_start",

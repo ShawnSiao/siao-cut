@@ -154,7 +154,7 @@ describe("SiaoCut review workbench", () => {
   it("persists source language independently and creates the selected Agent workflow", async () => {
     render(<App />);
     const newProject = await screen.findByRole("button", { name: "新建项目" });
-    const agentButton = screen.getByRole("button", { name: "开始 AI 辅助" });
+    const agentButton = await screen.findByRole("button", { name: "开始 AI 辅助" });
     expect(agentButton).toBeDisabled();
     expect(agentButton).toHaveAttribute("title", "请先导入或重新定位本地媒体。");
     fireEvent.click(newProject);

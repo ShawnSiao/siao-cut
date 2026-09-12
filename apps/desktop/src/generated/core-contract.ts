@@ -6,7 +6,8 @@ export const requiredCoreCapabilities = [
   "ai-approval-v1",
   "transcription-jobs-v1",
   "project-query-v1",
-  "edit-receipt-v2"
+  "edit-receipt-v2",
+  "desktop-query-v1"
 ] as const;
 export type CoreCapability = typeof requiredCoreCapabilities[number];
 
@@ -421,7 +422,8 @@ export const coreErrorCodes = [
 ] as const;
 export type KnownCoreErrorCode = typeof coreErrorCodes[number];
 
-export type DesktopRequest = { "kind": "project_query", request: ProjectQuery, } | { "kind": "ai_approval", request: AiApprovalRequest, } | { "kind": "transcription_job", request: TranscriptionCommand, } | { "kind": "editing", request: EditingRequest, } | { "kind": "transcript_offset", projectId: string, segmentIds: Array<string>, delta: number, } | { "kind": "transcription_start", projectId: string, language: string, prompt?: string, hotwords: Array<string>, };
+export type DesktopRequest = { "kind": "desktop_query", request: DesktopQuery, } | { "kind": "project_query", request: ProjectQuery, } | { "kind": "ai_approval", request: AiApprovalRequest, } | { "kind": "transcription_job", request: TranscriptionCommand, } | { "kind": "editing", request: EditingRequest, } | { "kind": "transcript_offset", projectId: string, segmentIds: Array<string>, delta: number, } | { "kind": "transcription_start", projectId: string, language: string, prompt?: string, hotwords: Array<string>, };
+export type DesktopQuery = { "action": "models", verify: boolean, } | { "action": "model_jobs" } | { "action": "model_job", jobId: string, } | { "action": "source_jobs" } | { "action": "source_job", jobId: string, } | { "action": "auto_workflows" } | { "action": "auto_workflow", workflowId: string, } | { "action": "audio_latest", projectId: string, } | { "action": "audio_job", jobId: string, } | { "action": "speaker_package", verify: boolean, } | { "action": "speaker_jobs" } | { "action": "speaker_job", jobId: string, } | { "action": "speaker_track", projectId: string, } | { "action": "transcription_health" } | { "action": "latest_transcription", projectId: string, } | { "action": "transcription_reviews", projectId: string, } | { "action": "video_exports", projectId: string, } | { "action": "video_export", jobId: string, } | { "action": "agent_health" } | { "action": "agent_runs", projectId: string | null, } | { "action": "agent_run", runId: string, } | { "action": "resource_status" } | { "action": "resource_plan", capability: string, profile: string | null, } | { "action": "resource_job", jobId: string, } | { "action": "resource_jobs" } | { "action": "runtime" } | { "action": "delete_preflight", projectId: string, } | { "action": "transcript_replacement_preflight", projectId: string, } | { "action": "inspect_subtitle", projectId: string, path: string, } | { "action": "preview_cut", projectId: string, editId: string, };
 export type ProjectSummary = { id: string, title: string, createdAt: string, updatedAt: string, segmentCount: number, durationSeconds: number | null, versionId: string | null, };
 export type ProjectPage = { items: Array<ProjectSummary>, nextOffset: number | null, total: number, };
 export type ProjectQuery = { "action": "list", offset: number, limit: number | null, } | { "action": "show", projectId: string, } | { "action": "review", projectId: string, } | { "action": "history", projectId: string, } | { "action": "insights", projectId: string, };

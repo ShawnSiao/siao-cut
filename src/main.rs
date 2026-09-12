@@ -18,6 +18,7 @@ mod db;
 #[cfg(test)]
 mod db_migration_33_tests;
 mod desktop_api;
+mod desktop_query;
 mod editing;
 mod editing_contract;
 mod export;

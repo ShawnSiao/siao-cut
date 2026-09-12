@@ -402,6 +402,7 @@ pub fn contract() -> Value {
     let config = ts_rs::Config::default();
     let mut declarations = vec![
         crate::desktop_api::DesktopRequest::decl(&config),
+        crate::desktop_query::DesktopQuery::decl(&config),
         crate::project_query::ProjectSummary::decl(&config),
         crate::project_query::ProjectPage::decl(&config),
         crate::project_query::ProjectQuery::decl(&config),
@@ -421,7 +422,7 @@ pub fn contract() -> Value {
     declarations.extend(crate::model_contract::declarations(&config));
     json!({
         "typeDeclarations": declarations,
-        "capabilities": ["editing-v1", "ai-approval-v1", "transcription-jobs-v1", "project-query-v1", "edit-receipt-v2"],
+        "capabilities": ["editing-v1", "ai-approval-v1", "transcription-jobs-v1", "project-query-v1", "edit-receipt-v2", "desktop-query-v1"],
         "statusSets": {
             "backgroundJob": BACKGROUND_JOB_STATUSES,
             "transcriptionJob": TRANSCRIPTION_JOB_STATUSES,
