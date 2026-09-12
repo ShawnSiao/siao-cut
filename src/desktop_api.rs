@@ -6,6 +6,14 @@ use serde_json::{Value, json};
 #[derive(Debug, Deserialize, ts_rs::TS)]
 #[serde(tag = "kind", deny_unknown_fields)]
 pub enum DesktopRequest {
+    #[serde(rename = "project_command")]
+    ProjectCommand {
+        request: crate::project_commands::ProjectCommand,
+    },
+    #[serde(rename = "desktop_control")]
+    Control {
+        request: crate::desktop_control::DesktopControl,
+    },
     #[serde(rename = "desktop_query")]
     Query {
         request: crate::desktop_query::DesktopQuery,
@@ -53,6 +61,10 @@ fn validate_desktop_request_text(label: &str, value: &str, max_chars: usize) -> 
 
 pub fn execute(database: &mut rusqlite::Connection, request: DesktopRequest) -> Result<Value> {
     match request {
+        DesktopRequest::ProjectCommand { request } => {
+            crate::project_commands::execute(database, request)
+        }
+        DesktopRequest::Control { request } => crate::desktop_control::execute(database, request),
         DesktopRequest::Query { request } => crate::desktop_query::execute(database, request),
         DesktopRequest::ProjectQuery { request } => project_query::execute(database, request),
         DesktopRequest::AiApproval { request } => ai_approval::execute(database, request),

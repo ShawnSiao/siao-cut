@@ -1,70 +1,51 @@
-import { Bot, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Clock3, Copy, Cpu, Download, FileText, FileVideo2, FolderOpen, FolderPlus, Headphones, History, Link2, ListChecks, LoaderCircle, MoreHorizontal, MoveHorizontal, Play, Redo2, RefreshCw, RotateCcw, Scissors, Search, Settings2, ShieldCheck, Sparkles, Trash2, Undo2, Users, X } from "lucide-react";
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { agentTaskStatusLabel, audioRiskLabel, audioUnitLabel, autoStageLabel, autoStatusLabel, cutSuggestionLabel, editReasonLabel, formatTime, getProjectCapabilities, hasMeaningfulSubtitleText, isHttpsSourceUrl, parseTranscriptionLanguage, segmentCountLabel, structureEditLabel, subtitleCountLabel, subtitleIssueLabel, subtitleQualityStatusLabel, taskLabel, TRANSCRIPTION_LANGUAGE_STORAGE_KEY, versionReasonLabel, wordCountLabel, workflowProfileLabel, type SegmentSelectionMode } from "../app-view-model";
+import { Bot,Check,ChevronDown,ChevronRight,ChevronUp,CircleAlert,Clock3,Copy,Cpu,Download,FileText,FileVideo2,FolderOpen,FolderPlus,Headphones,History,Link2,ListChecks,LoaderCircle,MoreHorizontal,MoveHorizontal,Play,Redo2,RefreshCw,RotateCcw,Scissors,Search,Settings2,ShieldCheck,Sparkles,Trash2,Undo2,Users,X } from "lucide-react";
+import { lazy,Suspense,useCallback,useEffect,useMemo,useRef,useState,type CSSProperties,type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { agentTaskStatusLabel,audioRiskLabel,audioUnitLabel,autoStageLabel,autoStatusLabel,cutSuggestionLabel,editReasonLabel,formatTime,getProjectCapabilities,hasMeaningfulSubtitleText,parseTranscriptionLanguage,segmentCountLabel,structureEditLabel,subtitleCountLabel,subtitleIssueLabel,subtitleQualityStatusLabel,taskLabel,TRANSCRIPTION_LANGUAGE_STORAGE_KEY,versionReasonLabel,wordCountLabel,workflowProfileLabel,type SegmentSelectionMode } from "../app-view-model";
 import { JobFailureDetails } from "../components/job-failure";
-import { Button, Dialog, IconButton, StatusBadge } from "../components/ui";
-import { AudioQualityPanel, PatchReviewCard, RuntimeChecklist, SegmentRow, SpeakerTrackPanel, SpeechInsightsPanel, TranscriptionReviewPanel } from "../components/workbench-panels";
+import { Button,Dialog,IconButton,StatusBadge } from "../components/ui";
+import { AudioQualityPanel,PatchReviewCard,RuntimeChecklist,SegmentRow,SpeakerTrackPanel,SpeechInsightsPanel,TranscriptionReviewPanel } from "../components/workbench-panels";
 import { agentReviewClient } from "../domains/agent-review-client";
 import { backgroundTaskClient } from "../domains/background-task-client";
-import { authorizeArtifact, authorizeMedia, localFileAvailable, openLogDirectory, pickMedia, pickModel, pickResourceDirectory, pickSubtitleFile, pickVideoPath, runtimeInfo, selectAsrBackend, updaterPolicy } from "../domains/desktop-platform-client";
+import { authorizeArtifact,authorizeMedia,localFileAvailable,openLogDirectory,pickMedia,pickModel,pickSubtitleFile,runtimeInfo,selectAsrBackend,updaterPolicy } from "../domains/desktop-platform-client";
 import { exportRuntimeClient } from "../domains/export-runtime-client";
 import { localResourceClient } from "../domains/local-resource-client";
 import { projectSessionClient } from "../domains/project-session-client";
 import { transcriptEditingClient } from "../domains/transcript-editing-client";
-import type { AiExecutionSelection } from "../features/ai-assistance/types";
-import { isValidAgentIdentity, useAiReviewSession } from "../features/ai-assistance/use-ai-review-session";
+import { isValidAgentIdentity,useAiReviewSession } from "../features/ai-assistance/use-ai-review-session";
+import { ACTIONABLE_AUTO_WORKFLOW_STATUSES,ACTIVE_AUTO_WORKFLOW_STATUSES,AUTO_WORKFLOW_DISMISSED_STORAGE_KEY,TERMINAL_AUTO_WORKFLOW_STATUSES,upsertById } from "../features/background-tasks/auto-workflow-snapshots";
+import { resourceMaintenance } from "../features/background-tasks/resource-maintenance";
+import { localCapabilityLabel,localResourceError,RESOURCE_SETUP_DEFERRED_KEY } from "../features/background-tasks/resource-messages";
+import { useAutoWorkflowSession } from "../features/background-tasks/use-auto-workflow-session";
 import { useBackgroundSession } from "../features/background-tasks/use-background-session";
+import { useResourceSession } from "../features/background-tasks/use-resource-session";
+import { useSourceImportSession } from "../features/background-tasks/use-source-import-session";
 import { EditingStatus } from "../features/editing/EditingStatus";
 import { fieldKey } from "../features/editing/editing-session";
 import { useEditingSession } from "../features/editing/use-editing-session";
 import { useStructureEditing } from "../features/editing/use-structure-editing";
 import { VirtualTranscript } from "../features/editing/virtual-transcript";
 import { useExportSession } from "../features/export/use-export-session";
-import { resolveCanvasMedia, resolveImportedProjectMedia, usePlaybackSession } from "../features/playback/use-playback-session";
+import { resolveCanvasMedia,resolveImportedProjectMedia,usePlaybackSession } from "../features/playback/use-playback-session";
 import { useProjectLifecycle } from "../features/project-session/use-project-lifecycle";
 import { useProjectReadModels } from "../features/project-session/use-project-read-models";
 import { useProjectSession } from "../features/project-session/use-project-session";
 import type { ProjectSummary } from "../generated/core-contract";
 import { useAppUpdater } from "../hooks/use-app-updater";
 import { useWorkbenchFeedback } from "../hooks/use-workbench-feedback";
-import { changeUiLocale, getUiLocale, tr, type UiLocale } from "../i18n";
-import type { AudioRisk, AutoWorkflow, CanvasSettings, LocalCapabilityId, LocalResourcePlan, LocalResourceStatus, LocalTranscriptionProfile, ModelStatus, Project, ProjectDeletionPreflight, RuntimeInfo, Segment, SourceBrowser, SourceImportJob, SourcePreview, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SpeechEvidence, SpeechPause, SubtitleImportPreview, SubtitleQualityIssue, TranscriptionLanguage, TranscriptionProviderConfig, TranscriptionProviderHealth, TranscriptionReviewItem, TranscriptReplacementPreflight, WorkflowProfile } from "../types";
+import { changeUiLocale,getUiLocale,tr,type UiLocale } from "../i18n";
+import type { AudioRisk,AutoWorkflow,CanvasSettings,ModelStatus,Project,ProjectDeletionPreflight,RuntimeInfo,Segment,SourceImportJob,SpeakerJob,SpeakerPackageStatus,SpeakerTrack,SpeechEvidence,SpeechPause,SubtitleImportPreview,SubtitleQualityIssue,TranscriptionLanguage,TranscriptionProviderConfig,TranscriptionProviderHealth,TranscriptionReviewItem,TranscriptReplacementPreflight } from "../types";
 import type { ReviewQueueItem } from "./review-queue";
 import { groupSubtitleQualityIssues } from "./subtitle-quality-groups";
 import type { TimelineReviewMarker } from "./subtitle-timeline-panel";
 import { useFocusReviewState } from "./use-focus-review-state";
-import { cycleWorkbenchFocus, useTranscriptNavigation } from "./use-transcript-navigation";
-import type { WorkbenchActivity, WorkbenchActivityInputs } from "./workbench-activity";
+import { cycleWorkbenchFocus,useTranscriptNavigation } from "./use-transcript-navigation";
+import type { WorkbenchActivity,WorkbenchActivityInputs } from "./workbench-activity";
 import type { WorkbenchActivityAction } from "./workbench-activity-center";
-export { AudioQualityPanel, PatchReviewCard, SpeakerPackageManager, SpeakerTrackPanel, SpeechInsightsPanel } from "../components/workbench-panels";
+export { AudioQualityPanel,PatchReviewCard,SpeakerPackageManager,SpeakerTrackPanel,SpeechInsightsPanel } from "../components/workbench-panels";
+export { AUTO_WORKFLOW_DISMISSED_STORAGE_KEY,parseDismissedAutoWorkflowIds,upsertAutoWorkflowSnapshot } from "../features/background-tasks/auto-workflow-snapshots";
 
-const RESOURCE_SETUP_DEFERRED_KEY = "siaocut.localResourcesSetupDeferred.v1";
 
-function localCapabilityLabel(capability: LocalCapabilityId) {
-    return {
-        basic_media: tr("app.resources.capability.basic_media"),
-        url_import: tr("app.resources.capability.url_import"),
-        local_transcription: tr("app.resources.capability.local_transcription"),
-        speaker_identity: tr("app.resources.capability.speaker_identity"),
-    }[capability];
-}
-
-function localResourceError(error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    const code = message.split(":", 1)[0];
-    return ({
-        resource_setup_required: tr("app.resources.error.locationRequired"),
-        resource_root_unavailable: tr("app.resources.error.locationUnavailable"),
-        resource_root_not_writable: tr("app.resources.error.locationUnavailable"),
-        resource_root_low_space: tr("app.resources.error.lowSpace"),
-        resource_insufficient_space: tr("app.resources.error.lowSpace"),
-        resource_job_active: tr("app.resources.error.active"),
-        resource_move_target_not_empty: tr("app.resources.error.locationNotEmpty"),
-        resource_move_target_invalid: tr("app.resources.error.locationNested"),
-    } as Record<string, string>)[code] ?? tr("app.resources.error.generic");
-}
-
-export { resolveCanvasMedia, resolveImportedProjectMedia } from "../features/playback/use-playback-session";
+export { resolveCanvasMedia,resolveImportedProjectMedia } from "../features/playback/use-playback-session";
 export function resolveCaptionKaraokeStyle(
     playing: boolean,
     progress: number,
@@ -123,48 +104,6 @@ const AutoWorkflowAiTarget = lazy(() => import("../features/ai-assistance/AutoWo
 const SubtitleImportDialog = lazy(() => import("../components/subtitle-import-dialog"));
 const QuickRetranscriptionDialog = lazy(() => import("../components/quick-retranscription-dialog"));
 
-function upsertById<T extends { id: string }>(items: T[], next: T): T[] {
-    const index = items.findIndex((item) => item.id === next.id);
-    if (index < 0)
-        return [next, ...items];
-    return items.map((item) => item.id === next.id ? next : item);
-}
-
-export function upsertAutoWorkflowSnapshot(items: AutoWorkflow[], next: AutoWorkflow): AutoWorkflow[] {
-    const current = items.find((item) => item.id === next.id);
-    if (current && Date.parse(current.updatedAt) > Date.parse(next.updatedAt))
-        return items;
-    return upsertById(items, next);
-}
-
-function selectAutoWorkflowSnapshot(current: AutoWorkflow | null, next: AutoWorkflow): AutoWorkflow | null {
-    if (current?.id !== next.id)
-        return current;
-    return Date.parse(current.updatedAt) > Date.parse(next.updatedAt) ? current : { ...next };
-}
-
-export const AUTO_WORKFLOW_DISMISSED_STORAGE_KEY = "siaocut.dismissedAutoWorkflows.v1";
-const ACTIVE_AUTO_WORKFLOW_STATUSES = new Set(["queued", "running", "needs_agent", "awaiting_authorization", "needs_review"]);
-const ACTIONABLE_AUTO_WORKFLOW_STATUSES = new Set([...ACTIVE_AUTO_WORKFLOW_STATUSES, "failed", "interrupted"]);
-const TERMINAL_AUTO_WORKFLOW_STATUSES = new Set(["completed", "cancelled", "failed", "interrupted"]);
-
-export function parseDismissedAutoWorkflowIds(value: string | null): string[] {
-    if (!value)
-        return [];
-    try {
-        const parsed: unknown = JSON.parse(value);
-        if (!Array.isArray(parsed))
-            return [];
-        return Array.from(new Set(parsed
-            .filter((item): item is string => typeof item === "string")
-            .map((item) => item.trim())
-            .filter(Boolean)));
-    }
-    catch {
-        return [];
-    }
-}
-
 function WorkbenchController() {
     const [uiLocale, setUiLocale] = useState<UiLocale>(() => getUiLocale());
     const selectUiLocale = (locale: UiLocale) => {
@@ -207,49 +146,17 @@ function WorkbenchController() {
     });
     const editing = useEditingSession(project, acknowledgeEdit);
     const [runtime, setRuntime] = useState<RuntimeInfo | null>(null);
-    const [localResources, setLocalResources] = useState<LocalResourceStatus | null>(null);
-    const [resourcePlan, setResourcePlan] = useState<LocalResourcePlan | null>(null);
-    const [resourceCapability, setResourceCapability] = useState<LocalCapabilityId>("basic_media");
-    const [resourceProfile, setResourceProfile] = useState<LocalTranscriptionProfile>("standard");
-    const [resourceSetupReason, setResourceSetupReason] = useState<"first_run" | "on_demand" | "manage">("first_run");
-    const [resourceSelectedRoot, setResourceSelectedRoot] = useState("");
-    const [resourceBusy, setResourceBusy] = useState(false);
-    const [resourceError, setResourceError] = useState<string | null>(null);
-    const [showResourceSetup, setShowResourceSetup] = useState(false);
-    const [pendingResourceAction, setPendingResourceAction] = useState<"inspect_url" | "transcribe" | null>(null);
+    const { localResources, setLocalResources, resourcePlan, setResourcePlan, resourceCapability, setResourceCapability, resourceProfile, setResourceProfile, resourceSetupReason, setResourceSetupReason, resourceSelectedRoot, setResourceSelectedRoot, resourceBusy, setResourceBusy, resourceError, setResourceError, showResourceSetup, setShowResourceSetup, pendingResourceAction, setPendingResourceAction, handledResourceJobRef, openResourcePreparation, changeResourceProfile, chooseResourceLocation, confirmResourceLocation, startResourcePreparation, cancelResourcePreparation, resumeResourcePreparation, closeResourcePreparation } = useResourceSession({getJob: () => resourceJob, setJob: (job) => setResourceJob(job), setRuntime, setShowRuntime: (show) => setShowRuntime(show), setShowSourceImport: (show) => setShowSourceImport(show), setNotice});
+    const {removeResourceCapability, cleanupLocalResources, rollbackResourceCapability} = resourceMaintenance({setResourceBusy, setLocalResources, setRuntime, setNotice, setError});
     const [resumeSourceInspection, setResumeSourceInspection] = useState(false);
     const [resumeLocalTranscription, setResumeLocalTranscription] = useState(false);
-    const handledResourceJobRef = useRef<string | null>(null);
     const { updatePolicy, setUpdatePolicy, availableUpdate, updateBusy, updateError, checkUpdates, confirmUpdateInstall } = useAppUpdater(setNotice);
     const [models, setModels] = useState<ModelStatus[]>([]);
-    const [sourcePreview, setSourcePreview] = useState<SourcePreview | null>(null);
-    const [sourceUrl, setSourceUrl] = useState("");
-    const [sourceAuthorized, setSourceAuthorized] = useState(false);
-    const [sourceAuthMode, setSourceAuthMode] = useState<"anonymous" | "browser">("anonymous");
-    const [sourceBrowser, setSourceBrowser] = useState<SourceBrowser>("chrome");
-    const [sourceBrowserAuthorized, setSourceBrowserAuthorized] = useState(false);
-    const [sourceBusy, setSourceBusy] = useState<string | null>(null);
-    const [sourceError, setSourceError] = useState<string | null>(null);
-    const [showSourceImport, setShowSourceImport] = useState(false);
-    const [showAutoWorkflow, setShowAutoWorkflow] = useState(false);
-    const [trackedAutoWorkflowIds, setTrackedAutoWorkflowIds] = useState<string[]>([]);
-    const [dismissedAutoWorkflowIds, setDismissedAutoWorkflowIds] = useState<string[]>(() => parseDismissedAutoWorkflowIds(localStorage.getItem(AUTO_WORKFLOW_DISMISSED_STORAGE_KEY)));
-    const [autoInputKind, setAutoInputKind] = useState<"local" | "url">("local");
-    const [autoMediaPath, setAutoMediaPath] = useState("");
-    const [autoUrl, setAutoUrl] = useState("");
-    const [autoSourcePreview, setAutoSourcePreview] = useState<SourcePreview | null>(null);
-    const [autoAuthorized, setAutoAuthorized] = useState(false);
-    const [autoTranslate, setAutoTranslate] = useState(false); const [autoProfile, setAutoProfile] = useState<WorkflowProfile>("balanced");
-    const [autoAiSelection, setAutoAiSelection] = useState<AiExecutionSelection | null>(null);
-    const [autoTranslationLanguage, setAutoTranslationLanguage] = useState("en");
+    const { sourcePreview, setSourcePreview, sourceUrl, setSourceUrl, sourceAuthorized, setSourceAuthorized, sourceAuthMode, setSourceAuthMode, sourceBrowser, setSourceBrowser, sourceBrowserAuthorized, setSourceBrowserAuthorized, sourceBusy, setSourceBusy, sourceError, setSourceError, showSourceImport, setShowSourceImport, sourceJobOriginProjectIdsRef, inspectSource, startSourceImport, cancelSourceImport, resumeSourceImport, resetSourceImport } = useSourceImportSession({localResources, runtime, activeProjectIdRef, getJob: () => sourceJob, setJob: (job) => setSourceJob(job), setNotice, prepareResources: async () => {setPendingResourceAction("inspect_url"); await openResourcePreparation("url_import", "on_demand");}});
     const [transcriptionLanguage, setTranscriptionLanguage] = useState<TranscriptionLanguage>(() => parseTranscriptionLanguage(localStorage.getItem(TRANSCRIPTION_LANGUAGE_STORAGE_KEY)));
-    const [autoBurnSubtitles, setAutoBurnSubtitles] = useState(true);
-    const [autoSubtitleMode, setAutoSubtitleMode] = useState<"source" | "translated" | "bilingual">("source");
-    const [autoBusy, setAutoBusy] = useState<string | null>(null);
-    const [autoError, setAutoError] = useState<string | null>(null);
-    const [autoWorkflowErrors, setAutoWorkflowErrors] = useState<Record<string, string>>({});
     const [modelPath, setModelPath] = useState<string | null>(() => localStorage.getItem("siaocut.modelPath"));
     const [modelPathAvailable, setModelPathAvailable] = useState(false);
+    const { showAutoWorkflow, setShowAutoWorkflow, trackedAutoWorkflowIds, setTrackedAutoWorkflowIds, dismissedAutoWorkflowIds, setDismissedAutoWorkflowIds, autoInputKind, setAutoInputKind, autoMediaPath, setAutoMediaPath, autoUrl, setAutoUrl, autoSourcePreview, setAutoSourcePreview, autoAuthorized, setAutoAuthorized, autoTranslate, setAutoTranslate, autoProfile, setAutoProfile, autoAiSelection, setAutoAiSelection, autoTranslationLanguage, setAutoTranslationLanguage, autoBurnSubtitles, setAutoBurnSubtitles, autoSubtitleMode, setAutoSubtitleMode, autoBusy, setAutoBusy, autoError, setAutoError, autoWorkflowErrors, setAutoWorkflowErrors, autoWorkflowOriginProjectIdsRef, chooseAutoMedia, inspectAutoSource, showAutoWorkflowStatus, dismissAutoWorkflowStatus, startAutoWorkflow, cancelAutoWorkflow, continueAutoWorkflow, openAutoProject } = useAutoWorkflowSession({runtime, modelPath, modelPathAvailable, setModelPathAvailable, transcriptionLanguage, uiLocale, activeProjectIdRef, getWorkflow: () => autoWorkflow, setWorkflow: setAutoWorkflow, setWorkflows: setAutoWorkflows, openProject: async (id) => {await activateProject(id);}, setNotice});
     const [showRuntime, setShowRuntime] = useState(false);
     const [showExportPanel, setShowExportPanel] = useState(false);
     const [drawerTab, setDrawerTab] = useState<"review" | "quality" | "analysis" | "history" | "export">("review");
@@ -297,8 +204,6 @@ function WorkbenchController() {
     const searchInputRef = useRef<HTMLInputElement>(null);
     const replacementInputRef = useRef<HTMLInputElement>(null);
     const subtitleImportButtonRef = useRef<HTMLButtonElement>(null);
-    const autoWorkflowOriginProjectIdsRef = useRef(new Map<string, string | null>());
-    const sourceJobOriginProjectIdsRef = useRef(new Map<string, string | null>());
     const busyRef = useRef(false);
     const { focusReview, enterFocusReview, exitFocusReview, resetFocusReview } = useFocusReviewState({
         projectAvailable: Boolean(project), mediaAvailable: Boolean(mediaUrl), mediaMissingMessage: tr("app.focusReview.mediaMissing"),
@@ -1036,273 +941,6 @@ function WorkbenchController() {
             setDeleteBusy(false);
         }
     };
-    const openResourcePreparation = async (capability: LocalCapabilityId, reason: "first_run" | "on_demand" | "manage") => {
-        const profile = capability === "local_transcription" ? localResources?.transcriptionProfile ?? resourceProfile : undefined;
-        setResourceCapability(capability);
-        if (profile)
-            setResourceProfile(profile);
-        setResourceSetupReason(reason);
-        setResourceSelectedRoot("");
-        setResourceError(null);
-        if (reason === "manage")
-            setShowRuntime(false);
-        if (reason === "on_demand")
-            setShowSourceImport(false);
-        setShowResourceSetup(true);
-        try {
-            const envelope = await localResourceClient.plan(capability, profile);
-            setResourcePlan(envelope.resourcePlan ?? null);
-        }
-        catch (cause) {
-            setResourceError(localResourceError(cause));
-        }
-    };
-    const changeResourceProfile = async (profile: LocalTranscriptionProfile) => {
-        setResourceProfile(profile);
-        setResourceBusy(true);
-        setResourceError(null);
-        try {
-            const envelope = await localResourceClient.plan("local_transcription", profile);
-            setResourcePlan(envelope.resourcePlan ?? null);
-        }
-        catch (cause) {
-            setResourceError(localResourceError(cause));
-        }
-        finally {
-            setResourceBusy(false);
-        }
-    };
-    const chooseResourceLocation = async () => {
-        const path = await pickResourceDirectory();
-        if (path) {
-            setResourceSelectedRoot(path);
-            setResourceError(null);
-        }
-    };
-    const confirmResourceLocation = async () => {
-        if (!resourceSelectedRoot)
-            return;
-        setResourceBusy(true);
-        setResourceError(null);
-        try {
-            const changingLocation = Boolean(localResources?.configured);
-            const envelope = changingLocation
-                ? await localResourceClient.migrate(resourceSelectedRoot)
-                : await localResourceClient.configure(resourceSelectedRoot);
-            if (!envelope.localResources)
-                throw new Error("resource_setup_required");
-            setLocalResources(envelope.localResources);
-            setResourceSelectedRoot("");
-            setRuntime(await runtimeInfo());
-            localStorage.removeItem(RESOURCE_SETUP_DEFERRED_KEY);
-            setNotice(tr(changingLocation ? "app.resources.locationMoved" : "app.resources.locationConfirmed"));
-            if (changingLocation && resourceSetupReason === "manage") {
-                setShowResourceSetup(false);
-                setShowRuntime(true);
-            }
-        }
-        catch (cause) {
-            setResourceError(localResourceError(cause));
-        }
-        finally {
-            setResourceBusy(false);
-        }
-    };
-    const startResourcePreparation = async () => {
-        if (!localResources?.configured || resourceSelectedRoot)
-            return;
-        setResourceBusy(true);
-        setResourceError(null);
-        handledResourceJobRef.current = null;
-        try {
-            const isUpdate = localResources.capabilities.some((capability) => capability.id === resourceCapability && capability.state === "update_available");
-            const envelope = isUpdate
-                ? await localResourceClient.update(resourceCapability, resourceCapability === "local_transcription" ? resourceProfile : undefined)
-                : await localResourceClient.install(resourceCapability, resourceCapability === "local_transcription" ? resourceProfile : undefined);
-            if (!envelope.resourceJob)
-                throw new Error("resource_job_not_found");
-            setResourceJob(envelope.resourceJob);
-            setNotice(tr("app.resources.preparingNotice", { capability: localCapabilityLabel(resourceCapability) }));
-        }
-        catch (cause) {
-            setResourceError(localResourceError(cause));
-        }
-        finally {
-            setResourceBusy(false);
-        }
-    };
-    const cancelResourcePreparation = async () => {
-        if (!resourceJob)
-            return;
-        setResourceBusy(true);
-        try {
-            const envelope = await localResourceClient.cancel(resourceJob.id);
-            if (envelope.resourceJob)
-                setResourceJob(envelope.resourceJob);
-        }
-        catch (cause) {
-            setResourceError(localResourceError(cause));
-        }
-        finally {
-            setResourceBusy(false);
-        }
-    };
-    const resumeResourcePreparation = async () => {
-        if (!resourceJob)
-            return;
-        setResourceBusy(true);
-        setResourceError(null);
-        handledResourceJobRef.current = null;
-        try {
-            const envelope = await localResourceClient.resume(resourceJob.id);
-            if (!envelope.resourceJob)
-                throw new Error("resource_job_not_found");
-            setResourceJob(envelope.resourceJob);
-        }
-        catch (cause) {
-            setResourceError(localResourceError(cause));
-        }
-        finally {
-            setResourceBusy(false);
-        }
-    };
-    const closeResourcePreparation = () => {
-        if (resourceJob && ["queued", "running"].includes(resourceJob.status))
-            return;
-        setShowResourceSetup(false);
-        setResourceSelectedRoot("");
-        setResourceError(null);
-        if (resourceSetupReason === "first_run")
-            localStorage.setItem(RESOURCE_SETUP_DEFERRED_KEY, "1");
-        if (resourceSetupReason === "manage")
-            setShowRuntime(true);
-        if (pendingResourceAction === "inspect_url") {
-            setPendingResourceAction(null);
-            setShowSourceImport(true);
-        }
-        else if (pendingResourceAction === "transcribe") {
-            setPendingResourceAction(null);
-        }
-    };
-    const removeResourceCapability = async (capability: LocalCapabilityId) => {
-        if (!window.confirm(tr("app.resources.removeConfirm", { capability: localCapabilityLabel(capability) })))
-            return;
-        setResourceBusy(true);
-        try {
-            const envelope = await localResourceClient.remove(capability);
-            if (envelope.localResources)
-                setLocalResources(envelope.localResources);
-            setRuntime(await runtimeInfo());
-            setNotice(tr("app.resources.removedNotice", { capability: localCapabilityLabel(capability) }));
-        }
-        catch (cause) {
-            setError(localResourceError(cause));
-        }
-        finally {
-            setResourceBusy(false);
-        }
-    };
-    const cleanupLocalResources = async () => {
-        if (!window.confirm(tr("app.resources.cleanupConfirm")))
-            return;
-        setResourceBusy(true);
-        try {
-            const envelope = await localResourceClient.cleanup();
-            if (envelope.localResources)
-                setLocalResources(envelope.localResources);
-            setNotice(tr("app.resources.cleanupNotice"));
-        }
-        catch (cause) {
-            setError(localResourceError(cause));
-        }
-        finally {
-            setResourceBusy(false);
-        }
-    };
-    const rollbackResourceCapability = async (capability: LocalCapabilityId) => {
-        if (!window.confirm(tr("app.resources.rollbackConfirm", { capability: localCapabilityLabel(capability) })))
-            return;
-        setResourceBusy(true);
-        try {
-            const envelope = await localResourceClient.rollback(capability);
-            if (envelope.localResources)
-                setLocalResources(envelope.localResources);
-            setRuntime(await runtimeInfo());
-            setNotice(tr("app.resources.rollbackNotice", { capability: localCapabilityLabel(capability) }));
-        }
-        catch (cause) {
-            setError(localResourceError(cause));
-        }
-        finally {
-            setResourceBusy(false);
-        }
-    };
-    const withSourceBusy = async (label: string, action: () => Promise<void>) => {
-        setSourceBusy(label);
-        setSourceError(null);
-        try {
-            await action();
-        }
-        catch (cause) {
-            setSourceError(cause instanceof Error ? cause.message : String(cause));
-        }
-        finally {
-            setSourceBusy(null);
-        }
-    };
-    const inspectSource = () => withSourceBusy(tr("app.s0083"), async () => {
-        const url = sourceUrl.trim();
-        if (!isHttpsSourceUrl(url))
-            throw new Error(tr("app.s0085"));
-        const urlCapability = localResources?.capabilities.find((capability) => capability.id === "url_import");
-        if (!["ready", "update_available"].includes(urlCapability?.state ?? "not_ready") || !runtime?.ytDlpConfigured) {
-            setPendingResourceAction("inspect_url");
-            await openResourcePreparation("url_import", "on_demand");
-            return;
-        }
-        if (sourceAuthMode === "browser" && !sourceBrowserAuthorized)
-            throw new Error("source_browser_consent_required");
-        const envelope = await backgroundTaskClient.inspectSource(url, sourceAuthMode === "browser" ? sourceBrowser : undefined);
-        if (!envelope.source)
-            throw new Error(tr("app.s0086"));
-        setSourcePreview(envelope.source);
-        setSourceJob(null);
-        setSourceAuthorized(false);
-    });
-    const startSourceImport = () => sourcePreview && withSourceBusy(tr("app.s0087"), async () => {
-        if (!sourceAuthorized)
-            throw new Error(tr("app.s0088"));
-        const envelope = await backgroundTaskClient.startSourceImport(sourcePreview.originalUrl, sourcePreview.siteMediaId, sourcePreview.browser ?? undefined);
-        if (!envelope.sourceJob)
-            throw new Error(tr("app.s0089"));
-        sourceJobOriginProjectIdsRef.current.set(envelope.sourceJob.id, activeProjectIdRef.current);
-        setSourceJob(envelope.sourceJob);
-        setNotice(tr("app.s0090"));
-    });
-    const cancelSourceImport = () => sourceJob && withSourceBusy(tr("app.s0091"), async () => {
-        const envelope = await backgroundTaskClient.cancelSourceImport(sourceJob.id);
-        if (!envelope.sourceJob)
-            throw new Error(tr("app.s0092"));
-        setSourceJob(envelope.sourceJob);
-    });
-    const resumeSourceImport = () => sourceJob && withSourceBusy(tr("app.s0093"), async () => {
-        const envelope = await backgroundTaskClient.resumeSourceImport(sourceJob.id);
-        if (!envelope.sourceJob)
-            throw new Error(tr("app.s0094"));
-        sourceJobOriginProjectIdsRef.current.set(envelope.sourceJob.id, activeProjectIdRef.current);
-        setSourceJob(envelope.sourceJob);
-        setNotice(tr("app.s0095", { "0": envelope.sourceJob.attemptCount }));
-    });
-    const resetSourceImport = () => {
-        if (sourceJob && ["queued", "running", "finalizing"].includes(sourceJob.status))
-            return;
-        setSourcePreview(null);
-        setSourceJob(null);
-        setSourceUrl("");
-        setSourceAuthorized(false);
-        setSourceBrowserAuthorized(false);
-        setSourceError(null);
-    };
     useEffect(() => {
         if (!resourceJob || handledResourceJobRef.current === resourceJob.id)
             return;
@@ -1370,135 +1008,6 @@ function WorkbenchController() {
         setResumeSourceInspection(false);
         void inspectSource();
     }, [resumeSourceInspection, showSourceImport]);
-    const withAutoBusy = async (
-        label: string,
-        action: () => Promise<void>,
-        workflowId?: string,
-    ) => {
-        setAutoBusy(label);
-        if (workflowId) {
-            setAutoWorkflowErrors((current) => {
-                if (!(workflowId in current))
-                    return current;
-                const next = { ...current };
-                delete next[workflowId];
-                return next;
-            });
-        }
-        else {
-            setAutoError(null);
-        }
-        try {
-            await action();
-        }
-        catch (cause) {
-            const message = cause instanceof Error ? cause.message : String(cause);
-            if (workflowId)
-                setAutoWorkflowErrors((current) => ({ ...current, [workflowId]: message }));
-            else
-                setAutoError(message);
-        }
-        finally {
-            setAutoBusy(null);
-        }
-    };
-    const chooseAutoMedia = () => withAutoBusy(tr("app.s0096"), async () => {
-        const path = await pickMedia();
-        if (path)
-            setAutoMediaPath(path);
-    });
-    const inspectAutoSource = () => withAutoBusy(tr("app.s0083"), async () => {
-        if (!runtime?.ytDlpConfigured)
-            throw new Error(tr("app.s0084"));
-        if (!autoUrl.trim())
-            throw new Error(tr("app.s0085"));
-        const envelope = await backgroundTaskClient.inspectSource(autoUrl.trim());
-        if (!envelope.source)
-            throw new Error(tr("app.s0086"));
-        setAutoSourcePreview(envelope.source);
-        setAutoAuthorized(false);
-    });
-    const showAutoWorkflowStatus = (target: AutoWorkflow) => {
-        setTrackedAutoWorkflowIds((current) => current.includes(target.id) ? current : [...current, target.id]);
-        setDismissedAutoWorkflowIds((current) => current.filter((id) => id !== target.id));
-        setAutoWorkflow({ ...target });
-    };
-    const dismissAutoWorkflowStatus = (target: AutoWorkflow) => {
-        setTrackedAutoWorkflowIds((current) => current.filter((id) => id !== target.id));
-        setDismissedAutoWorkflowIds((current) => current.includes(target.id) ? current : [...current, target.id]);
-    };
-    const startAutoWorkflow = () => withAutoBusy(tr("app.s0097"), async () => {
-        if (!modelPath || !modelPathAvailable || !await localFileAvailable(modelPath)) {
-            setModelPathAvailable(false);
-            throw new Error(tr("app.s0098"));
-        }
-        if (autoTranslate && !autoTranslationLanguage.trim())
-            throw new Error(tr("app.s0099"));
-        if (autoInputKind === "local" && !autoMediaPath)
-            throw new Error(tr("app.s0100"));
-        if (autoInputKind === "url" && (!autoSourcePreview || !autoAuthorized))
-            throw new Error(tr("app.s0101"));
-        const output = await pickVideoPath(autoSourcePreview?.title ?? tr("app.s0102"));
-        if (!output)
-            return;
-        const input = autoInputKind === "local"
-            ? { kind: "local" as const, mediaPath: autoMediaPath, title: tr("app.s0103") }
-            : { kind: "url" as const, url: autoSourcePreview!.originalUrl, confirmedMediaId: autoSourcePreview!.siteMediaId };
-        const envelope = await backgroundTaskClient.startAutoWorkflow({
-            input,
-            modelPath,
-            language: transcriptionLanguage,
-            locale: uiLocale,
-            output,
-            subtitleMode: autoTranslate ? autoSubtitleMode : "source", profile: autoProfile,
-            translationLanguage: autoTranslate ? autoTranslationLanguage : undefined,
-            burnSubtitles: autoBurnSubtitles,
-            aiExecution: autoTranslate ? autoAiSelection ?? undefined : undefined,
-        });
-        if (!envelope.workflow)
-            throw new Error(tr("app.s0104"));
-        autoWorkflowOriginProjectIdsRef.current.set(envelope.workflow.id, activeProjectIdRef.current);
-        setAutoWorkflows((current) => upsertAutoWorkflowSnapshot(current, { ...envelope.workflow! }));
-        showAutoWorkflowStatus(envelope.workflow);
-        setAutoWorkflow({ ...envelope.workflow });
-        setShowAutoWorkflow(false);
-        setNotice(tr("app.s0105"));
-    });
-    const cancelAutoWorkflow = (target: AutoWorkflow | null = autoWorkflow) => {
-        if (!target)
-            return;
-        setAutoWorkflow({ ...target });
-        return withAutoBusy(tr("app.s0106"), async () => {
-        const envelope = await backgroundTaskClient.cancelAutoWorkflow(target.id);
-        if (!envelope.workflow)
-            throw new Error(tr("app.s0107"));
-        setAutoWorkflows((current) => upsertAutoWorkflowSnapshot(current, { ...envelope.workflow! }));
-        setAutoWorkflow((current) => selectAutoWorkflowSnapshot(current, envelope.workflow!));
-        setNotice(tr("app.s0108"));
-        }, target.id);
-    };
-    const continueAutoWorkflow = (target: AutoWorkflow | null = autoWorkflow) => {
-        if (!target)
-            return;
-        showAutoWorkflowStatus(target);
-        return withAutoBusy(tr("app.s0109"), async () => {
-        const envelope = await backgroundTaskClient.continueAutoWorkflow(target.id);
-        if (!envelope.workflow)
-            throw new Error(tr("app.s0110"));
-        setAutoWorkflows((current) => upsertAutoWorkflowSnapshot(current, { ...envelope.workflow! }));
-        showAutoWorkflowStatus(envelope.workflow);
-        setAutoWorkflow((current) => selectAutoWorkflowSnapshot(current, envelope.workflow!));
-        setNotice(tr("app.s0111", { "0": envelope.workflow.attemptCount }));
-        }, target.id);
-    };
-    const openAutoProject = (target: AutoWorkflow | null = autoWorkflow) => {
-        if (!target?.projectId)
-            return;
-        setAutoWorkflow({ ...target });
-        return withAutoBusy(tr("app.s0112"), async () => {
-            await activateProject(target.projectId!);
-        }, target.id);
-    };
     const changeAsrBackend = (backend: "cpu" | "vulkan") => withBusy(tr("app.s0113"), async () => {
         const next = await selectAsrBackend(backend);
         setRuntime(next);

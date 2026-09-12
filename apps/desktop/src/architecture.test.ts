@@ -1,7 +1,7 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { readdirSync,readFileSync,statSync } from "node:fs";
+import { join,resolve } from "node:path";
 import ts from "typescript";
-import { describe, expect, it } from "vitest";
+import { describe,expect,it } from "vitest";
 
 const sourceRoot = resolve(process.cwd(), "src");
 
@@ -14,6 +14,15 @@ function sourceFiles(directory: string): string[] {
 }
 
 describe("desktop architecture boundaries", () => {
+  it("keeps resource lifecycle operations on the generated application contract", () => {
+    const resources = readFileSync(join(sourceRoot, "domains/local-resource-client.ts"), "utf8");
+    expect(resources).not.toMatch(/\brunCore\s*\(/);
+    expect(resources).toContain("desktopControl(");
+    const controller = readFileSync(join(sourceRoot, "workbench/workbench-controller.tsx"), "utf8");
+    expect(controller).toContain("useSourceImportSession(");
+    expect(controller).not.toContain("const withSourceBusy =");
+    expect(controller).not.toContain("backgroundTaskClient.inspectSource(");
+  });
   it("keeps migrated desktop reads on the generated structured query contract", () => {
     const forbidden = /runCore\(\["(?:model",\s*"(?:list|jobs|status)|source",\s*"(?:jobs|status)|video",\s*"(?:list|status)|speaker",\s*"(?:package|jobs|job-status|track)|agent",\s*"(?:health|list|status)|resources",\s*"(?:status|plan|job|jobs))"/;
     for (const file of sourceFiles(join(sourceRoot,"domains"))) {
@@ -25,7 +34,7 @@ describe("desktop architecture boundaries", () => {
     const controller=readFileSync(join(sourceRoot,"workbench/workbench-controller.tsx"),"utf8");
     for(const session of ["useProjectSession","useEditingSession","usePlaybackSession","useAiReviewSession","useBackgroundSession","useExportSession"]) expect(controller).toContain(`${session}(`);
     expect(controller).not.toMatch(/useState<Project(?:\[\])?\s*\|?\s*null?>|setInterval\s*\(/);
-    expect(controller.split(/\r?\n/).length).toBeLessThan(3000);
+    expect(controller.split(/\r?\n/).length).toBeLessThan(2300);
     expect(controller).toContain("useEditingSession(project, acknowledgeEdit)");
     const owners=sourceFiles(sourceRoot).filter((path)=>/useState<Project\s*\|\s*null>/.test(readFileSync(path,"utf8")));
     expect(owners.map((path)=>path.replaceAll("\\","/").split("/src/")[1])).toEqual(["features/project-session/use-project-session.ts"]);

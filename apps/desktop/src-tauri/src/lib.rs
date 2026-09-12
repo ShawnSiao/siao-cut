@@ -381,6 +381,10 @@ fn validate_core_args(args: &[String]) -> Result<(), String> {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", deny_unknown_fields)]
 enum StructuredCoreRequest {
+    #[serde(rename = "project_command")]
+    ProjectCommand { request: Value },
+    #[serde(rename = "desktop_control")]
+    Control { request: Value },
     #[serde(rename = "desktop_query")]
     Query { request: Value },
     #[serde(rename = "project_query")]
@@ -429,7 +433,9 @@ fn validate_structured_core_request(payload: &str) -> Result<(), String> {
         | StructuredCoreRequest::AiApproval { request }
         | StructuredCoreRequest::TranscriptionJob { request }
         | StructuredCoreRequest::ProjectQuery { request }
-        | StructuredCoreRequest::Query { request } => {
+        | StructuredCoreRequest::Query { request }
+        | StructuredCoreRequest::Control { request }
+        | StructuredCoreRequest::ProjectCommand { request } => {
             if !request.is_object() {
                 return Err(
                     "structured_core_request_invalid: domain request must be an object".into(),

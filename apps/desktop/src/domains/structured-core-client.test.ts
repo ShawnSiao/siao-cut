@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach,describe,expect,it,vi } from "vitest";
 
 const coreMocks = vi.hoisted(() => ({
   listProjects: vi.fn(),
@@ -55,8 +55,7 @@ describe("structured Desktop Core requests", () => {
     await editingClient.mutate!(mutation);
     await projectSessionClient.deleteProject("p1", "v-before");
     expect(coreMocks.runCoreStructured).toHaveBeenCalledWith({kind:"editing",request:{action:"mutate",mutation}});
-    expect(coreMocks.runCore).toHaveBeenCalledExactlyOnceWith([
-      "project", "delete", "p1", "--expected-version", "v-before",
-    ]);
+    expect(coreMocks.runCoreStructured).toHaveBeenCalledWith({kind:"project_command",request:{action:"delete",projectId:"p1",expectedVersionId:"v-before",mutationId:"delete:p1:v-before"}});
+    expect(coreMocks.runCore).not.toHaveBeenCalled();
   });
 });

@@ -1,5 +1,6 @@
-import { desktopQuery } from "./desktop-query-client";
 import { runCore } from "../core";
+import { desktopControl } from "./desktop-control-client";
+import { desktopQuery } from "./desktop-query-client";
 
 type TranscriptFormat = "srt" | "vtt" | "ass" | "markdown" | "json";
 type SubtitleMode = "source" | "translated" | "bilingual";
@@ -31,6 +32,6 @@ export const exportRuntimeClient = {
     ...(subtitleMode === "source" ? [] : ["--lang", subtitleLanguage ?? ""]),
     ...(confirmStaleTranslation ? ["--confirm-stale-translation"] : []),
   ]),
-  cancelVideoExport: (jobId: string) => runCore(["video", "cancel", jobId]),
-  retryVideoExport: (jobId: string) => runCore(["video", "retry", jobId]),
+  cancelVideoExport: (jobId: string) => desktopControl({ action: "video_cancel", jobId: jobId }),
+  retryVideoExport: (jobId: string) => desktopControl({action:"video_retry",jobId}),
 };

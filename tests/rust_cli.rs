@@ -154,6 +154,48 @@ fn desktop_query_uses_the_same_result_through_direct_and_service_transports() {
 }
 
 #[test]
+fn desktop_controls_share_cli_validation_and_preserve_unicode_paths() {
+    let temp = tempdir().unwrap();
+    let root = temp.path().join("本地资源 空格");
+    let request_path = temp.path().join("控制请求.json");
+    fs::write(
+        &request_path,
+        serde_json::to_vec(&json!({
+            "kind": "desktop_control", "request": {
+                "action": "resource_configure", "root": root
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let args = ["desktop-request", request_path.to_str().unwrap()];
+    let direct = run_direct(temp.path(), &args);
+    let service = run(temp.path(), &args);
+    let legacy = run_direct(
+        temp.path(),
+        &["resources", "configure", "--root", root.to_str().unwrap()],
+    );
+    assert_eq!(
+        direct["localResources"]["root"],
+        service["localResources"]["root"]
+    );
+    assert_eq!(
+        legacy["localResources"]["root"],
+        direct["localResources"]["root"]
+    );
+    assert_eq!(direct["localResources"]["configured"], true);
+    fs::write(&request_path, br#"{"kind":"desktop_control","request":{"action":"resource_install","capability":"url_import","profile":null,"unexpected":true}}"#).unwrap();
+    assert_eq!(
+        run_direct_error(temp.path(), &args)["error"]["code"],
+        "invalid_request"
+    );
+    fs::write(&request_path, br#"{"kind":"desktop_control","request":{"action":"resource_rollback","capability":"basic_media"}}"#).unwrap();
+    let structured = run_direct_error(temp.path(), &args);
+    let legacy = run_direct_error(temp.path(), &["resources", "rollback", "basic_media"]);
+    assert_eq!(structured["error"]["code"], legacy["error"]["code"]);
+}
+
+#[test]
 fn local_resources_can_be_configured_planned_and_checked() {
     let temp = tempdir().unwrap();
     let root = temp.path().join("managed-resources");

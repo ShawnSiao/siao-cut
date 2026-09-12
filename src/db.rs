@@ -7,7 +7,10 @@ use std::{
     time::Duration,
 };
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 37;
+#[path = "db_lifecycle_migrations.rs"]
+mod lifecycle_migrations;
+
+pub const CURRENT_SCHEMA_VERSION: i64 = 38;
 
 struct Migration {
     version: i64,
@@ -161,7 +164,11 @@ const MIGRATIONS: &[Migration] = &[
     },
     Migration {
         version: 37,
-        apply: migration_37_transcription_commands,
+        apply: lifecycle_migrations::migration_37_transcription_commands,
+    },
+    Migration {
+        version: 38,
+        apply: lifecycle_migrations::migration_38_project_commands,
     },
 ];
 
@@ -2211,11 +2218,10 @@ mod tests {
 #[path = "migration36_tests.rs"]
 mod migration36_tests;
 
-fn migration_37_transcription_commands(tx: &Transaction<'_>) -> Result<()> {
-    tx.execute_batch("CREATE TABLE transcription_commands(mutation_id TEXT PRIMARY KEY, request_json TEXT NOT NULL, job_id TEXT NOT NULL REFERENCES transcription_jobs(id) ON DELETE CASCADE, created_at TEXT NOT NULL);")?;
-    Ok(())
-}
-
 #[cfg(test)]
 #[path = "migration37_tests.rs"]
 mod migration37_tests;
+
+#[cfg(test)]
+#[path = "migration38_tests.rs"]
+mod migration38_tests;

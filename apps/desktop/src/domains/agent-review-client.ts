@@ -1,12 +1,12 @@
+import { desktopControl } from "./desktop-control-client";
 import { desktopQuery } from "./desktop-query-client";
-import { runCore } from "../core";
 
 /** Execution lifecycle only. Sending and applying content use approval/editing contracts. */
 export const agentReviewClient = {
   getCodexHealth: () => desktopQuery({action:"agent_health"}),
   getAgentRun: (runId: string) => desktopQuery({action:"agent_run",runId}),
   listAgentRuns: (projectId?: string) => desktopQuery({action:"agent_runs",projectId:projectId??null}),
-  cancelAgent: (runId: string) => runCore(["agent", "cancel", runId]),
-  resumeAgent: (runId: string) => runCore(["agent", "resume", runId]),
-  updateTask: (taskId: string, action: "retry" | "cancel") => runCore(["task", action, taskId]),
+  cancelAgent: (runId: string) => desktopControl({ action: "agent_cancel", runId: runId }),
+  resumeAgent: (runId: string) => desktopControl({action:"agent_resume",runId,startDelayMs:null}),
+  updateTask: (taskId: string, action: "retry" | "cancel") => desktopControl({action: action === "retry" ? "task_retry" : "task_cancel", taskId}),
 };
