@@ -1,5 +1,5 @@
-import type { Draft, EditReceipt, SaveEdit, ProjectOperation, ProjectMutation } from "../../generated/core-contract";
-import type { Project, CoreEnvelope } from "../../types";
+import type { Draft, EditReceipt, ProjectMutation, ProjectOperation, SaveEdit } from "../../generated/core-contract";
+import type { CoreEnvelope, Project } from "../../types";
 
 export type SaveStatus = "saved" | "dirty" | "saving" | "failed" | "conflict";
 export type DraftState = { draft: Draft; status: SaveStatus; journaled: boolean; error: string | null; currentText: string; composing: boolean; groupId: string; request?: SaveEdit };
@@ -26,21 +26,25 @@ export class EditingSession {
   private journalChains = new Map<string, Promise<void>>();
   private loading = new Map<string, Promise<void>>();
   private revision = 0;
+  private batching = false;
+  private pendingEmission = false;
   private pendingOperations = new Map<string, ProjectMutation>();
   constructor(private transport: EditingTransport, private onSaved: (receipt: EditReceipt) => Promise<Project | void> = async () => {}) {}
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
   snapshot = () => this.revision;
-  private emit() { this.revision++; this.listeners.forEach((listener) => listener()); }
+  private emit() { if (this.batching) { this.pendingEmission = true; return; } this.revision++; this.listeners.forEach((listener) => listener()); }
   state(key: string) { return this.fields.get(key); }
   entries(projectId?: string) { return [...this.fields.entries()].filter(([, value]) => !projectId || value.draft.projectId === projectId); }
   private set(key: string, patch: Partial<DraftState>) { const value = this.fields.get(key); if (value) { this.fields.set(key, { ...value, ...patch }); this.emit(); } }
 
   observe(project: Project) {
+    this.batching = true;
     this.versions.set(project.id, project.history.currentVersionId);
+    const translations = Object.entries(project.translations).map(([language,translation]) => [language,new Map(translation.segments.map((segment) => [segment.segmentId,segment]))] as const);
     for (const segment of project.transcript.segments) {
       this.observeField(project.id, segment.id, "source", segment.text);
-      for (const [language, translation] of Object.entries(project.translations)) {
-        const item = translation.segments.find((entry) => entry.segmentId === segment.id);
+      for (const [language, translation] of translations) {
+        const item = translation.get(segment.id);
         if (item) this.observeField(project.id, segment.id, `translation:${language}`, item.text);
       }
     }
@@ -48,6 +52,8 @@ export class EditingSession {
     for (const [key, state] of this.entries(project.id)) {
       if (!ids.has(state.draft.segmentId) && state.status !== "saved") this.set(key, { status: "conflict", error: "字幕段已被删除 / Segment was removed" });
     }
+    this.batching = false;
+    if (this.pendingEmission) { this.pendingEmission = false; this.emit(); }
     if (!this.loading.has(project.id)) {
       const loading = this.restore(project.id);
       this.loading.set(project.id, loading);

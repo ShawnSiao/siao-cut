@@ -1,5 +1,6 @@
+import { act, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { startBackgroundTaskRegistry } from "./use-background-task-registry";
+import { startBackgroundTaskRegistry, useBackgroundTaskRegistry } from "./use-background-task-registry";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -32,4 +33,20 @@ describe("background task registry", () => {
     await vi.advanceTimersByTimeAsync(100);
     expect(fast).toHaveBeenCalledTimes(fastCount);
   });
+});
+
+it("adding or removing another task cannot restart an in-flight poll",async()=>{
+  vi.useFakeTimers();
+  let release!:()=>void;
+  const slow=vi.fn(()=>new Promise<void>((resolve)=>{release=resolve;}));
+  const fast=vi.fn(async()=>{});
+  const {rerender,unmount}=renderHook(({extra})=>useBackgroundTaskRegistry([{key:"slow",intervalMs:10,poll:slow},extra?{key:"fast",intervalMs:10,poll:fast}:null]),{initialProps:{extra:false}});
+  await act(async()=>{await vi.advanceTimersByTimeAsync(10);});
+  expect(slow).toHaveBeenCalledTimes(1);
+  rerender({extra:true});
+  await act(async()=>{await vi.advanceTimersByTimeAsync(100);});
+  expect(slow).toHaveBeenCalledTimes(1);expect(fast.mock.calls.length).toBeGreaterThan(1);
+  rerender({extra:false});
+  await act(async()=>{release();await vi.advanceTimersByTimeAsync(10);});
+  expect(slow).toHaveBeenCalledTimes(2);unmount();
 });

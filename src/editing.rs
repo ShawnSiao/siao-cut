@@ -33,6 +33,76 @@ pub fn mutate(db: &mut Connection, request: &ProjectMutation) -> Result<serde_js
         bail!("editing_version_conflict: 项目版本已变化，请重新核对操作")
     }
     let mut result = match &request.operation {
+        ProjectOperation::RelinkMedia { path } => {
+            json!({"project":project::relink_media(&mut tx,id,std::path::Path::new(path))?})
+        }
+        ProjectOperation::ReviewPatch {
+            patch_item_id,
+            action,
+        } => {
+            let owner: String = tx.query_row("SELECT project_id FROM agent_patch_sets WHERE id=(SELECT patch_set_id FROM agent_patch_items WHERE id=?1)",[patch_item_id],|row| row.get(0))?;
+            if &owner != id {
+                bail!("invalid_request: 补丁不属于当前项目")
+            }
+            let (_, set) = crate::patches::review_item(&mut tx, patch_item_id, action)?;
+            json!({"patchSet":set})
+        }
+        ProjectOperation::ReviewAll { task_id, action } => {
+            let owner: String = tx.query_row(
+                "SELECT project_id FROM tasks WHERE id=?1",
+                [task_id],
+                |row| row.get(0),
+            )?;
+            if &owner != id {
+                bail!("invalid_request: 任务不属于当前项目")
+            }
+            let (_, set) = crate::patches::review_all(&mut tx, task_id, action)?;
+            json!({"patchSet":set})
+        }
+        ProjectOperation::ReplaceGlossary {
+            language,
+            expected_glossary_version,
+            entries,
+        } => {
+            translation::replace_language(
+                &mut tx,
+                id,
+                language,
+                *expected_glossary_version,
+                entries.clone(),
+            )?;
+            project::snapshot_in_transaction(&tx, id, "更新翻译术语表")?;
+            json!({"project":project::load(&tx,id)?})
+        }
+        ProjectOperation::CreateWorkflow {
+            workflow_kind,
+            language,
+            locale,
+        } => {
+            let workflow = crate::workflows::create_with_locale(
+                &mut tx,
+                id,
+                workflow_kind,
+                language.clone(),
+                locale,
+            )?;
+            json!({"taskId":workflow.task_id})
+        }
+        ProjectOperation::ImportSubtitle {
+            path,
+            sha256,
+            preview_version_id,
+        } => {
+            let imported = crate::subtitle_import::import_file_at_version(
+                &mut tx,
+                id,
+                std::path::Path::new(path),
+                true,
+                sha256,
+                preview_version_id,
+            )?;
+            json!({"project":imported.project,"insertedSegments":imported.inserted_segments,"impact":imported.impact})
+        }
         ProjectOperation::DetectCuts => json!({"suggestions":crate::cuts::detect(&mut tx,id)?}),
         ProjectOperation::SetCutStatus { edit_id, action } => {
             let status = match action.as_str() {
@@ -228,7 +298,9 @@ pub fn save(db: &mut Connection, edit: &SaveEdit) -> Result<EditReceipt> {
     let receipt = EditReceipt {
         mutation_id: edit.mutation_id.clone(),
         project_id: d.project_id.clone(),
-        version_id: version.id,
+        version_id: version.id.clone(),
+        history: Some(project::history_status(&tx, &d.project_id)?),
+        version: Some(version),
         segment_id: d.segment_id.clone(),
         field: d.field.clone(),
         text: d.text.clone(),

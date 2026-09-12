@@ -400,9 +400,28 @@ pub const CORE_ERROR_CODES: &[&str] = &[
 pub fn contract() -> Value {
     use ts_rs::TS;
     let config = ts_rs::Config::default();
+    let mut declarations = vec![
+        crate::desktop_api::DesktopRequest::decl(&config),
+        crate::project_query::ProjectSummary::decl(&config),
+        crate::project_query::ProjectPage::decl(&config),
+        crate::project_query::ProjectQuery::decl(&config),
+        crate::editing::Draft::decl(&config),
+        crate::editing::SaveEdit::decl(&config),
+        crate::editing::EditReceipt::decl(&config),
+        crate::editing::ProjectOperation::decl(&config),
+        crate::editing::ProjectMutation::decl(&config),
+        crate::editing::EditingRequest::decl(&config),
+        crate::agent::execution::ExecutionTarget::decl(&config),
+        crate::ai_approval::AiSendSpec::decl(&config),
+        crate::ai_approval::AiSendPreview::decl(&config),
+        crate::ai_approval::AiApprovalRequest::decl(&config),
+        crate::transcription::desktop::TranscriptionCommand::decl(&config),
+        crate::transcription::desktop::JobSummary::decl(&config),
+    ];
+    declarations.extend(crate::model_contract::declarations(&config));
     json!({
-        "typeDeclarations": [crate::editing::Draft::decl(&config), crate::editing::SaveEdit::decl(&config), crate::editing::EditReceipt::decl(&config), crate::editing::ProjectOperation::decl(&config), crate::editing::ProjectMutation::decl(&config), crate::editing::EditingRequest::decl(&config), crate::agent::execution::ExecutionTarget::decl(&config), crate::ai_approval::AiSendSpec::decl(&config), crate::ai_approval::AiSendPreview::decl(&config), crate::ai_approval::AiApprovalRequest::decl(&config), crate::transcription::desktop::TranscriptionCommand::decl(&config), crate::transcription::desktop::JobSummary::decl(&config)],
-        "capabilities": ["editing-v1", "ai-approval-v1", "transcription-jobs-v1"],
+        "typeDeclarations": declarations,
+        "capabilities": ["editing-v1", "ai-approval-v1", "transcription-jobs-v1", "project-query-v1", "edit-receipt-v2"],
         "statusSets": {
             "backgroundJob": BACKGROUND_JOB_STATUSES,
             "transcriptionJob": TRANSCRIPTION_JOB_STATUSES,

@@ -1,13 +1,8 @@
-import type { AgentRunStatus, AutoWorkflowStage, AutoWorkflowStatus, BackgroundJobStatus, CoreErrorCode, LocalResourceState, TaskStatus, TranscriptionJobStage, TranscriptionJobStatus, WorkflowProfile, WorkflowStatus } from "./generated/core-contract";
+import type * as Wire from "./generated/core-contract";
+import type { AgentRunStatus, AutoWorkflowStage, AutoWorkflowStatus, BackgroundJobStatus, CoreErrorCode, LocalResourceState, TaskStatus, TranscriptionJobStage, TranscriptionJobStatus, WorkflowStatus } from "./generated/core-contract";
 export type { AgentRunStatus, AutoWorkflowStage, AutoWorkflowStatus, BackgroundJobStatus, CoreErrorCode, KnownCoreErrorCode, LocalResourceState, TaskStatus, TranscriptionJobStage, TranscriptionJobStatus, WorkflowProfile, WorkflowStatus } from "./generated/core-contract";
 
-export type Segment = {
-  id: string;
-  start: number;
-  end: number;
-  text: string;
-  confidence: number | null;
-};
+export type Segment = import("./generated/core-contract").CoreSegment;
 
 export type CodexHealth = {
   available: boolean;
@@ -16,207 +11,36 @@ export type CodexHealth = {
   authMode: string | null;
 };
 
-export type AgentRunBatch = {
-  id: string;
-  ordinal: number;
-  status: AgentRunStatus;
-  segmentIds: string[];
-  codexThreadId: string | null;
-  providerRequestId: string | null;
-  usage: unknown | null;
-  retryCount: number;
-  errorCode: string | null;
-  errorMessage: string | null;
-  startedAt: string | null;
-  completedAt: string | null;
-  attemptCount: number;
-};
+export type AgentRunBatch = Omit<Wire.CoreAgentRunBatch,"status"> & {status:AgentRunStatus};
 
-export type AgentRun = {
-  id: string;
-  taskId: string;
-  projectId: string;
-  provider: string;
-  executionKind: "codex" | "api";
-  serviceConfigId: string | null;
-  serviceRevision: number | null;
-  networkRevision: number | null;
-  providerId: string | null;
-  modelId: string | null;
-  providerRequestId: string | null;
-  usage: unknown | null;
-  retryCount: number;
-  status: AgentRunStatus;
-  baseVersionId: string;
-  progress: number;
-  currentBatch: number;
-  batchCount: number;
-  timeoutSeconds: number;
-  cliVersion: string | null;
-  authMode: string | null;
-  codexThreadId: string | null;
-  cancelRequestedAt: string | null;
-  errorCode: string | null;
-  errorMessage: string | null;
-  createdAt: string;
-  updatedAt: string;
-  startedAt: string | null;
-  completedAt: string | null;
-  workerPid: number | null;
-  attemptCount: number;
-  batches: AgentRunBatch[];
-};
+export type AgentRun = Omit<Wire.CoreAgentRun,"status" | "executionKind" | "batches"> & {status:AgentRunStatus;executionKind:"codex" | "api";batches:AgentRunBatch[]};
 
-export type WordTiming = {
-  id: string;
-  segmentId: string;
-  start: number;
-  end: number;
-  text: string;
-  confidence: number | null;
-};
+export type WordTiming = import("./generated/core-contract").CoreWord;
 
-export type SpeechPause = {
-  start: number;
-  end: number;
-  duration: number;
-  previousWordId: string;
-  nextWordId: string;
-  severity: "pause" | "long_pause";
-};
+export type SpeechPause = import("./generated/core-contract").CoreSpeechPause;
 
-export type SpeechEvidence = {
-  kind: "filler" | "low_confidence";
-  wordId: string;
-  segmentId: string;
-  start: number;
-  end: number;
-  text: string;
-  confidence: number | null;
-};
+export type SpeechEvidence = import("./generated/core-contract").CoreSpeechEvidence;
 
-export type SpeechInsights = {
-  status: "ready" | "insufficient_evidence";
-  analyzerVersion: string;
-  thresholds: {
-    pauseSeconds: number;
-    longPauseSeconds: number;
-    lowConfidence: number;
-  };
-  spanDurationSeconds: number;
-  spokenDurationSeconds: number;
-  tokenCount: number;
-  tokensPerMinute: number;
-  pauseCount: number;
-  longPauseCount: number;
-  totalPauseDurationSeconds: number;
-  fillerCount: number;
-  lowConfidenceCount: number;
-  pauses: SpeechPause[];
-  evidence: SpeechEvidence[];
-};
+export type SpeechInsights = import("./generated/core-contract").CoreSpeechInsights;
 
-export type Translation = {
-  status: "current" | "stale" | string;
-  updatedAt: string;
-  glossaryVersion: number;
-  segments: Array<{
-    segmentId: string;
-    text: string;
-    sourceHash: string;
-    status: "current" | "stale" | "quality_failed" | string;
-    updatedAt: string;
-  }>;
-};
+export type Translation = import("./generated/core-contract").CoreTranslation;
 
-export type Glossary = {
-  version: number;
-  updatedAt: string;
-  entries: Array<{ language: string; source: string; target: string }>;
-};
+export type Glossary = import("./generated/core-contract").CoreGlossary;
 
 export type UiLocale = "zh-CN" | "en-US";
 export type TranscriptionLanguage = "auto" | "en" | "zh";
 
-export type Task = {
-  id: string;
-  kind: string;
-  language: string | null;
-  status: TaskStatus;
-  createdAt?: string;
-  lease?: { worker: string; id: string; expiresAt: string } | null;
-  lastActivity?: { kind: string; progress: number | null; message: string; createdAt: string } | null;
-  stageCode?: string | null;
-  progress: number;
-  errorMessage: string | null;
-  errorCode?: CoreErrorCode | null;
-  attemptCount?: number;
-  completedAt?: string | null;
-  cancelRequestedAt?: string | null;
-  baseVersionId?: string | null;
-  workflowId?: string | null;
-  instructionLocale: UiLocale;
-};
+export type Task = Omit<Wire.CoreTask,"status" | "instructionLocale" | LegacyTaskFields> & Partial<Pick<Wire.CoreTask,LegacyTaskFields>> & {status:TaskStatus;instructionLocale:UiLocale;stageCode?:string|null};
 
-export type AgentPatchItem = {
-  id: string;
-  segmentId: string | null;
-  target: string;
-  beforeText: string;
-  afterText: string;
-  currentText: string;
-  reason: string;
-  confidence: number | null;
-  status: string;
-};
+export type AgentPatchItem = import("./generated/core-contract").CoreAgentPatchItem;
 
-export type AgentPatchSet = {
-  id: string;
-  taskId: string;
-  kind: string;
-  language: string | null;
-  status: string;
-  baseVersionId: string;
-  createdAt: string;
-  items: AgentPatchItem[];
-};
+export type AgentPatchSet = import("./generated/core-contract").CoreAgentPatchSet;
 
-export type Workflow = {
-  id: string;
-  kind: string;
-  language: string | null;
-  status: WorkflowStatus;
-  taskId: string;
-  createdAt: string;
-  updatedAt: string;
-  instructionLocale: UiLocale;
-};
+export type Workflow = Omit<Wire.CoreWorkflow,"status" | "instructionLocale"> & {status:WorkflowStatus;instructionLocale:UiLocale};
 
-export type Version = { id: string; reason: string; createdAt: string };
+export type Version = import("./generated/core-contract").Version;
 
-export type Edit = {
-  id: string;
-  kind: string;
-  status: string;
-  segmentId: string;
-  start: number;
-  end: number;
-  reason: string;
-  cutRange?: {
-    fromWordId: string;
-    toWordId: string;
-    selectedStart: number;
-    selectedEnd: number;
-    paddingMs: number;
-    transcriptHash: string;
-    stale: boolean;
-  } | null;
-  suggestion?: {
-    suggestionType: "standalone_filler" | "adjacent_repetition" | "speech_restart" | string;
-    confidence: number;
-    detectorVersion: string;
-  } | null;
-};
+export type Edit = Omit<Wire.CoreEdit,"createdAt" | "cutRange" | "suggestion"> & Partial<Pick<Wire.CoreEdit,"createdAt" | "cutRange" | "suggestion">>;
 
 export type CutPreview = {
   cutId: string;
@@ -227,72 +51,18 @@ export type CutPreview = {
   skipRange: boolean;
 };
 
-export type TimelineMap = {
-  sourceDuration: number;
-  outputDuration: number;
-  keptRanges: Array<{ sourceStart: number; sourceEnd: number; outputStart: number; outputEnd: number }>;
-  cuts: Array<{ editIds: string[]; sourceStart: number; sourceEnd: number; outputAt: number }>;
-};
+export type TimelineMap = import("./generated/core-contract").CoreTimelineMap;
 
-export type MediaArtifacts = {
-  status: string;
-  proxyPath: string | null;
-  waveformPath: string | null;
-  thumbnails: string[];
-  sourceSha256: string;
-  updatedAt: string;
-  errorMessage: string | null;
-};
+export type MediaArtifacts = import("./generated/core-contract").CoreMediaArtifacts;
 
-export type ExportJob = {
-  id: string;
-  projectId: string;
-  outputPath: string;
-  status: BackgroundJobStatus;
-  stageCode?: string | null;
-  progress: number;
-  burnSubtitles: boolean;
-  subtitleDelivery: "none" | "burned" | "embedded-mp4" | "embedded-mkv" | "sidecar-srt" | "sidecar-vtt";
-  language: string | null;
-  bilingual: boolean;
-  subtitleMode: "source" | "translated" | "bilingual";
-  allowStaleTranslation: boolean;
-  canvasSettings: CanvasSettings;
-  subtitleStyle: SubtitleStyle;
-  cancelRequestedAt: string | null;
-  errorMessage: string | null;
-  errorCode?: CoreErrorCode | null;
-  manifestPath: string | null;
-  createdAt: string;
-  updatedAt: string;
-  completedAt: string | null;
-  workerPid?: number | null;
-};
+export type ExportJob = Omit<Wire.CoreExportJob,"status" | "stageCode" | "errorCode" | "workerPid"> & Partial<Pick<Wire.CoreExportJob,"stageCode" | "errorCode" | "workerPid">> & {status:BackgroundJobStatus};
 
-export type CanvasSettings = {
-  aspectRatio: "source" | "9:16";
-  framing: "contain-blur" | "cover-center";
-};
+export type CanvasSettings = import("./generated/core-contract").CoreCanvasSettings;
 
-export type SubtitleStylePreset = "compact" | "standard" | "emphasis";
-export type SubtitlePosition = "bottom" | "center";
+export type SubtitleStylePreset = import("./generated/core-contract").CoreSubtitleStylePreset;
+export type SubtitlePosition = import("./generated/core-contract").CoreSubtitlePosition;
 
-export type SubtitleStyle = {
-  preset: SubtitleStylePreset;
-  position: SubtitlePosition;
-  fontFamily: string;
-  bold: boolean;
-  fontSize: number;
-  secondaryFontSize: number;
-  primaryColor: string;
-  secondaryColor: string;
-  outlineColor: string;
-  outlineWidth: number;
-  shadowDepth: number;
-  safeMarginPercent: number;
-  boxWidthPercent: number;
-  boxHeightLines: number;
-};
+export type SubtitleStyle = import("./generated/core-contract").CoreSubtitleStyle;
 
 export type SubtitleStylePresetOption = {
   id: SubtitleStylePreset;
@@ -577,46 +347,7 @@ export type SpeakerJob = {
   attemptCount: number;
 };
 
-export type AutoWorkflow = {
-  id: string;
-  inputKind: "local" | "url";
-  inputValue: string;
-  title: string | null;
-  confirmedMediaId: string | null;
-  projectId: string | null;
-  sourceImportId: string | null;
-  modelPath: string;
-  transcribeLanguage: string | null;
-  translationLanguage: string | null;
-  outputPath: string;
-  burnSubtitles: boolean;
-  subtitleMode: "source" | "translated" | "bilingual";
-  profile: WorkflowProfile;
-  status: AutoWorkflowStatus;
-  currentStage: AutoWorkflowStage;
-  stageCode?: string | null;
-  progress: number;
-  transcriptVersionId: string | null;
-  agentTaskId: string | null;
-  audioAnalysisJobId: string | null;
-  aiExecutionKind: "codex" | "api" | null;
-  aiServiceConfigId: string | null;
-  aiServiceRevision: number | null;
-  aiNetworkRevision: number | null;
-  aiModelId: string | null;
-  aiAuthorized: boolean;
-  exportJobId: string | null;
-  audit: Record<string, unknown> | null;
-  cancelRequestedAt: string | null;
-  errorMessage: string | null;
-  errorCode?: CoreErrorCode | null;
-  createdAt: string;
-  updatedAt: string;
-  completedAt: string | null;
-  workerPid?: number | null;
-  attemptCount: number;
-  instructionLocale: UiLocale;
-};
+export type AutoWorkflow = Omit<Wire.CoreAutoWorkflow,"status" | "currentStage" | "inputKind" | "aiExecutionKind" | "audit" | "instructionLocale" | "errorCode" | "workerPid"> & Partial<Pick<Wire.CoreAutoWorkflow,"errorCode" | "workerPid">> & {status:AutoWorkflowStatus;currentStage:AutoWorkflowStage;inputKind:"local"|"url";aiExecutionKind:"codex"|"api"|null;audit:Record<string,unknown>|null;instructionLocale:UiLocale;stageCode?:string|null};
 
 export type TranscriptionProviderConfig = {
   providerId: "moss_openai" | string;
@@ -691,73 +422,19 @@ export type TranscriptionReviewItem = {
   resolvedAt: string | null;
 };
 
-export type AutoWorkflowEvent = {
-  id: number;
-  workflowId: string;
-  stage: AutoWorkflowStage;
-  status: AutoWorkflowStatus;
-  progress: number;
-  message: string;
-  createdAt: string;
+export type AutoWorkflowEvent = Omit<Wire.CoreAutoWorkflowEvent,"stage" | "status"> & {stage:AutoWorkflowStage;status:AutoWorkflowStatus};
+
+/** Rust wire shape; legacy preview fixtures may omit media hashes and optional task metadata. */
+export type Project = Omit<import("./generated/core-contract").CoreProject,"media" | "tasks" | "workflows" | "edits"> & {
+  media: Omit<import("./generated/core-contract").CoreMedia,"sha256"> & {sha256?:string};
+  tasks:Task[];workflows:Workflow[];edits:Edit[];
 };
 
-export type Project = {
-  id: string;
-  title: string;
-  createdAt: string;
-  updatedAt: string;
-  canvasSettings: CanvasSettings;
-  subtitleStyle: SubtitleStyle;
-  media: {
-    sourcePath: string;
-    extension: string;
-    durationSeconds: number | null;
-  };
-  mediaArtifacts: MediaArtifacts | null;
-  timeline: TimelineMap;
-  transcript: { sourceLanguage: string; segments: Segment[]; words: WordTiming[] };
-  subtitleQuality: SubtitleQualityReport;
-  speechInsights: SpeechInsights;
-  translations: Record<string, Translation>;
-  glossary: Glossary;
-  edits: Edit[];
-  tasks: Task[];
-  versions: Version[];
-  history: { canUndo: boolean; canRedo: boolean; currentVersionId: string | null };
-  patchSets: AgentPatchSet[];
-  workflows: Workflow[];
-};
+export type SubtitleIssueKind = import("./generated/core-contract").CoreSubtitleIssueKind;
 
-export type SubtitleIssueKind = "empty_text" | "invalid_timing" | "out_of_bounds" | "overlap" | "duration_too_long" | "line_too_long" | "too_many_lines" | "reading_speed_high" | "gap_too_short";
+export type SubtitleQualityIssue = import("./generated/core-contract").CoreSubtitleQualityIssue;
 
-export type SubtitleQualityIssue = {
-  id: string;
-  kind: SubtitleIssueKind;
-  severity: "warning" | "error";
-  segmentId: string;
-  relatedSegmentId: string | null;
-  start: number;
-  end: number;
-  message: string;
-  measuredValue: number | null;
-  threshold: number | null;
-};
-
-export type SubtitleQualityReport = {
-  status: "good" | "warning" | "error";
-  statusLabel: string;
-  issueCount: number;
-  errorCount: number;
-  warningCount: number;
-  thresholds: {
-    maxDurationSeconds: number;
-    maxLineCharacters: number;
-    maxCharactersPerSecond: number;
-    minGapSeconds: number;
-    maxLines: number;
-  };
-  issues: SubtitleQualityIssue[];
-};
+export type SubtitleQualityReport = import("./generated/core-contract").CoreSubtitleQualityReport;
 
 export type SubtitleImportPreview = {
   format: "srt" | "vtt" | "ass";
@@ -811,6 +488,13 @@ export type TranscriptReplacementPreflight = {
 };
 
 export type CoreEnvelope = {
+  tasks?: Task[];
+  patchSets?: AgentPatchSet[];
+  projectWorkflows?: Workflow[];
+  projectPage?: import("./generated/core-contract").ProjectPage;
+  history?: import("./generated/core-contract").HistoryState;
+  versions?: import("./generated/core-contract").Version[];
+
   versionId?: string | null;
   mutationId?: string;
   editReceipt?: import("./generated/core-contract").EditReceipt;
@@ -922,3 +606,5 @@ export type UpdateDownloadEvent = {
   event: "Started" | "Progress" | "Finished" | "Verifying";
   data?: { contentLength?: number; chunkLength?: number };
 };
+
+type LegacyTaskFields="createdAt" | "lease" | "lastActivity" | "errorCode" | "attemptCount" | "completedAt" | "cancelRequestedAt" | "baseVersionId" | "workflowId";

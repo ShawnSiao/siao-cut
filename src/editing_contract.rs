@@ -35,6 +35,10 @@ pub struct EditReceipt {
     pub field: String,
     pub text: String,
     pub changed_domains: Vec<String>,
+    #[serde(default)]
+    pub history: Option<crate::model::HistoryState>,
+    #[serde(default)]
+    pub version: Option<crate::model::Version>,
 }
 
 #[derive(Debug, Deserialize, TS)]
@@ -75,6 +79,32 @@ pub struct ProjectMutation {
     deny_unknown_fields
 )]
 pub enum ProjectOperation {
+    RelinkMedia {
+        path: String,
+    },
+    ReplaceGlossary {
+        language: String,
+        expected_glossary_version: u32,
+        entries: Vec<(String, String)>,
+    },
+    CreateWorkflow {
+        workflow_kind: String,
+        language: Option<String>,
+        locale: String,
+    },
+    ImportSubtitle {
+        path: String,
+        sha256: String,
+        preview_version_id: String,
+    },
+    ReviewPatch {
+        patch_item_id: String,
+        action: String,
+    },
+    ReviewAll {
+        task_id: String,
+        action: String,
+    },
     DetectCuts,
     SetCutStatus {
         edit_id: String,

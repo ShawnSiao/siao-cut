@@ -1,10 +1,10 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
-import { backgroundTaskClient } from "../domains/background-task-client";
+import { backgroundTaskClient } from "../../domains/background-task-client";
+import type { CoreEnvelope, TranscriptionJob } from "../../types";
 import { useTranscriptionTasks } from "./use-transcription-tasks";
-import type { CoreEnvelope, TranscriptionJob } from "../types";
 
-vi.mock("../domains/background-task-client", () => ({ backgroundTaskClient: { listTranscriptions: vi.fn(), getTranscriptionJob: vi.fn() } }));
+vi.mock("../../domains/background-task-client", () => ({ backgroundTaskClient: { listTranscriptions: vi.fn(), getTranscriptionJob: vi.fn() } }));
 afterEach(() => { vi.useRealTimers(); vi.clearAllMocks(); });
 
 it("serializes slow polling, keeps jobs across project navigation, and stops after completion", async () => {
@@ -15,7 +15,7 @@ it("serializes slow polling, keeps jobs across project navigation, and stops aft
   vi.mocked(backgroundTaskClient.getTranscriptionJob).mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
   const applied = vi.fn().mockResolvedValue(undefined);
   const { result, unmount } = renderHook(() => useTranscriptionTasks(applied));
-  await act(async () => {});
+  await act(async () => { });
   expect(result.current.jobs).toHaveLength(1);
   await act(() => vi.advanceTimersByTimeAsync(800));
   await act(() => vi.advanceTimersByTimeAsync(5000));

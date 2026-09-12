@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
+import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 const sourceRoot = resolve(process.cwd(), "src");
@@ -13,6 +14,35 @@ function sourceFiles(directory: string): string[] {
 }
 
 describe("desktop architecture boundaries", () => {
+  it("checks the actual workbench and one Project owner, not only the App wrapper", () => {
+    const controller=readFileSync(join(sourceRoot,"workbench/workbench-controller.tsx"),"utf8");
+    for(const session of ["useProjectSession","useEditingSession","usePlaybackSession","useAiReviewSession","useBackgroundSession","useExportSession"]) expect(controller).toContain(`${session}(`);
+    expect(controller).not.toMatch(/useState<Project(?:\[\])?\s*\|?\s*null?>|setInterval\s*\(/);
+    expect(controller.split(/\r?\n/).length).toBeLessThan(3000);
+    expect(controller).toContain("useEditingSession(project, acknowledgeEdit)");
+    const owners=sourceFiles(sourceRoot).filter((path)=>/useState<Project\s*\|\s*null>/.test(readFileSync(path,"utf8")));
+    expect(owners.map((path)=>path.replaceAll("\\","/").split("/src/")[1])).toEqual(["features/project-session/use-project-session.ts"]);
+  });
+
+  it("routes components through domain ports and rejects static runtime dependency cycles",()=>{
+    const files=sourceFiles(sourceRoot),known=new Set(files),graph=new Map<string,string[]>();
+    for(const file of files){
+      const source=ts.createSourceFile(file,readFileSync(file,"utf8"),ts.ScriptTarget.Latest,true);
+      const edges:string[]=[];
+      for(const statement of source.statements){
+        if(!ts.isImportDeclaration(statement)||!ts.isStringLiteral(statement.moduleSpecifier)||statement.importClause?.isTypeOnly)continue;
+        const specifier=statement.moduleSpecifier.text;
+        if(file.endsWith(".tsx")) expect(specifier,`${file} imports transport`).not.toMatch(/(?:^|\/)core$|@tauri-apps\/api\/core/);
+        if(!specifier.startsWith("."))continue;
+        const base=resolve(file,"..",specifier),dependency=[`${base}.ts`,`${base}.tsx`,join(base,"index.ts")].find((path)=>known.has(path));
+        if(dependency)edges.push(dependency);
+      }
+      graph.set(file,edges);
+    }
+    const visited=new Set<string>();
+    const visit=(file:string,path:string[])=>{expect(path.includes(file),`Dependency cycle: ${[...path,file].join(" -> ")}`).toBe(false);if(visited.has(file))return;for(const dependency of graph.get(file)??[])visit(dependency,[...path,file]);visited.add(file);};
+    for(const file of files)visit(file,[]);
+  });
   it("keeps App.tsx as a small top-level assembly module", () => {
     const app = readFileSync(join(sourceRoot, "App.tsx"), "utf8");
     expect(app.split(/\r?\n/).length).toBeLessThanOrEqual(500);

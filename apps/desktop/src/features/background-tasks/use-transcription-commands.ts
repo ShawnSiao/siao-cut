@@ -1,5 +1,5 @@
 import { useRef } from "react";
-import { backgroundTaskClient } from "../domains/background-task-client";
+import { backgroundTaskClient } from "../../domains/background-task-client";
 
 // Keep the identifier after an ambiguous transport failure; retry the same operation.
 export function useTranscriptionCommands() {

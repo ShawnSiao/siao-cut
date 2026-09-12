@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { sanitizeWindowsFileName, structuredCoreErrorMessage } from "./core";
+import { assertCoreCapabilities, sanitizeWindowsFileName, structuredCoreErrorMessage } from "./core";
+import { requiredCoreCapabilities } from "./generated/core-contract";
 import { changeUiLocale } from "./i18n";
 
 afterEach(() => changeUiLocale("zh-CN"));
@@ -28,3 +29,5 @@ describe("desktop Core bridge helpers", () => {
       .toBe("The structured Core request parameters are invalid.");
   });
 });
+
+it("rejects an old Core instead of falling back to unprotected writes",()=>{expect(()=>assertCoreCapabilities(requiredCoreCapabilities)).not.toThrow();expect(()=>assertCoreCapabilities(["editing-v1"])).toThrow(/Core 版本不匹配/);expect(()=>assertCoreCapabilities(undefined)).toThrow(/Core 版本不匹配/);});

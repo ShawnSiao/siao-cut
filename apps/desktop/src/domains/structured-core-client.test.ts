@@ -10,8 +10,8 @@ const coreMocks = vi.hoisted(() => ({
 vi.mock("../core", () => coreMocks);
 
 import { backgroundTaskClient } from "./background-task-client";
+import { editingClient } from "./editing-client";
 import { projectSessionClient } from "./project-session-client";
-import { transcriptEditingClient } from "./transcript-editing-client";
 
 describe("structured Desktop Core requests", () => {
   beforeEach(() => {
@@ -22,14 +22,12 @@ describe("structured Desktop Core requests", () => {
   it("keeps a 100-segment offset request in one structured payload", async () => {
     const segmentIds = Array.from({ length: 100 }, (_, index) => `字幕-${index + 1}`);
 
-    await transcriptEditingClient.offsetSegments("项目-一", segmentIds, -0.125);
+    await editingClient.mutate!({projectId:"项目-一",mutationId:"offset-once",expectedVersionId:"v-before",operation:{kind:"offset",segmentIds,delta:-0.125}});
 
     expect(coreMocks.runCoreStructured).toHaveBeenCalledOnce();
     expect(coreMocks.runCoreStructured).toHaveBeenCalledWith({
-      kind: "transcript_offset",
-      projectId: "项目-一",
-      segmentIds,
-      delta: -0.125,
+      kind: "editing",
+      request: {action:"mutate",mutation:{projectId:"项目-一",mutationId:"offset-once",expectedVersionId:"v-before",operation:{kind:"offset",segmentIds,delta:-0.125}}},
     });
     expect(coreMocks.runCore).not.toHaveBeenCalled();
   });
@@ -53,15 +51,11 @@ describe("structured Desktop Core requests", () => {
   });
 
   it("binds destructive confirmations to the preflight project version", async () => {
-    await transcriptEditingClient.importSubtitleFile("p1", "D:\\字幕\\final.srt", "sha-256", "v-before");
+    const mutation = {projectId:"p1",mutationId:"import-once",expectedVersionId:"v-before",operation:{kind:"import_subtitle" as const,path:"D:/字幕/final.srt",sha256:"sha-256",previewVersionId:"v-before"}};
+    await editingClient.mutate!(mutation);
     await projectSessionClient.deleteProject("p1", "v-before");
-
-    expect(coreMocks.runCore).toHaveBeenNthCalledWith(1, [
-      "transcript", "import-file", "p1", "D:\\字幕\\final.srt",
-      "--confirm-replace", "--expected-sha256", "sha-256",
-      "--expected-version", "v-before",
-    ]);
-    expect(coreMocks.runCore).toHaveBeenNthCalledWith(2, [
+    expect(coreMocks.runCoreStructured).toHaveBeenCalledWith({kind:"editing",request:{action:"mutate",mutation}});
+    expect(coreMocks.runCore).toHaveBeenCalledExactlyOnceWith([
       "project", "delete", "p1", "--expected-version", "v-before",
     ]);
   });

@@ -334,6 +334,7 @@ fn configure_sync_command(command: &mut Command, runtime: &RuntimePaths) {
 fn validate_core_args_with_limit(args: &[String], default_max_args: usize) -> Result<(), String> {
     const ALLOWED: &[&str] = &[
         "health",
+        "contract",
         "import",
         "project",
         "glossary",
@@ -380,6 +381,8 @@ fn validate_core_args(args: &[String]) -> Result<(), String> {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", deny_unknown_fields)]
 enum StructuredCoreRequest {
+    #[serde(rename = "project_query")]
+    ProjectQuery { request: Value },
     #[serde(rename = "ai_approval")]
     AiApproval { request: Value },
     #[serde(rename = "transcription_job")]
@@ -420,7 +423,7 @@ fn validate_structured_core_request(payload: &str) -> Result<(), String> {
     let request: StructuredCoreRequest = serde_json::from_str(payload)
         .map_err(|error| format!("structured_core_payload_invalid: {error}"))?;
     match request {
-        StructuredCoreRequest::Editing { request } | StructuredCoreRequest::AiApproval { request } | StructuredCoreRequest::TranscriptionJob { request } => {
+        StructuredCoreRequest::Editing { request } | StructuredCoreRequest::AiApproval { request } | StructuredCoreRequest::TranscriptionJob { request } | StructuredCoreRequest::ProjectQuery { request } => {
             if !request.is_object() {
                 return Err(
                     "structured_core_request_invalid: editing request must be an object".into(),
@@ -927,6 +930,7 @@ mod tests {
     #[test]
     fn allows_public_auto_workflow_commands() {
         assert!(validate_core_args(&["auto".into(), "list".into()]).is_ok());
+        assert!(validate_core_args(&["contract".into()]).is_ok());
     }
 
     #[test]

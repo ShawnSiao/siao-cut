@@ -1,6 +1,6 @@
-import { runMockTranscription, resetMockTranscriptionCommands } from "./workbench/mock-transcription";
 import { sampleProject } from "./mock";
-import type { AgentRun, AudioAnalysisJob, AutoWorkflow, CoreEnvelope, ExportJob, LocalCapabilityId, LocalResourceJob, LocalResourceStatus, LocalTranscriptionProfile, ModelDownloadJob, ModelStatus, Project, ResourceUpdateCheck, RuntimeInfo, SourceImportJob, SourcePreview, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SubtitleImportPreview, SubtitleStructureEdit, TranscriptionJob, TranscriptionProviderConfig, TranscriptionProviderHealth, TranscriptionReviewItem, UpdateDownloadEvent, UpdateMetadata, UpdatePolicy } from "./types";
+import type { AgentRun, AudioAnalysisJob, AutoWorkflow, CoreEnvelope, ExportJob, LocalCapabilityId, LocalResourceJob, LocalResourceStatus, LocalTranscriptionProfile, ModelDownloadJob, ModelStatus, Project, ResourceUpdateCheck, SourceImportJob, SourcePreview, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SubtitleImportPreview, SubtitleStructureEdit, TranscriptionJob, TranscriptionProviderConfig, TranscriptionProviderHealth, TranscriptionReviewItem } from "./types";
+import { resetMockTranscriptionCommands, runMockTranscription } from "./workbench/mock-transcription";
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
 const mockSubtitleStylePresets = [
@@ -86,6 +86,7 @@ export function resetMockLocalResourcesForTest() {
 
 export function setMockProjectForTest(project: Project) {
   mockProjectListOverride = structuredClone(project);
+  mockProjects = [];
 }
 
 export function setMockAuthorizedMediaForTest(url: string) {
@@ -98,6 +99,7 @@ export function mockAuthorizeMedia(): string | null {
 
 export function resetMockProjectForTest() {
   mockProjectListOverride = null;
+  mockProjects = [];
   mockAuthorizedMediaUrl = null;
 }
 
@@ -1517,6 +1519,12 @@ export async function mockEditingRequest(request: import("./generated/core-contr
     if (!p || p.history.currentVersionId !== m.expectedVersionId) return fail("editing_version_conflict", "项目版本已变化");
     let args: string[];
     switch (op.kind) {
+      case "relink_media": args=["project","relink",id,op.path];break;
+      case "replace_glossary": args=["glossary","replace",id,"--lang",op.language,"--expected-version",String(op.expectedGlossaryVersion),...op.entries.flatMap(([source,target])=>["--entry",`${source}=${target}`])];break;
+      case "create_workflow": args=["workflow","create",id,"--kind",op.workflowKind,"--locale",op.locale,...(op.language?["--lang",op.language]:[])];break;
+      case "import_subtitle": args=["transcript","import-file",id,op.path,"--confirm-replace","--expected-sha256",op.sha256,"--expected-version",op.previewVersionId];break;
+      case "review_patch": args = ["task","review",op.patchItemId,"--action",op.action]; break;
+      case "review_all": args = ["task","review-all",op.taskId,"--action",op.action]; break;
       case "detect_cuts": args = ["cut", "detect", id]; break;
       case "set_cut_status": args = ["cut", op.action, id, op.editId]; break;
       case "create_word_cut": args = ["cut", "create", id, "--segment", op.segmentId, "--from-word", op.fromWordId, "--to-word", op.toWordId, "--padding-ms", String(op.paddingMs)]; break;
@@ -1570,7 +1578,7 @@ export async function mockEditingRequest(request: import("./generated/core-contr
   project.history = { currentVersionId: versionId, canUndo: true, canRedo: false };
   project.versions.push({ id: versionId, reason: "编辑字幕", createdAt: new Date().toISOString() });
   syncMockProject(project); updateJournal(true);
-  const receipt = { mutationId: request.edit.mutationId, projectId: d.projectId, versionId, segmentId: d.segmentId, field: d.field, text: d.text, changedDomains: ["transcript", "translations", "history", "quality", "edits"] };
+  const receipt = { mutationId: request.edit.mutationId, projectId: d.projectId, versionId, segmentId: d.segmentId, field: d.field, text: d.text, history: project.history, version: project.versions.at(-1) ?? null, changedDomains: ["transcript", "translations", "history", "quality", "edits"] };
   previewReceipts.set(key, { request: raw, receipt }); return ok({ editReceipt: receipt });
 }
 
@@ -1585,4 +1593,23 @@ export function mockAuthorizeAutoTask(taskId: string) {
 
 export async function mockTranscriptionCommand(request: import("./generated/core-contract").TranscriptionCommand): Promise<CoreEnvelope> {
   return runMockTranscription(request, { mockTranscriptionJobs, mockProject, mockProjects, mockRun });
+}
+
+// Structured read models use the same preview database as legacy commands.
+export async function mockProjectQuery(request: import("./generated/core-contract").ProjectQuery): Promise<CoreEnvelope> {
+  const ok = (body: Partial<CoreEnvelope>): CoreEnvelope => ({apiVersion:"0.1",status:"ok",...body});
+  if (request.action === "list") {
+    if (!mockProjects.length) await mockRun(["project", "list"]);
+    const items = mockProjects.slice(request.offset, request.offset + (request.limit ?? 50)).map((p) => ({
+      id:p.id,title:p.title,createdAt:p.createdAt,updatedAt:p.updatedAt,segmentCount:p.transcript.segments.length,
+      durationSeconds:p.media.durationSeconds,versionId:p.history.currentVersionId,
+    }));
+    const next = request.offset + items.length;
+    return ok({projectPage:{items,total:mockProjects.length,nextOffset:next < mockProjects.length ? next : null}});
+  }
+  const result = await mockRun(["project","show",request.projectId]);
+  if (!result.project || request.action === "show") return result;
+  const p = result.project;
+  return request.action === "review" ? ok({projectId:p.id,versionId:p.history.currentVersionId ?? undefined,tasks:p.tasks,patchSets:p.patchSets,projectWorkflows:p.workflows}) : request.action === "history" ? ok({projectId:p.id,history:p.history,versions:p.versions})
+    : ok({projectId:p.id,versionId:p.history.currentVersionId ?? undefined,subtitleQuality:p.subtitleQuality,speechInsights:p.speechInsights});
 }

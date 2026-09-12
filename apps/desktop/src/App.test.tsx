@@ -1,12 +1,12 @@
-import { editingClient } from "./domains/editing-client";
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App, { AUTO_WORKFLOW_DISMISSED_STORAGE_KEY, PatchReviewCard, TRANSCRIPTION_LANGUAGE_STORAGE_KEY, agentTaskStatusLabel, clearTransientCoreError, getProjectCapabilities, isHttpsSourceUrl, parseDismissedAutoWorkflowIds, parseExportPreferences, parseTranscriptionLanguage, resolveCanvasMedia, resolveCaptionKaraokeStyle, resolveCaptionSegment, resolveFocusCaptionText, resolveImportedProjectMedia, resolvePlaybackDuration, shouldCheckForUpdates, startSerialPolling, taskLabel, upsertAutoWorkflowSnapshot } from "./App";
 import { mockRun, resetMockLocalResourcesForTest, resetMockProjectForTest, setMockAuthorizedMediaForTest, setMockLocalResourcesForTest, setMockProjectForTest } from "./core.mock";
 import { agentReviewClient } from "./domains/agent-review-client";
+import { editingClient } from "./domains/editing-client";
 import { projectSessionClient } from "./domains/project-session-client";
-import { transcriptEditingClient } from "./domains/transcript-editing-client";
+import { projectSummary } from "./features/project-session/use-project-session";
 import { sampleProject } from "./mock";
 import type { AutoWorkflow } from "./types";
 import { TIMELINE_PREFERENCES_STORAGE_KEY } from "./workbench/subtitle-timeline-panel";
@@ -246,26 +246,10 @@ describe("SiaoCut review workbench", () => {
         createdAt: "2026-07-25T15:48:41.000Z",
       },
     }];
-    const staleInterruptedProject = structuredClone(failedProject);
-    staleInterruptedProject.tasks = [{
-      ...failedTask,
-      status: "interrupted",
-      errorMessage: "旧轮询快照",
-      lastActivity: {
-        kind: "interrupted",
-        progress: null,
-        message: "旧轮询快照",
-        createdAt: "2026-07-25T15:48:32.000Z",
-      },
-    }];
-    let resolveStaleReload!: (value: typeof staleInterruptedProject) => void;
-    const staleReload = new Promise<typeof staleInterruptedProject>((resolve) => {
-      resolveStaleReload = resolve;
-    });
-    vi.spyOn(projectSessionClient, "listProjects").mockResolvedValue([failedProject]);
+    vi.spyOn(projectSessionClient, "listProjects").mockResolvedValue({items:[failedProject].map(projectSummary),nextOffset:null,total:1});
     const load = vi.spyOn(projectSessionClient, "loadProject")
-      .mockImplementationOnce(() => staleReload)
-      .mockResolvedValue(claimedProject);
+      .mockResolvedValue(failedProject);
+    const readReview = vi.spyOn(projectSessionClient,"review").mockResolvedValue({apiVersion:"0.1",status:"ok",projectId:claimedProject.id,versionId:claimedProject.history.currentVersionId ?? undefined,tasks:claimedProject.tasks,patchSets:claimedProject.patchSets,projectWorkflows:claimedProject.workflows});
     vi.spyOn(agentReviewClient, "listAgentRuns").mockResolvedValue({
       apiVersion: "0.1",
       status: "ok",
@@ -291,7 +275,7 @@ describe("SiaoCut review workbench", () => {
     const handoffDialog = await screen.findByRole("dialog", { name: "交给外部 Agent" });
     expect(within(handoffDialog).getByRole("textbox", { name: /本次 Agent 标识/ })).toBeEnabled();
 
-    await waitFor(() => expect(load).toHaveBeenCalledTimes(2), { timeout: 4_000 });
+    await waitFor(() => expect(readReview).toHaveBeenCalled(), { timeout: 4_000 });
     expect(await screen.findByText(/named-agent 已领取任务/)).toBeInTheDocument();
     expect(screen.getByText(/第 2 次尝试/)).toBeInTheDocument();
 
@@ -305,7 +289,7 @@ describe("SiaoCut review workbench", () => {
     fireEvent.click(within(handoffDialog).getByRole("button", { name: "关闭 Agent 交接" }));
     await waitFor(() => expect(handoffTrigger).toHaveFocus());
 
-    resolveStaleReload(staleInterruptedProject);
+    expect(load).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(screen.getByText(/named-agent 已领取任务/)).toBeInTheDocument());
     expect(screen.queryByText("旧轮询快照")).not.toBeInTheDocument();
   });
@@ -347,9 +331,11 @@ describe("SiaoCut review workbench", () => {
         createdAt: "2026-07-25T15:48:41.000Z",
       },
     }];
-    vi.spyOn(projectSessionClient, "listProjects").mockResolvedValue([failedProject]);
+    vi.spyOn(projectSessionClient, "listProjects").mockResolvedValue({items:[failedProject].map(projectSummary),nextOffset:null,total:1});
     const load = vi.spyOn(projectSessionClient, "loadProject")
+      .mockResolvedValueOnce(failedProject)
       .mockResolvedValue(claimedProject);
+    const readReview = vi.spyOn(projectSessionClient,"review").mockResolvedValue({apiVersion:"0.1",status:"ok",projectId:claimedProject.id,versionId:claimedProject.history.currentVersionId ?? undefined,tasks:claimedProject.tasks,patchSets:claimedProject.patchSets,projectWorkflows:claimedProject.workflows});
     vi.spyOn(agentReviewClient, "listAgentRuns").mockResolvedValue({
       apiVersion: "0.1",
       status: "ok",
@@ -359,7 +345,8 @@ describe("SiaoCut review workbench", () => {
     render(<App />);
     expect(await screen.findByRole("button", { name: "重新排队" })).toBeInTheDocument();
 
-    await waitFor(() => expect(load).toHaveBeenCalledTimes(1), { timeout: 7_000 });
+    await waitFor(() => expect(readReview).toHaveBeenCalled(), { timeout: 7_000 });
+    expect(load).toHaveBeenCalledTimes(1);
     expect(await screen.findByText(/cli-agent 已领取任务/)).toBeInTheDocument();
     expect(screen.getByText(/第 2 次尝试/)).toBeInTheDocument();
     expect(screen.queryByText("外部 Agent 暂时报告失败")).not.toBeInTheDocument();
@@ -402,8 +389,9 @@ describe("SiaoCut review workbench", () => {
     failedProject.edits = [];
     const claimedProject = structuredClone(failedProject);
     claimedProject.tasks = [claimedTask];
-    vi.spyOn(projectSessionClient, "listProjects").mockResolvedValue([failedProject]);
-    vi.spyOn(projectSessionClient, "loadProject").mockResolvedValue(claimedProject);
+    vi.spyOn(projectSessionClient, "listProjects").mockResolvedValue({items:[failedProject].map(projectSummary),nextOffset:null,total:1});
+    vi.spyOn(projectSessionClient, "loadProject").mockResolvedValueOnce(failedProject).mockResolvedValue(claimedProject);
+    const readReview = vi.spyOn(projectSessionClient,"review").mockResolvedValue({apiVersion:"0.1",status:"ok",projectId:claimedProject.id,versionId:claimedProject.history.currentVersionId ?? undefined,tasks:claimedProject.tasks,patchSets:claimedProject.patchSets,projectWorkflows:claimedProject.workflows});
     vi.spyOn(agentReviewClient, "listAgentRuns").mockResolvedValue({
       apiVersion: "0.1",
       status: "ok",

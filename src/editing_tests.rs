@@ -24,6 +24,87 @@ fn fixture(db: &mut rusqlite::Connection, media: &std::path::Path) -> SaveEdit {
 }
 
 #[test]
+fn glossary_mutation_is_versioned_idempotent_and_recoverable() {
+    let temp = tempdir().unwrap();
+    let mut db = db::open_at(&temp.path().join("test.db")).unwrap();
+    let edit = fixture(&mut db, &temp.path().join("audio.wav"));
+    let request = ProjectMutation {
+        project_id: edit.draft.project_id.clone(),
+        mutation_id: "glossary-once".into(),
+        expected_version_id: edit.expected_version_id.clone(),
+        operation: ProjectOperation::ReplaceGlossary {
+            language: "en".into(),
+            expected_glossary_version: 0,
+            entries: vec![("字幕".into(), "subtitle".into())],
+        },
+    };
+    let receipt = mutate(&mut db, &request).unwrap();
+    assert_ne!(
+        receipt["versionId"],
+        serde_json::json!(edit.expected_version_id)
+    );
+    assert_eq!(mutate(&mut db, &request).unwrap(), receipt);
+    let mut stale = request;
+    stale.mutation_id = "glossary-stale".into();
+    assert!(
+        mutate(&mut db, &stale)
+            .unwrap_err()
+            .to_string()
+            .contains("editing_version_conflict")
+    );
+    let restored = project::undo(&mut db, &stale.project_id).unwrap();
+    assert!(restored.glossary.entries.is_empty());
+    let redone = project::redo(&mut db, &stale.project_id).unwrap();
+    assert_eq!(redone.glossary.entries[0].target, "subtitle");
+    assert!(redone.glossary.version > restored.glossary.version);
+}
+
+#[test]
+fn workflow_retry_creates_one_task_and_review_cannot_cross_projects() {
+    let temp = tempdir().unwrap();
+    let mut db = db::open_at(&temp.path().join("test.db")).unwrap();
+    let edit = fixture(&mut db, &temp.path().join("audio.wav"));
+    let request = ProjectMutation {
+        project_id: edit.draft.project_id.clone(),
+        mutation_id: "workflow-once".into(),
+        expected_version_id: edit.expected_version_id,
+        operation: ProjectOperation::CreateWorkflow {
+            workflow_kind: "polish".into(),
+            language: None,
+            locale: "zh-CN".into(),
+        },
+    };
+    let receipt = mutate(&mut db, &request).unwrap();
+    assert_eq!(mutate(&mut db, &request).unwrap(), receipt);
+    assert_eq!(
+        project::select_tasks(&db, &request.project_id)
+            .unwrap()
+            .len(),
+        1
+    );
+    let other = fixture(&mut db, &temp.path().join("other.wav"));
+    let review = ProjectMutation {
+        project_id: other.draft.project_id.clone(),
+        mutation_id: "foreign-review".into(),
+        expected_version_id: other.expected_version_id.clone(),
+        operation: ProjectOperation::ReviewAll {
+            task_id: receipt["taskId"].as_str().unwrap().into(),
+            action: "accept".into(),
+        },
+    };
+    assert!(
+        mutate(&mut db, &review)
+            .unwrap_err()
+            .to_string()
+            .contains("任务不属于当前项目")
+    );
+    assert_eq!(
+        project::current_version_id(&db, &other.draft.project_id).unwrap(),
+        other.expected_version_id
+    );
+}
+
+#[test]
 fn repeated_save_is_atomic_and_idempotent_even_after_later_edits() {
     let temp = tempdir().unwrap();
     let mut db = db::open_at(&temp.path().join("test.db")).unwrap();

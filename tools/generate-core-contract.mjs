@@ -24,6 +24,7 @@ if (result.status !== 0) {
 
 const contract = JSON.parse(result.stdout);
 const declarations = [
+  ["requiredCoreCapabilities", "CoreCapability", contract.capabilities],
   ["backgroundJobStatuses", "BackgroundJobStatus", contract.statusSets.backgroundJob],
   ["agentRunStatuses", "AgentRunStatus", contract.statusSets.agentRun],
   ["localResourceStates", "LocalResourceState", contract.statusSets.localResource],

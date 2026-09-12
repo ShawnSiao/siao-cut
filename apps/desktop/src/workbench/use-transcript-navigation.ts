@@ -18,7 +18,8 @@ export function useTranscriptNavigation(project: Project | null, time: number, p
   const locate = useCallback((id: string) => {
     const list = listRef.current;
     const row = list && Array.from(list.querySelectorAll<HTMLElement>("[data-segment-id]")).find((node) => node.dataset.segmentId === id);
-    if (!list || !row) return;
+    if (!list) return;
+    if (!row) { list.dispatchEvent(new CustomEvent("transcript-locate",{detail:id})); return; }
     const viewport = list.getBoundingClientRect(), bounds = row.getBoundingClientRect();
     if (bounds.top < viewport.top) list.scrollTop += bounds.top - viewport.top;
     else if (bounds.bottom > viewport.bottom) list.scrollTop += bounds.bottom - viewport.bottom;

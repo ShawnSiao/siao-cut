@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { backgroundTaskClient } from "../domains/background-task-client";
-import type { TranscriptionJob } from "../types";
+import { backgroundTaskClient } from "../../domains/background-task-client";
+import type { TranscriptionJob } from "../../types";
 
 const active = (job: TranscriptionJob) => ["queued", "running", "finalizing"].includes(job.status);
 
@@ -8,8 +8,8 @@ export function useTranscriptionTasks(onApplied: (job: TranscriptionJob) => Prom
   const [jobs, setJobs] = useState<TranscriptionJob[]>([]);
   const [error, setError] = useState<string | null>(null);
   const current = useRef(jobs), callback = useRef(onApplied);
-  const wake = useRef(() => {});
-  const reload = useRef(() => {});
+  const wake = useRef(() => { });
+  const reload = useRef(() => { });
   callback.current = onApplied;
   const track = useCallback((job: TranscriptionJob | null) => {
     if (!job) return;
@@ -52,7 +52,7 @@ export function useTranscriptionTasks(onApplied: (job: TranscriptionJob) => Prom
     };
     reload.current();
     schedule();
-    return () => { disposed = true; clearTimeout(timer); wake.current = () => {}; reload.current = () => {}; };
+    return () => { disposed = true; clearTimeout(timer); wake.current = () => { }; reload.current = () => { }; };
   }, []);
   return { jobs, track, error, refresh: () => reload.current() };
 }

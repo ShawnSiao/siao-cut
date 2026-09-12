@@ -1,6 +1,5 @@
 use anyhow::{Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand, error::ErrorKind};
-use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{env, fs, io::Read, path::PathBuf};
 
@@ -18,6 +17,7 @@ mod cuts;
 mod db;
 #[cfg(test)]
 mod db_migration_33_tests;
+mod desktop_api;
 mod editing;
 mod editing_contract;
 mod export;
@@ -25,9 +25,11 @@ mod ipc;
 mod local_resources;
 mod media;
 mod model;
+mod model_contract;
 mod models;
 mod patches;
 mod project;
+mod project_query;
 mod resource_jobs;
 mod runtime;
 mod source_import;
@@ -121,37 +123,6 @@ enum Commands {
     },
     /// Extract audio through FFmpeg and call a local whisper.cpp CLI.
     Transcribe(TranscribeArgs),
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "kind", deny_unknown_fields)]
-enum DesktopRequest {
-    #[serde(rename = "ai_approval")]
-    AiApproval {
-        request: ai_approval::AiApprovalRequest,
-    },
-    #[serde(rename = "transcription_job")]
-    TranscriptionJob {
-        request: transcription::desktop::TranscriptionCommand,
-    },
-    #[serde(rename = "editing")]
-    Editing { request: editing::EditingRequest },
-    #[serde(rename = "transcript_offset")]
-    TranscriptOffset {
-        #[serde(rename = "projectId")]
-        project_id: String,
-        #[serde(rename = "segmentIds")]
-        segment_ids: Vec<String>,
-        delta: f64,
-    },
-    #[serde(rename = "transcription_start")]
-    TranscriptionStart {
-        #[serde(rename = "projectId")]
-        project_id: String,
-        language: String,
-        prompt: Option<String>,
-        hotwords: Vec<String>,
-    },
 }
 
 #[derive(Subcommand)]
@@ -915,13 +886,6 @@ fn envelope(payload: Value) -> Value {
     Value::Object(object)
 }
 
-fn validate_desktop_request_text(label: &str, value: &str, max_chars: usize) -> Result<()> {
-    if value.trim().is_empty() || value.chars().count() > max_chars || value.contains('\0') {
-        bail!("invalid_request: Desktop 结构化请求中的{label}无效")
-    }
-    Ok(())
-}
-
 fn run_desktop_request(database: &mut rusqlite::Connection, input: &PathBuf) -> Result<Value> {
     const MAX_DESKTOP_REQUEST_BYTES: usize = 64 * 1024;
     let payload =
@@ -929,72 +893,9 @@ fn run_desktop_request(database: &mut rusqlite::Connection, input: &PathBuf) -> 
     if payload.len() > MAX_DESKTOP_REQUEST_BYTES {
         bail!("invalid_request: Desktop 结构化请求超过 64 KiB")
     }
-    let request: DesktopRequest = serde_json::from_slice(&payload)
+    let request: desktop_api::DesktopRequest = serde_json::from_slice(&payload)
         .map_err(|_| anyhow!("invalid_request: Desktop 结构化请求 JSON 无效"))?;
-    match request {
-        DesktopRequest::AiApproval { request } => {
-            Ok(envelope(ai_approval::execute(database, request)?))
-        }
-        DesktopRequest::Editing { request } => Ok(envelope(editing::execute(database, request)?)),
-        DesktopRequest::TranscriptOffset {
-            project_id,
-            segment_ids,
-            delta,
-        } => {
-            validate_desktop_request_text("项目 ID", &project_id, 256)?;
-            if segment_ids.is_empty()
-                || segment_ids.len() > 1000
-                || segment_ids
-                    .iter()
-                    .collect::<std::collections::BTreeSet<_>>()
-                    .len()
-                    != segment_ids.len()
-            {
-                bail!("invalid_request: Desktop 批量偏移请求无效")
-            }
-            for segment_id in &segment_ids {
-                validate_desktop_request_text("字幕段 ID", segment_id, 256)?;
-            }
-            let result = subtitle_workbench::offset(database, &project_id, &segment_ids, delta)?;
-            Ok(envelope(json!({
-                "projectId": project_id,
-                "structureEdit": result,
-                "message": "选中字幕与对应词级证据已批量偏移。"
-            })))
-        }
-        DesktopRequest::TranscriptionJob { request } => Ok(envelope(
-            transcription::desktop::execute(database, request)?,
-        )),
-        DesktopRequest::TranscriptionStart {
-            project_id,
-            language,
-            prompt,
-            hotwords,
-        } => {
-            validate_desktop_request_text("项目 ID", &project_id, 256)?;
-            if !["auto", "en", "zh"].contains(&language.as_str()) || hotwords.len() > 512 {
-                bail!("invalid_request: Desktop 多人转写请求无效")
-            }
-            if let Some(value) = prompt.as_deref() {
-                validate_desktop_request_text("Prompt", value, 1200)?;
-            }
-            for hotword in &hotwords {
-                validate_desktop_request_text("热词", hotword, 200)?;
-            }
-            let job = transcription::start(
-                database,
-                &project_id,
-                Some(&language),
-                prompt.as_deref(),
-                &hotwords,
-                None,
-            )?;
-            Ok(envelope(json!({
-                "transcriptionJob": job,
-                "message": "多人长音频转写已进入后台队列；不会静默回退到快速转写。"
-            })))
-        }
-    }
+    Ok(envelope(desktop_api::execute(database, request)?))
 }
 
 fn run_ai_request() -> Result<Value> {

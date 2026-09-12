@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { sampleProject } from "../../mock";
 import type { EditReceipt, SaveEdit } from "../../generated/core-contract";
+import { sampleProject } from "../../mock";
 import { EditingSession, fieldKey, type EditingTransport } from "./editing-session";
 
 const deferred = <T,>() => { let resolve!: (value: T) => void; let reject!: (reason: unknown) => void; const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
-const receipt = (edit: SaveEdit): EditReceipt => ({ mutationId: edit.mutationId, projectId: edit.draft.projectId, segmentId: edit.draft.segmentId, field: edit.draft.field, text: edit.draft.text, versionId: `v-${edit.draft.revision}-${edit.draft.segmentId}`, changedDomains: ["transcript"] });
+const receipt = (edit: SaveEdit): EditReceipt => ({ mutationId: edit.mutationId, projectId: edit.draft.projectId, segmentId: edit.draft.segmentId, field: edit.draft.field, text: edit.draft.text, versionId: `v-${edit.draft.revision}-${edit.draft.segmentId}`, history: null, version: null, changedDomains: ["transcript"] });
 function setup(overrides: Partial<EditingTransport> = {}) {
   const project = structuredClone(sampleProject);
   const transport: EditingTransport = { journal: vi.fn(async () => {}), list: vi.fn(async () => []), discard: vi.fn(async () => {}), save: vi.fn(async (edit) => receipt(edit)), ...overrides };

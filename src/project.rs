@@ -21,6 +21,14 @@ use std::{
 };
 
 pub fn load(db: &Connection, id: &str) -> Result<Project> {
+    load_with_history(db, id, true)
+}
+
+pub fn load_workspace(db: &Connection, id: &str) -> Result<Project> {
+    load_with_history(db, id, false)
+}
+
+fn load_with_history(db: &Connection, id: &str, include_history: bool) -> Result<Project> {
     let base: (String, String, String, String, String, String, String, String) = db
         .query_row(
             "SELECT id,title,created_at,updated_at,source_language,canvas_aspect_ratio,canvas_framing,subtitle_style_json FROM projects WHERE id=?1",
@@ -72,6 +80,10 @@ pub fn load(db: &Connection, id: &str) -> Result<Project> {
         .optional()?;
     let segments = select_segments(db, id)?;
     let words = select_words(db, id)?;
+    let segments_by_id = segments
+        .iter()
+        .map(|segment| (segment.id.as_str(), segment))
+        .collect::<std::collections::HashMap<_, _>>();
     let mut translations = BTreeMap::new();
     let mut statement = db.prepare(
         "SELECT language,status,updated_at,glossary_version FROM translations WHERE project_id=?1 ORDER BY language",
@@ -94,22 +106,22 @@ pub fn load(db: &Connection, id: &str) -> Result<Project> {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         for translated in &mut translated_segments {
-            if let Some(source) = segments
-                .iter()
-                .find(|segment| segment.id == translated.segment_id)
-            {
+            if let Some(source) = segments_by_id.get(translated.segment_id.as_str()) {
                 translated.status =
                     translation::effective_segment_status(source, translated, &language);
             } else {
                 translated.status = "stale".to_owned();
             }
         }
+        let current_ids = translated_segments
+            .iter()
+            .filter(|segment| segment.status == "current")
+            .map(|segment| segment.segment_id.as_str())
+            .collect::<std::collections::HashSet<_>>();
         let complete = !segments.is_empty()
-            && segments.iter().all(|source| {
-                translated_segments.iter().any(|translated| {
-                    translated.segment_id == source.id && translated.status == "current"
-                })
-            });
+            && segments
+                .iter()
+                .all(|segment| current_ids.contains(segment.id.as_str()));
         translations.insert(
             language,
             Translation {
@@ -153,8 +165,9 @@ pub fn load(db: &Connection, id: &str) -> Result<Project> {
             }),
         })
     })?.collect::<rusqlite::Result<Vec<_>>>()?;
-    let tasks = db.prepare("SELECT id,kind,language,status,created_at,completed_at,lease_worker,lease_id,lease_expires_at,base_version_id,progress,error_message,attempt_count,cancel_requested_at,workflow_id,instruction_locale,(SELECT kind FROM task_events WHERE task_id=tasks.id ORDER BY id DESC LIMIT 1),(SELECT progress FROM task_events WHERE task_id=tasks.id ORDER BY id DESC LIMIT 1),(SELECT message FROM task_events WHERE task_id=tasks.id ORDER BY id DESC LIMIT 1),(SELECT created_at FROM task_events WHERE task_id=tasks.id ORDER BY id DESC LIMIT 1) FROM tasks WHERE project_id=?1 ORDER BY created_at")?.query_map([id],|row| { let worker:Option<String>=row.get(6)?; let status:String=row.get(3)?; let error_message:Option<String>=row.get(11)?; let activity_kind:Option<String>=row.get(16)?; Ok(Task{id:row.get(0)?,kind:row.get(1)?,language:row.get(2)?,error_code:crate::model::background_error_code(&status,error_message.as_deref()),status,created_at:row.get(4)?,completed_at:row.get(5)?,lease:worker.map(|worker| Lease { worker, id:row.get(7).unwrap_or_default(), expires_at:row.get(8).unwrap_or_default()}),last_activity:activity_kind.map(|kind| TaskActivity { kind, progress:row.get(17).unwrap_or(None), message:row.get(18).unwrap_or_default(), created_at:row.get(19).unwrap_or_default() }),base_version_id:row.get(9)?,progress:row.get(10)?,error_message,attempt_count:row.get(12)?,cancel_requested_at:row.get(13)?,workflow_id:row.get(14)?,instruction_locale:row.get(15)?})})?.collect::<rusqlite::Result<Vec<_>>>()?;
-    let versions = db
+    let tasks = select_tasks(db, id)?;
+    let versions = if include_history {
+        db
         .prepare(
             "SELECT id,reason,created_at FROM versions WHERE project_id=?1 AND active_history=1 ORDER BY history_index",
         )?
@@ -165,7 +178,10 @@ pub fn load(db: &Connection, id: &str) -> Result<Project> {
                 created_at: row.get(2)?,
             })
         })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+        .collect::<rusqlite::Result<Vec<_>>>()?
+    } else {
+        Vec::new()
+    };
     let mut project = Project {
         id: base.0,
         title: base.1,
@@ -1175,6 +1191,11 @@ fn apply_snapshot_in_transaction(
 ) -> Result<()> {
     let snapshot: Value = serde_json::from_str(snapshot_json)?;
     let project: Project = serde_json::from_value(snapshot.clone())?;
+    let restored_glossary_version = if snapshot.get("glossary").is_some() {
+        translation::restore_snapshot(tx, project_id, &project.glossary)?
+    } else {
+        translation::load_glossary(tx, project_id)?.version
+    };
     let speaker_track = snapshot
         .get("speakerTrack")
         .map(|value| serde_json::from_value::<speaker::SpeakerTrack>(value.clone()))
@@ -1350,7 +1371,11 @@ fn apply_snapshot_in_transaction(
                 language,
                 &translation.status,
                 &translation.updated_at,
-                i64::from(translation.glossary_version)
+                i64::from(if translation.glossary_version == project.glossary.version {
+                    restored_glossary_version
+                } else {
+                    translation.glossary_version
+                })
             ],
         )?;
         for segment in &translation.segments {
@@ -1460,6 +1485,10 @@ pub fn undo(db: &mut Connection, project_id: &str) -> Result<Project> {
 
 pub fn redo(db: &mut Connection, project_id: &str) -> Result<Project> {
     move_history(db, project_id, false)
+}
+
+pub(crate) fn select_tasks(db: &Connection, id: &str) -> Result<Vec<Task>> {
+    Ok(db.prepare("SELECT id,kind,language,status,created_at,completed_at,lease_worker,lease_id,lease_expires_at,base_version_id,progress,error_message,attempt_count,cancel_requested_at,workflow_id,instruction_locale,(SELECT kind FROM task_events WHERE task_id=tasks.id ORDER BY id DESC LIMIT 1),(SELECT progress FROM task_events WHERE task_id=tasks.id ORDER BY id DESC LIMIT 1),(SELECT message FROM task_events WHERE task_id=tasks.id ORDER BY id DESC LIMIT 1),(SELECT created_at FROM task_events WHERE task_id=tasks.id ORDER BY id DESC LIMIT 1) FROM tasks WHERE project_id=?1 ORDER BY created_at")?.query_map([id],|row| { let worker:Option<String>=row.get(6)?; let status:String=row.get(3)?; let error_message:Option<String>=row.get(11)?; let activity_kind:Option<String>=row.get(16)?; Ok(Task{id:row.get(0)?,kind:row.get(1)?,language:row.get(2)?,error_code:crate::model::background_error_code(&status,error_message.as_deref()),status,created_at:row.get(4)?,completed_at:row.get(5)?,lease:worker.map(|worker| Lease { worker, id:row.get(7).unwrap_or_default(), expires_at:row.get(8).unwrap_or_default()}),last_activity:activity_kind.map(|kind| TaskActivity { kind, progress:row.get(17).unwrap_or(None), message:row.get(18).unwrap_or_default(), created_at:row.get(19).unwrap_or_default() }),base_version_id:row.get(9)?,progress:row.get(10)?,error_message,attempt_count:row.get(12)?,cancel_requested_at:row.get(13)?,workflow_id:row.get(14)?,instruction_locale:row.get(15)?})})?.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 #[cfg(test)]

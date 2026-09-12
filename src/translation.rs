@@ -41,6 +41,36 @@ pub fn load_glossary(db: &Connection, project_id: &str) -> Result<Glossary> {
     })
 }
 
+/// Restore content while keeping glossary revisions monotonic for stale-client detection.
+/// The caller owns the project snapshot transaction.
+pub(crate) fn restore_snapshot(
+    tx: &Connection,
+    project_id: &str,
+    glossary: &Glossary,
+) -> Result<u32> {
+    let current = load_glossary(tx, project_id)?;
+    if current.entries == glossary.entries {
+        return Ok(current.version);
+    }
+    let next = current
+        .version
+        .checked_add(1)
+        .ok_or_else(|| anyhow!("术语表版本超出范围"))?;
+    let timestamp = now();
+    tx.execute(
+        "INSERT INTO glossary_versions(project_id,version,created_at) VALUES(?1,?2,?3)",
+        params![project_id, next, timestamp],
+    )?;
+    for (ordinal, entry) in glossary.entries.iter().enumerate() {
+        tx.execute("INSERT INTO glossary_entries(project_id,version,language,source,target,ordinal) VALUES(?1,?2,?3,?4,?5,?6)",params![project_id,next,entry.language,entry.source,entry.target,ordinal as i64])?;
+    }
+    tx.execute(
+        "UPDATE project_glossaries SET current_version=?2,updated_at=?3 WHERE project_id=?1",
+        params![project_id, next, timestamp],
+    )?;
+    Ok(next)
+}
+
 pub fn replace_language(
     db: &mut Connection,
     project_id: &str,

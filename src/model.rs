@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, ts_rs::TS)]
+#[ts(rename = "CoreCanvasAspectRatio")]
 pub enum CanvasAspectRatio {
     #[default]
     #[serde(rename = "source")]
@@ -27,8 +28,9 @@ impl CanvasAspectRatio {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, ts_rs::TS)]
 #[serde(rename_all = "kebab-case")]
+#[ts(rename = "CoreCanvasFraming")]
 pub enum CanvasFraming {
     #[default]
     ContainBlur,
@@ -52,15 +54,17 @@ impl CanvasFraming {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreCanvasSettings")]
 pub struct CanvasSettings {
     pub aspect_ratio: CanvasAspectRatio,
     pub framing: CanvasFraming,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, ts_rs::TS)]
 #[serde(rename_all = "lowercase")]
+#[ts(rename = "CoreSubtitleMode")]
 pub enum SubtitleMode {
     #[default]
     Source,
@@ -87,8 +91,9 @@ impl SubtitleMode {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, ts_rs::TS)]
 #[serde(rename_all = "kebab-case")]
+#[ts(rename = "CoreSubtitleDelivery")]
 pub enum SubtitleDelivery {
     #[default]
     None,
@@ -132,8 +137,9 @@ impl SubtitleDelivery {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, ts_rs::TS)]
 #[serde(rename_all = "lowercase")]
+#[ts(rename = "CoreWorkflowProfile")]
 pub enum WorkflowProfile {
     Draft,
     #[default]
@@ -160,8 +166,9 @@ impl WorkflowProfile {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, ts_rs::TS)]
 #[serde(rename_all = "kebab-case")]
+#[ts(rename = "CoreSubtitleStylePreset")]
 pub enum SubtitleStylePreset {
     Compact,
     #[default]
@@ -180,8 +187,9 @@ impl SubtitleStylePreset {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, ts_rs::TS)]
 #[serde(rename_all = "kebab-case")]
+#[ts(rename = "CoreSubtitlePosition")]
 pub enum SubtitlePosition {
     #[default]
     Bottom,
@@ -198,8 +206,9 @@ impl SubtitlePosition {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreSubtitleStyle")]
 pub struct SubtitleStyle {
     pub preset: SubtitleStylePreset,
     pub position: SubtitlePosition,
@@ -238,8 +247,9 @@ impl Default for SubtitleStyle {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreSegment")]
 pub struct Segment {
     pub id: String,
     pub start: f64,
@@ -280,8 +290,9 @@ pub fn reconcile_source_language<'a>(
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreWord")]
 pub struct Word {
     pub id: String,
     pub segment_id: String,
@@ -291,8 +302,9 @@ pub struct Word {
     pub confidence: Option<f64>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(rename = "CoreSubtitleQualityStatus")]
 pub enum SubtitleQualityStatus {
     #[default]
     Good,
@@ -300,15 +312,17 @@ pub enum SubtitleQualityStatus {
     Error,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(rename = "CoreSubtitleIssueSeverity")]
 pub enum SubtitleIssueSeverity {
     Warning,
     Error,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(rename = "CoreSubtitleIssueKind")]
 pub enum SubtitleIssueKind {
     EmptyText,
     InvalidTiming,
@@ -337,8 +351,9 @@ impl SubtitleIssueKind {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, ts_rs::TS)]
 #[serde(default, rename_all = "camelCase")]
+#[ts(rename = "CoreSubtitleQualityThresholds")]
 pub struct SubtitleQualityThresholds {
     pub max_duration_seconds: f64,
     pub max_line_characters: usize,
@@ -359,8 +374,9 @@ impl Default for SubtitleQualityThresholds {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreSubtitleQualityIssue")]
 pub struct SubtitleQualityIssue {
     pub id: String,
     pub kind: SubtitleIssueKind,
@@ -374,8 +390,9 @@ pub struct SubtitleQualityIssue {
     pub threshold: Option<f64>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreSubtitleQualityReport")]
 pub struct SubtitleQualityReport {
     pub status: SubtitleQualityStatus,
     pub status_label: String,
@@ -400,38 +417,43 @@ impl Default for SubtitleQualityReport {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(rename = "CoreSpeechInsightStatus")]
 pub enum SpeechInsightStatus {
     #[default]
     InsufficientEvidence,
     Ready,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(rename = "CoreSpeechPauseSeverity")]
 pub enum SpeechPauseSeverity {
     Pause,
     LongPause,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(rename = "CoreSpeechEvidenceKind")]
 pub enum SpeechEvidenceKind {
     Filler,
     LowConfidence,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Default, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreSpeechInsightThresholds")]
 pub struct SpeechInsightThresholds {
     pub pause_seconds: f64,
     pub long_pause_seconds: f64,
     pub low_confidence: f64,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreSpeechPause")]
 pub struct SpeechPause {
     pub start: f64,
     pub end: f64,
@@ -441,8 +463,9 @@ pub struct SpeechPause {
     pub severity: SpeechPauseSeverity,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreSpeechEvidence")]
 pub struct SpeechEvidence {
     pub kind: SpeechEvidenceKind,
     pub word_id: String,
@@ -453,8 +476,9 @@ pub struct SpeechEvidence {
     pub confidence: Option<f64>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreSpeechInsights")]
 pub struct SpeechInsights {
     pub status: SpeechInsightStatus,
     pub analyzer_version: String,
@@ -472,8 +496,9 @@ pub struct SpeechInsights {
     pub evidence: Vec<SpeechEvidence>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreMedia")]
 pub struct Media {
     pub source_path: String,
     pub sha256: String,
@@ -481,8 +506,9 @@ pub struct Media {
     pub duration_seconds: Option<f64>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreMediaArtifacts")]
 pub struct MediaArtifacts {
     pub status: String,
     pub proxy_path: Option<String>,
@@ -493,8 +519,9 @@ pub struct MediaArtifacts {
     pub error_message: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreTimelineRange")]
 pub struct TimelineRange {
     pub source_start: f64,
     pub source_end: f64,
@@ -502,8 +529,9 @@ pub struct TimelineRange {
     pub output_end: f64,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreTimelineCut")]
 pub struct TimelineCut {
     pub edit_ids: Vec<String>,
     pub source_start: f64,
@@ -511,8 +539,9 @@ pub struct TimelineCut {
     pub output_at: f64,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreTimelineMap")]
 pub struct TimelineMap {
     pub source_duration: f64,
     pub output_duration: f64,
@@ -520,8 +549,9 @@ pub struct TimelineMap {
     pub cuts: Vec<TimelineCut>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreExportJob")]
 pub struct ExportJob {
     pub id: String,
     pub project_id: String,
@@ -549,8 +579,9 @@ pub struct ExportJob {
     pub worker_pid: Option<u32>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreTranslation")]
 pub struct Translation {
     pub status: String,
     pub updated_at: String,
@@ -559,8 +590,9 @@ pub struct Translation {
     pub segments: Vec<TranslationSegment>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreTranslationSegment")]
 pub struct TranslationSegment {
     pub segment_id: String,
     pub text: String,
@@ -576,24 +608,27 @@ fn default_stale_translation_status() -> String {
     "stale".to_owned()
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreGlossary")]
 pub struct Glossary {
     pub version: u32,
     pub updated_at: String,
     pub entries: Vec<GlossaryEntry>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreGlossaryEntry")]
 pub struct GlossaryEntry {
     pub language: String,
     pub source: String,
     pub target: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreEdit")]
 pub struct Edit {
     pub id: String,
     pub kind: String,
@@ -609,8 +644,9 @@ pub struct Edit {
     pub suggestion: Option<CutSuggestion>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreCutRange")]
 pub struct CutRange {
     pub from_word_id: String,
     pub to_word_id: String,
@@ -621,16 +657,18 @@ pub struct CutRange {
     pub stale: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreCutSuggestion")]
 pub struct CutSuggestion {
     pub suggestion_type: String,
     pub confidence: f64,
     pub detector_version: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreTask")]
 pub struct Task {
     pub id: String,
     pub kind: String,
@@ -646,6 +684,7 @@ pub struct Task {
     pub error_message: Option<String>,
     #[serde(default)]
     pub error_code: Option<String>,
+    #[ts(type = "number")]
     pub attempt_count: i64,
     pub cancel_requested_at: Option<String>,
     #[serde(default)]
@@ -654,8 +693,9 @@ pub struct Task {
     pub instruction_locale: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreAgentPatchItem")]
 pub struct AgentPatchItem {
     pub id: String,
     pub segment_id: Option<String>,
@@ -668,8 +708,9 @@ pub struct AgentPatchItem {
     pub status: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreAgentPatchSet")]
 pub struct AgentPatchSet {
     pub id: String,
     pub task_id: String,
@@ -681,8 +722,9 @@ pub struct AgentPatchSet {
     pub items: Vec<AgentPatchItem>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreAgentRunBatch")]
 pub struct AgentRunBatch {
     pub id: String,
     pub ordinal: u32,
@@ -690,6 +732,7 @@ pub struct AgentRunBatch {
     pub segment_ids: Vec<String>,
     pub codex_thread_id: Option<String>,
     pub provider_request_id: Option<String>,
+    #[ts(type = "unknown")]
     pub usage: Option<serde_json::Value>,
     pub retry_count: u32,
     pub error_code: Option<String>,
@@ -699,8 +742,9 @@ pub struct AgentRunBatch {
     pub attempt_count: u32,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreAgentRun")]
 pub struct AgentRun {
     pub id: String,
     pub task_id: String,
@@ -708,11 +752,14 @@ pub struct AgentRun {
     pub provider: String,
     pub execution_kind: String,
     pub service_config_id: Option<String>,
+    #[ts(type = "number | null")]
     pub service_revision: Option<u64>,
+    #[ts(type = "number | null")]
     pub network_revision: Option<u64>,
     pub provider_id: Option<String>,
     pub model_id: Option<String>,
     pub provider_request_id: Option<String>,
+    #[ts(type = "unknown")]
     pub usage: Option<serde_json::Value>,
     pub retry_count: u32,
     pub status: String,
@@ -720,6 +767,7 @@ pub struct AgentRun {
     pub progress: f64,
     pub current_batch: u32,
     pub batch_count: u32,
+    #[ts(type = "number")]
     pub timeout_seconds: u64,
     pub cli_version: Option<String>,
     pub auth_mode: Option<String>,
@@ -736,8 +784,9 @@ pub struct AgentRun {
     pub batches: Vec<AgentRunBatch>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreWorkflow")]
 pub struct Workflow {
     pub id: String,
     pub kind: String,
@@ -750,8 +799,9 @@ pub struct Workflow {
     pub instruction_locale: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreAutoWorkflow")]
 pub struct AutoWorkflow {
     pub id: String,
     pub input_kind: String,
@@ -775,11 +825,14 @@ pub struct AutoWorkflow {
     pub audio_analysis_job_id: Option<String>,
     pub ai_execution_kind: Option<String>,
     pub ai_service_config_id: Option<String>,
+    #[ts(type = "number | null")]
     pub ai_service_revision: Option<u64>,
+    #[ts(type = "number | null")]
     pub ai_network_revision: Option<u64>,
     pub ai_model_id: Option<String>,
     pub ai_authorized: bool,
     pub export_job_id: Option<String>,
+    #[ts(type = "unknown")]
     pub audit: Option<serde_json::Value>,
     pub cancel_requested_at: Option<String>,
     pub error_message: Option<String>,
@@ -812,9 +865,11 @@ fn default_instruction_locale() -> String {
     "zh-CN".to_owned()
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreAutoWorkflowEvent")]
 pub struct AutoWorkflowEvent {
+    #[ts(type = "number")]
     pub id: i64,
     pub workflow_id: String,
     pub stage: String,
@@ -824,9 +879,11 @@ pub struct AutoWorkflowEvent {
     pub created_at: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreTaskEvent")]
 pub struct TaskEvent {
+    #[ts(type = "number")]
     pub id: i64,
     pub task_id: String,
     pub project_id: String,
@@ -836,8 +893,9 @@ pub struct TaskEvent {
     pub created_at: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreTaskActivity")]
 pub struct TaskActivity {
     pub kind: String,
     pub progress: Option<f64>,
@@ -845,15 +903,16 @@ pub struct TaskActivity {
     pub created_at: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreLease")]
 pub struct Lease {
     pub worker: String,
     pub id: String,
     pub expires_at: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct Version {
     pub id: String,
@@ -861,7 +920,7 @@ pub struct Version {
     pub created_at: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryState {
     pub can_undo: bool,
@@ -869,8 +928,9 @@ pub struct HistoryState {
     pub current_version_id: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreProject")]
 pub struct Project {
     pub id: String,
     pub title: String,
@@ -904,8 +964,9 @@ pub struct Project {
     pub workflows: Vec<Workflow>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreTranscript")]
 pub struct Transcript {
     pub source_language: String,
     pub segments: Vec<Segment>,
