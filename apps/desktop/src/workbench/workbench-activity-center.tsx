@@ -26,7 +26,7 @@ function activityTitle(kind: WorkbenchActivityKind) {
 
 function statusLabel(activity: WorkbenchActivity) {
   if (activity.kind === "transcription")
-    return transcriptionStageLabel(activity.stage);
+    return transcriptionStageLabel(activity.stage, activity.providerId);
   if (activity.kind === "auto" && activity.stage) {
     return `${autoStatusLabel(activity.status)} · ${autoStageLabel(activity.stage)}`;
   }
@@ -42,6 +42,7 @@ function statusLabel(activity: WorkbenchActivity) {
 
 function ActivityIcon({ activity }: { activity: WorkbenchActivity }) {
   if (activity.state === "failed" || activity.state === "action_required") return <CircleAlert size={16}/>;
+  if (activity.state === "running") return <LoaderCircle className="spin" size={16}/>;
   if (activity.kind === "source") return <Link2 size={16}/>;
   if (activity.kind === "transcription") return <AudioWaveform size={16}/>;
   if (activity.kind === "agent") return <Bot size={16}/>;

@@ -26,8 +26,9 @@
 .creator-drawer { grid-area: context; min-width: 0; min-height: 0; height: auto; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--border-subtle); border-radius: var(--radius-panel); background: var(--bg-panel); }
 .workbench > .notice { flex: 0 0 auto; margin: 0; max-height: 70px; overflow: auto; }
 .workbench > .workbench-activity-center { flex: 0 0 auto; margin: 0; max-height: 96px; overflow-y: auto; }
-.workbench.preview-expanded .stage-grid { grid-template-areas: "preview preview" "preview preview"; }
-.workbench.preview-expanded .editor-grid, .workbench.preview-expanded .creator-drawer { visibility: hidden; pointer-events: none; }
+.workbench.preview-expanded .stage-grid { display: flex; }
+.workbench.preview-expanded .creator-player { flex: 1 1 auto; width: 100%; }
+.workbench.preview-expanded .editor-grid, .workbench.preview-expanded .creator-drawer { display: none; }
 .app-shell.focus-review { grid-template-columns: minmax(0, 1fr); }
 .focus-review .workbench { display: flex; gap: 10px; padding: 12px; }
 .focus-review .stage-grid { grid-template-columns: minmax(0, 1fr) minmax(300px, 34%); grid-template-rows: minmax(0, 1fr); grid-template-areas: "preview context"; }

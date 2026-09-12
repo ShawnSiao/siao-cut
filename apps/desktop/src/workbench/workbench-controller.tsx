@@ -1,3 +1,4 @@
+import { TranscriptionStatus } from "../features/background-tasks/TranscriptionStatus";
 import { Bot,Check,ChevronDown,ChevronRight,ChevronUp,CircleAlert,Clock3,Copy,Cpu,Download,FileText,FileVideo2,FolderOpen,FolderPlus,Headphones,History,Link2,ListChecks,LoaderCircle,MoreHorizontal,MoveHorizontal,Play,Redo2,RefreshCw,RotateCcw,Scissors,Search,Settings2,ShieldCheck,Sparkles,Trash2,Undo2,Users,X } from "lucide-react";
 import { lazy,Suspense,useCallback,useEffect,useMemo,useRef,useState,type CSSProperties,type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { agentTaskStatusLabel,audioRiskLabel,audioUnitLabel,autoStageLabel,autoStatusLabel,cutSuggestionLabel,editReasonLabel,formatTime,getProjectCapabilities,hasMeaningfulSubtitleText,parseTranscriptionLanguage,segmentCountLabel,structureEditLabel,subtitleCountLabel,subtitleIssueLabel,subtitleQualityStatusLabel,taskLabel,TRANSCRIPTION_LANGUAGE_STORAGE_KEY,versionReasonLabel,wordCountLabel,workflowProfileLabel,type SegmentSelectionMode } from "../app-view-model";
@@ -479,7 +480,8 @@ function WorkbenchController() {
         autoWorkflowErrors,
     };
     const recentAutoWorkflows = autoWorkflows.slice(0, 5);
-    const humanState = busy ? tr("app.s0001") : taskLabel(project);
+    const activeTranscription = transcriptionTasks.jobs.some((job) => job.projectId === project?.id && ["queued", "running", "finalizing"].includes(job.status));
+    const humanState = busy || activeTranscription ? tr("app.s0001") : taskLabel(project);
     const humanStateTone = humanState === tr("app.s0003") ? "warning" : humanState === tr("app.s0002") ? "agent" : humanState === tr("app.s0001") ? "info" : "success";
     const orderedPatchSets = project?.patchSets
         .map((set) => ({ ...set, items: set.items.filter((item) => ["pending", "conflict"].includes(item.status)).sort((left, right) => Number(right.status === "conflict") - Number(left.status === "conflict")) }))
@@ -997,6 +999,7 @@ function WorkbenchController() {
 	          </div>
 	        </header>
 
+        <TranscriptionStatus projectId={project?.id} tasks={transcriptionTasks} titles={workbenchActivityInputs.projectTitles} actionsFor={activityActionsFor}/>
         {(notice || error) && <div className={`notice ${error ? "error" : ""}`} role="status" aria-live="polite">{error && <CircleAlert size={15}/>}<span>{error ? tr("app.error.unknownSummary") : notice}</span>{error && <details><summary>{tr("app.error.technicalDetails")}</summary><code>{error}</code></details>}{error && <button className="notice-action" onClick={() => void initialize()}>{tr("app.s0262")}</button>}<button aria-label={tr("app.s0263")} title={tr("app.s0263")} onClick={() => { setNotice(null); setError(null); }}>×</button></div>}
 
         {!project ? (<section className="welcome-card">

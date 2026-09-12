@@ -1,4 +1,4 @@
-import { tr } from "../i18n";
+import { getUiLocale, tr } from "../i18n";
 import type { AgentRun, AudioAnalysisJob, AutoWorkflow, ExportJob, SourceImportJob, TranscriptionJob } from "../types";
 
 export type WorkbenchActivityKind = "local" | "source" | "transcription" | "agent" | "audio" | "export" | "auto";
@@ -15,6 +15,7 @@ export type WorkbenchActivity = {
   updatedAt: string;
   errorMessage: string | null;
   errorCode?: string | null;
+  providerId?: string;
 };
 
 export type WorkbenchActivityInputs = {
@@ -99,7 +100,9 @@ export function deriveWorkbenchActivities(inputs: WorkbenchActivityInputs): Work
   for (const job of inputs.transcriptionJobs ?? (inputs.transcriptionJob ? [inputs.transcriptionJob] : [])) {
     const candidate = job.candidate;
     const detail = `${inputs.projectTitles?.[job.projectId] ?? job.projectId} · ${candidate ? tr("app.moss.candidate.summary", { segments: candidate.segmentCount, speakers: candidate.speakerCount, warnings: candidate.warningCount }) : job.modelId.split(/[\\/]/).at(-1)}`;
-    activities.push(jobActivity("transcription", job, detail, ["awaiting_apply"], job.stage, ["completed"]));
+    const activity = jobActivity("transcription", job, detail, ["awaiting_apply"], job.cancelRequestedAt && ["queued", "running", "finalizing"].includes(job.status) ? "cancelling" : job.stage, ["completed"]);
+    if (activity) activity.providerId = job.providerId;
+    activities.push(activity);
   }
   if (inputs.agentRun && !childAgentTaskIds.has(inputs.agentRun.taskId))
     activities.push(jobActivity("agent", inputs.agentRun, inputs.agentRun.modelId ?? inputs.agentRun.provider, [], null));
@@ -128,7 +131,8 @@ export function deriveWorkbenchActivities(inputs: WorkbenchActivityInputs): Work
       || left.id.localeCompare(right.id));
 }
 
-export function transcriptionStageLabel(stage: string | null) {
+export function transcriptionStageLabel(stage: string | null, providerId?: string) {
+  if (stage === "requesting_model" && providerId === "whisper_local") return getUiLocale() === "zh-CN" ? "Whisper 正在转写" : "Whisper is transcribing";
   if (!stage)
     return tr("app.activity.stageUnknown");
   return ({

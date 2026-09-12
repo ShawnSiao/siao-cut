@@ -46,6 +46,10 @@ test("preserves the player across layouts and supports keyboard region navigatio
   const video = page.locator("video");
   await video.evaluate((node) => { node.dataset.identity = "persistent"; (node as HTMLVideoElement).currentTime = 14; });
   await page.getByRole("button", { name: "放大预览" }).click();
+  const area = await page.locator(".stage-grid").boundingBox();
+  const player = await page.locator(".creator-player").boundingBox();
+  expect(Math.abs(player!.width - area!.width)).toBeLessThan(2);
+  expect(Math.abs(player!.height - area!.height)).toBeLessThan(2);
   await expect(video).toHaveAttribute("data-identity", "persistent");
   await page.getByRole("button", { name: "还原布局" }).click();
   expect(await video.evaluate((node) => (node as HTMLVideoElement).currentTime)).toBe(14);

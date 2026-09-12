@@ -579,10 +579,28 @@ test("preflights and confirms original-timeline quick subtitle regeneration", as
   await expect(confirm).toBeDisabled();
   await dialog.getByRole("checkbox", { name: /确认启动后台转写/ }).check();
   await expect(confirm).toBeEnabled();
+  await page.evaluate(async () => {
+    const url = "/src/domains/background-task-client.ts";
+    const { backgroundTaskClient } = await import(url);
+    const get = backgroundTaskClient.getTranscriptionJob;
+    let cached: any;
+    backgroundTaskClient.getTranscriptionJob = async (id: string) => {
+      if ((window as any).failTaskQuery) throw new Error("query unavailable");
+      cached ??= await get(id);
+      return { ...cached, transcriptionJob: { ...cached.transcriptionJob, status: "running", stage: "requesting_model" } };
+    };
+  });
   await confirm.click();
 
   await expect(dialog).toBeHidden();
   await expect(page.getByText(/转写任务已登记/)).toBeVisible();
+  const status = page.getByRole("region", { name: "当前项目转写状态", exact: true });
+  await expect(status).toContainText("Whisper 正在转写");
+  await expect(status).toContainText("最近查询");
+  await expect(status).not.toContainText("MOSS");
+  await expect(status.locator("progress")).toHaveCount(0);
+  await page.evaluate(() => { (window as any).failTaskQuery = true; });
+  await expect(status.getByRole("alert")).toContainText("上次查询结果");
 });
 
 test("separates runtime status cards from the transcription model control", async ({ page }) => {

@@ -6,6 +6,7 @@ const active = (job: TranscriptionJob) => ["queued", "running", "finalizing"].in
 
 export function useTranscriptionTasks(onApplied: (job: TranscriptionJob) => Promise<void>) {
   const [jobs, setJobs] = useState<TranscriptionJob[]>([]);
+  const [lastCheckedAt, setLastCheckedAt] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const current = useRef(jobs), callback = useRef(onApplied);
   const wake = useRef(() => { });
@@ -38,7 +39,7 @@ export function useTranscriptionTasks(onApplied: (job: TranscriptionJob) => Prom
             if (result.transcriptionJob.status === "completed") await callback.current(result.transcriptionJob);
           }
         }
-        if (!disposed) setError(null);
+        if (!disposed) { setError(null); setLastCheckedAt(Date.now()); }
       } catch (cause) { if (!disposed) setError(String(cause)); }
       finally { running = false; schedule(); }
     };
@@ -47,12 +48,12 @@ export function useTranscriptionTasks(onApplied: (job: TranscriptionJob) => Prom
       if (running || disposed) return;
       clearTimeout(timer); timer = undefined; running = true;
       void backgroundTaskClient.listTranscriptions().then((result) => {
-        if (!disposed) { for (const job of result.transcriptionJobs ?? []) track(job); setError(null); }
+        if (!disposed) { for (const job of result.transcriptionJobs ?? []) track(job); setError(null); setLastCheckedAt(Date.now()); }
       }).catch((cause) => { if (!disposed) setError(String(cause)); }).finally(() => { running = false; schedule(); });
     };
     reload.current();
     schedule();
     return () => { disposed = true; clearTimeout(timer); wake.current = () => { }; reload.current = () => { }; };
   }, []);
-  return { jobs, track, error, refresh: () => reload.current() };
+  return { jobs, track, error, lastCheckedAt, refresh: () => reload.current() };
 }
