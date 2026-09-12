@@ -1,6 +1,6 @@
 import { useState, useSyncExternalStore } from "react";
 import { getUiLocale } from "../../i18n";
-import { Dialog } from "../../components/ui";
+import { CloseRecoveryDialog } from "./CloseRecoveryDialog";
 import type { EditingSession, SaveStatus } from "./editing-session";
 import { saveErrorMessage } from "./save-error-message";
 import "./editing.css";
@@ -26,7 +26,7 @@ export function EditingStatus({ session, projectId, closeError, onCancelClose, o
       <button onClick={() => action(session.discard(key))}>{zh ? "使用当前内容" : "Use current content"}</button>
     </details>)}
     </div>}
-    {closeError && <Dialog label={zh ? "关闭前保存失败" : "Unable to save before closing"} className="editing-close-error" onClose={onCancelClose}><p role="alert">{closeError}</p><button onClick={() => action(session.flush().then(onCloseWithDrafts))}>{zh ? "重试并退出" : "Retry and exit"}</button><button onClick={() => action(onCloseWithDrafts())}>{zh ? "保留草稿后退出" : "Keep drafts and exit"}</button><button data-dialog-initial-focus onClick={onCancelClose}>{zh ? "继续编辑" : "Keep editing"}</button></Dialog>}
+    {closeError && <CloseRecoveryDialog session={session} error={closeError} onCancel={onCancelClose} onCloseWithDrafts={onCloseWithDrafts}/>}
   </section>;
 }
 

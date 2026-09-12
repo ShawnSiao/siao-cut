@@ -3,5 +3,5 @@
   "identifier": "main-capability",
   "description": "SiaoCut main window local capabilities",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:default"]
+  "permissions": ["core:default", "core:window:allow-destroy", "dialog:default"]
 }

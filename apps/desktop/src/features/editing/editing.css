@@ -7,7 +7,6 @@
 .editing-conflict button { margin: 8px 8px 0 0; }
 .field-save-status { display: block; font-size: 12px; line-height: 1.6; color: #bfcbd4; }
 .field-save-status.conflict, .field-save-status.failed { color: #f7ba89; }
-.editing-close-error { position: fixed; z-index: 1000; inset: 25% 20% auto; padding: 24px; background: #1b2228; border: 1px solid #af8850; box-shadow: 0 8px 60px #0009; }
 
 .editing-status { position: relative; }
 .editing-problems { position: absolute; z-index: 60; top: 100%; left: 0; width: min(520px, 75vw); max-height: 55vh; overflow-y: auto; padding: 12px; border: 1px solid var(--warning); border-radius: var(--radius-panel); background: var(--bg-panel); box-shadow: 0 8px 24px #0006; }
