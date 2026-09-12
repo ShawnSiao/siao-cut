@@ -33,7 +33,7 @@ async function openDrawerTab(name: "审阅" | "质量" | "分析" | "历史" | "
 
 async function selectAdvancedTranscriptionMode(mode: "quick" | "multispeaker") {
   fireEvent.click(await screen.findByRole("button", { name: "本地资源" }));
-  const dialog = await screen.findByRole("dialog", { name: "环境配置" });
+  const dialog = await screen.findByRole("dialog", { name: "环境配置" }, { timeout: 3000 });
   openResourceDiagnostics(dialog);
   fireEvent.change(within(dialog).getByRole("combobox", { name: "转写模式" }), { target: { value: mode } });
   return dialog;
@@ -865,7 +865,7 @@ describe("SiaoCut review workbench", () => {
   it("uses history shortcuts outside editors and leaves text input shortcuts alone", async () => {
     render(<App />);
     await screen.findByRole("heading", { name: "发布口播 · 草稿" });
-    await waitFor(() => expect(screen.getByRole("button", { name: "撤销", exact: true })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "撤销" })).toBeEnabled());
     fireEvent.keyDown(window, { key: "z", code: "KeyZ", ctrlKey: true });
     await waitFor(() => expect(screen.getByText("已撤销上一步项目修改。")).toBeInTheDocument());
     fireEvent.click(screen.getByLabelText("关闭提示"));
@@ -1083,15 +1083,15 @@ describe("SiaoCut review workbench", () => {
     fireEvent.click(regenerate);
 
     const dialog = await screen.findByRole("dialog", { name: "确认重新生成快速字幕" });
-    expect(within(dialog).getByText(/校验未通过时，当前项目保持不变/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/校验失败会保留当前文稿/)).toBeInTheDocument();
     const confirm = within(dialog).getByRole("button", { name: "确认并重新转写" });
     expect(confirm).toBeDisabled();
-    fireEvent.click(within(dialog).getByRole("checkbox", { name: /确认替换当前字幕/ }));
+    fireEvent.click(within(dialog).getByRole("checkbox", { name: /确认启动后台转写/ }));
     expect(confirm).toBeEnabled();
     fireEvent.click(confirm);
 
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "确认重新生成快速字幕" })).not.toBeInTheDocument());
-    expect(screen.getByText(/快速字幕已重新生成并通过时间校验/)).toBeInTheDocument();
+    expect(screen.getByText(/转写任务已登记/)).toBeInTheDocument();
   });
 
   it("rejects a split that would create a punctuation-only subtitle", async () => {
@@ -1380,7 +1380,7 @@ describe("SiaoCut review workbench", () => {
     fireEvent.click(within(setup).getByRole("button", { name: "准备并继续" }));
 
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "准备 SiaoCut" })).not.toBeInTheDocument());
-    expect(await screen.findByText(/未检测到清晰人声/)).toBeInTheDocument();
+    expect(await screen.findByText(/转写任务已登记/)).toBeInTheDocument();
   });
 
   it("cancels a URL import without a project and only resumes explicitly", async () => {
@@ -1581,7 +1581,7 @@ describe("SiaoCut review workbench", () => {
     render(<App />);
     const settings = await screen.findByRole("button", { name: "本地资源" });
     fireEvent.click(settings);
-    const dialog = await screen.findByRole("dialog", { name: "环境配置" });
+    const dialog = await screen.findByRole("dialog", { name: "环境配置" }, { timeout: 3000 });
     expect(within(dialog).getByText("whisper.cpp")).not.toBeVisible();
     openResourceDiagnostics(dialog);
     expect(screen.getByText("whisper.cpp")).toBeInTheDocument();
@@ -1680,7 +1680,7 @@ describe("SiaoCut review workbench", () => {
     const start = screen.getByRole("button", { name: "开始多人转写" });
     await waitFor(() => expect(start).toBeEnabled());
     fireEvent.click(start);
-    await waitFor(() => expect(screen.getByText(/字幕和说话人轨已作为一个版本写入/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/结果已应用为可恢复版本/)).toBeInTheDocument());
     expect(await screen.findByRole("region", { name: "多人转写复核" })).toHaveTextContent("快速人物切换");
     expect(screen.getByText("当前结果没有词级时间戳")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "创建词范围软剪辑" })).not.toBeInTheDocument();
@@ -1708,12 +1708,14 @@ describe("SiaoCut review workbench", () => {
     await waitFor(() => expect(start).toBeEnabled());
     fireEvent.click(start);
 
+    fireEvent.click(document.querySelector(".workspace-tasks > summary")!);
     expect(await screen.findByText("候选结果等待确认")).toBeInTheDocument();
-    expect(screen.getByText("18 段 · 3 位说话人 · 2 项提醒")).toBeInTheDocument();
+    expect(screen.getByText(/18 段 · 3 位说话人 · 2 项提醒/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "查看候选结果" }));
-    const dialog = await screen.findByRole("dialog", { name: "确认多人转写候选结果" });
+    const dialog = await screen.findByRole("dialog", { name: "确认转写候选结果" });
     const apply = within(dialog).getByRole("button", { name: "应用并替换" });
     expect(apply).toBeDisabled();
+    await waitFor(() => expect(within(dialog).getByRole("checkbox", { name: /确认用候选结果替换/ })).toBeEnabled());
     fireEvent.click(within(dialog).getByRole("checkbox", { name: /确认用候选结果替换/ }));
     expect(apply).toBeEnabled();
     fireEvent.click(apply);

@@ -130,6 +130,10 @@ enum DesktopRequest {
     AiApproval {
         request: ai_approval::AiApprovalRequest,
     },
+    #[serde(rename = "transcription_job")]
+    TranscriptionJob {
+        request: transcription::desktop::TranscriptionCommand,
+    },
     #[serde(rename = "editing")]
     Editing { request: editing::EditingRequest },
     #[serde(rename = "transcript_offset")]
@@ -958,6 +962,9 @@ fn run_desktop_request(database: &mut rusqlite::Connection, input: &PathBuf) -> 
                 "message": "选中字幕与对应词级证据已批量偏移。"
             })))
         }
+        DesktopRequest::TranscriptionJob { request } => Ok(envelope(
+            transcription::desktop::execute(database, request)?,
+        )),
         DesktopRequest::TranscriptionStart {
             project_id,
             language,
@@ -2644,7 +2651,14 @@ async fn main() {
             std::process::exit(2)
         };
         let start_delay_ms = arguments.get(2).and_then(|value| value.parse().ok());
-        if let Err(error) = transcription::run_worker(job_id, start_delay_ms) {
+        if let Err(error) = transcription::run_worker(
+            job_id,
+            start_delay_ms,
+            arguments
+                .get(3)
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(1),
+        ) {
             eprintln!("SiaoCut transcription worker: {error}");
             std::process::exit(1)
         }

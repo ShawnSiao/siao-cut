@@ -859,6 +859,7 @@ export type CoreEnvelope = {
   providerHealth?: TranscriptionProviderHealth;
   transcriptionJob?: TranscriptionJob | null;
   transcriptionJobs?: TranscriptionJob[];
+  candidatePreview?: { jobId: string; versionId: string; overwrittenSegments: number; total: number; offset: number; segments: { start: number; end: number; text: string }[] };
   deletionPreflight?: ProjectDeletionPreflight;
   reviewItem?: TranscriptionReviewItem;
   reviewItems?: TranscriptionReviewItem[];

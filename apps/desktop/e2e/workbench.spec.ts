@@ -281,7 +281,7 @@ test("runs all text assistance workflows through a default API when Codex is una
   await runtime.getByRole("combobox", { name: "转写模式" }).selectOption("multispeaker");
   await runtime.getByRole("button", { name: "关闭环境配置" }).click();
   await page.getByRole("button", { name: "开始多人转写" }).click();
-  await expect(page.getByText(/字幕和说话人轨已作为一个版本写入/)).toBeVisible();
+  await expect(page.getByText(/结果已应用为可恢复版本/)).toBeVisible();
   await configureMockApiService(page);
 
   const editor = page.getByLabel("00:13 字幕文本");
@@ -570,16 +570,16 @@ test("preflights and confirms original-timeline quick subtitle regeneration", as
   await page.getByRole("button", { name: "更多命令" }).click();
   await page.getByRole("menuitem", { name: "重新生成快速字幕" }).click();
   const dialog = page.getByRole("dialog", { name: "确认重新生成快速字幕" });
-  await expect(dialog.getByText(/只有通过原始媒体时间轴验收/)).toBeVisible();
-  await expect(dialog.getByText(/原片、既有导出文件和历史版本不会修改/)).toBeVisible();
+  await expect(dialog.getByText(/后台转写采用无 VAD/)).toBeVisible();
+  await expect(dialog.getByText(/完成后检查实际文本/)).toBeVisible();
   const confirm = dialog.getByRole("button", { name: "确认并重新转写" });
   await expect(confirm).toBeDisabled();
-  await dialog.getByRole("checkbox", { name: /确认替换当前字幕/ }).check();
+  await dialog.getByRole("checkbox", { name: /确认启动后台转写/ }).check();
   await expect(confirm).toBeEnabled();
   await confirm.click();
 
   await expect(dialog).toBeHidden();
-  await expect(page.getByText(/快速字幕已重新生成并通过时间校验/)).toBeVisible();
+  await expect(page.getByText(/转写任务已登记/)).toBeVisible();
 });
 
 test("separates runtime status cards from the transcription model control", async ({ page }) => {
@@ -894,7 +894,7 @@ test("uses MOSS as an explicit multispeaker mode with loopback settings and revi
   const start = page.getByRole("button", { name: "开始多人转写" });
   await expect(start).toBeEnabled();
   await start.click();
-  await expect(page.getByText(/字幕和说话人轨已作为一个版本写入/)).toBeVisible();
+  await expect(page.getByText(/结果已应用为可恢复版本/)).toBeVisible();
   const review = page.getByRole("region", { name: "多人转写复核" });
   await expect(review.getByText("快速人物切换")).toBeVisible();
   await expect(page.getByText("当前结果没有词级时间戳")).toBeVisible();
@@ -938,7 +938,7 @@ test("keeps a conflicting MOSS candidate isolated until explicit replacement", a
 
   await page.locator(".workspace-tasks > summary").click();
   await expect(page.getByText("候选结果等待确认")).toBeVisible();
-  await expect(page.getByText("18 段 · 3 位说话人 · 2 项提醒")).toBeVisible();
+  await expect(page.getByText(/18 段 · 3 位说话人 · 2 项提醒/)).toBeVisible();
   await page.getByRole("button", { name: "删除项目 发布口播 · 草稿" }).click();
   const deleteDialog = page.getByRole("dialog", { name: "删除项目" });
   await expect(deleteDialog.getByText("仍有多人转写候选结果等待应用或丢弃。")).toBeVisible();
@@ -947,7 +947,7 @@ test("keeps a conflicting MOSS candidate isolated until explicit replacement", a
 
   await page.locator(".workspace-tasks > summary").click();
   await page.getByRole("button", { name: "查看候选结果" }).click();
-  const candidate = page.getByRole("dialog", { name: "确认多人转写候选结果" });
+  const candidate = page.getByRole("dialog", { name: "确认转写候选结果" });
   const apply = candidate.getByRole("button", { name: "应用并替换" });
   await expect(apply).toBeDisabled();
   await candidate.getByRole("checkbox", { name: /确认用候选结果替换/ }).check();

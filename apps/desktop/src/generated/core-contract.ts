@@ -217,10 +217,14 @@ export const coreErrorCodes = [
   "transcription_timing_invalid",
   "transcription_import_failed",
   "transcription_cancelled",
+  "transcription_attempt_superseded",
+  "transcription_model_missing",
+  "transcription_model_failed",
   "transcription_interrupted",
   "transcription_active_job_exists",
   "transcription_job_state_invalid",
   "transcription_project_changed",
+  "transcription_review_required",
   "transcription_source_changed",
   "transcription_result_not_ready",
   "transcription_apply_confirmation_required",
@@ -426,4 +430,6 @@ export type AiSendPreview = { approvalId: string, payloadHash: string, spec: AiS
  */
 payloadJson: string, };
 export type AiApprovalRequest = { "action": "preview", spec: AiSendSpec, } | { "action": "execute", approvalId: string, };
+export type TranscriptionCommand = { "action": "start", mutationId: string, projectId: string, expectedVersionId: string, modelPath: string, language: string, } | { "action": "list", projectId: string | null, } | { "action": "get", jobId: string, } | { "action": "preview", jobId: string, offset: number, } | { "action": "cancel", jobId: string, } | { "action": "retry", mutationId: string, jobId: string, } | { "action": "apply", mutationId: string, jobId: string, expectedVersionId: string, } | { "action": "discard", mutationId: string, jobId: string, };
+export type JobSummary = { jobId: string, projectId: string, kind: string, status: string, stage: string, progress: number | null, attempt: number, result: string | null, errorCode: string | null, error: string | null, availableActions: Array<string>, };
 export type CoreErrorCode = KnownCoreErrorCode | (string & {});

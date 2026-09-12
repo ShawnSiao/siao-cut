@@ -1,0 +1,2 @@
+.candidate-text-page { max-height: 220px; overflow: auto; padding: 8px; border: 1px solid var(--border-subtle); font-size: 13px; }
+.candidate-text-page time { color: var(--text-muted); font-variant-numeric: tabular-nums; }

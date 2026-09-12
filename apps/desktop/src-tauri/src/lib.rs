@@ -382,6 +382,8 @@ fn validate_core_args(args: &[String]) -> Result<(), String> {
 enum StructuredCoreRequest {
     #[serde(rename = "ai_approval")]
     AiApproval { request: Value },
+    #[serde(rename = "transcription_job")]
+    TranscriptionJob { request: Value },
     #[serde(rename = "editing")]
     Editing { request: Value },
     #[serde(rename = "transcript_offset")]
@@ -418,7 +420,7 @@ fn validate_structured_core_request(payload: &str) -> Result<(), String> {
     let request: StructuredCoreRequest = serde_json::from_str(payload)
         .map_err(|error| format!("structured_core_payload_invalid: {error}"))?;
     match request {
-        StructuredCoreRequest::Editing { request } | StructuredCoreRequest::AiApproval { request } => {
+        StructuredCoreRequest::Editing { request } | StructuredCoreRequest::AiApproval { request } | StructuredCoreRequest::TranscriptionJob { request } => {
             if !request.is_object() {
                 return Err(
                     "structured_core_request_invalid: editing request must be an object".into(),

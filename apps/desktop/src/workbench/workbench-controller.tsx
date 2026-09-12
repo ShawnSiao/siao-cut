@@ -1,3 +1,5 @@
+import { useTranscriptionTasks } from "./use-transcription-tasks";
+import { useTranscriptionCommands } from "./use-transcription-commands";
 import { cycleWorkbenchFocus, useTranscriptNavigation } from "./use-transcript-navigation";
 import { aiApprovalClient } from "../domains/ai-approval-client";
 import { useEditingSession } from "../features/editing/use-editing-session";
@@ -236,7 +238,15 @@ function WorkbenchController() {
     const [transcriptionMode, setTranscriptionMode] = useState<"quick" | "multispeaker">(() => localStorage.getItem("siaocut.transcriptionMode") === "multispeaker" ? "multispeaker" : "quick");
     const [transcriptionConfig, setTranscriptionConfig] = useState<TranscriptionProviderConfig | null>(null);
     const [transcriptionHealth, setTranscriptionHealth] = useState<TranscriptionProviderHealth | null>(null);
-    const [transcriptionJob, setTranscriptionJob] = useState<TranscriptionJob | null>(null);
+    const [pendingCandidateJobId, setPendingCandidateJobId] = useState<string | null>(null);
+    const transcriptionCommands = useTranscriptionCommands();
+    const transcriptionTasks = useTranscriptionTasks(async (job) => {
+        if (activeProjectIdRef.current !== job.projectId) return;
+        await refreshProject(job.projectId, true);
+        if (activeProjectIdRef.current === job.projectId) setNotice(tr("app.moss.job.completed"));
+    });
+    const transcriptionJob = transcriptionTasks.jobs.filter((job) => job.projectId === project?.id).at(-1) ?? null;
+    const setTranscriptionJob = transcriptionTasks.track;
     const [showTranscriptionCandidate, setShowTranscriptionCandidate] = useState(false);
     const [transcriptionApplyConfirmed, setTranscriptionApplyConfirmed] = useState(false);
     const [transcriptionReviews, setTranscriptionReviews] = useState<TranscriptionReviewItem[]>([]);
@@ -814,26 +824,6 @@ function WorkbenchController() {
                     setNotice(tr("app.s0063"));
             }).catch((cause) => setError(cause instanceof Error ? cause.message : String(cause))),
         })),
-        transcriptionJob && ["queued", "running", "finalizing"].includes(transcriptionJob.status) ? {
-            key: `transcription:${transcriptionJob.id}`,
-            intervalMs: 1000,
-            poll: () => backgroundTaskClient.getTranscriptionJob(transcriptionJob.id).then(async (envelope) => {
-                setError(clearTransientCoreError);
-                if (!envelope.transcriptionJob)
-                    return;
-                const next = envelope.transcriptionJob;
-                if (activeProjectIdRef.current === next.projectId)
-                    setTranscriptionJob(next);
-                if (next.status === "completed") {
-                    await Promise.all([refreshProject(next.projectId, true), refreshSpeakerTrack(next.projectId), refreshTranscription(next.projectId)]);
-                    setNotice(tr("app.moss.job.completed"));
-                }
-                if (["failed", "interrupted"].includes(next.status))
-                    setError(next.errorMessage ?? tr("app.moss.job.failed"));
-                if (next.status === "cancelled")
-                    setNotice(tr("app.moss.job.cancelled"));
-            }).catch((cause) => setError(cause instanceof Error ? cause.message : String(cause))),
-        } : null,
         sourceJob && ["queued", "running", "finalizing"].includes(sourceJob.status) ? {
             key: `source:${sourceJob.id}`,
             intervalMs: 600,
@@ -1097,7 +1087,8 @@ function WorkbenchController() {
     const workbenchActivityInputs: WorkbenchActivityInputs = {
         busyMessage: busy,
         sourceJob,
-        transcriptionJob,
+        transcriptionJobs: transcriptionTasks.jobs,
+        projectTitles: Object.fromEntries(projects.map((item) => [item.id, item.title])),
         agentRun,
         audioAnalysisJob,
         exportJob: activeExport,
@@ -1179,6 +1170,13 @@ function WorkbenchController() {
         setShowTranscriptionCandidate(false);
         resetFocusReview();
     }, [project?.id, resetFocusReview]);
+    useEffect(() => {
+        if (pendingCandidateJobId && transcriptionJob?.id === pendingCandidateJobId && transcriptionJob.status === "awaiting_apply") {
+            setTranscriptionApplyConfirmed(false);
+            setShowTranscriptionCandidate(true);
+            setPendingCandidateJobId(null);
+        }
+    }, [project?.id, transcriptionJob?.id, transcriptionJob?.status, pendingCandidateJobId]);
     useEffect(() => {
         if (!showExportPanel)
             return;
@@ -1918,9 +1916,10 @@ function WorkbenchController() {
         const expectedVersionId = project.history.currentVersionId;
         if (!expectedVersionId)
             throw new Error(tr("app.quickRetranscribe.versionMissing"));
-        const result = await transcriptEditingClient.quickTranscribe(project.id, activeModelPath, transcriptionLanguage, expectedVersionId);
-        await refreshProject(project.id);
-        setNotice(Number(result.segments ?? 0) === 0 ? tr("app.s0124") : tr("app.s0125"));
+        await editing.session.flush(project.id);
+        const result = await transcriptionCommands.start(project.id, activeModelPath, transcriptionLanguage, expectedVersionId);
+        setTranscriptionJob(result.transcriptionJob ?? null);
+        setNotice(tr("app.transcription.backgroundStarted"));
     });
     useEffect(() => {
         if (!resumeLocalTranscription)
@@ -1975,23 +1974,13 @@ function WorkbenchController() {
                 setModelPathAvailable(false);
                 throw new Error(tr("app.s0123"));
             }
-            const result = await transcriptEditingClient.quickTranscribe(
-                project.id,
-                modelPath,
-                transcriptionLanguage,
-                quickRetranscriptionPreflight.currentVersionId,
-                true,
-            );
-            if (result.timingValidation?.status !== "verified"
-                || result.timingValidation.timeDomain !== "original_media"
-                || result.timingValidation.vadUsed) {
-                throw new Error(tr("app.quickRetranscribe.validationMissing"));
-            }
-            await refreshProject(project.id);
+            await editing.session.flush(project.id);
+            const result = await transcriptionCommands.start(project.id, modelPath, transcriptionLanguage, quickRetranscriptionPreflight.currentVersionId);
+            setTranscriptionJob(result.transcriptionJob ?? null);
             setShowQuickRetranscription(false);
             setQuickRetranscriptionPreflight(null);
             setQuickRetranscriptionConfirmed(false);
-            setNotice(tr("app.quickRetranscribe.completed", { count: result.timingValidation.segmentCount }));
+            setNotice(tr("app.transcription.backgroundStarted"));
         }
         catch (cause) {
             setQuickRetranscriptionError(cause instanceof Error ? cause.message : String(cause));
@@ -2019,13 +2008,14 @@ function WorkbenchController() {
         setTranscriptionJob(envelope.transcriptionJob ?? null);
     });
     const resumeTranscription = () => transcriptionJob && withBusy(tr("app.moss.job.resuming"), async () => {
-        const envelope = await backgroundTaskClient.resumeTranscription(transcriptionJob.id);
+        const envelope = await transcriptionCommands.retry(transcriptionJob.id, transcriptionJob.attemptCount);
         if (!envelope.transcriptionJob)
             throw new Error(tr("app.moss.job.missing"));
         setTranscriptionJob(envelope.transcriptionJob);
     });
-    const applyTranscriptionCandidate = () => transcriptionJob?.candidate && project && withBusy(tr("app.moss.candidate.applying"), async () => {
-        const envelope = await backgroundTaskClient.applyTranscription(transcriptionJob.id, transcriptionJob.candidate!.currentVersionId ?? "");
+    const applyTranscriptionCandidate = (versionId: string) => transcriptionJob?.candidate && project && withBusy(tr("app.moss.candidate.applying"), async () => {
+        await editing.session.flush(project.id);
+        const envelope = await transcriptionCommands.apply(transcriptionJob.id, versionId);
         if (!envelope.transcriptionJob)
             throw new Error(tr("app.moss.job.missing"));
         setShowTranscriptionCandidate(false);
@@ -2034,7 +2024,7 @@ function WorkbenchController() {
         setNotice(tr("app.moss.candidate.applied"));
     });
     const discardTranscriptionCandidate = () => transcriptionJob && withBusy(tr("app.moss.candidate.discarding"), async () => {
-        const envelope = await backgroundTaskClient.discardTranscription(transcriptionJob.id);
+        const envelope = await transcriptionCommands.discard(transcriptionJob.id);
         if (!envelope.transcriptionJob)
             throw new Error(tr("app.moss.job.missing"));
         setTranscriptionJob(envelope.transcriptionJob);
@@ -2915,14 +2905,32 @@ function WorkbenchController() {
             return actions;
         }
         if (activity.kind === "transcription") {
-            if (activity.status === "awaiting_apply")
-                return [
-                    { id: "inspect", label: tr("app.activity.inspect"), primary: true, disabled: Boolean(busy), onClick: () => { setTranscriptionApplyConfirmed(false); setShowTranscriptionCandidate(true); } },
-                    { id: "discard", label: tr("app.activity.discard"), disabled: Boolean(busy), onClick: () => void discardTranscriptionCandidate() },
-                ];
-            if (["queued", "running"].includes(activity.status))
-                return [{ id: "cancel", label: tr("app.activity.cancel"), disabled: Boolean(busy), onClick: () => void cancelTranscription() }];
-            return [{ id: "resume", label: tr("app.activity.resume"), primary: true, disabled: Boolean(busy), onClick: () => void resumeTranscription() }];
+            const job = transcriptionTasks.jobs.find((item) => `transcription:${item.id}` === activity.id);
+            if (!job) return [];
+            const run = async (action: "review" | "cancel" | "retry" | "discard" | "open") => {
+                try {
+                    if (action === "review" || action === "open") {
+                        await editing.session.flush(project?.id);
+                        if (activeProjectIdRef.current === job.projectId) await refreshProject(job.projectId);
+                        else await activateProject(job.projectId);
+                        if (activeProjectIdRef.current !== job.projectId) return;
+                        if (action === "review") setPendingCandidateJobId(job.id);
+                        return;
+                    }
+                    const result = action === "cancel" ? await backgroundTaskClient.cancelTranscription(job.id)
+                        : action === "retry" ? await transcriptionCommands.retry(job.id, job.attemptCount)
+                        : await transcriptionCommands.discard(job.id);
+                    setTranscriptionJob(result.transcriptionJob ?? null);
+                } catch (cause) { setError(String(cause)); }
+            };
+            if (job.stage === "cancelling") return [];
+            if (job.status === "awaiting_apply") return [
+                { id: "inspect", label: tr("app.activity.inspect"), primary: true, onClick: () => void run("review") },
+                { id: "discard", label: tr("app.activity.discard"), onClick: () => void run("discard") },
+            ];
+            if (["queued", "running", "finalizing"].includes(job.status)) return [{ id: "cancel", label: tr("app.activity.cancel"), onClick: () => void run("cancel") }];
+            if (job.status === "completed") return [{ id: "open", label: tr("app.activity.open"), onClick: () => void run("open") }];
+            return [{ id: "retry", label: tr("app.activity.resume"), onClick: () => void run("retry") }];
         }
         if (activity.kind === "agent") {
             if (["queued", "running", "submitting"].includes(activity.status))
@@ -3123,7 +3131,7 @@ function WorkbenchController() {
         <header className="topbar">
           <div className="topbar-heading"><p className="eyebrow">{tr("app.s0247")}</p><h1 title={project?.title}>{project?.title ?? tr("app.s0248")}</h1><EditingStatus session={editing.session} projectId={project?.id} closeError={editing.closeError} onCancelClose={editing.clearCloseError} onCloseWithDrafts={editing.closeWithDrafts}/></div>
 	          <div className="command-bar creator-command-bar" aria-label={tr("app.s0249")}>
-	            <StatusBadge tone={humanStateTone}>{humanState}</StatusBadge><Suspense fallback={null}><WorkbenchTaskMenu inputs={workbenchActivityInputs} actionsFor={activityActionsFor}/></Suspense>
+	            <StatusBadge tone={humanStateTone}>{humanState}</StatusBadge><Suspense fallback={null}><WorkbenchTaskMenu error={transcriptionTasks.error} onRefresh={transcriptionTasks.refresh} inputs={workbenchActivityInputs} actionsFor={activityActionsFor}/></Suspense>
 	            <div className="command-history" aria-label={tr("app.s0250")}>
 	              <IconButton label={tr("app.s0251")} shortcut="Ctrl+Z" disabled={!project?.history.canUndo || Boolean(busy)} onClick={() => navigateHistory("undo")}><Undo2 size={15}/></IconButton>
 	              <IconButton label={tr("app.s0252")} shortcut="Ctrl+Shift+Z" disabled={!project?.history.canRedo || Boolean(busy)} onClick={() => navigateHistory("redo")}><Redo2 size={15}/></IconButton>

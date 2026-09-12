@@ -23,9 +23,9 @@ describe("QuickRetranscriptionDialog", () => {
       />,
     );
 
-    expect(screen.getByText(/只有通过原始媒体时间轴验收/)).toBeInTheDocument();
+    expect(screen.getByText(/后台转写采用无 VAD/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "确认并重新转写" })).toBeDisabled();
-    fireEvent.click(screen.getByRole("checkbox", { name: /确认替换当前字幕/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /确认启动后台转写/ }));
     expect(onConfirmedChange).toHaveBeenCalledWith(true);
   });
 
@@ -45,7 +45,7 @@ describe("QuickRetranscriptionDialog", () => {
     );
 
     expect(screen.getByRole("alert")).toHaveTextContent("任务基线 3 项");
-    expect(screen.getByRole("checkbox", { name: /确认替换当前字幕/ })).toBeDisabled();
+    expect(screen.getByRole("checkbox", { name: /确认启动后台转写/ })).toBeDisabled();
     expect(screen.getByRole("button", { name: "确认并重新转写" })).toBeDisabled();
   });
 });

@@ -203,10 +203,14 @@ pub const CORE_ERROR_CODES: &[&str] = &[
     "transcription_timing_invalid",
     "transcription_import_failed",
     "transcription_cancelled",
+    "transcription_attempt_superseded",
+    "transcription_model_missing",
+    "transcription_model_failed",
     "transcription_interrupted",
     "transcription_active_job_exists",
     "transcription_job_state_invalid",
     "transcription_project_changed",
+    "transcription_review_required",
     "transcription_source_changed",
     "transcription_result_not_ready",
     "transcription_apply_confirmation_required",
@@ -397,8 +401,8 @@ pub fn contract() -> Value {
     use ts_rs::TS;
     let config = ts_rs::Config::default();
     json!({
-        "typeDeclarations": [crate::editing::Draft::decl(&config), crate::editing::SaveEdit::decl(&config), crate::editing::EditReceipt::decl(&config), crate::editing::ProjectOperation::decl(&config), crate::editing::ProjectMutation::decl(&config), crate::editing::EditingRequest::decl(&config), crate::agent::execution::ExecutionTarget::decl(&config), crate::ai_approval::AiSendSpec::decl(&config), crate::ai_approval::AiSendPreview::decl(&config), crate::ai_approval::AiApprovalRequest::decl(&config)],
-        "capabilities": ["editing-v1", "ai-approval-v1"],
+        "typeDeclarations": [crate::editing::Draft::decl(&config), crate::editing::SaveEdit::decl(&config), crate::editing::EditReceipt::decl(&config), crate::editing::ProjectOperation::decl(&config), crate::editing::ProjectMutation::decl(&config), crate::editing::EditingRequest::decl(&config), crate::agent::execution::ExecutionTarget::decl(&config), crate::ai_approval::AiSendSpec::decl(&config), crate::ai_approval::AiSendPreview::decl(&config), crate::ai_approval::AiApprovalRequest::decl(&config), crate::transcription::desktop::TranscriptionCommand::decl(&config), crate::transcription::desktop::JobSummary::decl(&config)],
+        "capabilities": ["editing-v1", "ai-approval-v1", "transcription-jobs-v1"],
         "statusSets": {
             "backgroundJob": BACKGROUND_JOB_STATUSES,
             "transcriptionJob": TRANSCRIPTION_JOB_STATUSES,

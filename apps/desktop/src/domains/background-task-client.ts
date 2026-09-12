@@ -87,10 +87,13 @@ export const backgroundTaskClient = {
   cancelSpeakerJob: (jobId: string) => runCore(["speaker", "cancel", jobId]),
   resumeSpeakerJob: (jobId: string) => runCore(["speaker", "resume", jobId]),
 
+  startWhisper: (projectId: string, modelPath: string, language: string, expectedVersionId: string, mutationId: string) => runCoreStructured({ kind: "transcription_job", request: { action: "start", projectId, modelPath, language, expectedVersionId, mutationId } }),
+  previewTranscription: (jobId: string, offset = 0) => runCoreStructured({ kind: "transcription_job", request: { action: "preview", jobId, offset } }),
+  listTranscriptions: () => runCoreStructured({ kind: "transcription_job", request: { action: "list", projectId: null } }),
   getTranscriptionHealth: () => runCore(["transcription", "health"]),
   latestTranscription: (projectId: string) => runCore(["transcription", "latest", projectId]),
   listTranscriptionReviews: (projectId: string) => runCore(["transcription", "review", projectId]),
-  getTranscriptionJob: (jobId: string) => runCore(["transcription", "status", jobId]),
+  getTranscriptionJob: (jobId: string) => runCoreStructured({ kind: "transcription_job", request: { action: "get", jobId } }),
   startTranscription: (options: StartTranscriptionOptions) => runCoreStructured({
     kind: "transcription_start",
     projectId: options.projectId,
@@ -99,9 +102,9 @@ export const backgroundTaskClient = {
     hotwords: options.hotwords,
   }),
   configureTranscription: (endpoint: string, modelId: string) => runCore(["transcription", "configure", "--endpoint", endpoint, "--model", modelId]),
-  cancelTranscription: (jobId: string) => runCore(["transcription", "cancel", jobId]),
-  resumeTranscription: (jobId: string) => runCore(["transcription", "resume", jobId]),
-  applyTranscription: (jobId: string, expectedVersionId: string) => runCore(["transcription", "apply", jobId, "--expected-version", expectedVersionId, "--confirm-replace"]),
-  discardTranscription: (jobId: string) => runCore(["transcription", "discard", jobId]),
+  cancelTranscription: (jobId: string) => runCoreStructured({ kind: "transcription_job", request: { action: "cancel", jobId } }),
+  resumeTranscription: (jobId: string, mutationId: string) => runCoreStructured({ kind: "transcription_job", request: { action: "retry", jobId, mutationId } }),
+  applyTranscription: (jobId: string, expectedVersionId: string, mutationId: string) => runCoreStructured({ kind: "transcription_job", request: { action: "apply", jobId, expectedVersionId, mutationId } }),
+  discardTranscription: (jobId: string, mutationId: string) => runCoreStructured({ kind: "transcription_job", request: { action: "discard", jobId, mutationId } }),
   resolveTranscriptionReview: (itemId: string, action: "resolved" | "ignored") => runCore(["transcription", "resolve", itemId, "--action", action]),
 };

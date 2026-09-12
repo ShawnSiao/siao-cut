@@ -1,3 +1,4 @@
+import { runMockTranscription, resetMockTranscriptionCommands } from "./workbench/mock-transcription";
 import { sampleProject } from "./mock";
 import type { AgentRun, AudioAnalysisJob, AutoWorkflow, CoreEnvelope, ExportJob, LocalCapabilityId, LocalResourceJob, LocalResourceStatus, LocalTranscriptionProfile, ModelDownloadJob, ModelStatus, Project, ResourceUpdateCheck, RuntimeInfo, SourceImportJob, SourcePreview, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SubtitleImportPreview, SubtitleStructureEdit, TranscriptionJob, TranscriptionProviderConfig, TranscriptionProviderHealth, TranscriptionReviewItem, UpdateDownloadEvent, UpdateMetadata, UpdatePolicy } from "./types";
 
@@ -469,6 +470,7 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
     mockSpeakerJobs.clear();
     mockSpeakerTracks.clear();
     mockTranscriptionJobs.clear();
+    resetMockTranscriptionCommands();
     mockAgentRuns.clear();
     mockAgentPolls.clear();
     mockTranscriptionReviews = [];
@@ -1578,4 +1580,9 @@ export function mockAuthorizeAutoTask(taskId: string) {
       workflow.status = "needs_agent"; workflow.aiAuthorized = true;
     }
   }
+}
+
+
+export async function mockTranscriptionCommand(request: import("./generated/core-contract").TranscriptionCommand): Promise<CoreEnvelope> {
+  return runMockTranscription(request, { mockTranscriptionJobs, mockProject, mockProjects, mockRun });
 }

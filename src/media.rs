@@ -924,6 +924,19 @@ fn import_whisper_json_at_baseline_with_mode(
 #[path = "media/tests/transcription_timing.rs"]
 mod transcription_timing_tests;
 
+/// Reuse the original-media timing validator for persisted Whisper candidates.
+pub(crate) fn normalized_whisper_candidate(raw: &Value, duration: f64) -> Result<Value> {
+    let validated = validate_whisper_transcript(raw, duration)?;
+    Ok(serde_json::json!({
+        "language": validated.language,
+        "timingValidation": { "status": "verified", "timeDomain": "original_media", "vadUsed": false },
+        "segments": validated.segments.into_iter().map(|segment| serde_json::json!({
+            "start": segment.start, "end": segment.end, "text": segment.text,
+            "speaker": "S01", "words": segment.words,
+        })).collect::<Vec<_>>()
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

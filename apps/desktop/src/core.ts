@@ -2,7 +2,7 @@ import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { tr } from "./i18n";
 import type { CoreEnvelope, Project, RuntimeInfo, UpdateDownloadEvent, UpdateMetadata, UpdatePolicy } from "./types";
-import type { EditingRequest, AiApprovalRequest } from "./generated/core-contract";
+import type { EditingRequest, AiApprovalRequest, TranscriptionCommand } from "./generated/core-contract";
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
 
@@ -27,13 +27,14 @@ export async function runCore(args: string[]): Promise<CoreEnvelope> {
 }
 
 export type StructuredCoreRequest =
+  | { kind: "transcription_job"; request: TranscriptionCommand }
   | { kind: "ai_approval"; request: AiApprovalRequest }
   | { kind: "editing"; request: EditingRequest }
   | { kind: "transcript_offset"; projectId: string; segmentIds: string[]; delta: number }
   | { kind: "transcription_start"; projectId: string; language: "auto" | "en" | "zh"; prompt?: string; hotwords: string[] };
 
 function expandStructuredCoreRequest(request: StructuredCoreRequest): string[] {
-  if (request.kind === "editing" || request.kind === "ai_approval") throw new Error("Editing requests use the structured mock adapter");
+  if (request.kind === "editing" || request.kind === "ai_approval" || request.kind === "transcription_job") throw new Error("Editing requests use the structured mock adapter");
   if (request.kind === "transcript_offset") {
     return ["transcript", "offset", request.projectId, ...request.segmentIds.flatMap((segmentId) => ["--segment", segmentId]), "--delta", String(request.delta)];
   }
@@ -60,7 +61,7 @@ export async function runCoreStructured(request: StructuredCoreRequest): Promise
   try {
     const envelope = isTauri()
       ? await invoke<CoreEnvelope>("run_core_structured", { payload: JSON.stringify(request) })
-      : request.kind === "ai_approval" ? await (await import("./features/ai-assistance/mock-ai-approval")).mockAiApproval(request.request) : request.kind === "editing" ? await (await import("./core.mock")).mockEditingRequest(request.request) : await runMockCore(expandStructuredCoreRequest(request));
+      : request.kind === "transcription_job" ? await (await import("./core.mock")).mockTranscriptionCommand(request.request) : request.kind === "ai_approval" ? await (await import("./features/ai-assistance/mock-ai-approval")).mockAiApproval(request.request) : request.kind === "editing" ? await (await import("./core.mock")).mockEditingRequest(request.request) : await runMockCore(expandStructuredCoreRequest(request));
     return ensureOk(envelope);
   } catch (error) {
     if (error instanceof CoreRequestError) throw error;
