@@ -1,3 +1,5 @@
+import { handoffPathCheck } from "./handoff-path-check";
+import { resumeAgentWithRecovery } from "./resume-agent";
 import { useEffect,useRef,useState,type Dispatch,type RefObject,type SetStateAction } from "react";
 import { getProjectCapabilities } from "../../app-view-model";
 import { agentReviewClient } from "../../domains/agent-review-client";
@@ -128,14 +130,10 @@ export function useAiReviewSession({ project, mediaUrl, subtitleLanguage, uiLoca
     }
     setNotice(tr("app.creator.agent.cancelled"));
   });
-  const resumeCodexAgent = () => agentRun && withBusy(tr("app.creator.agent.resuming"), async () => {
-    const envelope = await agentReviewClient.resumeAgent(agentRun.id);
-    if (!envelope.agentRun)
-      throw new Error(tr("app.creator.agent.runMissing"));
-    setAgentRun(envelope.agentRun);
-    onReview();
-    setNotice(tr("app.creator.agent.resumed"));
-  });
+  const resumeCodexAgent = () => agentRun && withBusy(tr("app.creator.agent.resuming"), () => resumeAgentWithRecovery({
+    agentRun, project, activeProjectIdRef, refreshProject, setAgentWorkflowKind, setAiApprovalTaskId,
+    setShowAiExecutionConfirm, setError, setNotice, setAgentRun, onReview,
+  }));
   const handoffTask = agentHandoffTaskId ? project?.tasks.find((task) => task.id === agentHandoffTaskId) ?? null : null;
   const lockedHandoffIdentity = handoffTask?.lease?.worker && ["claimed", "running"].includes(handoffTask.status)
     ? handoffTask.lease.worker
@@ -150,7 +148,7 @@ export function useAiReviewSession({ project, mediaUrl, subtitleLanguage, uiLoca
     tr("app.agent.handoff.prompt.title", { taskId: handoffTask.id }),
     tr("app.agent.handoff.prompt.context", { worker: handoffIdentity }),
     tr("app.agent.handoff.prompt.claim", { taskId: handoffTask.id, worker: handoffIdentity, payloadFile: handoffPayloadFile, leaseArgument: handoffLeaseArgument }),
-    tr("app.agent.handoff.prompt.verify", { taskId: handoffTask.id }),
+    tr("app.agent.handoff.prompt.verify", { taskId: handoffTask.id, pathVerification: handoffPathCheck }),
     tr("app.agent.handoff.prompt.heartbeat", { taskId: handoffTask.id, worker: handoffIdentity }),
     tr("app.agent.handoff.prompt.process"),
     tr("app.agent.handoff.prompt.submit", { taskId: handoffTask.id, worker: handoffIdentity }),

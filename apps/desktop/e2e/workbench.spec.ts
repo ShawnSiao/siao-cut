@@ -71,6 +71,8 @@ test("switches the application chrome to English without reloading the project",
   const handoff = page.getByRole("textbox", { name: "Complete instructions to copy to the external Agent" });
   await expect(handoff).toHaveValue(/task claim/);
   await expect(handoff).toHaveValue(/--payload-output \$payloadPath/);
+  await expect(handoff).toHaveValue(/Normalize-SiaoCutPayloadPath \(\[string\]\$claim\.payloadFile\.path\)/);
+  await expect(handoff).not.toHaveValue(/\{\{pathVerification\}\}/);
   await expect(handoff).toHaveValue(/Get-FileHash .* SHA256/);
   await expect(handoff).toHaveValue(/\$leaseId = \[string\]\$payload\.leaseId/);
   await expect(handoff).toHaveValue(/\$heartbeatProgress = \[Math\]::Max\(0\.05, \[double\]\$claim\.task\.progress\)/);
@@ -362,12 +364,14 @@ test("uses the full transcript panel height without leaving an empty footer", as
   await page.setViewportSize({ width: 2560, height: 720 });
   await page.goto("/");
 
-  const panel = await page.locator(".transcript-panel").boundingBox();
-  const list = await page.getByLabel("字幕文稿列表").boundingBox();
-  expect(panel).not.toBeNull();
-  expect(list).not.toBeNull();
-  expect(Math.abs(panel!.y + panel!.height - (list!.y + list!.height))).toBeLessThanOrEqual(2);
-  await expect(page.getByLabel("字幕文稿列表")).toHaveCSS("overflow-y", "auto");
+  await expect(async () => {
+    const panel = await page.locator(".transcript-panel").boundingBox();
+    const list = await page.getByLabel("字幕文稿列表").boundingBox();
+    expect(panel).not.toBeNull();
+    expect(list).not.toBeNull();
+    expect(Math.abs(panel!.y + panel!.height - (list!.y + list!.height))).toBeLessThanOrEqual(2);
+    await expect(page.getByLabel("字幕文稿列表")).toHaveCSS("overflow-y", "auto");
+  }).toPass({ timeout: 5000 });
 });
 
 test("keeps translated subtitle modes selected before a translation exists", async ({ page }) => {
@@ -428,28 +432,30 @@ test("expands the editing workbench on a maximized 27-inch display", async ({ pa
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "发布口播 · 草稿" })).toBeVisible();
 
-  const workbench = await page.locator(".workbench").boundingBox();
-  const video = await page.locator(".video-panel").boundingBox();
-  const videoFrame = await page.locator(".video-frame").boundingBox();
-  const workflow = await page.locator(".creator-drawer").boundingBox();
-  const drawerBody = page.locator(".creator-drawer-body");
-  const transcript = await page.locator(".transcript-panel").boundingBox();
+  await expect(async () => {
+    const workbench = await page.locator(".workbench").boundingBox();
+    const video = await page.locator(".video-panel").boundingBox();
+    const videoFrame = await page.locator(".video-frame").boundingBox();
+    const workflow = await page.locator(".creator-drawer").boundingBox();
+    const drawerBody = page.locator(".creator-drawer-body");
+    const transcript = await page.locator(".transcript-panel").boundingBox();
 
-  expect(workbench).not.toBeNull();
-  expect(video).not.toBeNull();
-  expect(videoFrame).not.toBeNull();
-  expect(workflow).not.toBeNull();
-  expect(transcript).not.toBeNull();
-  expect(workbench!.width).toBeGreaterThan(2200);
-  expect(transcript!.width).toBeGreaterThan(1000);
-  expect(video!.width).toBeGreaterThan(600);
-  expect(workflow!.y).toBeGreaterThan(video!.y + video!.height);
-  expect(videoFrame!.height).toBeGreaterThan(300);
-  expect(workflow!.width).toBeGreaterThanOrEqual(340);
-  expect(workflow!.height).toBeGreaterThan(500);
-  await expect(drawerBody).toHaveCSS("overflow-y", "auto");
-  expect(await drawerBody.evaluate((element) => element.scrollHeight >= element.clientHeight)).toBe(true);
-  expect(transcript!.height).toBeGreaterThan(500);
+    expect(workbench).not.toBeNull();
+    expect(video).not.toBeNull();
+    expect(videoFrame).not.toBeNull();
+    expect(workflow).not.toBeNull();
+    expect(transcript).not.toBeNull();
+    expect(workbench!.width).toBeGreaterThan(2200);
+    expect(transcript!.width).toBeGreaterThan(1000);
+    expect(video!.width).toBeGreaterThan(600);
+    expect(workflow!.y).toBeGreaterThan(video!.y + video!.height);
+    expect(videoFrame!.height).toBeGreaterThan(300);
+    expect(workflow!.width).toBeGreaterThanOrEqual(340);
+    expect(workflow!.height).toBeGreaterThan(500);
+    await expect(drawerBody).toHaveCSS("overflow-y", "auto");
+    expect(await drawerBody.evaluate((element) => element.scrollHeight >= element.clientHeight)).toBe(true);
+    expect(transcript!.height).toBeGreaterThan(500);
+  }).toPass({ timeout: 5000 });
 });
 
 test("shows local speech rhythm evidence and locates a finding", async ({ page }) => {
@@ -977,4 +983,30 @@ test("keeps a conflicting MOSS candidate isolated until explicit replacement", a
   await expect(page.getByText("候选结果已应用为可撤销的新版本。")).toBeVisible();
   await expect(page.getByLabel("00:00 字幕文本")).toHaveValue("这是经过明确确认后应用的多人转写候选结果。");
   await expect(page.getByRole("button", { name: "撤销" })).toBeEnabled();
+});
+
+test("opens fresh unchecked consent when a failed AI run cannot reuse approval", async ({ page }) => {
+  await page.goto("/"); await bindMockMedia(page);
+  await page.evaluate(async () => {
+    const approvalUrl = "/src/domains/ai-approval-client.ts", reviewUrl = "/src/domains/agent-review-client.ts";
+    const { aiApprovalClient } = await import(approvalUrl);
+    const { agentReviewClient } = await import(reviewUrl);
+    const execute = aiApprovalClient.execute;
+    (window as any).aiSendCount = 0;
+    aiApprovalClient.execute = async (id: string) => {
+      (window as any).aiSendCount++;
+      const result = await execute(id);
+      return { ...result, agentRun: { ...result.agentRun, status: "failed", errorMessage: "Invalid structured output" } };
+    };
+    agentReviewClient.resumeAgent = async () => { throw Object.assign(new Error("ai_approval_stale: changed"), {code:"ai_approval_stale"}); };
+  });
+  await page.getByRole("button", { name: "开始 AI 辅助" }).click();
+  await confirmAiAssistance(page, "本机 Codex");
+  await page.getByRole("button", { name: "显式继续" }).click();
+  const dialog = page.getByRole("dialog", { name: "确认 AI 辅助" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole("checkbox")).not.toBeChecked();
+  await expect(dialog.getByRole("button", { name: "确认并执行" })).toBeDisabled();
+  expect(await page.evaluate(() => (window as any).aiSendCount)).toBe(1);
+  await expect(page.getByText(/原运行记录会保留/)).toBeVisible();
 });

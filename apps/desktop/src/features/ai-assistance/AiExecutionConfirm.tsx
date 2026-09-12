@@ -1,3 +1,4 @@
+import { approvalRecoveryMessage, requiresNewApproval } from "./approval-recovery";
 import { Bot, CircleAlert, Cloud, Copy, Cpu, ShieldCheck, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { Dialog } from "../../components/ui";
@@ -82,7 +83,11 @@ export default function AiExecutionConfirm(props: Props) {
     inFlight.current = true;
     setSending(true); setSendError(null);
     try { await props.onConfirm(selection, preview?.approvalId); }
-    catch (cause) { setSendError(cause instanceof Error ? cause.message : String(cause)); }
+    catch (cause) {
+      if (requiresNewApproval(cause)) {
+        setConfirmation(null); preflight.retry(); setSendError(approvalRecoveryMessage);
+      } else setSendError(cause instanceof Error ? cause.message : String(cause));
+    }
     finally { inFlight.current = false; setSending(false); }
   };
 

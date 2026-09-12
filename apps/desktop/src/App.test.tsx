@@ -183,6 +183,9 @@ describe("SiaoCut review workbench", () => {
     const handoff = (screen.getByRole("textbox", { name: "复制给外部 Agent 的完整说明" }) as HTMLTextAreaElement).value;
     expect(handoff).toContain("task claim");
     expect(handoff).toContain("--payload-output $payloadPath");
+    expect(handoff).toContain("Normalize-SiaoCutPayloadPath ([string]$claim.payloadFile.path)");
+    expect(handoff).toContain("[StringComparison]::OrdinalIgnoreCase");
+    expect(handoff).not.toContain("{{pathVerification}}");
     expect(handoff).toContain("Get-FileHash -LiteralPath $payloadPath -Algorithm SHA256");
     expect(handoff).toContain("Get-Content -Raw -Encoding UTF8 -LiteralPath $payloadPath");
     expect(handoff).toContain("$leaseId = [string]$payload.leaseId");

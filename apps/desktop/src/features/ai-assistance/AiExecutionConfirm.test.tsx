@@ -1,3 +1,4 @@
+import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createRef } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -35,4 +36,22 @@ describe("AiExecutionConfirm", () => {
     fireEvent.click(screen.getByRole("button", { name: "确认并执行" }));
     expect(onConfirm).toHaveBeenCalledWith(expect.objectContaining({ kind: "api", serviceConfigId: service.id, modelId: "changed-model" }), expect.stringContaining("approval-"));
   });
+  it.each(["ai_approval_stale", "ai_dispatch_uncertain"])("requires a fresh unchecked preview after %s", async (code) => {
+    let count = 0;
+    const preview = vi.spyOn(aiApprovalClient, "preview").mockImplementation(async spec => ({
+      approvalId: `approval-${++count}`, spec, payloadHash: "hash", receiver: "Codex", endpoint: null, model: null, receiverVerified: false,
+      configurationRevision: "revision", segmentCount: 1, characterCount: 4, startTime: 0, endTime: 2, payloadJson: '{"segments":[{"text":"text"}]}',
+    }));
+    const onConfirm = vi.fn().mockRejectedValueOnce(Object.assign(new Error(`${code}: changed`), { code }));
+    render(<AiExecutionConfirm scope={{ projectId: "p", expectedVersionId: "v", kind: "polish", language: null, taskId: null, instructionLocale: "zh-CN" }} returnFocusRef={createRef()} codexReady taskLabel="AI 辅助" segmentCount={1} characterCount={4} startTime={0} endTime={2} contextLabel={null} onClose={vi.fn()} onConfirm={onConfirm}/>);
+    fireEvent.click(screen.getByRole("radio", { name: /本机 Codex/ }));
+    await waitFor(() => expect(screen.getByRole("checkbox")).not.toBeDisabled());
+    fireEvent.click(screen.getByRole("checkbox")); fireEvent.click(screen.getByRole("button", { name: "确认并执行" }));
+    await waitFor(() => expect(preview).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("checkbox")).not.toBeChecked();
+    expect(screen.getByRole("button", { name: "确认并执行" })).toBeDisabled();
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("alert")).toHaveTextContent("再次执行可能消耗额度");
+  });
+
 });
