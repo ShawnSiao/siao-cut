@@ -59,6 +59,7 @@ pub const WORKFLOW_STATUSES: &[&str] = &[
 ];
 
 pub const AUTO_WORKFLOW_STATUSES: &[&str] = &[
+    "awaiting_authorization",
     "queued",
     "running",
     "needs_agent",
@@ -384,6 +385,10 @@ pub const CORE_ERROR_CODES: &[&str] = &[
     "provider_unavailable",
     "invalid_response",
     "service_revision_changed",
+    "ai_approval_stale",
+    "ai_approval_not_found",
+    "ai_approval_configuration_unavailable",
+    "ai_dispatch_uncertain",
     "payload_too_large",
     "cancelled",
 ];
@@ -392,8 +397,8 @@ pub fn contract() -> Value {
     use ts_rs::TS;
     let config = ts_rs::Config::default();
     json!({
-        "typeDeclarations": [crate::editing::Draft::decl(&config), crate::editing::SaveEdit::decl(&config), crate::editing::EditReceipt::decl(&config), crate::editing::ProjectOperation::decl(&config), crate::editing::ProjectMutation::decl(&config), crate::editing::EditingRequest::decl(&config)],
-        "capabilities": ["editing-v1"],
+        "typeDeclarations": [crate::editing::Draft::decl(&config), crate::editing::SaveEdit::decl(&config), crate::editing::EditReceipt::decl(&config), crate::editing::ProjectOperation::decl(&config), crate::editing::ProjectMutation::decl(&config), crate::editing::EditingRequest::decl(&config), crate::agent::execution::ExecutionTarget::decl(&config), crate::ai_approval::AiSendSpec::decl(&config), crate::ai_approval::AiSendPreview::decl(&config), crate::ai_approval::AiApprovalRequest::decl(&config)],
+        "capabilities": ["editing-v1", "ai-approval-v1"],
         "statusSets": {
             "backgroundJob": BACKGROUND_JOB_STATUSES,
             "transcriptionJob": TRANSCRIPTION_JOB_STATUSES,

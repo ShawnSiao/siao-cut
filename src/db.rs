@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 35;
+pub const CURRENT_SCHEMA_VERSION: i64 = 36;
 
 struct Migration {
     version: i64,
@@ -154,6 +154,10 @@ const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 35,
         apply: migration_35_editing_sessions,
+    },
+    Migration {
+        version: 36,
+        apply: migration_36_ai_approvals,
     },
 ];
 
@@ -1414,6 +1418,11 @@ fn migration_35_editing_sessions(tx: &Transaction<'_>) -> Result<()> {
     Ok(())
 }
 
+fn migration_36_ai_approvals(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute_batch(include_str!("migrations/36_ai_approvals.sql"))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2193,3 +2202,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "migration36_tests.rs"]
+mod migration36_tests;

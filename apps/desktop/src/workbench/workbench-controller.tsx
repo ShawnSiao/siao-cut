@@ -1,3 +1,4 @@
+import { aiApprovalClient } from "../domains/ai-approval-client";
 import { useEditingSession } from "../features/editing/use-editing-session";
 import { EditingStatus } from "../features/editing/EditingStatus";
 import { fieldKey } from "../features/editing/editing-session";
@@ -181,7 +182,7 @@ function selectAutoWorkflowSnapshot(current: AutoWorkflow | null, next: AutoWork
 }
 
 export const AUTO_WORKFLOW_DISMISSED_STORAGE_KEY = "siaocut.dismissedAutoWorkflows.v1";
-const ACTIVE_AUTO_WORKFLOW_STATUSES = new Set(["queued", "running", "needs_agent", "needs_review"]);
+const ACTIVE_AUTO_WORKFLOW_STATUSES = new Set(["queued", "running", "needs_agent", "awaiting_authorization", "needs_review"]);
 const ACTIONABLE_AUTO_WORKFLOW_STATUSES = new Set([...ACTIVE_AUTO_WORKFLOW_STATUSES, "failed", "interrupted"]);
 const TERMINAL_AUTO_WORKFLOW_STATUSES = new Set(["completed", "cancelled", "failed", "interrupted"]);
 
@@ -289,6 +290,7 @@ function WorkbenchController() {
     const [agentRun, setAgentRun] = useState<AgentRun | null>(null);
     const [showAgentHandoff, setShowAgentHandoff] = useState(false);
     const [showAiExecutionConfirm, setShowAiExecutionConfirm] = useState(false);
+    const [aiApprovalTaskId, setAiApprovalTaskId] = useState<string | null>(null);
     const [agentHandoffTaskId, setAgentHandoffTaskId] = useState<string | null>(null);
     const [agentIdentity, setAgentIdentity] = useState("external-agent");
     const [agentHandoffReady, setAgentHandoffReady] = useState(false);
@@ -492,7 +494,7 @@ function WorkbenchController() {
             setUpdatePolicy(updatePolicyResult.value);
         if (autoWorkflowsResult.status === "fulfilled") {
             const workflows = autoWorkflowsResult.value.workflows ?? [];
-            activeAutoWorkflow = workflows.find((item) => ["queued", "running", "needs_agent", "needs_review", "failed", "interrupted"].includes(item.status)) ?? null;
+            activeAutoWorkflow = workflows.find((item) => ["queued", "running", "needs_agent", "awaiting_authorization", "needs_review", "failed", "interrupted"].includes(item.status)) ?? null;
             workflows.forEach((workflow) => {
                 if (workflow.sourceImportId)
                     autoWorkflowSourceIds.add(workflow.sourceImportId);
@@ -887,7 +889,7 @@ function WorkbenchController() {
                 setError(message);
             }),
         } : null,
-        ...autoWorkflows.filter((trackedWorkflow) => ["queued", "running", "needs_agent", "needs_review"].includes(trackedWorkflow.status)).map((trackedWorkflow) => ({
+        ...autoWorkflows.filter((trackedWorkflow) => ["queued", "running", "needs_agent", "awaiting_authorization", "needs_review"].includes(trackedWorkflow.status)).map((trackedWorkflow) => ({
             key: `auto:${trackedWorkflow.id}`,
             intervalMs: 800,
             poll: () => backgroundTaskClient.getAutoWorkflow(trackedWorkflow.id).then(async (envelope) => {
@@ -2750,28 +2752,26 @@ function WorkbenchController() {
             speaker_names: tr("app.workflow.created.speakerNames"),
         }[agentWorkflowKind]);
     });
-    const startAiAssistance = (target: AiExecutionSelection) => project && withBusy(tr("app.creator.agent.starting"), async () => {
+    const startAiAssistance = async (target: AiExecutionSelection, approvalId?: string) => {
+        if (!project) return;
         assertAgentWorkflowReady();
-        const workflow = await agentReviewClient.createWorkflow(project.id, agentWorkflowKind, uiLocale, agentWorkflowKind === "translate" ? subtitleLanguage : undefined);
-        if (!workflow.taskId)
-            throw new Error(tr("app.creator.agent.taskMissing"));
-        await refreshProject(project.id);
         if (target.kind === "copy_prompt") {
+            const workflow = aiApprovalTaskId ? { taskId: aiApprovalTaskId } : await agentReviewClient.createWorkflow(project.id, agentWorkflowKind, uiLocale, agentWorkflowKind === "translate" ? subtitleLanguage : undefined);
+            if (!workflow.taskId) throw new Error(tr("app.creator.agent.taskMissing"));
+            await refreshProject(project.id);
             agentHandoffReturnFocusRef.current = agentButtonRef.current;
-            setAgentHandoffTaskId(workflow.taskId);
-            setAgentHandoffReady(true);
-            setAgentHandoffCopied(false);
-            setShowAgentHandoff(true);
+            setAgentHandoffTaskId(workflow.taskId); setAgentHandoffReady(true); setAgentHandoffCopied(false);
+            setShowAgentHandoff(true); setShowAiExecutionConfirm(false);
             setNotice(tr("app.creator.agent.manualFallback"));
             return;
         }
-        const envelope = await agentReviewClient.startAgent(workflow.taskId, 900, target);
-        if (!envelope.agentRun)
-            throw new Error(tr("app.creator.agent.runMissing"));
-        setAgentRun(envelope.agentRun);
-        setDrawerTab("review");
-        setNotice(tr("app.creator.agent.started"));
-    });
+        if (!approvalId) throw new Error("请先核对实际发送预检。");
+        const envelope = await aiApprovalClient.execute(approvalId);
+        if (!envelope.agentRun) throw new Error(tr("app.creator.agent.runMissing"));
+        setAgentRun(envelope.agentRun); setShowAiExecutionConfirm(false);
+        setDrawerTab("review"); setNotice(["queued", "running"].includes(envelope.agentRun.status) ? tr("app.creator.agent.started") : `已找到本次运行：${envelope.agentRun.errorMessage ?? envelope.agentRun.status}`);
+        await refreshProject(project.id);
+    };
     const cancelCodexAgent = () => agentRun && withBusy(tr("app.creator.agent.cancelling"), async () => {
         const envelope = await agentReviewClient.cancelAgent(agentRun.id);
         if (envelope.agentRun)
@@ -2938,13 +2938,22 @@ function WorkbenchController() {
         if (!workflow)
             return [];
         const actions: WorkbenchActivityAction[] = [];
-        if (workflow.projectId && ["needs_agent", "needs_review", "cancelled"].includes(workflow.status))
-            actions.push({ id: "open", label: tr("app.s0276"), primary: ["needs_agent", "needs_review"].includes(workflow.status), disabled: Boolean(autoBusy), onClick: () => void openAutoProject(workflow) });
+        if (workflow.status === "awaiting_authorization" && workflow.projectId && workflow.agentTaskId)
+            actions.push({ id: "authorize", label: "核对并授权发送", primary: true, disabled: Boolean(busy || autoBusy), onClick: () => {
+                void (async () => {
+                    await editing.session.flush(project?.id);
+                    await activateProject(workflow.projectId!);
+                    setAgentWorkflowKind("translate"); setSubtitleLanguage(workflow.translationLanguage ?? "en");
+                    setAiApprovalTaskId(workflow.agentTaskId!); setShowAiExecutionConfirm(true);
+                })().catch((cause) => setError(String(cause)));
+            } });
+        if (workflow.projectId && ["needs_agent", "awaiting_authorization", "needs_review", "cancelled"].includes(workflow.status))
+            actions.push({ id: "open", label: tr("app.s0276"), primary: ["needs_agent", "awaiting_authorization", "needs_review"].includes(workflow.status), disabled: Boolean(autoBusy), onClick: () => void openAutoProject(workflow) });
         if (workflow.status === "needs_review")
             actions.push({ id: "continue", label: tr("app.s0278"), disabled: Boolean(autoBusy), onClick: () => void continueAutoWorkflow(workflow) });
         if (["failed", "interrupted", "cancelled"].includes(workflow.status))
             actions.push({ id: "resume", label: tr("app.s0279"), primary: true, disabled: Boolean(autoBusy), onClick: () => void continueAutoWorkflow(workflow) });
-        if (["queued", "running", "needs_agent", "needs_review"].includes(workflow.status))
+        if (["queued", "running", "needs_agent", "awaiting_authorization", "needs_review"].includes(workflow.status))
             actions.push({ id: "cancel", label: tr("app.s0277"), disabled: Boolean(autoBusy), onClick: () => void cancelAutoWorkflow(workflow) });
         if (["completed", "cancelled"].includes(workflow.status))
             actions.push({ id: "details", label: tr("app.s0280"), disabled: Boolean(autoBusy), onClick: () => { setAutoWorkflow(workflow); setShowAutoWorkflow(true); } });
@@ -3171,7 +3180,7 @@ function WorkbenchController() {
 	                        </div>
 	                      </>}
 	                      {agentRun && <div className={`creator-agent-run ${agentRun.status}`} role="status"><span><strong>{tr(`app.creator.agent.status.${agentRun.status}` as Parameters<typeof tr>[0])}</strong><small>{tr("app.creator.agent.batch", { current: agentRun.currentBatch, total: agentRun.batchCount })}</small></span><progress max={1} value={agentRun.progress}/>{["queued", "running", "submitting"].includes(agentRun.status) ? <button onClick={() => void cancelCodexAgent()}>{tr("app.creator.agent.cancel")}</button> : ["failed", "interrupted", "cancelled"].includes(agentRun.status) ? <button onClick={() => void resumeCodexAgent()}><RefreshCw size={12}/>{tr("app.creator.agent.resume")}</button> : null}{agentRun.errorMessage && <JobFailureDetails context="agent" status={agentRun.status} errorCode={agentRun.errorCode} errorMessage={agentRun.errorMessage}/>}</div>}
-                      <div className="creator-agent-actions"><Button ref={agentButtonRef} variant="agent" disabled={!capabilities.canCreateAgentTask || agentRunActive || Boolean(busy) || (agentWorkflowKind === "speaker_names" && speakerTrack?.status !== "ready")} title={agentCapabilityTitle} onClick={() => { agentHandoffReturnFocusRef.current = agentButtonRef.current; setShowAiExecutionConfirm(true); }}><Bot size={14}/>{tr("app.creator.agent.start")}</Button><button className="button quiet" disabled={agentRunActive || Boolean(busy)} onClick={(event) => openAgentHandoff(event.currentTarget)}>{tr("app.creator.agent.manual")}</button></div>
+                      <div className="creator-agent-actions"><Button ref={agentButtonRef} variant="agent" disabled={!capabilities.canCreateAgentTask || agentRunActive || Boolean(busy) || (agentWorkflowKind === "speaker_names" && speakerTrack?.status !== "ready")} title={agentCapabilityTitle} onClick={() => { agentHandoffReturnFocusRef.current = agentButtonRef.current; void editing.session.flush(project!.id).then(() => { setAiApprovalTaskId(null); setShowAiExecutionConfirm(true); }).catch((cause) => setError(String(cause))); }}><Bot size={14}/>{tr("app.creator.agent.start")}</Button><button className="button quiet" disabled={agentRunActive || Boolean(busy)} onClick={(event) => openAgentHandoff(event.currentTarget)}>{tr("app.creator.agent.manual")}</button></div>
 	                      <p className="runtime-disclosure"><ShieldCheck size={13}/>{tr("app.creator.agent.boundary")}</p>
 	                    </section>
 	                    <div className="review-panel-scroll creator-review-list" role="region" aria-label={tr("app.s0297")} tabIndex={0}>
@@ -3288,6 +3297,8 @@ function WorkbenchController() {
           </>)}
       </section>
       {showAiExecutionConfirm && project && <Suspense fallback={null}><AiExecutionConfirm
+        scope={{ projectId: project.id, expectedVersionId: project.history.currentVersionId ?? "", kind: agentWorkflowKind,
+          language: agentWorkflowKind === "translate" ? subtitleLanguage : null, instructionLocale: uiLocale, taskId: aiApprovalTaskId }}
         returnFocusRef={agentHandoffReturnFocusRef}
         codexReady={Boolean(codexHealth?.available && codexHealth.authenticated)}
         taskLabel={`AI 辅助 · ${aiConfirmationLabel}`}
@@ -3297,7 +3308,7 @@ function WorkbenchController() {
         endTime={aiConfirmationSegments.at(-1)?.end ?? 0}
         contextLabel={aiConfirmationContext}
         onClose={() => setShowAiExecutionConfirm(false)}
-        onConfirm={(selection) => { setShowAiExecutionConfirm(false); void startAiAssistance(selection); }}
+        onConfirm={startAiAssistance}
       /></Suspense>}
       {showAgentHandoff && project && <Suspense fallback={null}><AgentHandoffDialog
         returnFocusRef={agentHandoffReturnFocusRef}

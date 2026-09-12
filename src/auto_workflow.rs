@@ -1,6 +1,6 @@
 use crate::{
     agent::execution::ExecutionTarget,
-    agent_runner, audio_analysis, cuts, db, export, media,
+    audio_analysis, cuts, db, export, media,
     model::{AutoWorkflow, AutoWorkflowEvent, SubtitleDelivery, SubtitleMode, WorkflowProfile},
     project, source_import, tasks, translation,
     util::{new_id, now},
@@ -150,7 +150,7 @@ fn insert_with_flag(
         .query_row(
             "SELECT id FROM auto_workflows
              WHERE input_kind=?1 AND input_value=?2 AND output_path=?3
-               AND status IN ('queued','running','needs_agent','needs_review','failed','interrupted')
+               AND status IN ('queued','running','needs_agent','awaiting_authorization','needs_review','failed','interrupted')
              ORDER BY created_at DESC LIMIT 1",
             params![input_kind, input_value, output.to_string_lossy()],
             |row| row.get::<_, String>(0),
@@ -193,7 +193,7 @@ fn insert_with_flag(
             translation_execution.as_ref().and_then(|target| match target { ExecutionTarget::Api { service_revision, .. } => Some(*service_revision as i64), ExecutionTarget::Codex => None }),
             translation_execution.as_ref().and_then(|target| match target { ExecutionTarget::Api { network_revision, .. } => Some(*network_revision as i64), ExecutionTarget::Codex => None }),
             translation_execution.as_ref().and_then(|target| match target { ExecutionTarget::Api { model_id, .. } => Some(model_id.as_str()), ExecutionTarget::Codex => None }),
-            translation_execution.is_some(),
+            false, // Target preference is not authorization for unseen transcription.
         ],
     )?;
     append_event(db, &id, "import", "queued", 0.0, "自动工作流已创建")?;
@@ -381,7 +381,7 @@ fn project_id_for_task(db: &Connection, task_id: &str) -> Option<String> {
 pub fn continue_workflow(db: &mut Connection, workflow_id: &str) -> Result<AutoWorkflow> {
     let mut workflow = load(db, workflow_id)?;
     match workflow.status.as_str() {
-        "queued" | "running" => return Ok(workflow),
+        "queued" | "running" | "awaiting_authorization" => return Ok(workflow),
         "completed" => bail!(
             "auto_workflow_not_resumable: 自动工作流当前状态不能继续：{}",
             workflow.status
@@ -923,31 +923,22 @@ fn run_suggestions(db: &mut Connection, workflow: &AutoWorkflow) -> Result<bool>
             "UPDATE auto_workflows SET agent_task_id=?2 WHERE id=?1",
             params![&workflow.id, task_id],
         )?;
-        let target = workflow_execution_target(workflow)?;
-        let message = if let Some(target) = target {
-            match agent_runner::start_with_execution(db, &task_id, None, None, target) {
-                Ok(_) => format!(
-                    "已生成 {} 条粗剪建议；API 翻译已开始，完成后等待人工确认",
-                    suggestions.len()
-                ),
-                Err(_) => format!(
-                    "已生成 {} 条粗剪建议；AI 配置已变化或不可用，请重新确认翻译任务",
-                    suggestions.len()
-                ),
-            }
-        } else {
-            format!(
-                "已生成 {} 条粗剪建议；翻译任务等待 Agent",
-                suggestions.len()
-            )
-        };
+        let awaiting = workflow.ai_execution_kind.is_some();
         set_state(
             db,
             &workflow.id,
             "translate",
-            "needs_agent",
+            if awaiting {
+                "awaiting_authorization"
+            } else {
+                "needs_agent"
+            },
             stage_start(workflow.profile, "translate"),
-            &message,
+            if awaiting {
+                "转写已完成。请核对实际字幕、接收方和模型，单次授权后才发送 AI。"
+            } else {
+                "翻译任务等待手工交给 Agent；结果需要人工审核。"
+            },
         )?;
         return Ok(true);
     }
@@ -976,33 +967,6 @@ fn run_suggestions(db: &mut Connection, workflow: &AutoWorkflow) -> Result<bool>
             &message,
         )?;
         Ok(true)
-    }
-}
-
-fn workflow_execution_target(workflow: &AutoWorkflow) -> Result<Option<ExecutionTarget>> {
-    if !workflow.ai_authorized {
-        return Ok(None);
-    }
-    match workflow.ai_execution_kind.as_deref() {
-        Some("codex") => Ok(Some(ExecutionTarget::Codex)),
-        Some("api") => Ok(Some(ExecutionTarget::Api {
-            service_config_id: workflow
-                .ai_service_config_id
-                .clone()
-                .ok_or_else(|| anyhow!("auto_workflow_state_invalid: 缺少 AI 服务"))?,
-            service_revision: workflow
-                .ai_service_revision
-                .ok_or_else(|| anyhow!("auto_workflow_state_invalid: 缺少服务修订号"))?,
-            network_revision: workflow
-                .ai_network_revision
-                .ok_or_else(|| anyhow!("auto_workflow_state_invalid: 缺少网络修订号"))?,
-            model_id: workflow
-                .ai_model_id
-                .clone()
-                .ok_or_else(|| anyhow!("auto_workflow_state_invalid: 缺少 AI 模型"))?,
-        })),
-        None => Ok(None),
-        Some(_) => bail!("auto_workflow_state_invalid: 不支持的 AI 执行方式"),
     }
 }
 
@@ -1177,7 +1141,10 @@ fn set_state(
     message: &str,
 ) -> Result<()> {
     let timestamp = now();
-    let worker_pid = if matches!(status, "needs_agent" | "needs_review") {
+    let worker_pid = if matches!(
+        status,
+        "needs_agent" | "needs_review" | "awaiting_authorization"
+    ) {
         None
     } else {
         Some(std::process::id())
@@ -1420,6 +1387,51 @@ mod tests {
         let project = project::load(&db, &project_id).unwrap();
         assert_eq!(project.edits.len(), 1);
         assert_eq!(project.edits[0].status, "proposed");
+    }
+
+    #[test]
+    fn automatic_translation_waits_for_actual_payload_authorization_across_reopen() {
+        let (temp, mut db, media, model, output) = fixture();
+        let workflow = insert_local(&mut db, &media, &model, &output, Some("zh"));
+        db.execute(
+            "UPDATE auto_workflows SET ai_execution_kind='codex',ai_authorized=1 WHERE id=?1",
+            [&workflow.id],
+        )
+        .unwrap();
+        run_import(&mut db, &workflow).unwrap();
+        let imported = load(&db, &workflow.id).unwrap();
+        project::add_segment(
+            &mut db,
+            imported.project_id.as_deref().unwrap(),
+            0.,
+            1.,
+            "Actual transcript".into(),
+            None,
+        )
+        .unwrap();
+        let current = load(&db, &workflow.id).unwrap();
+        assert!(run_suggestions(&mut db, &current).unwrap());
+        let waiting = load(&db, &workflow.id).unwrap();
+        assert_eq!(waiting.status, "awaiting_authorization");
+        assert!(waiting.agent_task_id.is_some());
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM agent_runs", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            continue_workflow(&mut db, &workflow.id).unwrap().status,
+            "awaiting_authorization"
+        );
+        let db_path = db.path().unwrap().to_owned();
+        drop(db);
+        let db = crate::db::open_at(std::path::Path::new(&db_path)).unwrap();
+        assert_eq!(
+            load(&db, &workflow.id).unwrap().status,
+            "awaiting_authorization"
+        );
+        drop(temp);
     }
 
     #[test]

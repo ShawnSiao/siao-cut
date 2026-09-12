@@ -14,7 +14,7 @@ export function LocalCodexDetail({ health, busy, onRefresh }: Props) {
       ? "当前没有检测到可用的本机 Codex"
       : "正在检测本机 Codex…";
   const description = ready
-    ? "字幕文本只交给这台电脑上的 Codex 处理。"
+    ? "通过本机 Codex 执行。接收方和模型未核实，可能使用远程模型。"
     : health?.available
       ? "已检测到 Codex，但尚未登录。仍可使用已配置的 API 服务。"
       : "可以继续使用已配置的 API 服务或复制提示词。";
@@ -27,7 +27,7 @@ export function LocalCodexDetail({ health, busy, onRefresh }: Props) {
           <span className={`environment-status-chip ${ready ? "" : "unavailable"}`}>{ready ? "可以使用" : "不可用"}</span>
         </div>
         <div className="environment-codex-status"><strong>{title}</strong><p>{description}</p></div>
-        <div className="environment-privacy-note">◇ 本机服务不会把字幕发送给外部 API 服务。</div>
+        <div className="environment-privacy-note">◇ 可能发送到远程服务并消耗订阅额度或 API 用量；每次发送前核对实际文本并授权。</div>
       </div>
     </section>
     <footer className="environment-settings-footer">

@@ -9,7 +9,7 @@ mod contract_tests;
 #[cfg(test)]
 pub(crate) mod test_support;
 
-use std::{thread, time::Duration};
+use std::time::Duration;
 
 use serde_json::Value;
 
@@ -70,25 +70,8 @@ pub fn generate(
     network: &NetworkStore,
     input: &GenerationInput,
 ) -> Result<ProviderOutput, ProviderFailure> {
-    for attempt in 0..=2 {
-        match generate_once(service, network, input) {
-            Ok(mut output) => {
-                output.retry_count = attempt;
-                return Ok(output);
-            }
-            Err(failure) if failure.error.retryable() && attempt < 2 => {
-                let fallback = Duration::from_secs(1_u64 << attempt);
-                thread::sleep(
-                    failure
-                        .retry_after
-                        .unwrap_or(fallback)
-                        .min(Duration::from_secs(30)),
-                );
-            }
-            Err(failure) => return Err(failure),
-        }
-    }
-    unreachable!("retry loop always returns")
+    // A lost response may already have consumed quota. Never repeat a generation implicitly.
+    generate_once(service, network, input)
 }
 
 fn generate_once(

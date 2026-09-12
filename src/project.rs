@@ -483,6 +483,7 @@ fn retire_history(tx: &Connection, project_id: &str, predicate: &str) -> Result<
         UNION SELECT base_version_id FROM export_jobs WHERE project_id=?1
         UNION SELECT base_version_id FROM speaker_jobs WHERE project_id=?1
         UNION SELECT base_version_id FROM media_artifacts WHERE project_id=?1
+        UNION SELECT base_version_id FROM ai_send_approvals WHERE project_id=?1
         UNION SELECT base_version_id FROM editing_drafts WHERE project_id=?1 AND discarded=0
     )";
     tx.execute(&format!("UPDATE versions SET active_history=0,history_index=-rowid WHERE {selected} AND {pinned}"), [project_id])?;

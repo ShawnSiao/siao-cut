@@ -125,7 +125,7 @@ fn execute_with(
         schema: schema.clone(),
     }).map_err(|failure| {
         let request = failure.provider_request_id.as_deref().map(|id| format!("；厂商请求 ID：{id}")).unwrap_or_default();
-        anyhow!("{}: {}{}", failure.error.code(), failure.error, request)
+        anyhow!("{}: {}{}{}", failure.error.code(), failure.error, request, failure.retry_after.map(|delay| format!("；服务建议 {} 秒后再尝试，请重新授权", delay.as_secs())).unwrap_or_default())
     })?;
     let value = serde_json::from_str(&output.output_text)
         .map_err(|_| anyhow!("invalid_response: AI 服务返回的结果不是有效 JSON"))?;
@@ -159,7 +159,7 @@ fn ai_error(error: crate::ai_services::error::AiError) -> anyhow::Error {
     anyhow!("{}: {}", error.code(), error)
 }
 
-fn remote_payload(payload: &Value) -> Result<Value> {
+pub(crate) fn remote_payload(payload: &Value) -> Result<Value> {
     let mut remote = payload
         .as_object()
         .cloned()

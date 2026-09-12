@@ -6,6 +6,8 @@ use std::{env, fs, io::Read, path::PathBuf};
 
 mod agent;
 mod agent_runner;
+mod ai_approval;
+mod ai_approval_contract;
 mod ai_services;
 mod artifacts;
 mod audio_analysis;
@@ -124,6 +126,10 @@ enum Commands {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", deny_unknown_fields)]
 enum DesktopRequest {
+    #[serde(rename = "ai_approval")]
+    AiApproval {
+        request: ai_approval::AiApprovalRequest,
+    },
     #[serde(rename = "editing")]
     Editing { request: editing::EditingRequest },
     #[serde(rename = "transcript_offset")]
@@ -922,6 +928,9 @@ fn run_desktop_request(database: &mut rusqlite::Connection, input: &PathBuf) -> 
     let request: DesktopRequest = serde_json::from_slice(&payload)
         .map_err(|_| anyhow!("invalid_request: Desktop 结构化请求 JSON 无效"))?;
     match request {
+        DesktopRequest::AiApproval { request } => {
+            Ok(envelope(ai_approval::execute(database, request)?))
+        }
         DesktopRequest::Editing { request } => Ok(envelope(editing::execute(database, request)?)),
         DesktopRequest::TranscriptOffset {
             project_id,

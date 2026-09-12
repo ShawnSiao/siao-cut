@@ -112,7 +112,7 @@ export function deriveWorkbenchActivities(inputs: WorkbenchActivityInputs): Work
       "auto",
       workflow,
       workflow.title ?? workflow.outputPath,
-      ["needs_agent", "needs_review"],
+      ["needs_agent", "awaiting_authorization", "needs_review"],
       workflow.currentStage,
       ["completed"],
     );

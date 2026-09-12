@@ -114,6 +114,16 @@ pub fn start_with_execution(
     start_delay_ms: Option<u64>,
     execution: ExecutionTarget,
 ) -> Result<AgentRun> {
+    let run = enqueue_with_execution(db, task_id, timeout_seconds, execution)?;
+    launch_queued_run(db, &run.id, start_delay_ms)
+}
+
+pub(crate) fn enqueue_with_execution(
+    db: &mut Connection,
+    task_id: &str,
+    timeout_seconds: Option<u64>,
+    execution: ExecutionTarget,
+) -> Result<AgentRun> {
     let timeout_seconds = timeout_seconds.unwrap_or(DEFAULT_TIMEOUT_SECONDS);
     validate_timeout(timeout_seconds)?;
     execution.validate()?;
@@ -172,7 +182,7 @@ pub fn start_with_execution(
     };
     let run_id = new_id("ar");
     let timestamp = now();
-    let tx = db.transaction()?;
+    let tx = crate::write_transaction::WriteTransaction::begin(db)?;
     tx.execute(
         "INSERT INTO agent_runs(
              id,task_id,project_id,provider,execution_kind,service_config_id,
@@ -204,11 +214,19 @@ pub fn start_with_execution(
     )?;
     insert_batches(&tx, &run_id, &batches, &timestamp)?;
     tx.commit()?;
-    if let Err(error) = spawn_worker(&run_id, 1, start_delay_ms) {
-        mark_start_failed(db, &run_id, 1, &error)?;
+    load(db, &run_id)
+}
+
+pub(crate) fn launch_queued_run(
+    db: &mut Connection,
+    run_id: &str,
+    start_delay_ms: Option<u64>,
+) -> Result<AgentRun> {
+    if let Err(error) = spawn_worker(run_id, 1, start_delay_ms) {
+        mark_start_failed(db, run_id, 1, &error)?;
         return Err(error);
     }
-    load(db, &run_id)
+    load(db, run_id)
 }
 
 pub use crate::agent::repository::{list, load};
@@ -248,6 +266,7 @@ pub fn cancel(db: &mut Connection, run_id: &str) -> Result<AgentRun> {
 }
 
 pub fn resume(db: &mut Connection, run_id: &str, start_delay_ms: Option<u64>) -> Result<AgentRun> {
+    crate::ai_approval::validate_resume(db, run_id)?;
     let stored_run = load(db, run_id)?;
     let execution = ExecutionTarget::from_run(&stored_run)?;
     let cli_health = match &execution {
@@ -459,6 +478,7 @@ fn execute_run_with_executor(
         if task.base_version_id.as_deref() != Some(run.base_version_id.as_str()) {
             bail!("agent_project_version_conflict: Agent 任务基线已变化")
         }
+        let payload = crate::ai_approval::payload_for_run(db, &run, &payload)?;
         tasks::heartbeat(
             db,
             &run.task_id,
@@ -513,6 +533,7 @@ fn execute_run_with_executor(
                     .and_then(Value::as_str)
                     .unwrap_or_default(),
             );
+            crate::ai_approval::authorize_dispatch(db, &run, &batch.id)?;
             let mut batch_result = match &executor {
                 RunExecutor::Codex(config) => invoke_codex(
                     db,
@@ -1426,7 +1447,7 @@ fn validate_timeout(timeout_seconds: u64) -> Result<()> {
 }
 
 fn insert_batches(
-    tx: &rusqlite::Transaction<'_>,
+    tx: &Connection,
     run_id: &str,
     batches: &[Vec<String>],
     timestamp: &str,
@@ -1441,7 +1462,7 @@ fn insert_batches(
 }
 
 fn prepare_batches_for_resume(
-    tx: &rusqlite::Transaction<'_>,
+    tx: &Connection,
     run_id: &str,
     previous_base_version_id: &str,
     next_base_version_id: &str,
@@ -1459,6 +1480,12 @@ fn prepare_batches_for_resume(
                 stored.ordinal as usize == ordinal && stored.segment_ids == *expected
             });
     if !same_layout {
+        let dispatched: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM ai_approval_dispatches d JOIN ai_send_approvals a ON a.id=d.approval_id WHERE a.run_id=?1)", [run_id], |r| r.get(0))?;
+        if dispatched {
+            bail!(
+                "ai_dispatch_uncertain: 分批范围已变化，已发送任务不能自动重新分批；请新建任务并重新授权"
+            )
+        }
         tx.execute("DELETE FROM agent_run_batches WHERE run_id=?1", [run_id])?;
         insert_batches(tx, run_id, batches, timestamp)?;
         return Ok(0);

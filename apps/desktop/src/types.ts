@@ -814,6 +814,7 @@ export type CoreEnvelope = {
   versionId?: string | null;
   mutationId?: string;
   editReceipt?: import("./generated/core-contract").EditReceipt;
+  aiSendPreview?: import("./generated/core-contract").AiSendPreview;
   drafts?: import("./generated/core-contract").Draft[];
   apiVersion: string;
   status: "ok" | "error";

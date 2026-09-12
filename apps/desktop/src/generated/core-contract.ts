@@ -84,6 +84,7 @@ export const workflowStatuses = [
 export type WorkflowStatus = typeof workflowStatuses[number];
 
 export const autoWorkflowStatuses = [
+  "awaiting_authorization",
   "queued",
   "running",
   "needs_agent",
@@ -398,6 +399,10 @@ export const coreErrorCodes = [
   "provider_unavailable",
   "invalid_response",
   "service_revision_changed",
+  "ai_approval_stale",
+  "ai_approval_not_found",
+  "ai_approval_configuration_unavailable",
+  "ai_dispatch_uncertain",
   "payload_too_large",
   "cancelled"
 ] as const;
@@ -413,4 +418,12 @@ export type EditReceipt = { mutationId: string, projectId: string, versionId: st
 export type ProjectOperation = { "kind": "detect_cuts" } | { "kind": "set_cut_status", editId: string, action: string, } | { "kind": "create_word_cut", segmentId: string, fromWordId: string, toWordId: string, paddingMs: number, } | { "kind": "split", segmentId: string, textOffset: number, at: number, } | { "kind": "merge", firstId: string, secondId: string, } | { "kind": "timing", segmentId: string, start: number, end: number, } | { "kind": "offset", segmentIds: Array<string>, delta: number, } | { "kind": "replace", search: string, replacement: string, } | { "kind": "undo" } | { "kind": "redo" } | { "kind": "restore", versionId: string, } | { "kind": "canvas", aspectRatio: string, framing: string, } | { "kind": "style", preset: string, position: string, sourceFontSize: number | null, translationFontSize: number | null, boxWidthPercent: number | null, boxHeightLines: number | null, } | { "kind": "rename_speaker", speakerId: string, name: string, } | { "kind": "merge_speaker", fromId: string, intoId: string, } | { "kind": "assign_speaker", segmentId: string, speakerId: string, };
 export type ProjectMutation = { projectId: string, mutationId: string, expectedVersionId: string | null, operation: ProjectOperation, };
 export type EditingRequest = { "action": "mutate", mutation: ProjectMutation, } | { "action": "journal", draft: Draft, } | { "action": "list", projectId: string, } | { "action": "discard", draft: Draft, } | { "action": "save", edit: SaveEdit, };
+export type ExecutionTarget = { "kind": "codex" } | { "kind": "api", service_config_id: string, service_revision: number, network_revision: number, model_id: string, };
+export type AiSendSpec = { projectId: string, expectedVersionId: string, kind: string, language: string | null, instructionLocale: string, taskId: string | null, target: ExecutionTarget, };
+export type AiSendPreview = { approvalId: string, payloadHash: string, spec: AiSendSpec, receiver: string, endpoint: string | null, model: string | null, receiverVerified: boolean, configurationRevision: string, segmentCount: number, characterCount: number, startTime: number, endTime: number,
+/**
+ * Canonical JSON of the exact text task, including glossary/context and constraints.
+ */
+payloadJson: string, };
+export type AiApprovalRequest = { "action": "preview", spec: AiSendSpec, } | { "action": "execute", approvalId: string, };
 export type CoreErrorCode = KnownCoreErrorCode | (string & {});

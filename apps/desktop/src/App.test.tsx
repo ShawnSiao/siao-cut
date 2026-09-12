@@ -44,6 +44,7 @@ async function confirmCodexAiAssistance() {
   const codex = within(dialog).getByRole("radio", { name: /本机 Codex/ });
   await waitFor(() => expect(codex).toBeEnabled());
   fireEvent.click(codex);
+  await waitFor(() => expect(within(dialog).getByRole("checkbox", { name: /已核对接收方、模型、文本范围/ })).toBeEnabled());
   fireEvent.click(within(dialog).getByRole("checkbox", { name: /已核对接收方、模型、文本范围/ }));
   fireEvent.click(within(dialog).getByRole("button", { name: "确认并执行" }));
 }
@@ -1100,7 +1101,8 @@ describe("SiaoCut review workbench", () => {
 
   it("previews subtitle files before explicit replacement and filters located issues", async () => {
     render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: "导入字幕" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "导入字幕" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "导入字幕" }));
     const dialog = await screen.findByRole("dialog", { name: "导入字幕" });
     expect(within(dialog).getByText(/确认前不会修改项目/)).toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole("button", { name: "选择文件" }));
@@ -1129,7 +1131,8 @@ describe("SiaoCut review workbench", () => {
 
   it("invalidates subtitle replacement approval when the project changes after preflight", async () => {
     render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: "导入字幕" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "导入字幕" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "导入字幕" }));
     const dialog = await screen.findByRole("dialog", { name: "导入字幕" });
     fireEvent.click(within(dialog).getByRole("button", { name: "选择文件" }));
     const preview = await within(dialog).findByRole("region", { name: "字幕导入预检" });

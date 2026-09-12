@@ -283,7 +283,7 @@ test("runs all text assistance workflows through a default API when Codex is una
     await page.getByRole("button", { name: "开始 AI 辅助" }).click();
     const confirm = page.getByRole("dialog", { name: "确认 AI 辅助" });
     await expect(confirm.getByRole("radio", { name: /本机 Codex/ })).toBeDisabled();
-    await expect(confirm.getByText("OpenAI / preview-model")).toBeVisible();
+    await expect(confirm.getByText(/OpenAI \/ preview-model/)).toBeVisible();
     await confirmAiAssistance(page, "AI 服务");
     await expect(page.getByText("AI 辅助已完成；建议已进入集中审阅，文稿未自动修改。")).toBeVisible({ timeout: 7000 });
   }

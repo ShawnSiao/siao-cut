@@ -1155,7 +1155,7 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
       transcriptVersionId: null,
       agentTaskId: null,
       audioAnalysisJobId: null,
-      aiExecutionKind: valueAfter("--ai-execution") as AutoWorkflow["aiExecutionKind"],
+      aiExecutionKind: valueAfter("--ai-execution") === "api" ? "api" : valueAfter("--ai-execution") === "codex" ? "codex" : null,
       aiServiceConfigId: valueAfter("--ai-service-config-id"),
       aiServiceRevision: valueAfter("--ai-service-revision") ? Number(valueAfter("--ai-service-revision")) : null,
       aiNetworkRevision: valueAfter("--ai-network-revision") ? Number(valueAfter("--ai-network-revision")) : null,
@@ -1217,10 +1217,10 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
         workflow.progress = 0.45;
         workflow.transcriptVersionId = "v-auto-transcript";
       } else if (workflow.translationLanguage) {
-        workflow.status = "needs_agent";
+        workflow.status = workflow.aiExecutionKind ? "awaiting_authorization" : "needs_agent";
         workflow.currentStage = "translate";
         workflow.progress = workflow.profile === "delivery" ? 0.60 : 0.50;
-        workflow.agentTaskId = "t-auto-translate";
+        workflow.agentTaskId = (await mockRun(["workflow", "create", mockProject.id, "--kind", "translate", "--lang", workflow.translationLanguage])).taskId ?? null;
       } else {
         workflow.status = "needs_review";
         workflow.currentStage = "review";
@@ -1570,4 +1570,12 @@ export async function mockEditingRequest(request: import("./generated/core-contr
   syncMockProject(project); updateJournal(true);
   const receipt = { mutationId: request.edit.mutationId, projectId: d.projectId, versionId, segmentId: d.segmentId, field: d.field, text: d.text, changedDomains: ["transcript", "translations", "history", "quality", "edits"] };
   previewReceipts.set(key, { request: raw, receipt }); return ok({ editReceipt: receipt });
+}
+
+export function mockAuthorizeAutoTask(taskId: string) {
+  for (const workflow of mockAutoWorkflows.values()) {
+    if (workflow.agentTaskId === taskId && workflow.status === "awaiting_authorization") {
+      workflow.status = "needs_agent"; workflow.aiAuthorized = true;
+    }
+  }
 }

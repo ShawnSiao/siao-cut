@@ -4,6 +4,31 @@ use super::{anthropic, gemini, openai, openai_compatible, test_support::*};
 use crate::ai_services::types::{AiProtocol, AiProviderId};
 
 #[test]
+fn generation_does_not_automatically_retry_a_provider_failure() {
+    let temp = tempdir().unwrap();
+    // This server accepts exactly one generation. A retry would replace the original
+    // rate-limit response with a connection failure and potentially consume more quota.
+    let server = serve_once(429, "{}");
+    let result = super::generate(
+        &mock_service(
+            AiProviderId::Openai,
+            AiProtocol::OpenaiResponses,
+            &server.url,
+        ),
+        &network(temp.path()),
+        &generation_input(),
+    );
+    assert!(matches!(
+        result,
+        Err(super::ProviderFailure {
+            error: crate::ai_services::error::AiError::RateLimited,
+            ..
+        })
+    ));
+    assert!(server.finish().contains("POST /responses"));
+}
+
+#[test]
 fn openai_responses_contract() {
     let temp = tempdir().unwrap();
     let server = serve_once(

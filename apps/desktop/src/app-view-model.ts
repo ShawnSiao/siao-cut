@@ -172,6 +172,7 @@ export const workflowProfileLabel = (profile: WorkflowProfile) => ({
     delivery: tr("app.workflowProfile.delivery"),
 })[profile];
 export const autoStatusLabel = (status: string) => ({
+    awaiting_authorization: "等待发送授权",
     queued: tr("app.s0029"),
     running: tr("app.s0001"),
     needs_agent: tr("app.s0002"),
