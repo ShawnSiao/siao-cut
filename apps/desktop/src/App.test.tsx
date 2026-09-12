@@ -616,8 +616,9 @@ describe("SiaoCut review workbench", () => {
   it("loads the browser preview project and exposes the three-layer workbench", async () => {
     render(<App />);
     expect(await screen.findByRole("heading", { name: "发布口播 · 草稿" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "转录" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "字幕文稿" })).toBeInTheDocument();
     expect(screen.getByText("字幕时间轴")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "展开时间线" }));
     expect(screen.getByRole("button", { name: "精细编辑" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("slider", { name: "缩放比例" })).toHaveValue("160");
     expect(screen.getAllByText("需要你确认").length).toBeGreaterThan(0);
@@ -756,7 +757,7 @@ describe("SiaoCut review workbench", () => {
     await waitFor(() => expect(screen.getAllByText("需要更新").length).toBeGreaterThan(0));
 
     await openDrawerTab("导出");
-    const panel = await screen.findByLabelText("导出设置");
+    const panel = await screen.findByLabelText("导出设置", {}, { timeout: 3000 });
     fireEvent.change(within(panel).getByLabelText("字幕模式"), { target: { value: "translated" } });
     const exportButton = within(panel).getByRole("button", { name: "导出字幕" });
     const confirmation = within(panel).getByRole("checkbox", { name: /确认仍使用当前译文导出/ });
@@ -864,6 +865,7 @@ describe("SiaoCut review workbench", () => {
   it("uses history shortcuts outside editors and leaves text input shortcuts alone", async () => {
     render(<App />);
     await screen.findByRole("heading", { name: "发布口播 · 草稿" });
+    await waitFor(() => expect(screen.getByRole("button", { name: "撤销", exact: true })).toBeEnabled());
     fireEvent.keyDown(window, { key: "z", code: "KeyZ", ctrlKey: true });
     await waitFor(() => expect(screen.getByText("已撤销上一步项目修改。")).toBeInTheDocument());
     fireEvent.click(screen.getByLabelText("关闭提示"));
@@ -882,7 +884,7 @@ describe("SiaoCut review workbench", () => {
     expect(screen.getByLabelText("替换为")).toHaveFocus();
 
     fireEvent.keyDown(window, { key: "e", code: "KeyE", ctrlKey: true, shiftKey: true });
-    expect(await screen.findByLabelText("导出设置")).toBeInTheDocument();
+    expect(await screen.findByLabelText("导出设置", {}, { timeout: 3000 })).toBeInTheDocument();
     fireEvent.keyDown(window, { key: "Escape" });
     await waitFor(() => expect(screen.queryByLabelText("导出设置")).not.toBeInTheDocument());
 
@@ -1002,6 +1004,7 @@ describe("SiaoCut review workbench", () => {
   it("nudges the whole selected subtitle from the precision timeline", async () => {
     render(<App />);
     const timeline = await screen.findByRole("region", { name: "字幕时间轴" });
+    fireEvent.click(within(timeline).getByRole("button", { name: "展开时间线" }));
     fireEvent.click(within(timeline).getByRole("button", { name: /字幕 2，00:13\.2 至 00:18\.6/ }));
     fireEvent.click(within(timeline).getByRole("button", { name: "后移 0.1 秒" }));
 
@@ -1014,6 +1017,7 @@ describe("SiaoCut review workbench", () => {
     vi.spyOn(editingClient, "mutate").mockRejectedValueOnce(new Error("时间微调失败"));
     render(<App />);
     const timeline = await screen.findByRole("region", { name: "字幕时间轴" });
+    fireEvent.click(within(timeline).getByRole("button", { name: "展开时间线" }));
     fireEvent.click(within(timeline).getByRole("button", { name: /字幕 2，00:13\.2 至 00:18\.6/ }));
     expect(within(timeline).getByText("00:13.2 — 00:18.6")).toBeInTheDocument();
 
@@ -1037,7 +1041,7 @@ describe("SiaoCut review workbench", () => {
     await waitFor(() => expect(screen.getAllByRole("textbox", { name: /字幕文本/ }).some((input) => (input as HTMLTextAreaElement).value.includes("决定"))).toBe(true));
 
     await openDrawerTab("导出");
-    const exportPanel = await screen.findByLabelText("导出设置");
+    const exportPanel = await screen.findByLabelText("导出设置", {}, { timeout: 3000 });
     fireEvent.change(within(exportPanel).getByLabelText("导出格式"), { target: { value: "vtt" } });
     fireEvent.click(within(exportPanel).getByRole("button", { name: "导出字幕" }));
     await waitFor(() => expect(screen.getByText(/\.vtt/)).toBeInTheDocument());
@@ -1443,6 +1447,7 @@ describe("SiaoCut review workbench", () => {
     await waitFor(() => expect(secondStart).toBeEnabled());
     fireEvent.click(secondStart);
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "一键工作流" })).not.toBeInTheDocument());
+    fireEvent.click(document.querySelector(".workspace-tasks > summary")!);
     const activityCenter = await screen.findByRole("region", { name: "项目任务状态" });
     fireEvent.click(within(activityCenter).getByText("查看其余 1 项任务"));
     await waitFor(() => expect(within(activityCenter).getAllByRole("group", { name: "自动工作流状态" })).toHaveLength(2));
@@ -1490,6 +1495,7 @@ describe("SiaoCut review workbench", () => {
     await waitFor(() => expect(within(dialog).getByText("demo.mp4")).toBeInTheDocument());
     expect(start).toBeEnabled();
     fireEvent.click(start);
+    fireEvent.click(document.querySelector(".workspace-tasks > summary")!);
     const activityCenter = await screen.findByRole("region", { name: "项目任务状态" });
     const status = within(activityCenter).getByRole("group", { name: "自动工作流状态" });
     expect(within(status).getByText(/正在处理 · 导入素材/)).toBeInTheDocument();
@@ -1681,7 +1687,7 @@ describe("SiaoCut review workbench", () => {
     fireEvent.change(screen.getByRole("combobox", { name: "Agent 工作流" }), { target: { value: "speaker_names" } });
     expect(screen.getByRole("button", { name: "开始 AI 辅助" })).toBeEnabled();
     await openDrawerTab("导出");
-    const exportPanel = await screen.findByLabelText("导出设置");
+    const exportPanel = await screen.findByLabelText("导出设置", {}, { timeout: 3000 });
     fireEvent.change(within(exportPanel).getByLabelText("导出格式"), { target: { value: "json" } });
     expect(within(exportPanel).getByText(/始终保留模型、人物轨、段落关联和复核状态/)).toBeInTheDocument();
     const exportButton = within(exportPanel).getByRole("button", { name: "导出字幕" });

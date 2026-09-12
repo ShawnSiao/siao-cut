@@ -14,6 +14,7 @@ export function EditingStatus({ session, projectId, closeError, onCancelClose, o
   return <section className="editing-status" aria-label={zh ? "编辑保存状态" : "Editing save status"}>
     <span role="status">{dirty.length ? `${dirty.length} ${zh ? "项尚未保存" : "unsaved edits"}` : zh ? "已保存" : "Saved"}</span>
     {dirty.length > 0 && <button onClick={() => action(session.flush(projectId))}>{zh ? "立即保存" : "Save now"}</button>}
+    {(problems.length > 0 || session.restoreError || actionError) && <div className="editing-problems">
     {(session.restoreError || actionError) && <p role="alert">{session.restoreError ?? actionError}</p>}
     {problems.map(([key, state]) => <details key={key} open className="editing-conflict">
       <summary>{state.status === "conflict" ? (zh ? "草稿需要核对" : "Review draft") : (zh ? "保存失败" : "Save failed")} · {state.draft.field}</summary>
@@ -23,6 +24,7 @@ export function EditingStatus({ session, projectId, closeError, onCancelClose, o
       {state.status === "conflict" ? <button onClick={() => action(session.keepDraft(key))}>{zh ? "以此草稿保存" : "Save this draft"}</button> : <button onClick={() => action(session.save(key))}>{zh ? "重试保存" : "Retry save"}</button>}
       <button onClick={() => action(session.discard(key))}>{zh ? "使用当前内容" : "Use current content"}</button>
     </details>)}
+    </div>}
     {closeError && <Dialog label={zh ? "关闭前保存失败" : "Unable to save before closing"} className="editing-close-error" onClose={onCancelClose}><p role="alert">{closeError}</p><button onClick={() => action(session.flush().then(onCloseWithDrafts))}>{zh ? "重试并退出" : "Retry and exit"}</button><button onClick={() => action(onCloseWithDrafts())}>{zh ? "保留草稿后退出" : "Keep drafts and exit"}</button><button data-dialog-initial-focus onClick={onCancelClose}>{zh ? "继续编辑" : "Keep editing"}</button></Dialog>}
   </section>;
 }

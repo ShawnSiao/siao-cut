@@ -21,10 +21,10 @@ export type TimelinePreferencesV1 = {
 
 export const DEFAULT_TIMELINE_PREFERENCES: TimelinePreferencesV1 = {
   version: 1,
-  expanded: true,
+  expanded: false,
   mode: "edit",
   zoom: 1.6,
-  followPlayhead: true,
+  followPlayhead: false,
 };
 
 export type TimelineReviewMarker = {

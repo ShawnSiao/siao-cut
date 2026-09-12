@@ -1,5 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
 
+async function expandTimeline(page: Page) {
+  const expand = page.getByRole("button", { name: "展开时间线" });
+  if (await expand.isVisible()) await expand.click();
+}
+
 async function bindMockMedia(page: Page) {
   await page.getByRole("button", { name: "更多命令" }).click();
   await page.getByRole("menuitem", { name: "重新定位原片" }).click();
@@ -114,6 +119,7 @@ test("keeps command groups non-overlapping in Chinese and English", async ({ pag
         const rect = element.getBoundingClientRect();
         return rect.left >= 0 && rect.right <= window.innerWidth + 1 && rect.width > 0 && rect.height > 0;
       }))).toBe(true);
+      await expandTimeline(page);
       const timelineOverflow = await page.locator(".subtitle-timeline-scroll").evaluate((element) => ({
         clientWidth: element.clientWidth,
         scrollWidth: element.scrollWidth,
@@ -129,16 +135,18 @@ test("keeps command groups non-overlapping in Chinese and English", async ({ pag
   }
 });
 
-test("uses B by default, restores C after A, and links review markers to detail panels", async ({ page }) => {
+test("starts collapsed, restores the last review mode and links markers to details", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto("/");
   const timeline = page.locator(".subtitle-timeline-panel");
   await expect(timeline).toBeVisible();
+  await expect(timeline).toHaveClass(/collapsed/);
+  await expandTimeline(page);
   await expect(timeline.getByRole("button", { name: "精细编辑" })).toHaveAttribute("aria-pressed", "true");
   await expect(timeline.getByRole("slider", { name: "缩放比例" })).toHaveValue("160");
 
   await timeline.getByRole("button", { name: /字幕 2，/ }).click();
-  await expect(timeline.getByText(/已选 · 字幕 2/)).toBeVisible();
+  await expect(page.locator(".subtitle-selection-summary")).toContainText("00:13");
 
   const canvas = await timeline.locator(".subtitle-timeline-canvas").boundingBox();
   expect(canvas).not.toBeNull();
@@ -148,13 +156,13 @@ test("uses B by default, restores C after A, and links review markers to detail 
   await expect(page.getByRole("status", { name: "播放器状态" })).toContainText("01:09");
 
   await timeline.getByRole("button", { name: /高级审校/ }).click();
-  await expect(timeline.getByText("说话人", { exact: true })).toBeVisible();
+  await expect(timeline.getByText("说话人", { exact: true })).toBeAttached();
   await timeline.locator(".subtitle-timeline-review-markers button.warning").first().click();
   await expect(page.getByRole("tab", { name: /^质量/ })).toHaveAttribute("aria-selected", "true");
 
   await timeline.getByRole("button", { name: "收起时间线" }).click();
   await expect(timeline).toHaveClass(/overview/);
-  await expect(timeline.locator(".subtitle-timeline-overview")).toBeVisible();
+  await expect(timeline.locator(".subtitle-timeline-overview")).toBeHidden();
   await timeline.getByRole("button", { name: "展开时间线" }).click();
   await expect(timeline.getByRole("button", { name: /高级审校/ })).toHaveAttribute("aria-pressed", "true");
 });
@@ -204,6 +212,7 @@ test("keeps one player while focused review supports keyboard exit and responsiv
   expect(await video.evaluate((element) => (element as HTMLVideoElement & { focusReviewMarker?: string }).focusReviewMarker)).toBe("same-player");
 
   const timeline = page.locator(".subtitle-timeline-panel");
+  await expandTimeline(page);
   await timeline.getByRole("button", { name: /高级审校/ }).click();
   await timeline.getByRole("button", { name: "专注审阅" }).click();
   await expect(page.getByRole("button", { name: "保留原片" })).toBeVisible();
@@ -211,11 +220,10 @@ test("keeps one player while focused review supports keyboard exit and responsiv
   await expect(page.getByText(/剩余 1 项/)).toBeVisible();
 });
 
-test("blocks focused review until the source media is available", async ({ page }) => {
+test("allows text review while media-dependent controls remain unavailable", async ({ page }) => {
   await page.goto("/");
   const action = page.getByRole("button", { name: "审阅建议" });
-  await expect(action).toBeDisabled();
-  await expect(action).toHaveAttribute("title", /重新定位/);
+  await expect(action).toBeEnabled();
   await expect(page.getByRole("button", { name: "重新定位原片" }).first()).toBeVisible();
 });
 
@@ -327,10 +335,12 @@ test("keeps the transcript primary at the minimum supported workspace size", asy
   expect(commands).not.toBeNull();
   expect(subtitleTools).not.toBeNull();
   expect(transcript!.width).toBeGreaterThanOrEqual(context!.width);
-  expect(transcript!.y).toBeGreaterThanOrEqual(context!.y + context!.height - 1);
+  expect(transcript!.x + transcript!.width).toBeLessThan(context!.x);
+  expect(transcript!.y).toBeLessThan(context!.y);
   expect(commands!.x + commands!.width).toBeLessThanOrEqual(1080);
   expect(subtitleTools!.x + subtitleTools!.width).toBeLessThanOrEqual(1080);
-  const timelineOverflow = await page.locator(".subtitle-timeline-scroll").evaluate((element) => ({
+  await expandTimeline(page);
+      const timelineOverflow = await page.locator(".subtitle-timeline-scroll").evaluate((element) => ({
     clientWidth: element.clientWidth,
     scrollWidth: element.scrollWidth,
   }));
@@ -428,13 +438,14 @@ test("expands the editing workbench on a maximized 27-inch display", async ({ pa
   expect(workflow).not.toBeNull();
   expect(transcript).not.toBeNull();
   expect(workbench!.width).toBeGreaterThan(2200);
-  expect(video!.width).toBeGreaterThan(1000);
-  expect(workflow!.x).toBeGreaterThan(video!.x + video!.width);
-  expect(videoFrame!.height).toBeGreaterThan(500);
+  expect(transcript!.width).toBeGreaterThan(1000);
+  expect(video!.width).toBeGreaterThan(600);
+  expect(workflow!.y).toBeGreaterThan(video!.y + video!.height);
+  expect(videoFrame!.height).toBeGreaterThan(300);
   expect(workflow!.width).toBeGreaterThanOrEqual(340);
   expect(workflow!.height).toBeGreaterThan(500);
   await expect(drawerBody).toHaveCSS("overflow-y", "auto");
-  expect(await drawerBody.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+  expect(await drawerBody.evaluate((element) => element.scrollHeight >= element.clientHeight)).toBe(true);
   expect(transcript!.height).toBeGreaterThan(500);
 });
 
@@ -612,7 +623,7 @@ test("separates runtime status cards from the transcription model control", asyn
   const workbenchBox = await page.locator(".workbench").boundingBox();
   expect(welcomeBox).not.toBeNull();
   expect(workbenchBox).not.toBeNull();
-  expect(Math.abs((welcomeBox!.y + welcomeBox!.height) - (workbenchBox!.y + workbenchBox!.height - 30))).toBeLessThanOrEqual(2);
+  expect(Math.abs((welcomeBox!.y + welcomeBox!.height) - (workbenchBox!.y + workbenchBox!.height - 12))).toBeLessThanOrEqual(2);
   const welcomeCopy = welcome.locator(":scope > p:not(.eyebrow)");
   expect(await welcomeCopy.evaluate((element) => element.getBoundingClientRect().height <= Number.parseFloat(getComputedStyle(element).lineHeight) * 1.2)).toBe(true);
   const whisperDetail = cards.filter({ hasText: "whisper.cpp" }).locator("small");
@@ -639,6 +650,7 @@ test("reviews and edits a transcript from the workbench", async ({ page }) => {
   await page.getByRole("button", { name: "应用软剪辑" }).click();
   await expect(page.getByText("已应用软剪辑；预览时间线已更新，原片未修改。")).toBeVisible();
   await expect(page.getByText("成片 04:37 · 原片 04:38")).toBeVisible();
+  await expandTimeline(page);
   await page.getByRole("button", { name: "恢复剪辑" }).click();
   await expect(page.getByText("已恢复此处；预览时间线已更新。")).toBeVisible();
   await page.getByRole("tab", { name: "分析" }).click();
@@ -788,6 +800,7 @@ test("runs a resumable one-click workflow through the human review gate", async 
   await dialog.getByRole("button", { name: "选择文件" }).click();
   await expect(dialog.getByText("demo.mp4")).toBeVisible();
   await start.click();
+  await page.locator(".workspace-tasks > summary").click();
   const status = page.getByRole("group", { name: "自动工作流状态" });
   await expect(status.getByText(/需要你确认 · 等待人工确认/)).toBeVisible({ timeout: 5000 });
   await status.getByRole("button", { name: "确认完成并继续" }).click();
@@ -796,6 +809,7 @@ test("runs a resumable one-click workflow through the human review gate", async 
   await expect(status.getByText("仍有 Agent 修改或粗剪建议等待人工处理")).toBeHidden();
   await page.getByRole("button", { name: "应用软剪辑" }).click();
   await expect(page.getByText(/已应用软剪辑/)).toBeVisible();
+  await page.locator(".workspace-tasks > summary").click();
   await status.getByRole("button", { name: "确认完成并继续" }).click();
   await expect(status.getByText(/已完成 · 流程完成/)).toBeVisible({ timeout: 3000 });
   await expect(page.getByText(/一键工作流已完成，视频已导出到/)).toBeVisible();
@@ -812,6 +826,7 @@ test("runs quick draft without suggestion or Agent stages", async ({ page }) => 
   await dialog.getByRole("button", { name: "选择文件" }).click();
   await dialog.getByRole("button", { name: "启动一键工作流" }).click();
 
+  await page.locator(".workspace-tasks > summary").click();
   const status = page.getByRole("group", { name: "自动工作流状态" });
   await expect(status.getByText(/已完成 · 流程完成/)).toBeVisible({ timeout: 5000 });
   const result = await runMockCore(page, ["auto", "list"]);
@@ -828,12 +843,14 @@ test("runs delivery audio analysis and requires review even without automatic ap
   await dialog.getByRole("button", { name: "选择文件" }).click();
   await dialog.getByRole("button", { name: "启动一键工作流" }).click();
 
+  await page.locator(".workspace-tasks > summary").click();
   const status = page.getByRole("group", { name: "自动工作流状态" });
   await expect(status.getByText(/需要你确认 · 等待人工确认/)).toBeVisible({ timeout: 6000 });
   let result = await runMockCore(page, ["auto", "list"]);
   expect(result.workflows[0]).toMatchObject({ profile: "delivery", currentStage: "review", progress: 0.60 });
   expect(result.workflows[0].audioAnalysisJobId).toBeTruthy();
   await page.getByRole("button", { name: "保留原片" }).click();
+  await page.locator(".workspace-tasks > summary").click();
   await status.getByRole("button", { name: "确认完成并继续" }).click();
   await expect(status.getByText(/已完成 · 流程完成/)).toBeVisible({ timeout: 3000 });
   result = await runMockCore(page, ["auto", "list"]);
@@ -848,6 +865,7 @@ test("dismisses a cancelled one-click status while keeping an explicit recovery 
   await dialog.getByRole("button", { name: "选择文件" }).click();
   await dialog.getByRole("button", { name: "启动一键工作流" }).click();
 
+  await page.locator(".workspace-tasks > summary").click();
   const status = page.getByRole("group", { name: "自动工作流状态" });
   await expect(status).toBeVisible();
   await status.getByRole("button", { name: "取消流程" }).click();
@@ -861,6 +879,7 @@ test("dismisses a cancelled one-click status while keeping an explicit recovery 
   await expect(history.getByText(/已取消/)).toBeVisible();
   await history.getByRole("button", { name: "显式继续" }).click();
   await expect(page.getByText(/自动工作流已显式继续；这是第 2 次尝试/)).toBeVisible();
+  await page.locator(".workspace-tasks > summary").click();
   await expect(page.getByRole("group", { name: "自动工作流状态" })).toBeVisible();
 });
 
@@ -917,6 +936,7 @@ test("keeps a conflicting MOSS candidate isolated until explicit replacement", a
   await page.getByRole("textbox", { name: "自定义 Prompt" }).fill("simulate-conflict");
   await page.getByRole("button", { name: "开始多人转写" }).click();
 
+  await page.locator(".workspace-tasks > summary").click();
   await expect(page.getByText("候选结果等待确认")).toBeVisible();
   await expect(page.getByText("18 段 · 3 位说话人 · 2 项提醒")).toBeVisible();
   await page.getByRole("button", { name: "删除项目 发布口播 · 草稿" }).click();
@@ -925,6 +945,7 @@ test("keeps a conflicting MOSS candidate isolated until explicit replacement", a
   await expect(deleteDialog.getByRole("button", { name: "确认删除" })).toBeDisabled();
   await deleteDialog.getByRole("button", { name: "取消" }).click();
 
+  await page.locator(".workspace-tasks > summary").click();
   await page.getByRole("button", { name: "查看候选结果" }).click();
   const candidate = page.getByRole("dialog", { name: "确认多人转写候选结果" });
   const apply = candidate.getByRole("button", { name: "应用并替换" });

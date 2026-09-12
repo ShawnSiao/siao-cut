@@ -1,3 +1,4 @@
+import { cycleWorkbenchFocus, useTranscriptNavigation } from "./use-transcript-navigation";
 import { aiApprovalClient } from "../domains/ai-approval-client";
 import { useEditingSession } from "../features/editing/use-editing-session";
 import { EditingStatus } from "../features/editing/EditingStatus";
@@ -146,7 +147,7 @@ export function resolvePlaybackDuration(mediaDuration: number, fallbackDuration:
 const isValidAgentIdentity = (value: string) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value);
 const TranscriptionCandidateDialog = lazy(() => import("../components/transcription-candidate-dialog"));
 const ExportPanel = lazy(() => import("../components/export-panel"));
-const WorkbenchActivityCenter = lazy(() => import("./workbench-activity-center"));
+const WorkbenchTaskMenu = lazy(() => import("./workbench-task-menu"));
 const FocusReviewPanel = lazy(() => import("./focus-review-panel"));
 const FocusReviewToolbar = lazy(() => import("./focus-review-panel").then((module) => ({ default: module.FocusReviewToolbar })));
 const SubtitleTimelinePanel = lazy(() => import("./subtitle-timeline-panel").then((module) => ({ default: module.SubtitleTimelinePanel }))); const AutoWorkflowProfileSelector = lazy(() => import("./auto-workflow-profile-selector"));
@@ -306,7 +307,8 @@ function WorkbenchController() {
     const [showRuntime, setShowRuntime] = useState(false);
     const [showExportPanel, setShowExportPanel] = useState(false);
     const [drawerTab, setDrawerTab] = useState<"review" | "quality" | "analysis" | "history" | "export">("review");
-    const [playerExpanded, setPlayerExpanded] = useState(true);
+    const [playerExpanded, setPlayerExpanded] = useState(false);
+    const [navigationCollapsed, setNavigationCollapsed] = useState(false);
     const [reviewFocusDetailId, setReviewFocusDetailId] = useState<string | null>(null);
     const [showSubtitleSafeArea, setShowSubtitleSafeArea] = useState(true);
     const [showMoreMenu, setShowMoreMenu] = useState(false);
@@ -349,6 +351,7 @@ function WorkbenchController() {
     const [cutPadding, setCutPadding] = useState<30 | 100 | 200>(100);
     const [cutPreview, setCutPreview] = useState<CutPreview | null>(null);
     const [playback, setPlayback] = useState({ playing: false, currentTime: 0, duration: 0 });
+    const transcriptNavigation = useTranscriptNavigation(project, playback.currentTime, playback.playing);
     const [deleteCandidate, setDeleteCandidate] = useState<Project | null>(null);
     const [deleteBusy, setDeleteBusy] = useState(false);
     const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -1206,6 +1209,7 @@ function WorkbenchController() {
         return () => window.cancelAnimationFrame(frame);
     }, [drawerTab, reviewFocusDetailId]);
     const selectSegment = (segment: Segment) => {
+        transcriptNavigation.locate(segment.id);
         setSelectedId(segment.id);
         setSelectedSegmentIds([segment.id]);
         setSelectionAnchorId(segment.id);
@@ -2569,6 +2573,7 @@ function WorkbenchController() {
                 commandMoreRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
                 return;
             }
+            if (!dialogOpen && event.key === "F6" && !event.isComposing) { event.preventDefault(); cycleWorkbenchFocus(event.shiftKey); return; }
             if (!dialogOpen && modifier && key === "f") {
                 event.preventDefault();
                 searchInputRef.current?.focus();
@@ -3057,8 +3062,6 @@ function WorkbenchController() {
         : !capabilities.hasTranscript || transcriptionActive ? "transcribe"
             : agentRunActive ? "agent"
                 : actionableReviewCount > 0 ? "review" : "export";
-    const creatorSteps = ["prepare", "transcribe", "agent", "review", "export"] as const;
-    const creatorStepIndex = creatorSteps.indexOf(creatorPhase);
     const runCreatorPrimaryAction = () => {
         if (!project) {
             void importMedia();
@@ -3086,17 +3089,17 @@ function WorkbenchController() {
         : !capabilities.hasTranscript ? tr("app.creator.action.transcribe")
             : agentRunActive ? tr("app.creator.action.viewAgent")
                 : actionableReviewCount > 0 ? tr("app.creator.action.review") : tr("app.creator.action.checkExport");
-    return (<main className={`app-shell${focusReview ? " focus-review" : ""}`}>
+    return (<main className={`app-shell${focusReview ? " focus-review" : ""}${navigationCollapsed ? " navigation-collapsed" : ""}`}>
       <aside className="rail">
-        <div className="brand"><span className="brand-mark">S</span><span>SiaoCut</span></div>
+        <div className="brand"><span className="brand-mark">S</span><span>SiaoCut</span><button className="navigation-toggle" aria-label={uiLocale === "zh-CN" ? "切换项目导航" : "Toggle project navigation"} aria-expanded={!navigationCollapsed} onClick={() => setNavigationCollapsed((value) => !value)}><ChevronRight size={15}/></button></div>
         <div className="new-project-actions">
-          <button className="new-project auto" aria-label={tr("app.s0237")} disabled={projectTransitionLocked} onClick={importMedia}><FolderPlus size={16}/>{tr("app.creator.action.import")}</button>
-          <details className="rail-advanced-actions"><summary><Settings2 size={14}/>{tr("app.creator.advanced")}</summary><div><button ref={sourceButtonRef} disabled={projectTransitionLocked} onClick={() => setShowSourceImport(true)}><Link2 size={14}/>{tr("app.s0238")}</button><button ref={autoButtonRef} disabled={projectTransitionLocked} onClick={() => setShowAutoWorkflow(true)}><Sparkles size={14}/>{tr("app.s0236")}</button></div></details>
+          <button className="new-project auto" aria-label={tr("app.s0237")} disabled={projectTransitionLocked} onClick={importMedia}><FolderPlus size={16}/><span>{tr("app.creator.action.import")}</span></button>
+          <details className="rail-advanced-actions"><summary aria-label={tr("app.creator.advanced")}><Settings2 size={14}/><span>{tr("app.creator.advanced")}</span></summary><div><button aria-label={tr("app.s0238")} ref={sourceButtonRef} disabled={projectTransitionLocked} onClick={() => setShowSourceImport(true)}><Link2 size={14}/><span>{tr("app.s0238")}</span></button><button aria-label={tr("app.s0236")} ref={autoButtonRef} disabled={projectTransitionLocked} onClick={() => setShowAutoWorkflow(true)}><Sparkles size={14}/><span>{tr("app.s0236")}</span></button></div></details>
         </div>
         <div className="rail-heading">{tr("app.s0239")}</div>
         <nav aria-label={tr("app.s0240")}>
           {projects.map((item) => (<div className={`project-entry ${project?.id === item.id ? "active" : ""}`} key={item.id}>
-              <button className="project-link" disabled={projectTransitionLocked} onClick={() => switchProject(item.id)}>
+              <button className="project-link" title={item.title} aria-label={item.title} disabled={projectTransitionLocked} onClick={() => switchProject(item.id)}>
                 <span className="project-dot"/><span><strong>{item.title}</strong><small>{subtitleCountLabel(item.transcript.segments.length)}</small></span><ChevronRight size={14}/>
               </button>
               <button className="project-delete" disabled={projectTransitionLocked} aria-label={tr("app.s0242", { "0": item.title })} title={tr("app.s0243")} onClick={() => openDeleteDialog(item)}><Trash2 size={14}/></button>
@@ -3115,37 +3118,33 @@ function WorkbenchController() {
         <div className="privacy"><ShieldCheck size={15}/><span>{tr("app.s0246")}</span></div>
       </aside>
 
-      <section className={`workbench${project ? "" : " empty-workbench"}`}>
-        <EditingStatus session={editing.session} projectId={project?.id} closeError={editing.closeError} onCancelClose={editing.clearCloseError} onCloseWithDrafts={editing.closeWithDrafts}/>
+      <section className={`workbench${project ? "" : " empty-workbench"}${playerExpanded && !focusReview ? " preview-expanded" : ""}`}>
         {focusReview && project && <Suspense fallback={null}><FocusReviewToolbar remaining={focusReviewCount} subtitleMode={subtitleMode} translationPending={selectedTranslationPending} translationStale={selectedTranslationStale} onSubtitleModeChange={(mode) => { setSubtitleMode(mode); setConfirmStaleTranslation(false); }} onExit={() => exitFocusReview()}/></Suspense>}
         <header className="topbar">
-          <div className="topbar-heading"><p className="eyebrow">{tr("app.s0247")}</p><h1>{project?.title ?? tr("app.s0248")}</h1></div>
+          <div className="topbar-heading"><p className="eyebrow">{tr("app.s0247")}</p><h1 title={project?.title}>{project?.title ?? tr("app.s0248")}</h1><EditingStatus session={editing.session} projectId={project?.id} closeError={editing.closeError} onCancelClose={editing.clearCloseError} onCloseWithDrafts={editing.closeWithDrafts}/></div>
 	          <div className="command-bar creator-command-bar" aria-label={tr("app.s0249")}>
-	            <StatusBadge tone={humanStateTone}>{humanState}</StatusBadge>
+	            <StatusBadge tone={humanStateTone}>{humanState}</StatusBadge><Suspense fallback={null}><WorkbenchTaskMenu inputs={workbenchActivityInputs} actionsFor={activityActionsFor}/></Suspense>
 	            <div className="command-history" aria-label={tr("app.s0250")}>
 	              <IconButton label={tr("app.s0251")} shortcut="Ctrl+Z" disabled={!project?.history.canUndo || Boolean(busy)} onClick={() => navigateHistory("undo")}><Undo2 size={15}/></IconButton>
 	              <IconButton label={tr("app.s0252")} shortcut="Ctrl+Shift+Z" disabled={!project?.history.canRedo || Boolean(busy)} onClick={() => navigateHistory("redo")}><Redo2 size={15}/></IconButton>
 	            </div>
-	            <Button variant="primary" className="creator-primary-action" disabled={Boolean(busy) || (creatorPhase === "transcribe" && (!canStartTranscription || transcriptionActive)) || (creatorPhase === "review" && focusReviewCount > 0 && !mediaUrl)} title={creatorPhase === "transcribe" ? transcribeCapabilityTitle : creatorPhase === "review" && focusReviewCount > 0 && !mediaUrl ? tr("app.focusReview.mediaMissing") : undefined} onClick={runCreatorPrimaryAction}>{creatorPhase === "review" ? <ListChecks size={15}/> : creatorPhase === "export" ? <Download size={15}/> : <Sparkles size={15}/>} {creatorPrimaryLabel}</Button>
+	            <Button variant="primary" className="creator-primary-action" disabled={Boolean(busy) || (creatorPhase === "transcribe" && (!canStartTranscription || transcriptionActive))} title={creatorPhase === "transcribe" ? transcribeCapabilityTitle : undefined} onClick={runCreatorPrimaryAction}>{creatorPhase === "review" ? <ListChecks size={15}/> : creatorPhase === "export" ? <Download size={15}/> : <Sparkles size={15}/>} {creatorPrimaryLabel}</Button>
 	            <div className="command-more" ref={commandMoreRef}><IconButton label={tr("app.s0256")} onClick={() => setShowMoreMenu((current) => !current)}><MoreHorizontal size={17}/></IconButton>{showMoreMenu && <Suspense fallback={null}><AppCommandMenu canDetectSuggestions={Boolean(project?.transcript.words.length) && !busy} canPreparePreview={capabilities.canPreparePreview && !busy} canRelinkMedia={capabilities.canRelinkMedia && !busy} canRetranscribe={Boolean(project?.transcript.segments.length) && capabilities.hasBoundMedia && !busy} mediaCapabilityTitle={mediaCapabilityTitle} onDetectSuggestions={() => { setShowMoreMenu(false); void detectSuggestions(); }} onPreparePreview={() => { setShowMoreMenu(false); void preparePreview(); }} onRelinkMedia={() => { setShowMoreMenu(false); void relinkMedia(); }} onRetranscribe={() => { setShowMoreMenu(false); void openQuickRetranscription(); }}/></Suspense>}</div>
 	          </div>
 	        </header>
-	        <nav className="creator-flow" aria-label={tr("app.creator.flow.label")}>{creatorSteps.map((step, index) => <span key={step} className={index < creatorStepIndex ? "done" : index === creatorStepIndex ? "active" : "pending"}><i>{index < creatorStepIndex ? <Check size={12}/> : index + 1}</i>{tr(`app.creator.step.${step}`)}</span>)}</nav>
 
         {(notice || error) && <div className={`notice ${error ? "error" : ""}`} role="status" aria-live="polite">{error && <CircleAlert size={15}/>}<span>{error ? tr("app.error.unknownSummary") : notice}</span>{error && <details><summary>{tr("app.error.technicalDetails")}</summary><code>{error}</code></details>}{error && <button className="notice-action" onClick={() => void initialize()}>{tr("app.s0262")}</button>}<button aria-label={tr("app.s0263")} title={tr("app.s0263")} onClick={() => { setNotice(null); setError(null); }}>×</button></div>}
-        <Suspense fallback={null}><WorkbenchActivityCenter inputs={workbenchActivityInputs} actionsFor={activityActionsFor}/></Suspense>
 
         {!project ? (<section className="welcome-card">
             <div className="welcome-icon"><FileVideo2 size={30}/></div>
             <p className="eyebrow">{tr("app.s0281")}</p><h2>{tr("app.s0282")}</h2>
             <p>{tr("app.s0283")}</p>
             <RuntimeChecklist runtime={runtime} modelPath={modelPath} modelAvailable={modelPathAvailable} onChooseModel={chooseModel} compact/>
-	            <div className="welcome-actions"><button className="button primary" onClick={importMedia}><FolderPlus size={16}/>{tr("app.creator.action.import")}</button><button className="button quiet" onClick={() => setShowSourceImport(true)}><Link2 size={16}/>{tr("app.s0285")}</button></div>
+	            <div className="welcome-actions"><button className="button primary" onClick={importMedia}><FolderPlus size={16}/><span>{tr("app.creator.action.import")}</span></button><button className="button quiet" onClick={() => setShowSourceImport(true)}><Link2 size={16}/>{tr("app.s0285")}</button></div>
           </section>) : (<>
 	            <section className="stage-grid">
 	              <article className={`video-panel creator-player ${playerExpanded ? "expanded" : "collapsed"}`}>
 	                <header className="creator-player-header"><span><Play size={14}/><strong>{tr("app.creator.player.title")}</strong><small>{selected ? `${formatTime(selected.start)} — ${formatTime(selected.end)}` : tr("app.s0288")}</small></span><button aria-expanded={playerExpanded} onClick={() => setPlayerExpanded((current) => !current)}>{playerExpanded ? <ChevronUp size={14}/> : <ChevronDown size={14}/>}{playerExpanded ? tr("app.creator.player.collapse") : tr("app.creator.player.expand")}</button></header>
-	                {playerExpanded && <>
 	                <div className="video-frame">
                   {mediaUrl ? <video key={project.id} ref={videoRef} src={mediaUrl} controls preload="metadata" onLoadedMetadata={handleVideoLoadedMetadata} onPlay={() => setPlayback((current) => ({ ...current, playing: true }))} onPause={() => setPlayback((current) => ({ ...current, playing: false }))} onTimeUpdate={handleVideoTimeUpdate}/> : <div className="video-placeholder"><Play size={30}/><span>{tr("app.s0286")}</span></div>}
                   {showSubtitleSafeArea && (
@@ -3156,9 +3155,8 @@ function WorkbenchController() {
                     {captionSecondaryText && <span className="caption-secondary" style={{ color: project.subtitleStyle.secondaryColor, fontSize: `${Math.max(12, Math.round(project.subtitleStyle.secondaryFontSize * 0.36))}px` }}>{captionSecondaryText}</span>}
                   </div>}
                 </div>
-	                <div className="transport-summary"><Clock3 size={14}/><span>{selected ? `${formatTime(selected.start)} — ${formatTime(selected.end)}` : tr("app.s0288")}</span><span className="playback-state" role="status" aria-live="polite" aria-label={tr("app.playback.status")}>{playback.playing ? tr("app.playback.playing") : tr("app.playback.paused")} · {formatTime(playback.currentTime)} / {formatTime(playback.duration || project.media.durationSeconds || 0)}</span><button className="relink-media" onClick={relinkMedia}>{tr("app.s0258")}</button><span className="shortcut-hint">{tr("app.s0289")}</span><span className="spacer"/><span>{tr("app.composite.timelineSummary", { output: formatTime(project.timeline.outputDuration), source: formatTime(project.timeline.sourceDuration) })}</span></div>
+	                <div className="transport-summary"><Clock3 size={14}/><span>{selected ? `${formatTime(selected.start)} — ${formatTime(selected.end)}` : tr("app.s0288")}</span><span className="playback-state" role="status" aria-live="polite" aria-label={tr("app.playback.status")}>{playback.playing ? tr("app.playback.playing") : tr("app.playback.paused")} · {formatTime(playback.currentTime)} / {formatTime(playback.duration || project.media.durationSeconds || 0)}</span><button className="relink-media" onClick={relinkMedia}>{tr("app.s0258")}</button><span className="shortcut-hint">{tr("app.s0289")}</span><span className="spacer"/><span className="timeline-duration">{tr("app.composite.timelineSummary", { output: formatTime(project.timeline.outputDuration), source: formatTime(project.timeline.sourceDuration) })}</span></div>
 	                {audioRisks.length > 0 && <div className="audio-risk-strip" role="status"><CircleAlert size={14}/><strong>{tr("app.composite.audioRiskCount", { count: audioRisks.length })}</strong><span>{audioRiskLabel(audioRisks[0].kind)} · {formatTime(audioRisks[0].start)}</span><button onClick={() => locateAudioRisk(audioRisks[0])}>{tr("app.s0293")}</button></div>}
-	                </>}
 	              </article>
 
 	              <aside className="creator-drawer" aria-label={tr("app.creator.drawer.label")}>
@@ -3230,11 +3228,9 @@ function WorkbenchController() {
 	                </div>
 	              </aside>
 
-	            </section>
-
             <section className="editor-grid">
               <article className="transcript-panel">
-	                <header className="panel-header"><div><p className="eyebrow">{tr("app.s0332")}</p><h2>{tr("app.s0253")}</h2></div><div className="find-replace">{transcriptionMode === "multispeaker" && <button className="moss-transcribe-command" disabled={!canStartTranscription || transcriptionActive || Boolean(busy)} title={transcribeCapabilityTitle} onClick={transcribe}><Users size={12}/>{tr("app.moss.action.start")}</button>}<button ref={subtitleImportButtonRef} className="subtitle-import-command" disabled={Boolean(busy)} onClick={openSubtitleImport}><FileText size={12}/>{tr("app.s0333")}</button><button className="detect-suggestions" disabled={!project.transcript.words.length || Boolean(busy)} onClick={detectSuggestions}><Scissors size={12}/>{tr("app.s0334")}</button><label className="search"><Search size={14}/><input ref={searchInputRef} value={search} onChange={(event) => { setSearch(event.target.value); setEmptyReplacementConfirmed(false); }} placeholder={tr("app.s0335")} title="Ctrl+F"/></label><input ref={replacementInputRef} aria-label={tr("app.s0336")} value={replacement} onChange={(event) => { setReplacement(event.target.value); setEmptyReplacementConfirmed(false); }} placeholder={tr("app.s0336")} title="Ctrl+H"/>{search && <span className="replace-match-count">{tr("app.replace.matches", { count: replaceMatchCount })}</span>}{search && !replacement && <label className="replace-empty-confirm"><input type="checkbox" checked={emptyReplacementConfirmed} onChange={(event) => setEmptyReplacementConfirmed(event.target.checked)}/><span>{tr("app.replace.confirmDelete")}</span></label>}<button disabled={!search || (!replacement && !emptyReplacementConfirmed) || Boolean(busy)} onClick={replaceAll}>{tr("app.s0337")}</button></div></header>
+	                <header className="panel-header"><div><h2>{uiLocale === "zh-CN" ? "字幕文稿" : "Transcript"}</h2><label className="transcript-follow"><input type="checkbox" checked={transcriptNavigation.followPlayback} onChange={(event) => transcriptNavigation.setFollowPlayback(event.target.checked)}/>{uiLocale === "zh-CN" ? "跟随播放" : "Follow playback"}</label></div><div className="find-replace">{transcriptionMode === "multispeaker" && <button className="moss-transcribe-command" disabled={!canStartTranscription || transcriptionActive || Boolean(busy)} title={transcribeCapabilityTitle} onClick={transcribe}><Users size={12}/>{tr("app.moss.action.start")}</button>}<button ref={subtitleImportButtonRef} className="subtitle-import-command" disabled={Boolean(busy)} onClick={openSubtitleImport}><FileText size={12}/>{tr("app.s0333")}</button><button className="detect-suggestions" disabled={!project.transcript.words.length || Boolean(busy)} onClick={detectSuggestions}><Scissors size={12}/>{tr("app.s0334")}</button><label className="search"><Search size={14}/><input ref={searchInputRef} value={search} onChange={(event) => { setSearch(event.target.value); setEmptyReplacementConfirmed(false); }} placeholder={tr("app.s0335")} title="Ctrl+F"/></label><input ref={replacementInputRef} aria-label={tr("app.s0336")} value={replacement} onChange={(event) => { setReplacement(event.target.value); setEmptyReplacementConfirmed(false); }} placeholder={tr("app.s0336")} title="Ctrl+H"/>{search && <span className="replace-match-count">{tr("app.replace.matches", { count: replaceMatchCount })}</span>}{search && !replacement && <label className="replace-empty-confirm"><input type="checkbox" checked={emptyReplacementConfirmed} onChange={(event) => setEmptyReplacementConfirmed(event.target.checked)}/><span>{tr("app.replace.confirmDelete")}</span></label>}<button disabled={!search || (!replacement && !emptyReplacementConfirmed) || Boolean(busy)} onClick={replaceAll}>{tr("app.s0337")}</button></div></header>
                 <div className="transcript-meta"><span>{tr("app.s0338")}</span><span>{tr("app.composite.transcriptStats", { language: project.transcript.sourceLanguage.toUpperCase(), segments: segmentCountLabel(project.transcript.segments.length), words: wordCountLabel(project.transcript.words.length) })}</span></div>
                 {transcriptionMode === "multispeaker" && <details className="moss-advanced"><summary>{tr("app.moss.advanced.title")}</summary><div><label><span>{tr("app.moss.advanced.prompt")}</span><textarea value={transcriptionPrompt} maxLength={1200} onChange={(event) => setTranscriptionPrompt(event.target.value)} placeholder={tr("app.moss.advanced.promptPlaceholder")}/></label><label><span>{tr("app.moss.advanced.hotwords")}</span><input value={transcriptionHotwords} maxLength={500} onChange={(event) => setTranscriptionHotwords(event.target.value)} placeholder={tr("app.moss.advanced.hotwordsPlaceholder")}/></label><p>{tr("app.moss.advanced.experimental")}</p></div></details>}
                 {mossWordTimingUnavailable && <div className="capability-notice"><CircleAlert size={14}/><span><strong>{tr("app.moss.words.unavailable")}</strong><small>{tr("app.moss.words.explanation")}</small></span></div>}
@@ -3263,13 +3259,15 @@ function WorkbenchController() {
                     <button disabled={!selectedSegments.length || Boolean(busy)} title={tr("app.s0355")} onClick={() => openStructureEdit("offset")}><MoveHorizontal size={13}/>{tr("app.s0356")}</button>
                   </div>
                 </section>
-                <div className="segment-list" aria-label={tr("app.s0365")}>
-                  {filteredSegments.map((segment) => { const association = associationBySegment.get(segment.id); return <SegmentRow editingSession={editing.session} projectId={project.id} key={segment.id} segment={segment} speaker={association ? speakerById.get(association.speakerId) : undefined} speakerManual={association?.source === "manual"} selected={selectedSegmentIds.includes(segment.id)} active={segment.id === selectedId} translation={translation?.[1]} translationLanguage={translation?.[0]} onSelect={(mode) => selectSegmentInWorkbench(segment, mode)} onSave={(text) => editSegment(segment, text)} onSaveTranslation={(text) => editTranslationSegment(segment, text)} onSplitAt={(text, offset) => void splitSegmentFromEditor(segment, text, offset)} onMergePrevious={(text) => void mergePreviousFromEditor(segment, text)}/>; })}
+                <div ref={transcriptNavigation.listRef} className="segment-list" aria-label={tr("app.s0365")}>
+                  {filteredSegments.map((segment) => { const association = associationBySegment.get(segment.id); return <SegmentRow playbackActive={segment.id === transcriptNavigation.playbackSegmentId} editingSession={editing.session} projectId={project.id} key={segment.id} segment={segment} speaker={association ? speakerById.get(association.speakerId) : undefined} speakerManual={association?.source === "manual"} selected={selectedSegmentIds.includes(segment.id)} active={segment.id === selectedId} translation={translation?.[1]} translationLanguage={translation?.[0]} onSelect={(mode) => selectSegmentInWorkbench(segment, mode)} onSave={(text) => editSegment(segment, text)} onSaveTranslation={(text) => editTranslationSegment(segment, text)} onSplitAt={(text, offset) => void splitSegmentFromEditor(segment, text, offset)} onMergePrevious={(text) => void mergePreviousFromEditor(segment, text)}/>; })}
                   {!filteredSegments.length && <p className="empty-list">{project.transcript.segments.length ? tr("app.s0366") : tr("app.s0367")}</p>}
                 </div>
               </article>
 
 	            </section>
+
+            </section>
 
             <Suspense fallback={null}><SubtitleTimelinePanel
               project={project}
@@ -3291,7 +3289,7 @@ function WorkbenchController() {
               }}
               onOpenReviewDetail={openTimelineReviewDetail}
               onRestoreCut={(editId) => void updateCut(editId, "restore")}
-              canEnterFocusReview={Boolean(mediaUrl)}
+              canEnterFocusReview={Boolean(project)}
               onEnterFocusReview={enterFocusReview}
             /></Suspense>
           </>)}
