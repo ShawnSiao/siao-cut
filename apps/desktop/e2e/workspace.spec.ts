@@ -14,7 +14,20 @@ for (const viewport of [{ width: 1440, height: 940 }, { width: 1080, height: 720
     expect(await page.evaluate(() => ({ y: window.scrollY, overflow: document.documentElement.scrollWidth > innerWidth }))).toEqual({ y: 0, overflow: false });
     await page.getByRole("button", { name: "展开时间线" }).click();
     const timeline = await page.locator(".subtitle-timeline-panel").boundingBox();
-    expect(timeline!.height).toBeLessThanOrEqual(Math.min(181, viewport.height * 0.35));
+    expect(timeline!.height).toBeGreaterThanOrEqual(280);
+    expect(timeline!.height).toBeLessThanOrEqual(viewport.height * 0.45);
+    // Subtitle text must fit before any vertical scrolling in either mode.
+    for (const mode of ["精细编辑", "高级审校"]) {
+      await page.locator(".subtitle-timeline-modes").getByRole("button", { name: mode }).click();
+      const geometry = await page.locator(".subtitle-timeline-scroll").evaluate(scroll => {
+        const text = scroll.querySelector(".subtitle-timeline-segment > span:last-child")!;
+        const bounds = text.getBoundingClientRect(), viewport = scroll.getBoundingClientRect();
+        return { top: bounds.top - viewport.top, bottom: bounds.bottom - viewport.top, height: scroll.clientHeight, fontSize: parseFloat(getComputedStyle(text).fontSize) };
+      });
+      expect(geometry.top).toBeGreaterThanOrEqual(0);
+      expect(geometry.bottom).toBeLessThanOrEqual(geometry.height);
+      expect(geometry.fontSize).toBeGreaterThanOrEqual(14);
+    }
     expect(timeline!.y + timeline!.height).toBeLessThanOrEqual(viewport.height);
     const editor = page.locator(".segment-row").nth(1).getByRole("textbox").first();
     await editor.fill("长字幕和中英文内容 mixed text ".repeat(20));
