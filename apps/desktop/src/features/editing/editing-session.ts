@@ -2,7 +2,7 @@ import type { Draft, EditReceipt, ProjectMutation, ProjectOperation, SaveEdit } 
 import type { CoreEnvelope, Project } from "../../types";
 
 export type SaveStatus = "saved" | "dirty" | "saving" | "failed" | "conflict";
-export type DraftState = { draft: Draft; status: SaveStatus; journaled: boolean; error: string | null; currentText: string; composing: boolean; groupId: string; request?: SaveEdit };
+export type DraftState = { draft: Draft; status: SaveStatus; journaled: boolean; error: string | null; errorCode?: string; currentText: string; composing: boolean; groupId: string; request?: SaveEdit };
 export type EditingTransport = {
   journal(draft: Draft): Promise<void>;
   list(projectId: string): Promise<Draft[]>;
@@ -35,7 +35,7 @@ export class EditingSession {
   private emit() { if (this.batching) { this.pendingEmission = true; return; } this.revision++; this.listeners.forEach((listener) => listener()); }
   state(key: string) { return this.fields.get(key); }
   entries(projectId?: string) { return [...this.fields.entries()].filter(([, value]) => !projectId || value.draft.projectId === projectId); }
-  private set(key: string, patch: Partial<DraftState>) { const value = this.fields.get(key); if (value) { this.fields.set(key, { ...value, ...patch }); this.emit(); } }
+  private set(key: string, patch: Partial<DraftState>) { const value = this.fields.get(key); if (value) { this.fields.set(key, { ...value, ...(Object.hasOwn(patch, "error") ? { errorCode: undefined } : {}), ...patch }); this.emit(); } }
 
   observe(project: Project) {
     this.batching = true;
@@ -105,7 +105,7 @@ export class EditingSession {
     const draft = { ...state.draft };
     const next = (this.journalChains.get(key) ?? Promise.resolve()).catch(() => {}).then(async () => {
       try { await this.transport.journal(draft); if (this.fields.get(key)?.draft.revision === draft.revision) this.set(key, { journaled: true }); }
-      catch (error) { this.set(key, { status: "failed", error: String(error), journaled: false }); throw error; }
+      catch (error) { if (this.fields.get(key)?.draft.revision === draft.revision) this.set(key, { status: "failed", error: String(error), errorCode: (error as { code?: string }).code, journaled: false }); throw error; }
     });
     this.journalChains.set(key, next); await next;
   }
@@ -133,7 +133,7 @@ export class EditingSession {
       } catch (error) {
         const code = (error as { code?: string }).code ?? "";
         const conflict = code.includes("conflict") || String(error).includes("conflict");
-        this.set(key, { status: conflict ? "conflict" : "failed", error: error instanceof Error ? error.message : String(error), ...(conflict ? { request: undefined } : {}) });
+        this.set(key, { status: conflict ? "conflict" : "failed", error: error instanceof Error ? error.message : String(error), errorCode: code, ...(conflict ? { request: undefined } : {}) });
         if (conflict && this.transport.load) {
           await this.transport.load(projectId).then((project) => this.observe(project)).catch(() => {});
         }

@@ -934,7 +934,11 @@ fn run(cli: Cli) -> Result<Value> {
     if matches!(&cli.command, Commands::AiRequest) {
         return run_ai_request();
     }
-    let mut database = db::open()?;
+    let mut database = if matches!(&cli.command, Commands::DesktopRequest { .. }) {
+        db::open_desktop()?
+    } else {
+        db::open()?
+    };
     tasks::reconcile_expired(&mut database)?;
     models::reconcile_interrupted(&database)?;
     resource_jobs::reconcile_interrupted(&database)?;
@@ -2225,7 +2229,7 @@ fn run(cli: Cli) -> Result<Value> {
 
 fn ipc_error(arguments: &[String], error: &anyhow::Error) -> ipc::Response {
     let code = contracts::error_code(error);
-    let message = error.to_string();
+    let message = contracts::error_message(error);
     let output = if arguments.iter().any(|argument| argument == "--json") {
         serde_json::to_string_pretty(&json!({
             "apiVersion": API_VERSION,
@@ -2279,7 +2283,7 @@ pub(crate) fn execute_args(arguments: Vec<String>) -> ipc::Response {
         }
         Err(error) => {
             let code = contracts::error_code(&error);
-            let message = error.to_string();
+            let message = contracts::error_message(&error);
             let value = json!({
                 "apiVersion":API_VERSION,
                 "status":"error",

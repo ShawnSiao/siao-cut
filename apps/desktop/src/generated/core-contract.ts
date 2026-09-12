@@ -131,6 +131,7 @@ export const workflowProfiles = [
 export type WorkflowProfile = typeof workflowProfiles[number];
 
 export const coreErrorCodes = [
+  "database_busy",
   "editing_version_conflict",
   "editing_content_conflict",
   "editing_mutation_reused",

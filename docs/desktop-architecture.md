@@ -37,6 +37,8 @@
 
 项目编辑包含 `mutationId`、`expectedVersionId` 和操作参数。版本检查、领域修改、快照与幂等回执在同一事务内完成。相同标识重复提交返回原回执，复用标识提交不同内容会被拒绝。无版本的旧 CLI 编辑入口保留兼容性，不提供桌面陈旧编辑检测保证。
 
+桌面结构化请求对 SQLite 和数据库升级互斥锁采用单次最多 2 秒的锁等待；后台任务及旧 CLI 的 SQLite 等待仍为 120 秒。初始化、备份连接也使用对应策略，2 秒不是整个请求的总耗时上限。SQLite `BUSY`、`LOCKED` 及升级锁超时统一返回 `database_busy`，表示可稍后重试。错误不由 Core 推断草稿是否安全：编辑界面依据当前草稿版本的落盘回执，分别显示「本地草稿已落盘」或「当前草稿尚未确认落盘」。用户重试保存沿用原操作标识，不自动新建保存请求。
+
 `src/model.rs` 和各领域 Rust DTO 是 TypeScript 字段契约的来源。`domain_contract.rs` 汇集实际序列化类型，覆盖资源、模型、媒体导入、说话人、转写、审核、AI 服务设置等响应。`platform_contract.rs` 由 Core 与 Tauri 共用，生成运行环境、更新策略和下载事件类型。前端别名仅补充显示状态约束和兼容预览数据；通用 JSON 信封不是运行时业务校验。`ts-rs` 生成 `apps/desktop/src/generated/core-contract.ts`；修改 Rust 类型后先构建 Core，再运行：
 
 ```powershell

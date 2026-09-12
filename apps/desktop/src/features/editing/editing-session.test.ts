@@ -1,3 +1,4 @@
+import { saveErrorMessage } from "./save-error-message";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { EditReceipt, SaveEdit } from "../../generated/core-contract";
 import { sampleProject } from "../../mock";
@@ -63,4 +64,45 @@ describe("project editing queue", () => {
     expect(session.state(key)?.draft.text).toBe("fresh typing");
     expect(session.entries().some(([, state]) => state.draft.text === "recovered")).toBe(true); session.disposeTimers();
   });
+});
+
+
+it("reports a stored draft for a busy project save and reuses the mutation on retry", async () => {
+  const busy = Object.assign(new Error("database is busy"), {code: "database_busy"});
+  const save = vi.fn().mockRejectedValueOnce(busy).mockImplementation(async edit => receipt(edit));
+  const {session,key}=setup({save}); await Promise.resolve();session.change(key,"retained");
+  await expect(session.save(key)).rejects.toBe(busy);
+  expect(session.state(key)?.journaled).toBe(true);
+  expect(saveErrorMessage(session.state(key)!,true)).toContain("本地草稿已落盘");
+  expect(saveErrorMessage(session.state(key)!,false)).toContain("local draft is stored");
+  await session.save(key);
+  expect(save.mock.calls[1][0]).toEqual(save.mock.calls[0][0]);
+  expect(session.state(key)?.status).toBe("saved");session.disposeTimers();
+});
+it("does not claim persistence when the journal itself is busy", async () => {
+  const busy = Object.assign(new Error("busy"), {code: "database_busy"});
+  const journal=vi.fn().mockRejectedValueOnce(busy).mockResolvedValue(undefined);
+  const {session,key,transport}=setup({journal});await Promise.resolve();session.change(key,"only in memory");
+  await expect(session.save(key)).rejects.toBe(busy);
+  expect(transport.save).not.toHaveBeenCalled();expect(session.state(key)?.journaled).toBe(false);
+  expect(saveErrorMessage(session.state(key)!,true)).toContain("尚未确认落盘");
+  expect(saveErrorMessage(session.state(key)!,false)).toContain("not confirmed on disk");
+  await session.save(key);expect(session.state(key)?.status).toBe("saved");session.disposeTimers();
+});
+it("does not let an older failed journal mark a newer draft as failed", async () => {
+  const first=deferred<void>();const journal=vi.fn().mockReturnValueOnce(first.promise).mockResolvedValue(undefined);
+  const {session,key}=setup({journal});await Promise.resolve();session.change(key,"old");
+  const old=session.persist(key);const rejected=expect(old).rejects.toThrow("busy");
+  await vi.waitFor(()=>expect(journal).toHaveBeenCalledOnce());session.change(key,"new");
+  first.reject(Object.assign(new Error("busy"),{code:"database_busy"}));await rejected;
+  expect(session.state(key)?.status).toBe("dirty");expect(session.state(key)?.draft.text).toBe("new");
+  await session.persist(key);expect(session.state(key)?.journaled).toBe(true);session.disposeTimers();
+});
+
+it("replaces a busy message with a later content conflict", async () => {
+  const {session,key,project}=setup({save:async()=>{throw Object.assign(new Error("busy"),{code:"database_busy"});}});
+  await Promise.resolve();session.change(key,"local");await expect(session.save(key)).rejects.toThrow("busy");
+  project.transcript.segments[0].text="external";session.observe(project);
+  expect(session.state(key)?.status).toBe("conflict");
+  expect(saveErrorMessage(session.state(key)!,true)).toContain("当前内容已变化");session.disposeTimers();
 });

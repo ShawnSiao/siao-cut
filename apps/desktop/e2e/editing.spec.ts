@@ -50,3 +50,24 @@ test("restores a persisted draft after reopening without silently applying it", 
   await conflict.getByRole("button", { name: "使用当前内容" }).click();
   await expect(conflict).toHaveCount(0);
 });
+
+
+for (const failure of ["save", "journal"] as const) {
+  test(`explains database contention when ${failure} is blocked and keeps an explicit retry`, async ({page}) => {
+    await page.goto("/");
+    const row=page.locator(".segment-row").first();await expect(row).toBeVisible();
+    await page.evaluate(async action => {
+      const url="/src/domains/editing-client.ts";const {editingClient}=await import(url);
+      const original=editingClient[action];let blocked=true;
+      editingClient[action]=(...args: unknown[])=>{if(blocked) return Promise.reject(Object.assign(new Error("Database busy"),{code:"database_busy"}));return original(...args);};
+      (window as any).releaseEditingLock=()=>{blocked=false;};
+    },failure);
+    await row.getByRole("textbox").first().fill("数据库占用时保留的修改");
+    const problem=page.locator(".editing-conflict");await expect(problem).toBeVisible();
+    await expect(problem).toContainText(failure==="save"?"本地草稿已落盘":"当前草稿尚未确认落盘");
+    await expect(problem.getByRole("textbox")).toHaveValue("数据库占用时保留的修改");
+    await page.evaluate(()=>(window as any).releaseEditingLock());
+    await problem.getByRole("button",{name:"重试保存"}).click();
+    await expect(problem).toHaveCount(0);await expect(row.locator(".field-save-status").first()).toHaveText("已保存");
+  });
+}

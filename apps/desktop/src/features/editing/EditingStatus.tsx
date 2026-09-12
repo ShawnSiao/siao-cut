@@ -2,6 +2,7 @@ import { useState, useSyncExternalStore } from "react";
 import { getUiLocale } from "../../i18n";
 import { Dialog } from "../../components/ui";
 import type { EditingSession, SaveStatus } from "./editing-session";
+import { saveErrorMessage } from "./save-error-message";
 import "./editing.css";
 
 export function EditingStatus({ session, projectId, closeError, onCancelClose, onCloseWithDrafts }: { session: EditingSession; projectId?: string; closeError: string | null; onCancelClose(): void; onCloseWithDrafts(): Promise<void> }) {
@@ -18,7 +19,7 @@ export function EditingStatus({ session, projectId, closeError, onCancelClose, o
     {(session.restoreError || actionError) && <p role="alert">{session.restoreError ?? actionError}</p>}
     {problems.map(([key, state]) => <details key={key} open className="editing-conflict">
       <summary>{state.status === "conflict" ? (zh ? "草稿需要核对" : "Review draft") : (zh ? "保存失败" : "Save failed")} · {state.draft.field}</summary>
-      <p>{state.error}</p>
+      <p>{saveErrorMessage(state, zh)}</p>
       <label>{zh ? "当前内容" : "Current content"}<pre>{state.currentText}</pre></label>
       <label>{zh ? "本地草稿（可编辑后合并）" : "Local draft (edit to merge)"}<textarea value={state.draft.text} onChange={(event) => session.change(key, event.target.value)}/></label>
       {state.status === "conflict" ? <button onClick={() => action(session.keepDraft(key))}>{zh ? "以此草稿保存" : "Save this draft"}</button> : <button onClick={() => action(session.save(key))}>{zh ? "重试保存" : "Retry save"}</button>}

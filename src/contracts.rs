@@ -103,6 +103,7 @@ pub const LOCAL_RESOURCE_STATES: &[&str] = &[
 ];
 
 pub const CORE_ERROR_CODES: &[&str] = &[
+    "database_busy",
     "editing_version_conflict",
     "editing_content_conflict",
     "editing_mutation_reused",
@@ -446,6 +447,13 @@ pub fn contract() -> Value {
 }
 
 pub fn error_code(error: &Error) -> &'static str {
+    if error.chain().any(|cause| {
+        matches!(cause.downcast_ref::<rusqlite::Error>(),
+            Some(rusqlite::Error::SqliteFailure(inner, _)) if matches!(inner.code,
+                rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked))
+    }) {
+        return "database_busy";
+    }
     for cause in error.chain() {
         let message = cause.to_string();
         let candidate = message
@@ -463,10 +471,39 @@ pub fn error_code(error: &Error) -> &'static str {
     "invalid_request"
 }
 
+pub fn error_message(error: &Error) -> String {
+    if error_code(error) == "database_busy" {
+        "数据库暂时被占用，本次操作尚未完成。请稍后重试。".into()
+    } else {
+        error.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use anyhow::anyhow;
+
+    #[test]
+    fn sqlite_contention_is_retryable_even_inside_migration_context() {
+        for code in [
+            rusqlite::ffi::SQLITE_BUSY,
+            rusqlite::ffi::SQLITE_LOCKED,
+            rusqlite::ffi::SQLITE_BUSY_SNAPSHOT,
+        ] {
+            let error = anyhow!(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(code),
+                None
+            ))
+            .context("database_migration_failed: upgrading");
+            assert_eq!(error_code(&error), "database_busy");
+            assert!(error_message(&error).contains("稍后重试"));
+        }
+        assert_eq!(
+            error_code(&anyhow!("database is locked")),
+            "invalid_request"
+        );
+    }
 
     #[test]
     fn resolves_only_explicit_error_prefixes_across_context_layers() {

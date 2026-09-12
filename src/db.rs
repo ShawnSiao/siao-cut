@@ -7,6 +7,8 @@ use std::{
     time::Duration,
 };
 
+#[path = "db_access.rs"]
+mod access;
 #[path = "db_lifecycle_migrations.rs"]
 mod lifecycle_migrations;
 
@@ -194,32 +196,20 @@ pub fn open() -> Result<Connection> {
 }
 
 pub(crate) fn open_at(path: &Path) -> Result<Connection> {
-    // Serialize backup and migration together across Core workers and app windows.
-    // The file is scoped to this database and is released when initialization ends.
-    let lock_path = path.with_file_name(format!(
-        "{}.migration.lock",
-        path.file_name().unwrap_or_default().to_string_lossy()
-    ));
-    let migration_lock = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(lock_path)?;
-    fs2::FileExt::lock_exclusive(&migration_lock).context("无法取得数据库升级锁")?;
-    backup_before_upgrade(path)?;
-    let mut db = Connection::open(path).context("无法打开 SiaoCut SQLite 数据库")?;
-    db.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")?;
-    db.busy_timeout(Duration::from_secs(120))?;
-    migrate(&mut db)?;
-    Ok(db)
+    access::open_at_with_timeout(path, access::BACKGROUND_WAIT)
 }
 
-fn backup_before_upgrade(path: &Path) -> Result<Option<PathBuf>> {
+pub fn open_desktop() -> Result<Connection> {
+    fs::create_dir_all(home_dir()).context("无法创建 SiaoCut 数据目录")?;
+    access::open_at_with_timeout(&database_path(), access::INTERACTIVE_WAIT)
+}
+
+fn backup_before_upgrade(path: &Path, wait: Duration) -> Result<Option<PathBuf>> {
     if !path.is_file() {
         return Ok(None);
     }
     let source = Connection::open(path).context("无法读取待升级的 SiaoCut 数据库")?;
+    source.busy_timeout(wait)?;
     let has_migrations: bool = source.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations')",
         [],
