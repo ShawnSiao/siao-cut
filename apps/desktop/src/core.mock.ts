@@ -1,6 +1,6 @@
 import { sampleProject } from "./mock";
-import type { AgentRun, AudioAnalysisJob, AutoWorkflow, CoreEnvelope, ExportJob, LocalCapabilityId, LocalResourceJob, LocalResourceStatus, LocalTranscriptionProfile, ModelDownloadJob, ModelStatus, Project, ResourceUpdateCheck, SourceImportJob, SourcePreview, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SubtitleImportPreview, SubtitleStructureEdit, TranscriptionJob, TranscriptionProviderConfig, TranscriptionProviderHealth, TranscriptionReviewItem } from "./types";
-import { resetMockTranscriptionCommands, runMockTranscription } from "./workbench/mock-transcription";
+import type { AgentRun,AudioAnalysisJob,AutoWorkflow,CoreEnvelope,ExportJob,LocalCapabilityId,LocalResourceJob,LocalResourceStatus,LocalTranscriptionProfile,ModelDownloadJob,ModelStatus,Project,ResourceUpdateCheck,SourceImportJob,SourcePreview,SpeakerJob,SpeakerPackageStatus,SpeakerTrack,SubtitleImportPreview,SubtitleStructureEdit,TranscriptionJob,TranscriptionProviderConfig,TranscriptionProviderHealth,TranscriptionReviewItem } from "./types";
+import { resetMockTranscriptionCommands,runMockTranscription } from "./workbench/mock-transcription";
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
 const mockSubtitleStylePresets = [
@@ -101,6 +101,25 @@ export function resetMockProjectForTest() {
   mockProjectListOverride = null;
   mockProjects = [];
   mockAuthorizedMediaUrl = null;
+  resetMockBackgroundState();
+}
+
+function resetMockBackgroundState() {
+    mockJobs.clear();
+    mockSourceJobs.clear();
+    mockSourcePolls.clear();
+    mockAutoWorkflows.clear();
+    mockAutoPolls.clear();
+    mockAudioJobs.clear();
+    mockSpeakerJobs.clear();
+    mockSpeakerTracks.clear();
+    mockTranscriptionJobs.clear();
+    resetMockTranscriptionCommands();
+    mockAgentRuns.clear();
+    mockAgentPolls.clear();
+    mockTranscriptionReviews = [];
+    mockStructureCounter = 0;
+    mockSpeakerPackage = { ...mockSpeakerPackage, installed: false, verified: null, verificationStatus: "not_installed", assets: speakerAssets.map((asset) => ({ ...asset, installed: false, verified: null, verificationStatus: "not_installed" as const })) };
 }
 
 function syncMockProject(next: Project): Project {
@@ -463,21 +482,7 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
     secondary.history = { canUndo: false, canRedo: false, currentVersionId: null };
     mockProjects = [mockProject, secondary];
     resetMockHistory(mockProject);
-    mockJobs.clear();
-    mockSourceJobs.clear();
-    mockSourcePolls.clear();
-    mockAutoWorkflows.clear();
-    mockAutoPolls.clear();
-    mockAudioJobs.clear();
-    mockSpeakerJobs.clear();
-    mockSpeakerTracks.clear();
-    mockTranscriptionJobs.clear();
-    resetMockTranscriptionCommands();
-    mockAgentRuns.clear();
-    mockAgentPolls.clear();
-    mockTranscriptionReviews = [];
-    mockStructureCounter = 0;
-    mockSpeakerPackage = { ...mockSpeakerPackage, installed: false, verified: null, verificationStatus: "not_installed", assets: speakerAssets.map((asset) => ({ ...asset, installed: false, verified: null, verificationStatus: "not_installed" as const })) };
+    resetMockBackgroundState();
     return { apiVersion: "0.1", status: "ok", projects: mockProjects };
   }
   if (command === "project" && subcommand === "show") {
@@ -1524,6 +1529,7 @@ export async function mockEditingRequest(request: import("./generated/core-contr
       case "create_workflow": args=["workflow","create",id,"--kind",op.workflowKind,"--locale",op.locale,...(op.language?["--lang",op.language]:[])];break;
       case "import_subtitle": args=["transcript","import-file",id,op.path,"--confirm-replace","--expected-sha256",op.sha256,"--expected-version",op.previewVersionId];break;
       case "review_patch": args = ["task","review",op.patchItemId,"--action",op.action]; break;
+      case "resolve_transcription_review": args = ["transcription", "resolve", op.itemId, "--action", op.action]; break;
       case "review_all": args = ["task","review-all",op.taskId,"--action",op.action]; break;
       case "detect_cuts": args = ["cut", "detect", id]; break;
       case "set_cut_status": args = ["cut", op.action, id, op.editId]; break;
@@ -1592,24 +1598,11 @@ export function mockAuthorizeAutoTask(taskId: string) {
 
 
 export async function mockTranscriptionCommand(request: import("./generated/core-contract").TranscriptionCommand): Promise<CoreEnvelope> {
+  if (request.action === "start_multispeaker") return mockRun(["transcription","start",request.projectId,"--language",request.language,...(request.prompt?["--prompt",request.prompt]:[]),...request.hotwords.flatMap(word => ["--hotword",word])]);
   return runMockTranscription(request, { mockTranscriptionJobs, mockProject, mockProjects, mockRun });
 }
 
-// Structured read models use the same preview database as legacy commands.
 export async function mockProjectQuery(request: import("./generated/core-contract").ProjectQuery): Promise<CoreEnvelope> {
-  const ok = (body: Partial<CoreEnvelope>): CoreEnvelope => ({apiVersion:"0.1",status:"ok",...body});
-  if (request.action === "list") {
-    if (!mockProjects.length) await mockRun(["project", "list"]);
-    const items = mockProjects.slice(request.offset, request.offset + (request.limit ?? 50)).map((p) => ({
-      id:p.id,title:p.title,createdAt:p.createdAt,updatedAt:p.updatedAt,segmentCount:p.transcript.segments.length,
-      durationSeconds:p.media.durationSeconds,versionId:p.history.currentVersionId,
-    }));
-    const next = request.offset + items.length;
-    return ok({projectPage:{items,total:mockProjects.length,nextOffset:next < mockProjects.length ? next : null}});
-  }
-  const result = await mockRun(["project","show",request.projectId]);
-  if (!result.project || request.action === "show") return result;
-  const p = result.project;
-  return request.action === "review" ? ok({projectId:p.id,versionId:p.history.currentVersionId ?? undefined,tasks:p.tasks,patchSets:p.patchSets,projectWorkflows:p.workflows}) : request.action === "history" ? ok({projectId:p.id,history:p.history,versions:p.versions})
-    : ok({projectId:p.id,versionId:p.history.currentVersionId ?? undefined,subtitleQuality:p.subtitleQuality,speechInsights:p.speechInsights});
+  const {queryMockProject} = await import("./mock-project-query");
+  return queryMockProject(request, {project: () => mockProject, projects: () => mockProjects, run: mockRun});
 }

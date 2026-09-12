@@ -17,9 +17,9 @@ use super::{
     },
 };
 
-#[derive(Debug, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-enum AiRequest {
+#[derive(Debug, Deserialize, ts_rs::TS)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AiRequest {
     Snapshot,
     Save { input: SaveAiServiceInput },
     Delete { input: ServiceMutationInput },

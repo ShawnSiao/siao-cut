@@ -29,8 +29,9 @@ const HEARTBEAT_SECONDS: u64 = 240;
 const MIN_PERMISSION_PROFILE_VERSION: (u64, u64, u64) = (0, 145, 0);
 const AGENT_PERMISSION_PROFILE: &str = "siaocut_text_only";
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreCodexHealthWire")]
 pub struct CodexHealth {
     pub available: bool,
     pub authenticated: bool,

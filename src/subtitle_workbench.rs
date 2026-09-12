@@ -10,8 +10,9 @@ use std::collections::{BTreeSet, HashMap};
 
 const TIME_EPSILON: f64 = 0.000_001;
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreStructureImpactWire")]
 pub struct StructureImpact {
     pub translations_marked_stale: usize,
     pub translation_segments_removed: usize,
@@ -25,8 +26,9 @@ pub struct StructureImpact {
     pub speaker_associations_removed: usize,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreStructureEditResultWire")]
 pub struct StructureEditResult {
     pub operation: String,
     pub affected_segment_ids: Vec<String>,

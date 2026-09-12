@@ -10,16 +10,18 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{fs, path::Path};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ts_rs::TS)]
 #[serde(rename_all = "lowercase")]
+#[ts(rename = "CoreSubtitleFileFormatWire")]
 pub enum SubtitleFileFormat {
     Srt,
     Vtt,
     Ass,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreSubtitleImportPreviewWire")]
 pub struct SubtitleImportPreview {
     pub format: SubtitleFileFormat,
     pub source_path: String,
@@ -32,8 +34,9 @@ pub struct SubtitleImportPreview {
     pub requires_confirmation: bool,
 }
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Default, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreSubtitleImportImpactWire")]
 pub struct SubtitleImportImpact {
     pub replaced_segments: usize,
     pub removed_words: usize,
@@ -44,8 +47,9 @@ pub struct SubtitleImportImpact {
     pub speaker_associations_removed: usize,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreSubtitleImportResultWire")]
 pub struct SubtitleImportResult {
     pub format: SubtitleFileFormat,
     pub sha256: String,

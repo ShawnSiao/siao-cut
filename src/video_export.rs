@@ -62,13 +62,24 @@ pub fn create(
     project_id: &str,
     request: ExportRequest<'_>,
 ) -> Result<ExportJob> {
+    let delay = request.start_delay_ms;
+    let job = register(db, project_id, request)?;
+    launch(db, &job, delay)?;
+    Ok(job)
+}
+
+pub(crate) fn register(
+    db: &mut Connection,
+    project_id: &str,
+    request: ExportRequest<'_>,
+) -> Result<ExportJob> {
     let ExportRequest {
         output,
         subtitle_delivery,
         language,
         subtitle_mode,
         allow_stale_translation,
-        start_delay_ms,
+        start_delay_ms: _,
         job_id,
     } = request;
     let output_extension = output
@@ -176,6 +187,10 @@ pub fn create(
         }
         Err(error) => return Err(error.into()),
     }
+    Ok(job)
+}
+
+pub(crate) fn launch(db: &Connection, job: &ExportJob, start_delay_ms: Option<u64>) -> Result<()> {
     if let Err(error) = spawn_worker(&job.id, start_delay_ms) {
         let failed_at = now();
         db.execute(
@@ -186,7 +201,7 @@ pub fn create(
         )?;
         return Err(error);
     }
-    Ok(job)
+    Ok(())
 }
 
 pub fn load(db: &Connection, job_id: &str) -> Result<ExportJob> {

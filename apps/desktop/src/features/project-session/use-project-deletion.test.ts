@@ -1,0 +1,24 @@
+import {act, renderHook, waitFor} from "@testing-library/react";
+import {afterEach, expect, it, vi} from "vitest";
+import {projectSessionClient} from "../../domains/project-session-client";
+import {sampleProject} from "../../mock";
+import {projectSummary} from "./use-project-session";
+import {useProjectDeletion} from "./use-project-deletion";
+afterEach(() => vi.restoreAllMocks());
+it("uses the confirmed version and sends one deletion for repeated clicks", async () => {
+  const summary = projectSummary(sampleProject);
+  vi.spyOn(projectSessionClient,"deletePreflight").mockResolvedValue({apiVersion:"0.1",status:"ok",deletionPreflight:{projectId:summary.id,expectedVersionId:"confirmed-version",deletable:true,blockers:[]}});
+  let finish!: () => void;
+  const pending = new Promise<void>(resolve => { finish=resolve; });
+  const remove = vi.spyOn(projectSessionClient,"deleteProject").mockImplementation(async () => {await pending;return {apiVersion:"0.1",status:"ok"};});
+  const onDeleted = vi.fn(async () => {});
+  const {result} = renderHook(() => useProjectDeletion({projects:[summary],onDeleted}));
+  act(() => result.current.openDeleteDialog(summary));
+  await waitFor(() => expect(result.current.deletePreflightBusy).toBe(false));
+  let first!: Promise<void>;
+  act(() => { first=result.current.deleteProject();void result.current.deleteProject(); });
+  expect(remove).toHaveBeenCalledOnce();
+  expect(remove).toHaveBeenCalledWith(summary.id,"confirmed-version");
+  await act(async () => {finish();await first;});
+  expect(onDeleted).toHaveBeenCalledWith(summary);
+});

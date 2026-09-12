@@ -34,6 +34,7 @@ describe("structured Desktop Core requests", () => {
 
   it("preserves Unicode prompt and hotwords in one transcription payload", async () => {
     await backgroundTaskClient.startTranscription({
+      mutationId:"moss-once",expectedVersionId:"v-before",
       projectId: "项目-一",
       language: "zh",
       prompt: "区分「小爱」和「小艾」🎙️",
@@ -42,12 +43,12 @@ describe("structured Desktop Core requests", () => {
 
     expect(coreMocks.runCoreStructured).toHaveBeenCalledOnce();
     expect(coreMocks.runCoreStructured).toHaveBeenCalledWith({
-      kind: "transcription_start",
+      kind: "transcription_job", request: {action:"start_multispeaker",mutationId:"moss-once",expectedVersionId:"v-before",
       projectId: "项目-一",
       language: "zh",
       prompt: "区分「小爱」和「小艾」🎙️",
       hotwords: ["SiaoCut", "李雷", "韩梅梅"],
-    });
+    }});
   });
 
   it("binds destructive confirmations to the preflight project version", async () => {

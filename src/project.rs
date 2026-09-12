@@ -165,7 +165,11 @@ fn load_with_history(db: &Connection, id: &str, include_history: bool) -> Result
             }),
         })
     })?.collect::<rusqlite::Result<Vec<_>>>()?;
-    let tasks = select_tasks(db, id)?;
+    let tasks = if include_history {
+        select_tasks(db, id)?
+    } else {
+        Vec::new()
+    };
     let versions = if include_history {
         db
         .prepare(
@@ -213,15 +217,25 @@ fn load_with_history(db: &Connection, id: &str, include_history: bool) -> Result
         tasks,
         versions,
         history: history_status(db, id)?,
-        patch_sets: patches::for_project(db, id)?,
-        workflows: workflows::for_project(db, id)?,
+        patch_sets: if include_history {
+            patches::for_project(db, id)?
+        } else {
+            Vec::new()
+        },
+        workflows: if include_history {
+            workflows::for_project(db, id)?
+        } else {
+            Vec::new()
+        },
     };
-    project.speech_insights = speech::analyze(&project.transcript);
-    project.subtitle_quality = subtitle_quality::inspect_with_language(
-        &project.transcript.segments,
-        project.media.duration_seconds,
-        &project.transcript.source_language,
-    );
+    if include_history {
+        project.speech_insights = speech::analyze(&project.transcript);
+        project.subtitle_quality = subtitle_quality::inspect_with_language(
+            &project.transcript.segments,
+            project.media.duration_seconds,
+            &project.transcript.source_language,
+        );
+    }
     project.timeline = timeline::build(&project);
     Ok(project)
 }
@@ -236,16 +250,18 @@ pub fn list(db: &Connection) -> Result<Vec<Project>> {
         .collect()
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreProjectDeletionBlockerWire")]
 pub struct ProjectDeletionBlocker {
     pub kind: String,
     pub id: String,
     pub status: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreProjectDeletionPreflightWire")]
 pub struct ProjectDeletionPreflight {
     pub project_id: String,
     pub expected_version_id: String,
@@ -253,16 +269,21 @@ pub struct ProjectDeletionPreflight {
     pub blockers: Vec<ProjectDeletionBlocker>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreTranscriptReplacementBlockersWire")]
 pub struct TranscriptReplacementBlockers {
+    #[ts(type = "number")]
     pub edits: i64,
+    #[ts(type = "number")]
     pub patch_items: i64,
+    #[ts(type = "number")]
     pub task_segments: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreTranscriptReplacementPreflightWire")]
 pub struct TranscriptReplacementPreflight {
     pub can_replace: bool,
     pub current_version_id: String,

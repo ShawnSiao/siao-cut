@@ -16,8 +16,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Copy, Debug, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreModelSpecWire")]
 pub struct ModelSpec {
     pub id: &'static str,
     pub name: &'static str,
@@ -25,6 +26,7 @@ pub struct ModelSpec {
     pub description: &'static str,
     pub source: &'static str,
     pub url: &'static str,
+    #[ts(type = "number")]
     pub size: u64,
     pub sha256: &'static str,
     pub license: &'static str,
@@ -70,27 +72,32 @@ const MODEL_SPECS: &[ModelSpec] = &[
     },
 ];
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreModelStatusWire")]
 pub struct ModelStatus {
     #[serde(flatten)]
     pub spec: ModelSpec,
     pub path: String,
     pub installed: bool,
+    #[ts(type = "number")]
     pub bytes_on_disk: u64,
     pub verified: Option<bool>,
     pub verification_status: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreModelDownloadJobWire")]
 pub struct ModelDownloadJob {
     pub id: String,
     pub model_id: String,
     pub status: String,
     pub stage_code: Option<String>,
     pub progress: f64,
+    #[ts(type = "number")]
     pub bytes_downloaded: u64,
+    #[ts(type = "number")]
     pub total_bytes: u64,
     pub target_path: String,
     pub cancel_requested_at: Option<String>,

@@ -15,6 +15,9 @@ use serde_json::{Value, json};
     deny_unknown_fields
 )]
 pub enum DesktopControl {
+    AutoStart {
+        options: Box<crate::desktop_workflow::StartWorkflow>,
+    },
     MediaPrepare {
         project_id: String,
     },
@@ -133,6 +136,7 @@ pub enum DesktopControl {
 }
 pub fn execute(database: &mut Connection, request: DesktopControl) -> Result<Value> {
     match request {
+        DesktopControl::AutoStart { options } => crate::desktop_workflow::start(database, *options),
         DesktopControl::MediaPrepare { project_id } => {
             let artifacts = artifacts::prepare(database, &project_id)?;
             Ok(json!({

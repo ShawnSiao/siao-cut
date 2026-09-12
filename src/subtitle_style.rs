@@ -24,7 +24,7 @@ struct StoredSubtitleStyle {
     box_height_lines: Option<u8>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SubtitleStylePresetOption {
     pub id: SubtitleStylePreset,

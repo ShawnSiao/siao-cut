@@ -44,3 +44,51 @@ fn hundred_projects_and_ten_thousand_segments_use_bounded_summary_pages() {
         json.len()
     );
 }
+
+#[test]
+fn workspace_omits_review_history_and_computed_reports() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut db = db::open_at(&temp.path().join("workspace.db")).unwrap();
+    let media = temp.path().join("audio.wav");
+    std::fs::write(&media, b"audio").unwrap();
+    let p = crate::project::create(&mut db, &media, Some("Workspace".into())).unwrap();
+    crate::project::add_segment(
+        &mut db,
+        &p.id,
+        0.0,
+        0.1,
+        "A subtitle too long for its duration".into(),
+        None,
+    )
+    .unwrap();
+    // Renaming the review table proves opening the editor does not read it.
+    db.execute_batch("ALTER TABLE tasks RENAME TO deferred_tasks")
+        .unwrap();
+    let workspace = crate::project::load_workspace(&db, &p.id).unwrap();
+    assert_eq!(workspace.transcript.segments.len(), 1);
+    assert!(workspace.tasks.is_empty());
+    assert!(workspace.patch_sets.is_empty());
+    assert!(workspace.workflows.is_empty());
+    assert!(workspace.versions.is_empty());
+    assert!(workspace.subtitle_quality.issues.is_empty());
+    let insights = project_query::execute(
+        &db,
+        project_query::ProjectQuery::Insights {
+            project_id: p.id.clone(),
+        },
+    )
+    .unwrap();
+    assert!(
+        !insights["subtitleQuality"]["issues"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        project_query::execute(
+            &db,
+            project_query::ProjectQuery::Review { project_id: p.id }
+        )
+        .is_err()
+    );
+}

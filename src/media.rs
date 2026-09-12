@@ -296,8 +296,9 @@ const AUDIO_DURATION_TOLERANCE_SECONDS: f64 = 0.25;
 const PARENT_SEGMENT_TOLERANCE_SECONDS: f64 = 0.5;
 const TIMELINE_ORDER_TOLERANCE_SECONDS: f64 = 0.001;
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreTimingValidationWire")]
 pub struct TimingValidation {
     pub status: String,
     pub time_domain: String,

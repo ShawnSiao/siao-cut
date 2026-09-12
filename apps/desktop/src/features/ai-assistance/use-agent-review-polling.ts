@@ -1,9 +1,10 @@
-import type { Dispatch, RefObject, SetStateAction } from "react";
+import type { Dispatch,RefObject,SetStateAction } from "react";
 import { agentReviewClient } from "../../domains/agent-review-client";
 import { projectSessionClient } from "../../domains/project-session-client";
 import { useBackgroundTaskRegistry } from "../../hooks/use-background-task-registry";
 import { tr } from "../../i18n";
-import type { AgentRun, Project } from "../../types";
+import type { AgentRun,Project } from "../../types";
+import { refreshReview } from "../project-session/refresh-review";
 interface Inputs {
   project: Project | null;
   agentRun: AgentRun | null;
@@ -34,6 +35,7 @@ export function useAgentReviewPolling({ project, agentRun, setAgentRun, activePr
           setAgentRun(next);
         if (next.status === "completed") {
           await refreshProject(next.projectId);
+          await refreshReview(next.projectId, setProject);
           if (activeProjectIdRef.current === next.projectId) {
             onReview();
             setNotice(tr("app.creator.agent.completed"));

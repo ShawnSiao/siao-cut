@@ -9,6 +9,8 @@ export function useTranscriptionCommands() {
     return ids.current.get(key)!;
   };
   return {
+    cancel: (jobId: string) => backgroundTaskClient.cancelTranscription(jobId),
+    startMultispeaker: (options: Omit<import("../../domains/background-task-client").StartTranscriptionOptions,"mutationId">) => backgroundTaskClient.startTranscription({...options, mutationId:id(JSON.stringify(["multispeaker",options]))}),
     start: (projectId: string, model: string, language: string, version: string) => backgroundTaskClient.startWhisper(projectId, model, language, version, id(JSON.stringify(["start", projectId, model, language, version]))),
     retry: (jobId: string, attempt: number) => backgroundTaskClient.resumeTranscription(jobId, id(`retry:${jobId}:${attempt}`)),
     apply: (jobId: string, version: string) => backgroundTaskClient.applyTranscription(jobId, version, id(`apply:${jobId}:${version}`)),

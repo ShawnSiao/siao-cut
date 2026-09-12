@@ -404,6 +404,9 @@ pub fn contract() -> Value {
         crate::desktop_api::DesktopRequest::decl(&config),
         crate::desktop_query::DesktopQuery::decl(&config),
         crate::desktop_control::DesktopControl::decl(&config),
+        crate::desktop_export::ExportCommand::decl(&config),
+        crate::desktop_export::ExportOperation::decl(&config),
+        crate::desktop_workflow::StartWorkflow::decl(&config),
         crate::project_query::ProjectSummary::decl(&config),
         crate::project_query::ProjectPage::decl(&config),
         crate::project_query::ProjectQuery::decl(&config),
@@ -422,9 +425,10 @@ pub fn contract() -> Value {
         crate::transcription::desktop::JobSummary::decl(&config),
     ];
     declarations.extend(crate::model_contract::declarations(&config));
+    declarations.extend(crate::domain_contract::declarations());
     json!({
         "typeDeclarations": declarations,
-        "capabilities": ["editing-v1", "ai-approval-v1", "transcription-jobs-v1", "project-query-v1", "edit-receipt-v2", "desktop-query-v1", "desktop-control-v1", "project-command-v1"],
+        "capabilities": ["editing-v1", "ai-approval-v1", "transcription-jobs-v2", "project-query-v1", "edit-receipt-v2", "desktop-query-v1", "desktop-control-v2", "project-command-v1", "export-command-v1", "transcription-review-edit-v1"],
         "statusSets": {
             "backgroundJob": BACKGROUND_JOB_STATUSES,
             "transcriptionJob": TRANSCRIPTION_JOB_STATUSES,

@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { hasMeaningfulSubtitleText, type StructureEditMode } from "../../app-view-model";
+import { hasMeaningfulSubtitleText,type StructureEditMode } from "../../app-view-model";
 import { tr } from "../../i18n";
-import type { CoreEnvelope, Project, Segment, SubtitleStructureEdit } from "../../types";
+import type { CoreEnvelope,Project,Segment,SubtitleStructureEdit } from "../../types";
 import type { EditingSession } from "./editing-session";
 type Inputs = { project: Project | null; selectedSegments: Segment[]; editing: EditingSession; setSelectedId: (id: string | null) => void; setSelectedSegmentIds: (ids: string[]) => void; setSelectionAnchorId: (id: string | null) => void; setNotice: (value: string | null) => void; withBusy: (label: string, action: () => Promise<void>) => Promise<void>; onSaveField: (segment: Segment, text: string) => Promise<void>; onApplied: (result: SubtitleStructureEdit) => Promise<void> };
 export function useStructureEditing({ project, selectedSegments, editing, setSelectedId, setSelectedSegmentIds, setSelectionAnchorId, setNotice, withBusy, onSaveField, onApplied }: Inputs) {
@@ -172,5 +172,15 @@ export function useStructureEditing({ project, selectedSegments, editing, setSel
       setStructureBusy(false);
     }
   };
-  return { structureEditMode, setStructureEditMode, structureStart, setStructureStart, structureEnd, setStructureEnd, structureTextOffset, setStructureTextOffset, structureDelta, setStructureDelta, structureBusy, setStructureBusy, structureError, setStructureError, firstSelectedIndex, secondSelectedIndex, mergeCandidatesAdjacent, splitTextOffset, splitCharacters, splitLeftText, splitRightText, splitInputsValid, timingStart, timingEnd, timingInputsValid, timingChanged, structureSubmitDisabled, openStructureEdit, splitSegmentFromEditor, mergePreviousFromEditor, applyStructureEdit };
+  const nudgeTimelineSegment = (segmentId: string, delta: number) => project && !structureBusy && withBusy(tr("app.s0165"), async () => {
+    setStructureBusy(true);
+    try {
+      const envelope = await editing.mutate(project.id, {kind:"offset",segmentIds:[segmentId],delta});
+      if (!envelope.structureEdit?.project) throw new Error(tr("app.s0162"));
+      await onApplied(envelope.structureEdit);
+      setSelectedId(segmentId); setSelectedSegmentIds([segmentId]); setSelectionAnchorId(segmentId);
+      setNotice(tr("app.timeline.nudgeCompleted", {direction: delta < 0 ? tr("app.timeline.directionEarlier") : tr("app.timeline.directionLater"), amount:Math.abs(delta).toFixed(1)}));
+    } finally { setStructureBusy(false); }
+  });
+  return { structureEditMode, setStructureEditMode, structureStart, setStructureStart, structureEnd, setStructureEnd, structureTextOffset, setStructureTextOffset, structureDelta, setStructureDelta, structureBusy, setStructureBusy, structureError, setStructureError, firstSelectedIndex, secondSelectedIndex, mergeCandidatesAdjacent, splitTextOffset, splitCharacters, splitLeftText, splitRightText, splitInputsValid, timingStart, timingEnd, timingInputsValid, timingChanged, structureSubmitDisabled, openStructureEdit, splitSegmentFromEditor, mergePreviousFromEditor, applyStructureEdit, nudgeTimelineSegment };
 }

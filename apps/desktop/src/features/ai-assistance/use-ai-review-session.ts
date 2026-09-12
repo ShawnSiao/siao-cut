@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
+import { useEffect,useRef,useState,type Dispatch,type RefObject,type SetStateAction } from "react";
 import { getProjectCapabilities } from "../../app-view-model";
 import { agentReviewClient } from "../../domains/agent-review-client";
 import { aiApprovalClient } from "../../domains/ai-approval-client";
-import { tr, type UiLocale } from "../../i18n";
-import type { AgentRun, CodexHealth, Project, Task } from "../../types";
+import { tr,type UiLocale } from "../../i18n";
+import type { AgentRun,CodexHealth,Project,Task } from "../../types";
 import type { EditingSession } from "../editing/editing-session";
+import { refreshReview } from "../project-session/refresh-review";
 import type { AiExecutionSelection } from "./types";
 import { useAgentReviewPolling } from "./use-agent-review-polling";
 export const isValidAgentIdentity = (value: string) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value);
@@ -84,6 +85,7 @@ export function useAiReviewSession({ project, mediaUrl, subtitleLanguage, uiLoca
     assertAgentWorkflowReady();
     const envelope = await editing.mutate(project.id, { kind: "create_workflow", workflowKind: agentWorkflowKind, locale: uiLocale, language: agentWorkflowKind === "translate" ? subtitleLanguage : null });
     await refreshProject(project.id);
+    await refreshReview(project.id, setProject);
     setAgentHandoffTaskId(envelope.taskId ?? null);
     setNotice({
       polish: tr("app.workflow.created.polish"),
@@ -101,6 +103,7 @@ export function useAiReviewSession({ project, mediaUrl, subtitleLanguage, uiLoca
       const workflow = aiApprovalTaskId ? { taskId: aiApprovalTaskId } : await editing.mutate(project.id, { kind: "create_workflow", workflowKind: agentWorkflowKind, locale: uiLocale, language: agentWorkflowKind === "translate" ? subtitleLanguage : null });
       if (!workflow.taskId) throw new Error(tr("app.creator.agent.taskMissing"));
       await refreshProject(project.id);
+    await refreshReview(project.id, setProject);
       agentHandoffReturnFocusRef.current = agentButtonRef.current;
       setAgentHandoffTaskId(workflow.taskId); setAgentHandoffReady(true); setAgentHandoffCopied(false);
       setShowAgentHandoff(true); setShowAiExecutionConfirm(false);
@@ -113,13 +116,16 @@ export function useAiReviewSession({ project, mediaUrl, subtitleLanguage, uiLoca
     setAgentRun(envelope.agentRun); setShowAiExecutionConfirm(false);
     onReview(); setNotice(["queued", "running"].includes(envelope.agentRun.status) ? tr("app.creator.agent.started") : `已找到本次运行：${envelope.agentRun.errorMessage ?? envelope.agentRun.status}`);
     await refreshProject(project.id);
+    await refreshReview(project.id, setProject);
   };
   const cancelCodexAgent = () => agentRun && withBusy(tr("app.creator.agent.cancelling"), async () => {
     const envelope = await agentReviewClient.cancelAgent(agentRun.id);
     if (envelope.agentRun)
       setAgentRun(envelope.agentRun);
-    if (project)
+    if (project) {
       await refreshProject(project.id);
+      await refreshReview(project.id, setProject);
+    }
     setNotice(tr("app.creator.agent.cancelled"));
   });
   const resumeCodexAgent = () => agentRun && withBusy(tr("app.creator.agent.resuming"), async () => {
@@ -227,11 +233,13 @@ export function useAiReviewSession({ project, mediaUrl, subtitleLanguage, uiLoca
   const reviewPatch = (patchItemId: string, action: "apply" | "keep") => project && withBusy(action === "apply" ? tr("app.s0228") : tr("app.s0229"), async () => {
     await editing.mutate(project.id, { kind: "review_patch", patchItemId, action });
     await refreshProject(project.id);
+    await refreshReview(project.id, setProject);
     setNotice(action === "apply" ? tr("app.s0230") : tr("app.s0231"));
   });
   const reviewAll = (taskId: string, action: "apply" | "keep") => project && withBusy(action === "apply" ? tr("app.s0232") : tr("app.s0233"), async () => {
     await editing.mutate(project.id, { kind: "review_all", taskId, action });
     await refreshProject(project.id);
+    await refreshReview(project.id, setProject);
     setNotice(action === "apply" ? tr("app.s0234") : tr("app.s0235"));
   });
   useAgentReviewPolling({ project, agentRun, setAgentRun, activeProjectIdRef, refreshProject, onReview, setNotice, setError, taskActionIdsRef, reviewEpoch, invalidateProjectLoads, setProject });

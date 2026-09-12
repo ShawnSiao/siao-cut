@@ -1,3 +1,6 @@
+#[path = "../../../../src/platform_contract.rs"]
+mod platform_contract;
+use platform_contract::RuntimeInfo;
 mod app_updates;
 mod diagnostics;
 
@@ -14,31 +17,6 @@ use std::{
 use tauri::Manager;
 use tokio::io::AsyncWriteExt;
 use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RuntimeInfo {
-    core_path: String,
-    core_api_version: String,
-    ffmpeg_configured: bool,
-    asr_configured: bool,
-    vad_configured: bool,
-    vad_timeline_verified: bool,
-    vad_status: String,
-    vad_reason_code: Option<String>,
-    yt_dlp_configured: bool,
-    asr_backend: String,
-    asr_device: Option<String>,
-    available_asr_backends: Vec<String>,
-    ffmpeg_path: Option<String>,
-    whisper_path: Option<String>,
-    yt_dlp_path: Option<String>,
-    runtime_manifest_path: Option<String>,
-    default_model_path: String,
-    default_model_available: bool,
-    log_directory: Option<String>,
-    diagnostics_available: bool,
-}
 
 #[derive(Clone, Debug)]
 struct RuntimePaths {
@@ -381,6 +359,8 @@ fn validate_core_args(args: &[String]) -> Result<(), String> {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", deny_unknown_fields)]
 enum StructuredCoreRequest {
+    #[serde(rename = "export_command")]
+    Export { request: Value },
     #[serde(rename = "project_command")]
     ProjectCommand { request: Value },
     #[serde(rename = "desktop_control")]
@@ -435,7 +415,8 @@ fn validate_structured_core_request(payload: &str) -> Result<(), String> {
         | StructuredCoreRequest::ProjectQuery { request }
         | StructuredCoreRequest::Query { request }
         | StructuredCoreRequest::Control { request }
-        | StructuredCoreRequest::ProjectCommand { request } => {
+        | StructuredCoreRequest::ProjectCommand { request }
+        | StructuredCoreRequest::Export { request } => {
             if !request.is_object() {
                 return Err(
                     "structured_core_request_invalid: domain request must be an object".into(),

@@ -1,13 +1,13 @@
-import { useEffect, useState } from "react";
-import { clearTransientCoreError, getProjectCapabilities, parseExportPreferences, type ExportPreferencesV1 } from "../../app-view-model";
-import { pickTranscriptPath, pickVideoPath } from "../../domains/desktop-platform-client";
+import { useEffect,useState } from "react";
+import { clearTransientCoreError,getProjectCapabilities,parseExportPreferences,type ExportPreferencesV1 } from "../../app-view-model";
+import { pickTranscriptPath,pickVideoPath } from "../../domains/desktop-platform-client";
 import { exportRuntimeClient } from "../../domains/export-runtime-client";
 import { useBackgroundTaskRegistry } from "../../hooks/use-background-task-registry";
 import { tr } from "../../i18n";
-import type { ExportJob, Project, SpeakerTrack, TranscriptionReviewItem } from "../../types";
+import type { ExportJob,Project,SpeakerTrack,TranscriptionReviewItem } from "../../types";
 
-type Inputs = { project: Project | null; speakerTrack: SpeakerTrack | null; transcriptionReviews: TranscriptionReviewItem[]; mediaUrl: string | null; setNotice: (message: string | null) => void; setError: import("react").Dispatch<import("react").SetStateAction<string | null>>; activeProjectIdRef: import("react").RefObject<string | null>; withBusy: (label: string, action: () => Promise<void>) => Promise<void>; flush: () => Promise<void> };
-export function useExportSession({ project, speakerTrack, transcriptionReviews, mediaUrl, setNotice, setError, activeProjectIdRef, withBusy, flush }: Inputs) {
+type Inputs = { getVersion: (id: string) => string | null; project: Project | null; speakerTrack: SpeakerTrack | null; transcriptionReviews: TranscriptionReviewItem[]; mediaUrl: string | null; setNotice: (message: string | null) => void; setError: import("react").Dispatch<import("react").SetStateAction<string | null>>; activeProjectIdRef: import("react").RefObject<string | null>; withBusy: (label: string, action: () => Promise<void>) => Promise<void>; flush: () => Promise<void> };
+export function useExportSession({ getVersion, project, speakerTrack, transcriptionReviews, mediaUrl, setNotice, setError, activeProjectIdRef, withBusy, flush }: Inputs) {
   const [activeExport, setActiveExport] = useState<ExportJob | null>(null);
   const [exportFormat, setExportFormat] = useState<"srt" | "vtt" | "ass" | "markdown" | "json">(() => parseExportPreferences(localStorage.getItem("siaocut.exportPreferences.v1")).transcriptFormat);
   const [includeSpeakerLabels, setIncludeSpeakerLabels] = useState(true);
@@ -53,15 +53,17 @@ export function useExportSession({ project, speakerTrack, transcriptionReviews, 
   }, [project, subtitleLanguage, subtitleMode, translationLanguageOptions]);
   const exportTranscript = () => project && withBusy(tr("app.s0172"), async () => {
     await flush();
+    const versionId = getVersion(project.id);
+    if (!versionId) throw new Error("editing_version_conflict: 项目已切换，请重新确认导出");
     const output = await pickTranscriptPath(project.title, exportFormat);
     if (!output)
       return;
     if (structuredExport) {
-      await exportRuntimeClient.exportStructuredTranscript(project.id, exportFormat, output, includeSpeakerLabels, confirmTranscriptionWarnings);
+      await exportRuntimeClient.exportStructuredTranscript(project.id, exportFormat, output, includeSpeakerLabels, confirmTranscriptionWarnings, versionId);
     }
     else {
       const subtitle = subtitleExportOptions();
-      await exportRuntimeClient.exportTranscript(project.id, exportFormat, output, subtitle.mode, subtitle.language, subtitle.confirmStaleTranslation);
+      await exportRuntimeClient.exportTranscript(project.id, exportFormat, output, subtitle.mode, subtitle.language, subtitle.confirmStaleTranslation, versionId);
     }
     setNotice(tr("app.s0173", { "0": exportFormat === "markdown" ? tr("app.s0174") : exportFormat === "json" ? tr("app.moss.export.json") : tr("app.s0175"), "1": output }));
   });
@@ -78,11 +80,13 @@ export function useExportSession({ project, speakerTrack, transcriptionReviews, 
     if (!getProjectCapabilities(project, { mediaUrl }).hasBoundMedia)
       throw new Error(tr("app.capability.mediaRequired"));
     await flush();
+    const versionId = getVersion(project.id);
+    if (!versionId) throw new Error("editing_version_conflict: 项目已切换，请重新确认导出");
     const output = await pickVideoPath(project.title, subtitleDelivery);
     if (!output)
       return;
     const subtitle = subtitleExportOptions();
-    const envelope = await exportRuntimeClient.exportVideo(project.id, output, subtitleDelivery, subtitle.mode, subtitle.language, subtitle.confirmStaleTranslation);
+    const envelope = await exportRuntimeClient.exportVideo(project.id, output, subtitleDelivery, subtitle.mode, subtitle.language, subtitle.confirmStaleTranslation, versionId);
     if (!envelope.job)
       throw new Error(tr("app.s0187"));
     setActiveExport(envelope.job);

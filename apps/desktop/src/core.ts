@@ -46,7 +46,7 @@ export async function runCore(args: string[]): Promise<CoreEnvelope> {
 export type StructuredCoreRequest = DesktopRequest;
 
 function expandStructuredCoreRequest(request: StructuredCoreRequest): string[] {
-  if (request.kind === "project_command" || request.kind === "desktop_control" || request.kind === "editing" || request.kind === "ai_approval" || request.kind === "transcription_job" || request.kind === "project_query" || request.kind === "desktop_query") throw new Error("Editing requests use the structured mock adapter");
+  if (request.kind === "export_command" || request.kind === "project_command" || request.kind === "desktop_control" || request.kind === "editing" || request.kind === "ai_approval" || request.kind === "transcription_job" || request.kind === "project_query" || request.kind === "desktop_query") throw new Error("Editing requests use the structured mock adapter");
   if (request.kind === "transcript_offset") {
     return ["transcript", "offset", request.projectId, ...request.segmentIds.flatMap((segmentId) => ["--segment", segmentId]), "--delta", String(request.delta)];
   }
@@ -74,7 +74,7 @@ export async function runCoreStructured(request: StructuredCoreRequest): Promise
     await verifyCoreCapabilities();
     const envelope = isTauri()
       ? await invoke<CoreEnvelope>("run_core_structured", { payload: JSON.stringify(request) })
-      : request.kind === "project_command" ? await (await import("./mock-project-command")).mockProjectCommand(request.request) : request.kind === "desktop_control" ? await (await import("./mock-desktop-control")).mockDesktopControl(request.request) : request.kind === "desktop_query" ? await (await import("./mock-desktop-query")).mockDesktopQuery(request.request) : request.kind === "project_query" ? await (await import("./core.mock")).mockProjectQuery(request.request) : request.kind === "transcription_job" ? await (await import("./core.mock")).mockTranscriptionCommand(request.request) : request.kind === "ai_approval" ? await (await import("./features/ai-assistance/mock-ai-approval")).mockAiApproval(request.request) : request.kind === "editing" ? await (await import("./core.mock")).mockEditingRequest(request.request) : await runMockCore(expandStructuredCoreRequest(request));
+      : request.kind === "export_command" ? await (await import("./mock-export-command")).mockExportCommand(request.request) : request.kind === "project_command" ? await (await import("./mock-project-command")).mockProjectCommand(request.request) : request.kind === "desktop_control" ? await (await import("./mock-desktop-control")).mockDesktopControl(request.request) : request.kind === "desktop_query" ? await (await import("./mock-desktop-query")).mockDesktopQuery(request.request) : request.kind === "project_query" ? await (await import("./core.mock")).mockProjectQuery(request.request) : request.kind === "transcription_job" ? await (await import("./core.mock")).mockTranscriptionCommand(request.request) : request.kind === "ai_approval" ? await (await import("./features/ai-assistance/mock-ai-approval")).mockAiApproval(request.request) : request.kind === "editing" ? await (await import("./core.mock")).mockEditingRequest(request.request) : await runMockCore(expandStructuredCoreRequest(request));
     return ensureOk(envelope);
   } catch (error) {
     if (error instanceof CoreRequestError) throw error;
@@ -82,11 +82,12 @@ export async function runCoreStructured(request: StructuredCoreRequest): Promise
   }
 }
 
-export async function runAiRequest<T extends object>(request: T): Promise<CoreEnvelope> {
+export async function runAiRequest(request: import("./generated/core-contract").AiRequest): Promise<CoreEnvelope> {
   if (!isTauri()) {
     const { mockAiRequest } = await import("./features/environment-settings/mock-ai-settings");
     return ensureOk(await mockAiRequest(request));
   }
+  await verifyCoreCapabilities();
   return ensureOk(await invoke<CoreEnvelope>("run_ai_request", { payload: JSON.stringify(request) }));
 }
 
@@ -163,7 +164,7 @@ export async function listProjects(offset = 0): Promise<ProjectPage> {
 export async function loadProject(projectId: string): Promise<Project> {
   const project = (await runCoreStructured({ kind: "project_query", request: { action: "show", projectId } })).project;
   if (!project) throw new Error(tr("app.core.projectMissing"));
-  return project;
+  return { ...project, readModels: {} };
 }
 
 export async function pickMedia(): Promise<string | null> {

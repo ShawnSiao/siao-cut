@@ -6,6 +6,10 @@ use serde_json::{Value, json};
 #[derive(Debug, Deserialize, ts_rs::TS)]
 #[serde(tag = "kind", deny_unknown_fields)]
 pub enum DesktopRequest {
+    #[serde(rename = "export_command")]
+    Export {
+        request: crate::desktop_export::ExportCommand,
+    },
     #[serde(rename = "project_command")]
     ProjectCommand {
         request: crate::project_commands::ProjectCommand,
@@ -61,6 +65,7 @@ fn validate_desktop_request_text(label: &str, value: &str, max_chars: usize) -> 
 
 pub fn execute(database: &mut rusqlite::Connection, request: DesktopRequest) -> Result<Value> {
     match request {
+        DesktopRequest::Export { request } => crate::desktop_export::execute(database, request),
         DesktopRequest::ProjectCommand { request } => {
             crate::project_commands::execute(database, request)
         }

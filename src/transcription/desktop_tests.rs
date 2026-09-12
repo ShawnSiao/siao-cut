@@ -103,3 +103,46 @@ fn an_old_attempt_cannot_finalize_or_prepare_after_retry() {
         0
     );
 }
+
+#[test]
+fn multispeaker_start_has_the_same_version_and_replay_boundary() {
+    let temp = tempdir().unwrap();
+    let mut db = db::open_at(&temp.path().join("moss.db")).unwrap();
+    let media = temp.path().join("audio.wav");
+    fs::write(&media, b"audio").unwrap();
+    let p = project::create(&mut db, &media, None).unwrap();
+    let request = TranscriptionCommand::StartMultispeaker {
+        mutation_id: "moss-once".into(),
+        project_id: p.id.clone(),
+        expected_version_id: p.history.current_version_id.clone().unwrap(),
+        language: "zh".into(),
+        prompt: Some("区分小爱与小艾".into()),
+        hotwords: vec!["李雷".into()],
+    };
+    let mut stale = request.clone();
+    if let TranscriptionCommand::StartMultispeaker {
+        expected_version_id,
+        ..
+    } = &mut stale
+    {
+        *expected_version_id = "old".into();
+    }
+    assert!(
+        desktop::execute_impl(&mut db, stale, false)
+            .unwrap_err()
+            .to_string()
+            .contains("project_version_conflict")
+    );
+    let first = desktop::execute_impl(&mut db, request.clone(), false).unwrap();
+    let repeated = desktop::execute_impl(&mut db, request, false).unwrap();
+    assert_eq!(
+        first["transcriptionJob"]["id"],
+        repeated["transcriptionJob"]["id"]
+    );
+    assert_eq!(first["transcriptionJob"]["prompt"], "区分小爱与小艾");
+    assert_eq!(
+        first["transcriptionJob"]["hotwords"],
+        serde_json::json!(["李雷"])
+    );
+    assert_eq!(list(&db, Some(&p.id)).unwrap().len(), 1);
+}

@@ -1,10 +1,10 @@
 import type { TranscriptionCommand } from "../generated/core-contract";
-import type { CoreEnvelope, Project, TranscriptionJob } from "../types";
+import type { CoreEnvelope,Project,TranscriptionJob } from "../types";
 const mockTranscriptionCommands = new Map<string, { json: string; id: string }>();
 const mockWhisperPolls = new Map<string, number>();
 export function resetMockTranscriptionCommands() { mockTranscriptionCommands.clear(); mockWhisperPolls.clear(); }
 
-export async function runMockTranscription(request: TranscriptionCommand, dependencies: { mockTranscriptionJobs: Map<string, TranscriptionJob>; mockProject: Project; mockProjects: Project[]; mockRun: (args: string[]) => Promise<CoreEnvelope> }): Promise<CoreEnvelope> {
+export async function runMockTranscription(request: Exclude<TranscriptionCommand, {action:"start_multispeaker"}>, dependencies: { mockTranscriptionJobs: Map<string, TranscriptionJob>; mockProject: Project; mockProjects: Project[]; mockRun: (args: string[]) => Promise<CoreEnvelope> }): Promise<CoreEnvelope> {
   const { mockTranscriptionJobs, mockProject, mockProjects, mockRun } = dependencies;
   const response = (id: string): CoreEnvelope => ({ apiVersion: "0.1", status: "ok", transcriptionJob: structuredClone(mockTranscriptionJobs.get(id) ?? null) });
   const mutation = "mutationId" in request ? request.mutationId : null;

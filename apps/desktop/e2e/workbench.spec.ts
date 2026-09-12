@@ -1,8 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
 
 async function expandTimeline(page: Page) {
-  const expand = page.getByRole("button", { name: "展开时间线" });
-  if (await expand.isVisible()) await expand.click();
+  const toggle = page.locator(".timeline-toggle");
+  await expect(toggle).toBeVisible();
+  if (await toggle.getAttribute("aria-expanded") !== "true") await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  await expect(page.locator(".subtitle-timeline-scroll")).toBeVisible();
 }
 
 async function bindMockMedia(page: Page) {

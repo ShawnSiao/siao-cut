@@ -317,3 +317,44 @@ fn guarded_structure_is_idempotent_and_rolls_back_on_failure() {
         mutation.expected_version_id
     );
 }
+
+#[test]
+fn transcription_review_is_owned_version_checked_and_idempotent() {
+    let temp = tempdir().unwrap();
+    let mut db = db::open_at(&temp.path().join("review.db")).unwrap();
+    let edit = fixture(&mut db, &temp.path().join("audio.wav"));
+    db.execute("INSERT INTO transcription_jobs(id,project_id,provider_id,endpoint,model_id,status,stage,created_at,updated_at) VALUES('job',?1,'moss_openai','http://127.0.0.1:8000','model','completed','completed','now','now')",[&edit.draft.project_id]).unwrap();
+    db.execute("INSERT INTO transcription_runs(id,project_id,job_id,provider_id,model_id,source_sha256,result_sha256,raw_result_path,segment_count,speaker_count,created_at) VALUES('run',?1,'job','moss_openai','model','sha','result','',1,1,'now')",[&edit.draft.project_id]).unwrap();
+    db.execute("INSERT INTO transcription_review_items(id,project_id,run_id,severity,kind,message,status,created_at) VALUES('item',?1,'run','warning','timing','review','open','now')",[&edit.draft.project_id]).unwrap();
+    let mut request = ProjectMutation {
+        project_id: edit.draft.project_id,
+        mutation_id: "resolve".into(),
+        expected_version_id: edit.expected_version_id,
+        operation: ProjectOperation::ResolveTranscriptionReview {
+            item_id: "item".into(),
+            action: "resolved".into(),
+        },
+    };
+    let other = fixture(&mut db, &temp.path().join("other.wav"));
+    let mut wrong_owner: ProjectMutation =
+        serde_json::from_value(serde_json::to_value(&request).unwrap()).unwrap();
+    wrong_owner.project_id = other.draft.project_id;
+    wrong_owner.expected_version_id = other.expected_version_id;
+    assert!(
+        mutate(&mut db, &wrong_owner)
+            .unwrap_err()
+            .to_string()
+            .contains("不属于当前项目")
+    );
+    let receipt = mutate(&mut db, &request).unwrap();
+    assert_eq!(receipt["reviewItem"]["status"], "resolved");
+    assert_eq!(mutate(&mut db, &request).unwrap(), receipt);
+    request.mutation_id = "stale".into();
+    request.expected_version_id = Some("old".into());
+    assert!(
+        mutate(&mut db, &request)
+            .unwrap_err()
+            .to_string()
+            .contains("editing_version_conflict")
+    );
+}

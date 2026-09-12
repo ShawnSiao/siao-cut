@@ -79,6 +79,10 @@ pub struct ProjectMutation {
     deny_unknown_fields
 )]
 pub enum ProjectOperation {
+    ResolveTranscriptionReview {
+        item_id: String,
+        action: String,
+    },
     RelinkMedia {
         path: String,
     },
@@ -167,4 +171,67 @@ pub enum ProjectOperation {
         segment_id: String,
         speaker_id: String,
     },
+}
+
+impl ProjectOperation {
+    /// Domains whose read models may change; transport adapters do not infer business effects.
+    pub fn changed_domains(&self) -> &'static [&'static str] {
+        use ProjectOperation::*;
+        match self {
+            ResolveTranscriptionReview { .. } => &["transcriptionReview"],
+            RelinkMedia { .. } => &["media", "history"],
+            ReplaceGlossary { .. } => &["glossary", "translations", "review", "history"],
+            CreateWorkflow { .. } => &["review"],
+            Canvas { .. } | Style { .. } => &["presentation", "history"],
+            RenameSpeaker { .. } | MergeSpeaker { .. } | AssignSpeaker { .. } => {
+                &["speakers", "transcriptionReview", "history"]
+            }
+            DetectCuts | SetCutStatus { .. } | CreateWordCut { .. } => {
+                &["edits", "timeline", "history"]
+            }
+            Replace { .. } => &[
+                "transcript",
+                "translations",
+                "edits",
+                "insights",
+                "review",
+                "history",
+            ],
+            Split { .. } | Merge { .. } | Timing { .. } | Offset { .. } | ImportSubtitle { .. } => {
+                &[
+                    "transcript",
+                    "translations",
+                    "edits",
+                    "speakers",
+                    "insights",
+                    "review",
+                    "timeline",
+                    "history",
+                ]
+            }
+            ReviewPatch { .. } | ReviewAll { .. } => &[
+                "transcript",
+                "translations",
+                "edits",
+                "speakers",
+                "insights",
+                "review",
+                "timeline",
+                "history",
+            ],
+            Undo | Redo | Restore { .. } => &[
+                "transcript",
+                "translations",
+                "glossary",
+                "edits",
+                "speakers",
+                "insights",
+                "review",
+                "transcriptionReview",
+                "timeline",
+                "presentation",
+                "history",
+            ],
+        }
+    }
 }

@@ -33,6 +33,17 @@ pub fn mutate(db: &mut Connection, request: &ProjectMutation) -> Result<serde_js
         bail!("editing_version_conflict: 项目版本已变化，请重新核对操作")
     }
     let mut result = match &request.operation {
+        ProjectOperation::ResolveTranscriptionReview { item_id, action } => {
+            let owner: String = tx.query_row(
+                "SELECT project_id FROM transcription_review_items WHERE id=?1",
+                [item_id],
+                |row| row.get(0),
+            )?;
+            if &owner != id {
+                bail!("invalid_request: 复核项不属于当前项目")
+            }
+            json!({"reviewItem": crate::transcription::resolve_review(&tx, item_id, action)?, "changedDomains": ["transcriptionReview"]})
+        }
         ProjectOperation::RelinkMedia { path } => {
             json!({"project":project::relink_media(&mut tx,id,std::path::Path::new(path))?})
         }
@@ -178,6 +189,7 @@ pub fn mutate(db: &mut Connection, request: &ProjectMutation) -> Result<serde_js
             speaker_id,
         } => json!({"speakerTrack":speaker::assign(&mut tx,id,segment_id,speaker_id)?}),
     };
+    result["changedDomains"] = json!(request.operation.changed_domains());
     result["projectId"] = json!(id);
     result["mutationId"] = json!(request.mutation_id);
     result["versionId"] = json!(project::current_version_id(&tx, id)?);

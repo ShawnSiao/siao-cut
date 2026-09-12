@@ -1,4 +1,4 @@
-import { runCore,runCoreStructured } from "../core";
+import { runCoreStructured } from "../core";
 import type { AiExecutionSelection } from "../features/ai-assistance/types";
 import type { UiLocale } from "../i18n";
 import type { SourceBrowser,TranscriptionLanguage,WorkflowProfile } from "../types";
@@ -22,7 +22,9 @@ type StartAutoWorkflowOptions = {
   aiExecution?: AiExecutionSelection;
 };
 
-type StartTranscriptionOptions = {
+export type StartTranscriptionOptions = {
+  mutationId: string;
+  expectedVersionId: string;
   projectId: string;
   language: TranscriptionLanguage;
   prompt?: string;
@@ -45,32 +47,22 @@ export const backgroundTaskClient = {
   resumeSourceImport: (jobId: string) => desktopControl({ action: "source_resume", jobId: jobId }),
 
   listAutoWorkflows: () => desktopQuery({action:"auto_workflows"}),
-  startAutoWorkflow: (options: StartAutoWorkflowOptions) => {
-    const inputArgs = options.input.kind === "local"
-      ? ["--media", options.input.mediaPath, "--title", options.input.title]
-      : ["--url", options.input.url, "--confirm-media-id", options.input.confirmedMediaId];
-    return runCore([
-      "auto", "start", ...inputArgs,
-      "--model", options.modelPath,
-      "--language", options.language,
-      "--locale", options.locale,
-      "--output", options.output,
-      "--subtitle-mode", options.subtitleMode,
-      "--profile", options.profile,
-      ...(options.translationLanguage ? ["--translate", options.translationLanguage] : []),
-      ...(options.aiExecution && options.aiExecution.kind !== "copy_prompt" ? [
-        "--ai-execution", options.aiExecution.kind,
-        ...(options.aiExecution.kind === "api" ? [
-          "--ai-service-config-id", options.aiExecution.serviceConfigId,
-          "--ai-service-revision", String(options.aiExecution.serviceRevision),
-          "--ai-network-revision", String(options.aiExecution.networkRevision),
-          "--ai-model-id", options.aiExecution.modelId,
-        ] : []),
-        "--confirm-ai-text-send",
-      ] : []),
-      ...(options.burnSubtitles ? ["--burn-subtitles"] : []),
-    ]);
-  },
+  startAutoWorkflow: (options: StartAutoWorkflowOptions) => desktopControl({action: "auto_start", options: {
+    profile: options.profile,
+    media: options.input.kind === "local" ? options.input.mediaPath : null,
+    title: options.input.kind === "local" ? options.input.title : null,
+    url: options.input.kind === "url" ? options.input.url : null,
+    confirmMediaId: options.input.kind === "url" ? options.input.confirmedMediaId : null,
+    model: options.modelPath, language: options.language, locale: options.locale,
+    translate: options.translationLanguage ?? null,
+    aiExecution: options.aiExecution?.kind === "api" ? "api" : options.aiExecution?.kind === "codex" ? "codex" : "manual",
+    aiServiceConfigId: options.aiExecution?.kind === "api" ? options.aiExecution.serviceConfigId : null,
+    aiServiceRevision: options.aiExecution?.kind === "api" ? options.aiExecution.serviceRevision : null,
+    aiNetworkRevision: options.aiExecution?.kind === "api" ? options.aiExecution.networkRevision : null,
+    aiModelId: options.aiExecution?.kind === "api" ? options.aiExecution.modelId : null,
+    confirmAiTextSend: Boolean(options.aiExecution && options.aiExecution.kind !== "copy_prompt"),
+    output: options.output, burnSubtitles: options.burnSubtitles, subtitleMode: options.subtitleMode, startDelayMs: null,
+  }}),
   getAutoWorkflow: (workflowId: string) => desktopQuery({action:"auto_workflow",workflowId}),
   cancelAutoWorkflow: (workflowId: string) => desktopControl({action:"auto_cancel",workflowId}),
   continueAutoWorkflow: (workflowId: string) => desktopControl({action:"auto_continue",workflowId}),
@@ -96,17 +88,10 @@ export const backgroundTaskClient = {
   latestTranscription: (projectId: string) => desktopQuery({action:"latest_transcription",projectId}),
   listTranscriptionReviews: (projectId: string) => desktopQuery({action:"transcription_reviews",projectId}),
   getTranscriptionJob: (jobId: string) => runCoreStructured({ kind: "transcription_job", request: { action: "get", jobId } }),
-  startTranscription: (options: StartTranscriptionOptions) => runCoreStructured({
-    kind: "transcription_start",
-    projectId: options.projectId,
-    language: options.language,
-    prompt: options.prompt,
-    hotwords: options.hotwords,
-  }),
+  startTranscription: (options: StartTranscriptionOptions) => runCoreStructured({kind: "transcription_job", request: {action: "start_multispeaker", ...options, prompt: options.prompt ?? null}}),
   configureTranscription: (endpoint: string, modelId: string) => desktopControl({ action: "transcription_configure", endpoint: endpoint, model: modelId }),
   cancelTranscription: (jobId: string) => runCoreStructured({ kind: "transcription_job", request: { action: "cancel", jobId } }),
   resumeTranscription: (jobId: string, mutationId: string) => runCoreStructured({ kind: "transcription_job", request: { action: "retry", jobId, mutationId } }),
   applyTranscription: (jobId: string, expectedVersionId: string, mutationId: string) => runCoreStructured({ kind: "transcription_job", request: { action: "apply", jobId, expectedVersionId, mutationId } }),
   discardTranscription: (jobId: string, mutationId: string) => runCoreStructured({ kind: "transcription_job", request: { action: "discard", jobId, mutationId } }),
-  resolveTranscriptionReview: (itemId: string, action: "resolved" | "ignored") => runCore(["transcription", "resolve", itemId, "--action", action]),
 };

@@ -34,8 +34,11 @@ describe("desktop architecture boundaries", () => {
     const controller=readFileSync(join(sourceRoot,"workbench/workbench-controller.tsx"),"utf8");
     for(const session of ["useProjectSession","useEditingSession","usePlaybackSession","useAiReviewSession","useBackgroundSession","useExportSession"]) expect(controller).toContain(`${session}(`);
     expect(controller).not.toMatch(/useState<Project(?:\[\])?\s*\|?\s*null?>|setInterval\s*\(/);
-    expect(controller.split(/\r?\n/).length).toBeLessThan(2300);
+    expect(controller.split(/\r?\n/).length).toBeLessThan(1500);
     expect(controller).toContain("useEditingSession(project, acknowledgeEdit)");
+    for (const module of ["useWorkbenchStartup", "useRuntimeSession", "useResourceCompletion", "useSpeakerSession", "useTranscriptionReviewSession", "useTranscriptionStartSession", "useSubtitleImportSession", "createTranscriptCommands", "createPresentationCommands"]) expect(controller).toContain(`${module}(`);
+    expect(controller).not.toMatch(/editing\.session\.mutate|const initialize = useCallback|const transcribe =|const installModel =|const createWordCut =/);
+
     const owners=sourceFiles(sourceRoot).filter((path)=>/useState<Project\s*\|\s*null>/.test(readFileSync(path,"utf8")));
     expect(owners.map((path)=>path.replaceAll("\\","/").split("/src/")[1])).toEqual(["features/project-session/use-project-session.ts"]);
   });
@@ -66,16 +69,7 @@ describe("desktop architecture boundaries", () => {
   });
 
   it("allows raw runCore calls only in the low-level adapter and typed domain clients", () => {
-    const allowed = new Set([
-      join(sourceRoot, "core.ts"),
-      join(sourceRoot, "domains/project-session-client.ts"),
-      join(sourceRoot, "domains/background-task-client.ts"),
-      join(sourceRoot, "domains/transcript-editing-client.ts"),
-      join(sourceRoot, "domains/agent-review-client.ts"),
-      join(sourceRoot, "domains/export-runtime-client.ts"),
-      join(sourceRoot, "domains/translation-client.ts"),
-      join(sourceRoot, "domains/local-resource-client.ts"),
-    ].map((path) => path.replaceAll("\\", "/")));
+    const allowed = new Set([join(sourceRoot,"core.ts").replaceAll("\\","/")]);
     const violations = sourceFiles(sourceRoot)
       .map((path) => path.replaceAll("\\", "/"))
       .filter((path) => !allowed.has(path))

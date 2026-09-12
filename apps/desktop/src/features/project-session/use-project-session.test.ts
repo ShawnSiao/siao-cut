@@ -1,11 +1,20 @@
-import { act, renderHook } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { act,renderHook } from "@testing-library/react";
+import { describe,expect,it,vi } from "vitest";
 import { projectSessionClient } from "../../domains/project-session-client";
 import type { EditReceipt } from "../../generated/core-contract";
 import { sampleProject } from "../../mock";
-import { applyEditReceipt, useProjectSession } from "./use-project-session";
+import { applyEditReceipt,useProjectSession } from "./use-project-session";
 
 describe("project session projections", () => {
+  it("rejects a late full-project response after navigation changed the active project", () => {
+    const {result} = renderHook(() => useProjectSession());
+    act(() => {result.current.activeProjectIdRef.current=sampleProject.id;result.current.setProject(sampleProject);});
+    act(() => {result.current.activeProjectIdRef.current="next-project";result.current.setProject(null);});
+    act(() => result.current.setProject({...sampleProject,title:"Late response"}));
+    expect(result.current.project).toBeNull();
+    act(() => result.current.setProject({...sampleProject,id:"next-project",title:"Current project"}));
+    expect(result.current.project?.title).toBe("Current project");
+  });
   it("ignores an old next page after the project list is reloaded", async () => {
     let resolvePage!: (page: Awaited<ReturnType<typeof projectSessionClient.listProjects>>) => void;
     const list = vi.spyOn(projectSessionClient, "listProjects").mockImplementation(() => new Promise((resolve) => { resolvePage = resolve; }));

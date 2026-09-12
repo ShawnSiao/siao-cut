@@ -121,13 +121,15 @@ const INSTALLED_ASSETS: &[InstalledAssetSpec] = &[
     },
 ];
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreSpeakerAssetStatusWire")]
 pub struct SpeakerAssetStatus {
     pub id: String,
     pub name: String,
     pub source: String,
     pub license: String,
+    #[ts(type = "number")]
     pub size: u64,
     pub sha256: String,
     pub installed: bool,
@@ -135,8 +137,9 @@ pub struct SpeakerAssetStatus {
     pub verification_status: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreSpeakerPackageStatusWire")]
 pub struct SpeakerPackageStatus {
     pub id: String,
     pub name: String,
@@ -144,7 +147,9 @@ pub struct SpeakerPackageStatus {
     pub description: String,
     pub source: String,
     pub license: String,
+    #[ts(type = "number")]
     pub download_size: u64,
+    #[ts(type = "number")]
     pub installed_size: u64,
     pub installed: bool,
     pub verified: Option<bool>,
@@ -152,8 +157,9 @@ pub struct SpeakerPackageStatus {
     pub assets: Vec<SpeakerAssetStatus>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreSpeakerIdentityWire")]
 pub struct SpeakerIdentity {
     pub id: String,
     pub source_label: String,
@@ -162,8 +168,9 @@ pub struct SpeakerIdentity {
     pub created_at: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreSpeakerTurnWire")]
 pub struct SpeakerTurn {
     pub id: String,
     pub speaker_id: String,
@@ -175,8 +182,9 @@ pub struct SpeakerTurn {
     pub created_at: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreSegmentSpeakerWire")]
 pub struct SegmentSpeaker {
     pub segment_id: String,
     pub speaker_id: String,
@@ -185,8 +193,9 @@ pub struct SegmentSpeaker {
     pub updated_at: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreSpeakerTrackWire")]
 pub struct SpeakerTrack {
     pub status: String,
     pub runtime_version: String,
@@ -230,8 +239,9 @@ fn cascade_source_kind() -> String {
     "cascade".into()
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreSpeakerJobWire")]
 pub struct SpeakerJob {
     pub id: String,
     pub kind: String,
@@ -239,7 +249,9 @@ pub struct SpeakerJob {
     pub status: String,
     pub stage: String,
     pub progress: f64,
+    #[ts(type = "number")]
     pub bytes_downloaded: u64,
+    #[ts(type = "number")]
     pub total_bytes: u64,
     pub cancel_requested_at: Option<String>,
     pub error_message: Option<String>,

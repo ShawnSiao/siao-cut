@@ -19,10 +19,14 @@ mod db;
 mod db_migration_33_tests;
 mod desktop_api;
 mod desktop_control;
+mod desktop_export;
 mod desktop_query;
+mod desktop_workflow;
+mod domain_contract;
 mod editing;
 mod editing_contract;
 mod export;
+mod export_delivery;
 mod ipc;
 mod local_resources;
 mod media;
@@ -30,6 +34,9 @@ mod model;
 mod model_contract;
 mod models;
 mod patches;
+// Event variants are constructed by the native app; Core only emits their type contract.
+#[allow(dead_code)]
+mod platform_contract;
 mod project;
 mod project_commands;
 mod project_query;
@@ -1408,7 +1415,6 @@ fn run(cli: Cli) -> Result<Value> {
                 })))
             }
             TranscriptCommand::Export(arguments) => {
-                let project = project::load(&database, &arguments.project_id)?;
                 let subtitle_mode = export::resolve_subtitle_mode(
                     arguments.subtitle_mode.as_deref(),
                     arguments.lang.as_deref(),
@@ -1421,19 +1427,12 @@ fn run(cli: Cli) -> Result<Value> {
                     include_cuts: arguments.include_cuts,
                     allow_stale_translation: arguments.confirm_stale_translation,
                 };
-                export::validate_subtitle_mode(&project, &options)?;
-                let report = export::audit_for_options(&project, &options);
-                if report["ready"] != Value::Bool(true) {
-                    bail!("导出前审计未通过，请先处理无效字幕或媒体问题")
-                }
-                fs::write(&arguments.output, export::render(&project, &options)?)?;
-                Ok(envelope(json!({
-                    "projectId": project.id,
-                    "output": arguments.output,
-                    "format": arguments.format,
-                    "subtitleMode": subtitle_mode,
-                    "audit": report
-                })))
+                Ok(envelope(export_delivery::transcript(
+                    &database,
+                    &arguments.project_id,
+                    &arguments.output,
+                    &options,
+                )?))
             }
         },
         Commands::Task(command) => match command {
@@ -1724,88 +1723,30 @@ fn run(cli: Cli) -> Result<Value> {
             }
         },
         Commands::Auto(command) => match command {
-            AutoWorkflowCommand::Start(arguments) => {
-                let AutoWorkflowStartArgs {
-                    profile,
-                    media,
-                    url,
-                    title,
-                    confirm_media_id,
-                    model,
-                    language,
-                    locale,
-                    translate,
-                    ai_execution,
-                    ai_service_config_id,
-                    ai_service_revision,
-                    ai_network_revision,
-                    ai_model_id,
-                    confirm_ai_text_send,
-                    output,
-                    burn_subtitles,
-                    subtitle_mode,
-                    start_delay_ms,
-                } = *arguments;
-                let input = match (media, url) {
-                    (Some(media), None) => {
-                        if confirm_media_id.is_some() {
-                            bail!("auto_workflow_input_invalid: 本地文件不使用 --confirm-media-id")
-                        }
-                        auto_workflow::WorkflowInput::Local { media, title }
-                    }
-                    (None, Some(url)) => {
-                        if title.is_some() {
-                            bail!(
-                                "auto_workflow_input_invalid: URL 标题来自预检结果，不使用 --title"
-                            )
-                        }
-                        auto_workflow::WorkflowInput::Url {
-                            url,
-                            confirmed_media_id: confirm_media_id.ok_or_else(|| {
-                                anyhow!("auto_workflow_confirmation_required: URL 输入必须提供 --confirm-media-id")
-                            })?,
-                        }
-                    }
-                    _ => bail!("auto_workflow_input_invalid: 必须且只能提供 --media 或 --url"),
-                };
-                let subtitle_mode = model::SubtitleMode::parse(&subtitle_mode)
-                    .ok_or_else(|| anyhow!("auto_workflow_subtitle_mode_invalid: 字幕模式必须为 source、translated 或 bilingual"))?;
-                let profile = model::WorkflowProfile::parse(&profile).ok_or_else(|| {
-                    anyhow!(
-                        "auto_workflow_profile_invalid: 流程预设必须为 draft、balanced 或 delivery"
-                    )
-                })?;
-                let translation_execution = agent::execution::ExecutionTarget::auto_from_cli(
-                    &ai_execution,
-                    ai_service_config_id,
-                    ai_service_revision,
-                    ai_network_revision,
-                    ai_model_id,
-                    confirm_ai_text_send,
-                    translate.is_some(),
-                )?;
-                let workflow = auto_workflow::start(
-                    &mut database,
-                    auto_workflow::StartRequest {
-                        input,
-                        model,
-                        transcribe_language: language,
-                        instruction_locale: locale,
-                        translation_language: translate,
-                        output,
-                        burn_subtitles,
-                        subtitle_mode,
-                        profile,
-                        start_delay_ms,
-                        translation_execution,
-                    },
-                )?;
-                Ok(envelope(json!({
-                    "workflowId": workflow.id,
-                    "workflow": workflow,
-                    "message": "自动工作流已启动；内容判断阶段仍会暂停等待确认。"
-                })))
-            }
+            AutoWorkflowCommand::Start(arguments) => Ok(envelope(desktop_workflow::start(
+                &mut database,
+                desktop_workflow::StartWorkflow {
+                    profile: arguments.profile,
+                    media: arguments.media,
+                    url: arguments.url,
+                    title: arguments.title,
+                    confirm_media_id: arguments.confirm_media_id,
+                    model: arguments.model,
+                    language: arguments.language,
+                    locale: arguments.locale,
+                    translate: arguments.translate,
+                    ai_execution: arguments.ai_execution,
+                    ai_service_config_id: arguments.ai_service_config_id,
+                    ai_service_revision: arguments.ai_service_revision,
+                    ai_network_revision: arguments.ai_network_revision,
+                    ai_model_id: arguments.ai_model_id,
+                    confirm_ai_text_send: arguments.confirm_ai_text_send,
+                    output: arguments.output,
+                    burn_subtitles: arguments.burn_subtitles,
+                    subtitle_mode: arguments.subtitle_mode,
+                    start_delay_ms: arguments.start_delay_ms,
+                },
+            )?)),
             AutoWorkflowCommand::Status { workflow_id } => {
                 let workflow = auto_workflow::load(&database, &workflow_id)?;
                 Ok(envelope(json!({
@@ -2145,23 +2086,14 @@ fn run(cli: Cli) -> Result<Value> {
                 output,
                 include_speaker_labels,
                 confirm_warnings,
-            } => {
-                let (content, audit) = transcription::render_structured_export(
-                    &database,
-                    &project_id,
-                    &format,
-                    include_speaker_labels,
-                    confirm_warnings,
-                )?;
-                fs::write(&output, content)?;
-                Ok(envelope(json!({
-                    "projectId": project_id,
-                    "output": output,
-                    "format": format,
-                    "audit": audit,
-                    "message": "结构化多人转写已导出；JSON/Markdown 保留说话人证据。"
-                })))
-            }
+            } => Ok(envelope(export_delivery::structured(
+                &database,
+                &project_id,
+                &output,
+                &format,
+                include_speaker_labels,
+                confirm_warnings,
+            )?)),
         },
         Commands::Runtime(command) => match command {
             RuntimeCommand::Status => Ok(envelope(json!({"runtime":runtime::status()?}))),

@@ -3,6 +3,10 @@ import type { DesktopControl } from "./generated/core-contract";
 /** Browser simulation only. Production dispatch never expands command arguments. */
 export function mockDesktopControl(request: DesktopControl) {
   switch (request.action) {
+    case "auto_start": {
+      const o = request.options;
+      return mockRun(["auto", "start", ...(o.media ? ["--media", o.media, "--title", o.title ?? ""] : ["--url", o.url ?? "", "--confirm-media-id", o.confirmMediaId ?? ""]), "--model", o.model, "--language", o.language ?? "auto", "--locale", o.locale, "--output", o.output, "--subtitle-mode", o.subtitleMode, "--profile", o.profile, ...(o.translate ? ["--translate", o.translate] : []), ...(o.aiExecution !== "manual" ? ["--ai-execution", o.aiExecution, ...(o.aiExecution === "api" ? ["--ai-service-config-id", o.aiServiceConfigId ?? "", "--ai-service-revision", String(o.aiServiceRevision), "--ai-network-revision", String(o.aiNetworkRevision), "--ai-model-id", o.aiModelId ?? ""] : []), "--confirm-ai-text-send"] : []), ...(o.burnSubtitles ? ["--burn-subtitles"] : [])]);
+    }
     case "media_prepare": return mockRun(["media", "prepare", request.projectId]);
     case "agent_resume": return mockRun(["agent", "resume", request.runId]);
     case "video_retry": return mockRun(["video", "retry", request.jobId]);

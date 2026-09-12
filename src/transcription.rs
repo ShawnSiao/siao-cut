@@ -42,8 +42,9 @@ fn provider_for(provider_id: &str) -> Result<&'static dyn TranscriptionProvider>
     bail!("transcription_provider_invalid: 不支持的转写提供方：{provider_id}")
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreProviderConfigWire")]
 pub struct ProviderConfig {
     pub provider_id: String,
     pub endpoint: String,
@@ -51,8 +52,9 @@ pub struct ProviderConfig {
     pub updated_at: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreProviderHealthWire")]
 pub struct ProviderHealth {
     pub provider_id: String,
     pub endpoint: String,
@@ -62,8 +64,9 @@ pub struct ProviderHealth {
     pub checked_at: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreTranscriptionJobWire")]
 pub struct TranscriptionJob {
     pub id: String,
     pub project_id: String,
@@ -90,8 +93,9 @@ pub struct TranscriptionJob {
     pub candidate: Option<TranscriptionCandidateSummary>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreTranscriptionCandidateSummaryWire")]
 pub struct TranscriptionCandidateSummary {
     pub run_id: String,
     pub segment_count: u32,
@@ -103,8 +107,9 @@ pub struct TranscriptionCandidateSummary {
     pub can_apply: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreReviewItemWire")]
 pub struct ReviewItem {
     pub id: String,
     pub project_id: String,
@@ -187,6 +192,20 @@ pub fn start(
     hotwords: &[String],
     start_delay_ms: Option<u64>,
 ) -> Result<TranscriptionJob> {
+    let (job, created) = register_multispeaker(db, project_id, language, prompt, hotwords)?;
+    if created && let Err(error) = spawn_worker(&job.id, job.attempt_count, start_delay_ms) {
+        db.execute("UPDATE transcription_jobs SET status='failed',stage='failed',error_message=?2,completed_at=?3,updated_at=?3 WHERE id=?1 AND status='queued' AND worker_pid IS NULL", params![job.id,error.to_string(),now()])?;
+        return Err(error);
+    }
+    load(db, &job.id)
+}
+fn register_multispeaker(
+    db: &mut Connection,
+    project_id: &str,
+    language: Option<&str>,
+    prompt: Option<&str>,
+    hotwords: &[String],
+) -> Result<(TranscriptionJob, bool)> {
     let project = project::load(db, project_id)?;
     let source_sha256 = project.media.sha256.clone();
     let base_version_id = project.history.current_version_id.clone();
@@ -197,7 +216,7 @@ pub fn start(
     let tx = crate::write_transaction::WriteTransaction::begin(db)?;
     if let Some(job) = latest_active(&tx, project_id)? {
         tx.commit()?;
-        return Ok(job);
+        return Ok((job, false));
     }
     tx.execute(
         "INSERT INTO transcription_jobs(
@@ -219,16 +238,7 @@ pub fn start(
         ],
     )?;
     tx.commit()?;
-    if let Err(error) = spawn_worker(&id, 1, start_delay_ms) {
-        db.execute(
-            "UPDATE transcription_jobs
-             SET status='failed',stage='failed',error_message=?2,completed_at=?3,updated_at=?3
-             WHERE id=?1 AND status='queued' AND worker_pid IS NULL",
-            params![id, error.to_string(), now()],
-        )?;
-        return Err(error);
-    }
-    load(db, &id)
+    Ok((load(db, &id)?, true))
 }
 
 fn clean_language(value: Option<&str>) -> Option<String> {

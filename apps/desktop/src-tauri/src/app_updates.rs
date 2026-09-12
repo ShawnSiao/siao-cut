@@ -1,4 +1,4 @@
-use serde::Serialize;
+pub use crate::platform_contract::{DownloadEvent, UpdateMetadata, UpdatePolicy};
 use sha2::{Digest, Sha256};
 use std::{
     io::Write,
@@ -19,40 +19,6 @@ impl Default for PendingUpdate {
     fn default() -> Self {
         Self(Mutex::new(None))
     }
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdatePolicy {
-    current_version: String,
-    enabled: bool,
-    automatic_check_interval_hours: u8,
-    disabled_reason: Option<String>,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateMetadata {
-    version: String,
-    current_version: String,
-    notes: Option<String>,
-    published_at: Option<String>,
-    size_bytes: u64,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(tag = "event", content = "data")]
-pub enum DownloadEvent {
-    #[serde(rename_all = "camelCase")]
-    Started {
-        content_length: Option<u64>,
-    },
-    #[serde(rename_all = "camelCase")]
-    Progress {
-        chunk_length: usize,
-    },
-    Finished,
-    Verifying,
 }
 
 fn release_configured() -> bool {

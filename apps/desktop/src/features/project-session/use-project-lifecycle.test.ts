@@ -31,4 +31,17 @@ describe("project navigation ownership", () => {
     expect(result.current.project?.id).toBe(next.id);
     expect(ready).toHaveBeenCalledTimes(1);
   });
+  it("distinguishes an ordinary refresh from opening auxiliary domains", async () => {
+    vi.spyOn(projectSessionClient, "loadProject").mockResolvedValue({...structuredClone(sampleProject), readModels:{}});
+    const ready = vi.fn(async () => {});
+    const {result} = renderHook(() => {
+      const session = useProjectSession();
+      const lifecycle = useProjectLifecycle(session, {reset: () => session.setProject(null), prepareMedia: async () => ({mediaUrl:null,waveformUrl:null}), mediaReady: () => {}, projectReady:ready});
+      return {...session,...lifecycle};
+    });
+    await act(async () => result.current.activateProject(sampleProject.id));
+    await act(async () => result.current.refreshProject(sampleProject.id));
+    expect(ready.mock.calls.map(call => (call as unknown[])[2])).toEqual([true,false]);
+  });
+
 });

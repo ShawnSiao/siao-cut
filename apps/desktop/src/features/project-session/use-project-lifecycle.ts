@@ -1,14 +1,14 @@
-import { useCallback, useRef } from "react";
+import { useCallback,useRef } from "react";
 import { projectSessionClient } from "../../domains/project-session-client";
 import type { Project } from "../../types";
 import type { useProjectSession } from "./use-project-session";
 
-type Session = Pick<ReturnType<typeof useProjectSession>, "activeProjectIdRef" | "beginProjectLoad" | "isCurrentProjectLoad" | "setProject" | "updateProjectSummary">;
+type Session = Pick<ReturnType<typeof useProjectSession>, "projectRef" | "activeProjectIdRef" | "beginProjectLoad" | "isCurrentProjectLoad" | "setProject" | "updateProjectSummary">;
 interface Events {
   reset: () => void;
   prepareMedia: (project: Project) => Promise<{ mediaUrl: string | null; waveformUrl: string | null }>;
   mediaReady: (project: Project, media: { mediaUrl: string | null; waveformUrl: string | null }) => void;
-  projectReady: (project: Project, sequence: number) => Promise<void>;
+  projectReady: (project: Project, sequence: number, opening: boolean) => Promise<void>;
 }
 
 /** Owns project opening, stale-read fencing and rollback after a failed switch. */
@@ -25,8 +25,9 @@ export function useProjectLifecycle(session: Session, events: Events) {
     session.updateProjectSummary(next);
     if (session.activeProjectIdRef.current !== id) return next;
     if (media) latest.current.events.mediaReady(next, media);
-    session.setProject(next);
-    await latest.current.events.projectReady(next, sequence);
+    const opening = session.projectRef.current?.id !== id;
+    session.setProject(current => current?.id === id ? { ...next, subtitleQuality: current.subtitleQuality, speechInsights: current.speechInsights, versions: current.versions, tasks: current.tasks, patchSets: current.patchSets, workflows: current.workflows, readModels: { ...current.readModels, review: undefined } } : next);
+    await latest.current.events.projectReady(next, sequence, opening);
     return next;
   }, []);
   const activateProject = useCallback(async (id: string) => {

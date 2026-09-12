@@ -12,6 +12,14 @@ use ts_rs::TS;
     deny_unknown_fields
 )]
 pub enum TranscriptionCommand {
+    StartMultispeaker {
+        mutation_id: String,
+        project_id: String,
+        expected_version_id: String,
+        language: String,
+        prompt: Option<String>,
+        hotwords: Vec<String>,
+    },
     Start {
         mutation_id: String,
         project_id: String,
@@ -142,7 +150,8 @@ pub(super) fn execute_impl(
         _ => {}
     }
     let mutation_id = match &request {
-        TranscriptionCommand::Start { mutation_id, .. }
+        TranscriptionCommand::StartMultispeaker { mutation_id, .. }
+        | TranscriptionCommand::Start { mutation_id, .. }
         | TranscriptionCommand::Retry { mutation_id, .. }
         | TranscriptionCommand::Apply { mutation_id, .. }
         | TranscriptionCommand::Discard { mutation_id, .. } => mutation_id,
@@ -170,6 +179,46 @@ pub(super) fn execute_impl(
     }
     let mut launch = None;
     let id = match &request {
+        TranscriptionCommand::StartMultispeaker {
+            project_id,
+            expected_version_id,
+            language,
+            prompt,
+            hotwords,
+            ..
+        } => {
+            if !["auto", "zh", "en"].contains(&language.as_str())
+                || hotwords.len() > 512
+                || prompt.as_deref().is_some_and(|v| {
+                    v.trim().is_empty() || v.chars().count() > 1200 || v.contains('\0')
+                })
+                || hotwords
+                    .iter()
+                    .any(|v| v.trim().is_empty() || v.chars().count() > 200 || v.contains('\0'))
+            {
+                bail!("invalid_request: 多人转写参数无效")
+            }
+            if let Some(job) = latest_active(&tx, project_id)? {
+                job.id
+            } else {
+                if project::current_version_id(&tx, project_id)?.as_deref()
+                    != Some(expected_version_id)
+                {
+                    bail!("project_version_conflict: 项目已变化，请重新启动转写")
+                }
+                let (job, created) = register_multispeaker(
+                    &mut tx,
+                    project_id,
+                    Some(language),
+                    prompt.as_deref(),
+                    hotwords,
+                )?;
+                if created {
+                    launch = Some((job.id.clone(), job.attempt_count));
+                }
+                job.id
+            }
+        }
         TranscriptionCommand::Start {
             project_id,
             expected_version_id,

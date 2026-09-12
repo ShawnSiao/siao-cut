@@ -38,8 +38,9 @@ const MAX_SUBPROCESS_STDOUT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_SUBPROCESS_STDERR_BYTES: usize = 1024 * 1024;
 const DOWNLOAD_CONTROL_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreSourcePreviewWire")]
 pub struct SourcePreview {
     pub original_url: String,
     pub webpage_url: String,
@@ -47,6 +48,7 @@ pub struct SourcePreview {
     pub extractor: String,
     pub title: String,
     pub duration_seconds: f64,
+    #[ts(type = "number | null")]
     pub file_size_bytes: Option<u64>,
     pub file_size_known: bool,
     pub thumbnail_url: Option<String>,
@@ -59,8 +61,9 @@ pub struct SourcePreview {
     pub(crate) resolved_download_url: Option<Url>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreSourceImportJobWire")]
 pub struct SourceImportJob {
     pub id: String,
     pub project_id: Option<String>,
@@ -70,11 +73,14 @@ pub struct SourceImportJob {
     pub extractor: String,
     pub title: String,
     pub duration_seconds: f64,
+    #[ts(type = "number | null")]
     pub file_size_bytes: Option<u64>,
     pub status: String,
     pub stage_code: Option<String>,
     pub progress: f64,
+    #[ts(type = "number")]
     pub bytes_downloaded: u64,
+    #[ts(type = "number | null")]
     pub total_bytes: Option<u64>,
     pub output_directory: String,
     pub output_path: Option<String>,

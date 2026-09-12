@@ -1,6 +1,6 @@
-import { useCallback, useRef, useState, type SetStateAction } from "react";
+import { useCallback,useRef,useState,type SetStateAction } from "react";
 import { projectSessionClient } from "../../domains/project-session-client";
-import type { EditReceipt, ProjectPage, ProjectSummary } from "../../generated/core-contract";
+import type { EditReceipt,ProjectPage,ProjectSummary } from "../../generated/core-contract";
 import type { Project } from "../../types";
 
 export function projectSummary(project: Project): ProjectSummary {
@@ -50,6 +50,7 @@ export function useProjectSession() {
   }, []);
   const setProject = useCallback((action: SetStateAction<Project | null>) => {
     const next = typeof action === "function" ? action(projectRef.current) : action;
+    if (next && activeProjectIdRef.current && next.id !== activeProjectIdRef.current) return;
     projectRef.current = next; setProjectState(next);
   }, []);
   const beginProjectLoad = useCallback((id: string) => {
