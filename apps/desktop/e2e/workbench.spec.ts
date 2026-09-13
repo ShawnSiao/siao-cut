@@ -452,7 +452,8 @@ test("expands the editing workbench on a maximized 27-inch display", async ({ pa
     expect(workflow!.y).toBeGreaterThan(video!.y + video!.height);
     expect(videoFrame!.height).toBeGreaterThan(300);
     expect(workflow!.width).toBeGreaterThanOrEqual(340);
-    expect(workflow!.height).toBeGreaterThan(500);
+    expect(workflow!.height).toBeGreaterThan(250);
+    expect(video!.height).toBeGreaterThan(workflow!.height);
     await expect(drawerBody).toHaveCSS("overflow-y", "auto");
     expect(await drawerBody.evaluate((element) => element.scrollHeight >= element.clientHeight)).toBe(true);
     expect(transcript!.height).toBeGreaterThan(500);

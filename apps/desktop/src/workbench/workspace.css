@@ -10,7 +10,7 @@
 .topbar-heading .eyebrow { display: none; }
 .topbar-heading h1 { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin: 0; font-size: 18px; line-height: 1.4; }
 .topbar .editing-status { padding: 2px 0 0; border: 0; }
-.stage-grid { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 34%); grid-template-rows: minmax(140px, 40%) minmax(0, 1fr); grid-template-areas: "transcript preview" "transcript context"; gap: 10px; }
+.stage-grid { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 34%); grid-template-rows: minmax(220px, 60%) minmax(0, 1fr); grid-template-areas: "transcript preview" "transcript context"; gap: 10px; }
 .editor-grid { grid-area: transcript; min-width: 0; min-height: 0; display: flex; margin: 0; }
 .editor-grid > .transcript-panel { width: 100%; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .editor-grid > .transcript-panel > .segment-list { flex: 1 1 auto; min-height: 0; height: auto; max-height: none; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }

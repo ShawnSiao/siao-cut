@@ -28,6 +28,15 @@ for (const viewport of [{ width: 1440, height: 940 }, { width: 1080, height: 720
       expect(geometry.bottom).toBeLessThanOrEqual(geometry.height);
       expect(geometry.fontSize).toBeGreaterThanOrEqual(14);
     }
+    const ruler = await page.locator(".subtitle-timeline-ruler").boundingBox();
+    const label = await page.locator(".subtitle-timeline-ruler i.major span").first().boundingBox();
+    const actions = await page.locator(".subtitle-timeline-actions").boundingBox();
+    expect(label!.y).toBeGreaterThanOrEqual(ruler!.y);
+    expect(label!.y + label!.height).toBeLessThanOrEqual(ruler!.y + ruler!.height);
+    expect(actions!.y + actions!.height).toBeLessThanOrEqual(ruler!.y);
+    const player = await page.locator(".creator-player").boundingBox();
+    const stage = await page.locator(".stage-grid").boundingBox();
+    expect(player!.height).toBeGreaterThanOrEqual(stage!.height * 0.59);
     expect(timeline!.y + timeline!.height).toBeLessThanOrEqual(viewport.height);
     const editor = page.locator(".segment-row").nth(1).getByRole("textbox").first();
     await editor.fill("长字幕和中英文内容 mixed text ".repeat(20));
