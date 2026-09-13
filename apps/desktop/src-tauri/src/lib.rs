@@ -5,7 +5,7 @@ mod app_updates;
 mod diagnostics;
 
 use diagnostics::Diagnostics;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::Value;
 use std::{
     collections::BTreeMap,
