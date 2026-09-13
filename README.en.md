@@ -103,7 +103,6 @@ tools/                Build, release, and repository-checking tools
 
 ## Documentation
 
-- [Architecture](ARCHITECTURE.md)
 - [Voice intelligence 0.3](docs/voice-intelligence-0.3.md)
 - [Quick-transcription timing safety](docs/quick-transcription-timing.en.md)
 - [MOSS multispeaker transcription](docs/multispeaker-transcription.en.md)

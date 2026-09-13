@@ -137,6 +137,20 @@ jobs:
         shell: pwsh
         run: ./tools/check-repository-artifacts.ps1
 
+      - name: Set up Node.js for policy regression tests
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Test artifact policy against isolated Git fixtures
+        shell: pwsh
+        run: |
+          node --test tools/test-repository-artifacts.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:SIAOCUT_POLICY_TEST_SHELL = 'pwsh'
+          node --test tools/test-repository-artifacts.mjs
+
   dependency-review:
     name: Security / dependency review
     runs-on: ubuntu-latest

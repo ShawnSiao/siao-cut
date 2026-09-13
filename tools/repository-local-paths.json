@@ -1,0 +1,24 @@
+{
+  "directories": [
+    "designs",
+    "docs/hackathon",
+    ".local-tools",
+    ".agents/skills/baoyu-design"
+  ],
+  "files": [
+    "ARCHITECTURE.md",
+    "docs/desktop-architecture.md",
+    "docs/workspace-storage-policy.md",
+    "docs/user-manual.md",
+    "tools/serve-prototype.mjs",
+    "tools/set-build-environment.ps1",
+    "tools/check-workspace-size.ps1",
+    "tools/clean-workspace.ps1",
+    "docs/Agent CLI 处理结果.png",
+    "docs/Agent处理字幕.png",
+    "docs/交接给外部 Agent.png",
+    "docs/任务准备交接.png",
+    "docs/英文界面.png",
+    "docs/运行环境设置.png"
+  ]
+}
