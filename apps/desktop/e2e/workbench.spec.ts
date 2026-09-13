@@ -314,6 +314,7 @@ test("requeues a failed external Agent task and shows its next claim without fla
   if (typeof leaseId !== "string") throw new Error("Mock Core did not return a task lease");
   await runMockCore(page, ["task", "fail", "t1", "--worker", "e2e-agent", "--lease-id", leaseId, "--message", "模拟外部 Agent 失败"]);
 
+  await page.locator(".task-records > summary").click();
   const retry = page.getByRole("button", { name: "重新排队" });
   await expect(retry).toBeVisible({ timeout: 5_000 });
   await retry.click();

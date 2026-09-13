@@ -272,6 +272,8 @@ describe("SiaoCut review workbench", () => {
     });
 
     render(<App />);
+    await waitFor(() => expect(document.querySelector(".task-records > summary")).not.toBeNull());
+    fireEvent.click(document.querySelector(".task-records > summary")!);
     const retry = await screen.findByRole("button", { name: "重新排队" });
     fireEvent.click(retry);
     fireEvent.click(retry);
@@ -353,6 +355,8 @@ describe("SiaoCut review workbench", () => {
     });
 
     render(<App />);
+    await waitFor(() => expect(document.querySelector(".task-records > summary")).not.toBeNull());
+    fireEvent.click(document.querySelector(".task-records > summary")!);
     expect(await screen.findByRole("button", { name: "重新排队" })).toBeInTheDocument();
 
     await waitFor(() => expect(readReview).toHaveBeenCalled(), { timeout: 7_000 });
@@ -414,6 +418,8 @@ describe("SiaoCut review workbench", () => {
     });
 
     render(<App />);
+    await waitFor(() => expect(document.querySelector(".task-records > summary")).not.toBeNull());
+    fireEvent.click(document.querySelector(".task-records > summary")!);
     fireEvent.click(await screen.findByRole("button", { name: "重新排队" }));
 
     expect(await screen.findByText(/已由 fast-agent 领取；当前是第 2 次尝试/)).toBeInTheDocument();

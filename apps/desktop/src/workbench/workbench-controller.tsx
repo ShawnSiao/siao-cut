@@ -1,3 +1,4 @@
+import { TaskRecords } from "../features/ai-assistance/TaskRecords";
 import { TranscriptionStatus } from "../features/background-tasks/TranscriptionStatus";
 import { Bot,Check,ChevronDown,ChevronRight,ChevronUp,CircleAlert,Clock3,Copy,Cpu,Download,FileText,FileVideo2,FolderOpen,FolderPlus,Headphones,History,Link2,ListChecks,LoaderCircle,MoreHorizontal,MoveHorizontal,Play,Redo2,RefreshCw,RotateCcw,Scissors,Search,Settings2,ShieldCheck,Sparkles,Trash2,Undo2,Users,X } from "lucide-react";
 import { lazy,Suspense,useCallback,useEffect,useMemo,useRef,useState,type CSSProperties,type KeyboardEvent as ReactKeyboardEvent } from "react";
@@ -488,9 +489,7 @@ function WorkbenchController() {
         .filter((set) => set.items.length)
         .sort((left, right) => Number(right.items.some((item) => item.status === "conflict")) - Number(left.items.some((item) => item.status === "conflict"))) ?? [];
     const pendingEdits = project?.edits.filter((edit) => ["suggested", "proposed"].includes(edit.status)) ?? [];
-    const failedTasks = project?.tasks.filter((task) => ["failed", "interrupted"].includes(task.status) && task.id !== agentRun?.taskId) ?? [];
     const processingTasks = project?.tasks.filter((task) => ["queued", "claimed", "running"].includes(task.status)) ?? [];
-    const recentTasks = project?.tasks.filter((task) => ["completed", "cancelled", "canceled"].includes(task.status)).slice(-5).reverse() ?? [];
     const audioRisks = audioAnalysisJob?.status === "completed" ? audioAnalysisJob.report?.risks ?? [] : [];
     const projectSpeakerJob = speakerJobs
         .filter((job) => job.kind === "analyze" && job.projectId === project?.id)
@@ -500,7 +499,7 @@ function WorkbenchController() {
         .sort((left, right) => Number(["queued", "running"].includes(right.status)) - Number(["queued", "running"].includes(left.status)))[0] ?? null;
     const speakerById = new Map(speakerTrack?.speakers.map((speaker) => [speaker.id, speaker]) ?? []);
     const associationBySegment = new Map(speakerTrack?.associations.map((association) => [association.segmentId, association]) ?? []);
-    const actionableReviewCount = orderedPatchSets.reduce((count, set) => count + set.items.length, 0) + pendingEdits.length + failedTasks.length + audioRisks.length + transcriptionReviews.length + Number(Boolean(projectSpeakerJob && ["failed", "interrupted"].includes(projectSpeakerJob.status)));
+    const actionableReviewCount = orderedPatchSets.reduce((count, set) => count + set.items.length, 0) + pendingEdits.length + audioRisks.length + transcriptionReviews.length + Number(Boolean(projectSpeakerJob && ["failed", "interrupted"].includes(projectSpeakerJob.status)));
     const focusReviewCount = (project?.subtitleQuality.issues.filter((issue) => issue.severity === "error").length ?? 0)
         + orderedPatchSets.reduce((count, set) => count + set.items.length, 0)
         + pendingEdits.length
@@ -989,7 +988,7 @@ function WorkbenchController() {
         <header className="topbar">
           <div className="topbar-heading"><p className="eyebrow">{tr("app.s0247")}</p><h1 title={project?.title}>{project?.title ?? tr("app.s0248")}</h1><EditingStatus session={editing.session} projectId={project?.id} closeError={editing.closeError} onCancelClose={editing.clearCloseError} onCloseWithDrafts={editing.closeWithDrafts}/></div>
 	          <div className="command-bar creator-command-bar" aria-label={tr("app.s0249")}>
-	            <StatusBadge tone={humanStateTone}>{humanState}</StatusBadge><Suspense fallback={null}><WorkbenchTaskMenu error={transcriptionTasks.error} onRefresh={transcriptionTasks.refresh} inputs={workbenchActivityInputs} actionsFor={activityActionsFor}/></Suspense>
+	            {project && <TaskRecords key={project.id} projectId={project.id} tasks={project.tasks} onRetry={(id) => { if (id === agentRun?.taskId) void resumeCodexAgent(); else void updateTask(id, "retry"); }} pending={taskActions} english={uiLocale === "en-US"}/>}<StatusBadge tone={humanStateTone}>{humanState}</StatusBadge><Suspense fallback={null}><WorkbenchTaskMenu error={transcriptionTasks.error} onRefresh={transcriptionTasks.refresh} inputs={workbenchActivityInputs} actionsFor={activityActionsFor}/></Suspense>
 	            <div className="command-history" aria-label={tr("app.s0250")}>
 	              <IconButton label={tr("app.s0251")} shortcut="Ctrl+Z" disabled={!project?.history.canUndo || Boolean(busy)} onClick={() => navigateHistory("undo")}><Undo2 size={15}/></IconButton>
 	              <IconButton label={tr("app.s0252")} shortcut="Ctrl+Shift+Z" disabled={!project?.history.canRedo || Boolean(busy)} onClick={() => navigateHistory("redo")}><Redo2 size={15}/></IconButton>
@@ -1055,15 +1054,7 @@ function WorkbenchController() {
 	                      {pendingEdits.map((edit) => <article className="review-item" key={edit.id} data-review-detail-id={`edit:${edit.id}`} tabIndex={-1}><span className="review-tag">{tr("app.composite.reviewSuggestion", { kind: cutSuggestionLabel(edit.suggestion?.suggestionType) })}</span><strong>{editReasonLabel(edit)}</strong><p>{edit.suggestion ? tr("app.composite.suggestionEvidence", { range: `${formatTime(edit.start)} — ${formatTime(edit.end)}`, confidence: Math.round(edit.suggestion.confidence * 100) }) : `${formatTime(edit.start)} — ${formatTime(edit.end)}`}</p><div className="cut-actions"><button onClick={() => selectSegment(project.transcript.segments.find((segment) => segment.id === edit.segmentId)!)}>{tr("app.s0303")}</button>{edit.kind === "word_cut" && <button onClick={() => previewCut(edit.id)}><Headphones size={11}/>{tr("app.s0304")}</button>}<button onClick={() => updateCut(edit.id, "dismiss")}>{tr("app.cut.dismiss")}</button><button onClick={() => updateCut(edit.id, "apply")}>{tr("app.s0305")}</button></div></article>)}
 	                      {audioRisks.map((risk, index) => <article className="review-item audio-risk-item" key={`${risk.kind}-${risk.start}-${index}`}><span className="review-tag warning"><CircleAlert size={12}/>{tr("app.s0306")}</span><strong>{audioRiskLabel(risk.kind)}</strong><p>{tr("app.composite.audioRiskEvidence", { range: `${formatTime(risk.start)} — ${formatTime(risk.end)}`, measured: risk.measuredValue, threshold: risk.threshold, unit: audioUnitLabel(risk.unit) })}</p><button onClick={() => locateAudioRisk(risk)}>{tr("app.s0309")}</button></article>)}
 	                      <TranscriptionReviewPanel items={transcriptionReviews} disabled={Boolean(busy)} onLocate={(segmentId) => { const segment = project.transcript.segments.find((item) => item.id === segmentId); if (segment) selectSegment(segment); }} onResolve={resolveTranscriptionReview}/>
-	                      {failedTasks.map((task) => <article className={`agent-task-status ${task.status}`} key={task.id}>
-                            <header><CircleAlert size={14}/><strong>Agent {task.status === "interrupted" ? tr("app.s0018") : tr("app.s0324")}</strong><small>{task.kind}</small></header>
-                            <p className="agent-task-next">{tr("app.agent.task.failedHelp")}</p>
-                            <JobFailureDetails context="agent" status={task.status} errorCode={task.errorCode} errorMessage={task.errorMessage}/>
-                            <small>{tr("app.agent.task.attempt", { attempt: task.attemptCount ?? 0 })}{task.lastActivity?.createdAt ? ` · ${tr("app.agent.task.lastActivity", { time: new Date(task.lastActivity.createdAt).toLocaleString(uiLocale) })}` : ""}</small>
-                            <div className="agent-task-actions"><button disabled={Boolean(taskActions[task.id])} onClick={() => void updateTask(task.id, "retry")}>{taskActions[task.id] === "retry" ? <LoaderCircle className="spin" size={11}/> : <RefreshCw size={11}/>} {taskActions[task.id] === "retry" ? tr("app.agent.task.retrying") : tr("app.s0325")}</button></div>
-                            <details><summary>{tr("app.agent.task.technical")}</summary><dl><div><dt>{tr("app.agent.task.id")}</dt><dd><code>{task.id}</code></dd></div></dl></details>
-                          </article>)}
-                      {processingTasks.filter((task) => task.id !== agentRun?.taskId).map((task) => <article className={`agent-task-status ${task.status}`} key={task.id}>
+	                      {processingTasks.filter((task) => task.id !== agentRun?.taskId).map((task) => <article className={`agent-task-status ${task.status}`} key={task.id}>
                             <header><Bot size={14}/><strong>{agentTaskStatusLabel(task)}</strong><small>{task.kind}</small></header>
                             <p className="agent-task-next">{task.status === "claimed"
                                 ? tr("app.agent.task.claimedHelp", { worker: task.lease?.worker ?? tr("app.agent.task.unknownWorker") })
