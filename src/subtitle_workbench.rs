@@ -4,14 +4,15 @@ use crate::{
     util::{new_id, now},
 };
 use anyhow::{Result, anyhow, bail};
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use std::collections::{BTreeSet, HashMap};
 
 const TIME_EPSILON: f64 = 0.000_001;
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreStructureImpactWire")]
 pub struct StructureImpact {
     pub translations_marked_stale: usize,
     pub translation_segments_removed: usize,
@@ -25,8 +26,9 @@ pub struct StructureImpact {
     pub speaker_associations_removed: usize,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreStructureEditResultWire")]
 pub struct StructureEditResult {
     pub operation: String,
     pub affected_segment_ids: Vec<String>,
@@ -67,7 +69,7 @@ fn assert_media_bound(project: &Project, end: f64) -> Result<()> {
 }
 
 fn invalidate_translations(
-    tx: &Transaction<'_>,
+    tx: &Connection,
     project_id: &str,
     segment_ids: &[&str],
     impact: &mut StructureImpact,
@@ -86,7 +88,7 @@ fn invalidate_translations(
 }
 
 fn invalidate_edits(
-    tx: &Transaction<'_>,
+    tx: &Connection,
     project_id: &str,
     segment_ids: &[&str],
     impact: &mut StructureImpact,
@@ -107,7 +109,7 @@ fn invalidate_edits(
 }
 
 fn remove_automatic_speaker_association(
-    tx: &Transaction<'_>,
+    tx: &Connection,
     project_id: &str,
     segment_id: &str,
     impact: &mut StructureImpact,
@@ -120,7 +122,7 @@ fn remove_automatic_speaker_association(
 }
 
 fn copy_speaker_association(
-    tx: &Transaction<'_>,
+    tx: &Connection,
     project_id: &str,
     from_segment_id: &str,
     to_segment_id: &str,
@@ -136,7 +138,7 @@ fn copy_speaker_association(
 }
 
 fn merge_speaker_associations(
-    tx: &Transaction<'_>,
+    tx: &Connection,
     project_id: &str,
     left_id: &str,
     right_id: &str,
@@ -265,7 +267,7 @@ pub fn split(
         .collect::<Vec<_>>();
     let right_id = new_id("s");
     let mut impact = StructureImpact::default();
-    let tx = db.transaction()?;
+    let tx = crate::write_transaction::WriteTransaction::begin(db)?;
     tx.execute(
         "UPDATE segments SET end_seconds=?3,text=?4 WHERE project_id=?1 AND id=?2",
         params![project_id, segment_id, at_seconds, left_text],
@@ -347,7 +349,7 @@ pub fn merge(
         _ => None,
     };
     let mut impact = StructureImpact::default();
-    let tx = db.transaction()?;
+    let tx = crate::write_transaction::WriteTransaction::begin(db)?;
     invalidate_translations(&tx, project_id, &[&left.id, &right.id], &mut impact)?;
     invalidate_edits(&tx, project_id, &[&left.id, &right.id], &mut impact)?;
     impact.words_reassigned += tx.execute(
@@ -408,7 +410,7 @@ pub fn adjust_timing(
             && (word.start < start - TIME_EPSILON || word.end > end + TIME_EPSILON)
     });
     let mut impact = StructureImpact::default();
-    let tx = db.transaction()?;
+    let tx = crate::write_transaction::WriteTransaction::begin(db)?;
     invalidate_edits(&tx, project_id, &[segment_id], &mut impact)?;
     if remove_words {
         impact.words_removed += tx.execute(
@@ -487,7 +489,7 @@ pub fn offset(
         .map(|segment| segment.id.clone())
         .collect::<Vec<_>>();
     let mut impact = StructureImpact::default();
-    let tx = db.transaction()?;
+    let tx = crate::write_transaction::WriteTransaction::begin(db)?;
     for segment_id in &ordered_ids {
         invalidate_edits(&tx, project_id, &[segment_id], &mut impact)?;
         remove_automatic_speaker_association(&tx, project_id, segment_id, &mut impact)?;

@@ -69,7 +69,7 @@ describe("subtitle timeline model", () => {
 });
 
 describe("SubtitleTimelinePanel", () => {
-  it("defaults to B, persists C, collapses to A, and restores the expanded mode", async () => {
+  it("starts collapsed and preserves the selected expanded review mode", async () => {
     const onOpenReviewDetail = vi.fn();
     render(<SubtitleTimelinePanel
       project={structuredClone(sampleProject)}
@@ -91,6 +91,8 @@ describe("SubtitleTimelinePanel", () => {
       onEnterFocusReview={vi.fn()}
     />);
 
+    expect(screen.getByRole("region", { name: "字幕时间轴" })).toHaveClass("collapsed");
+    fireEvent.click(screen.getByRole("button", { name: "展开时间线" }));
     expect(screen.getByRole("button", { name: "精细编辑" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("slider", { name: "缩放比例" })).toHaveValue("160");
     expect(screen.getByRole("region", { name: "字幕时间轴" })).toHaveClass("expanded", "edit");
@@ -135,6 +137,7 @@ describe("SubtitleTimelinePanel", () => {
       onRestoreCut={vi.fn()}
     />);
 
+    fireEvent.click(screen.getByRole("button", { name: "展开时间线" }));
     fireEvent.click(screen.getByRole("button", { name: "前移 0.1 秒" }));
     fireEvent.click(screen.getByRole("button", { name: "后移 0.1 秒" }));
     expect(onNudgeSelected).toHaveBeenNthCalledWith(1, "s2", -0.1);

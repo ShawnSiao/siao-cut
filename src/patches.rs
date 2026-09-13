@@ -4,7 +4,7 @@ use crate::{
     util::{new_id, now},
 };
 use anyhow::{Result, anyhow, bail};
-use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value;
 use std::collections::BTreeSet;
 
@@ -384,7 +384,7 @@ pub fn review_item(
     action: &str,
 ) -> Result<(String, AgentPatchSet)> {
     validate_review_action(action)?;
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = crate::write_transaction::WriteTransaction::begin(db)?;
     let item = load_review_item(&tx, patch_item_id)?
         .ok_or_else(|| anyhow!("补丁不存在：{patch_item_id}"))?;
     assert_reviewable(&item)?;
@@ -426,7 +426,7 @@ pub fn review_all(
     action: &str,
 ) -> Result<(String, AgentPatchSet)> {
     validate_review_action(action)?;
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = crate::write_transaction::WriteTransaction::begin(db)?;
     let set_id: String = tx
         .query_row(
             "SELECT id FROM agent_patch_sets WHERE task_id=?1",
@@ -612,7 +612,7 @@ fn apply_precondition_matches(db: &Connection, item: &ReviewItem) -> Result<bool
     Ok(matches)
 }
 
-fn apply_review_item(tx: &Transaction<'_>, item: &ReviewItem) -> Result<()> {
+fn apply_review_item(tx: &Connection, item: &ReviewItem) -> Result<()> {
     match item.target.as_str() {
         "transcript" => {
             let segment_id = item

@@ -1,0 +1,7 @@
+.transcription-status { flex: 0 0 auto; min-width: 0; max-height: 150px; overflow: auto; border: 1px solid var(--info); border-radius: var(--radius-panel); background: var(--bg-panel); }
+.transcription-status .workbench-activity-center { margin: 0; border: 0; border-radius: 0; }
+.transcription-status-query { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; padding: 6px 12px; color: var(--text-secondary); font-size: 12px; }
+.transcription-status-query small { margin-left: auto; color: var(--text-muted); }
+.transcription-status-query button { border: 1px solid var(--border-strong); border-radius: var(--radius-control); background: var(--bg-control); color: var(--text-primary); padding: 5px 9px; }
+.transcription-status.query-failed { border-color: var(--warning); }
+.transcription-status.query-failed .spin { animation: none; }

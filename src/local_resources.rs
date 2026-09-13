@@ -48,8 +48,9 @@ pub struct ResourceActivationSnapshot {
     pub created_at: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreCapabilityStatusWire")]
 pub struct CapabilityStatus {
     pub id: &'static str,
     pub name: &'static str,
@@ -58,73 +59,88 @@ pub struct CapabilityStatus {
     pub can_rollback: bool,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreLocalResourceStatusWire")]
 pub struct LocalResourceStatus {
     pub configured: bool,
     pub root: Option<PathBuf>,
     pub root_available: bool,
     pub writable: bool,
+    #[ts(type = "number | null")]
     pub available_bytes: Option<u64>,
     pub transcription_profile: String,
     pub capabilities: Vec<CapabilityStatus>,
     pub needs_setup: bool,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreCapabilityUpdateCheckWire")]
 pub struct CapabilityUpdateCheck {
     pub capability_id: &'static str,
     pub state: &'static str,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreResourceUpdateCheckWire")]
 pub struct ResourceUpdateCheck {
     pub checked_at: String,
     pub capabilities: Vec<CapabilityUpdateCheck>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreResourcePlanWire")]
 pub struct ResourcePlan {
     pub capability_id: String,
     pub capability_name: &'static str,
     pub transcription_profile: Option<String>,
+    #[ts(type = "number")]
     pub download_bytes: u64,
     pub unknown_size: bool,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreResourceHealthWire")]
 pub struct ResourceHealth {
     pub status: LocalResourceStatus,
     pub healthy: bool,
     pub reason_code: Option<&'static str>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreResourceMigrationWire")]
 pub struct ResourceMigration {
     pub source_root: Option<PathBuf>,
     pub target_root: PathBuf,
     pub source_available: bool,
     pub source_removed: bool,
+    #[ts(type = "number")]
     pub files_copied: u64,
+    #[ts(type = "number")]
     pub bytes_copied: u64,
     pub status: LocalResourceStatus,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreResourceCleanupWire")]
 pub struct ResourceCleanup {
+    #[ts(type = "number")]
     pub files_removed: u64,
+    #[ts(type = "number")]
     pub directories_removed: u64,
+    #[ts(type = "number")]
     pub bytes_reclaimed: u64,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreResourceRollbackWire")]
 pub struct ResourceRollback {
     pub capability_id: String,
     pub restored_at: String,

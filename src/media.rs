@@ -296,8 +296,9 @@ const AUDIO_DURATION_TOLERANCE_SECONDS: f64 = 0.25;
 const PARENT_SEGMENT_TOLERANCE_SECONDS: f64 = 0.5;
 const TIMELINE_ORDER_TOLERANCE_SECONDS: f64 = 0.001;
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreTimingValidationWire")]
 pub struct TimingValidation {
     pub status: String,
     pub time_domain: String,
@@ -923,6 +924,19 @@ fn import_whisper_json_at_baseline_with_mode(
 #[cfg(test)]
 #[path = "media/tests/transcription_timing.rs"]
 mod transcription_timing_tests;
+
+/// Reuse the original-media timing validator for persisted Whisper candidates.
+pub(crate) fn normalized_whisper_candidate(raw: &Value, duration: f64) -> Result<Value> {
+    let validated = validate_whisper_transcript(raw, duration)?;
+    Ok(serde_json::json!({
+        "language": validated.language,
+        "timingValidation": { "status": "verified", "timeDomain": "original_media", "vadUsed": false },
+        "segments": validated.segments.into_iter().map(|segment| serde_json::json!({
+            "start": segment.start, "end": segment.end, "text": segment.text,
+            "speaker": "S01", "words": segment.words,
+        })).collect::<Vec<_>>()
+    }))
+}
 
 #[cfg(test)]
 mod tests {

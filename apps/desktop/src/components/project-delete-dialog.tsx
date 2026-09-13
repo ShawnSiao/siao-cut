@@ -1,13 +1,13 @@
 import { CircleAlert, LoaderCircle, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
+import type { ProjectSummary } from "../generated/core-contract";
 import { tr } from "../i18n";
-import type { Project } from "../types";
 import { Dialog } from "./ui";
 
 const CHECKING_INDICATOR_DELAY_MS = 180;
 
 type Props = {
-  project: Project;
+  project: Pick<ProjectSummary,"id" | "title">;
   checking: boolean;
   deleting: boolean;
   deletable: boolean;

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
 pub enum AiProviderId {
     Openai,
@@ -26,7 +26,7 @@ impl AiProviderId {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
 pub enum AiProtocol {
     OpenaiResponses,
@@ -35,7 +35,7 @@ pub enum AiProtocol {
     OpenaiChatCompletions,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct AiProviderCatalogEntry {
     pub id: AiProviderId,
@@ -47,21 +47,21 @@ pub struct AiProviderCatalogEntry {
     pub supports_model_discovery: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct AiProviderCatalog {
     pub schema_version: u32,
     pub providers: Vec<AiProviderCatalogEntry>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
 pub enum CredentialState {
     Missing,
     Stored,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ConnectionState {
     Untested,
@@ -84,7 +84,7 @@ pub(crate) struct AiServiceConfig {
     pub revision: u64,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct AiServiceSummary {
     pub id: String,
@@ -98,22 +98,25 @@ pub struct AiServiceSummary {
     pub last_tested_at: Option<String>,
     pub last_error_code: Option<String>,
     pub is_default: bool,
+    #[ts(type = "number")]
     pub revision: u64,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct AiServiceSettings {
     pub schema_version: u32,
+    #[ts(type = "number")]
     pub revision: u64,
     pub provider_catalog: AiProviderCatalog,
     pub services: Vec<AiServiceSummary>,
     pub default_service_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveAiServiceInput {
+    #[ts(type = "number")]
     pub expected_revision: u64,
     pub id: Option<String>,
     pub provider_id: AiProviderId,
@@ -124,32 +127,36 @@ pub struct SaveAiServiceInput {
     pub api_key: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ServiceMutationInput {
+    #[ts(type = "number")]
     pub expected_revision: u64,
     pub id: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SetDefaultAiServiceInput {
+    #[ts(type = "number")]
     pub expected_revision: u64,
     pub id: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct NetworkSettingsFile {
     pub schema_version: u32,
+    #[ts(type = "number")]
     pub revision: u64,
     pub custom_proxy_url: Option<String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct NetworkSettings {
     pub schema_version: u32,
+    #[ts(type = "number")]
     pub revision: u64,
     pub custom_proxy_url: Option<String>,
     pub effective_mode: String,
@@ -157,21 +164,22 @@ pub struct NetworkSettings {
     pub effective_proxy_address: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SetNetworkSettingsInput {
+    #[ts(type = "number")]
     pub expected_revision: u64,
     pub custom_proxy_url: Option<String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct AiEnvironmentSettings {
     pub ai_services: AiServiceSettings,
     pub network: NetworkSettings,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct AiServiceProbeInput {
     pub service_config_id: Option<String>,
@@ -191,21 +199,21 @@ pub(crate) struct ResolvedAiService {
     pub api_key: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct AiModelInfo {
     pub id: String,
     pub display_name: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct AiModelList {
     pub models: Vec<AiModelInfo>,
     pub manual_entry_allowed: bool,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct AiServiceTestResult {
     pub state: ConnectionState,

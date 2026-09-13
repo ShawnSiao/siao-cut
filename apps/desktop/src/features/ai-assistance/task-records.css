@@ -1,0 +1,15 @@
+.task-records { position: relative; font-size: 13px; }
+.task-records > summary { cursor: pointer; padding: 8px 12px; border: 1px solid var(--border, #35404a); border-radius: 8px; }
+.task-records > summary span { margin-left: 8px; color: #f3c76b; }
+.task-records > section { position: absolute; right: 0; top: calc(100% + 8px); z-index: 100; width: min(440px, 85vw); background: var(--panel, #1c2329); color: var(--text, #eef1f3); border: 1px solid #47525b; border-radius: 12px; padding: 16px; box-shadow: 0 12px 40px #0008; }
+.task-records p { font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.task-record-list { max-height: min(55vh, 480px); overflow: auto; }
+.task-record-list article { border-bottom: 1px solid #3a444e; padding: 12px 0; }
+.task-record-list header, .task-record-filters { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+.task-record-list small { display: block; color: #b2bdc7; margin: 8px 0; }
+.task-record-list details { margin: 8px 0; }
+.task-record-filters button, .task-record-filters select { min-height: 32px; padding: 6px 10px; border-radius: 7px; border: 1px solid #3a4650; background: #232c34; color: #e8edf1; font: inherit; }
+.task-record-filters button { cursor: pointer; }
+.task-record-filters button:hover:not(:disabled) { border-color: #b8e875; }
+.task-record-filters button:disabled { opacity: .45; cursor: default; }
+.task-records :focus-visible { outline: 2px solid #b8e875; outline-offset: 3px; }

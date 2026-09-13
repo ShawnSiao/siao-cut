@@ -1,11 +1,12 @@
 use anyhow::{Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand, error::ErrorKind};
-use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{env, fs, io::Read, path::PathBuf};
 
 mod agent;
 mod agent_runner;
+mod ai_approval;
+mod ai_approval_contract;
 mod ai_services;
 mod artifacts;
 mod audio_analysis;
@@ -16,14 +17,29 @@ mod cuts;
 mod db;
 #[cfg(test)]
 mod db_migration_33_tests;
+mod desktop_api;
+mod desktop_control;
+mod desktop_export;
+mod desktop_query;
+mod desktop_workflow;
+mod domain_contract;
+mod editing;
+mod editing_contract;
 mod export;
+mod export_delivery;
 mod ipc;
 mod local_resources;
 mod media;
 mod model;
+mod model_contract;
 mod models;
 mod patches;
+// Event variants are constructed by the native app; Core only emits their type contract.
+#[allow(dead_code)]
+mod platform_contract;
 mod project;
+mod project_commands;
+mod project_query;
 mod resource_jobs;
 mod runtime;
 mod source_import;
@@ -42,6 +58,8 @@ mod translation_edit_tests;
 mod util;
 mod video_export;
 mod workflows;
+mod write_transaction;
+mod x_public_video;
 
 const API_VERSION: &str = "0.1";
 
@@ -117,27 +135,6 @@ enum Commands {
     Transcribe(TranscribeArgs),
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(tag = "kind", deny_unknown_fields)]
-enum DesktopRequest {
-    #[serde(rename = "transcript_offset")]
-    TranscriptOffset {
-        #[serde(rename = "projectId")]
-        project_id: String,
-        #[serde(rename = "segmentIds")]
-        segment_ids: Vec<String>,
-        delta: f64,
-    },
-    #[serde(rename = "transcription_start")]
-    TranscriptionStart {
-        #[serde(rename = "projectId")]
-        project_id: String,
-        language: String,
-        prompt: Option<String>,
-        hotwords: Vec<String>,
-    },
-}
-
 #[derive(Subcommand)]
 enum ProjectCommand {
     List,
@@ -208,6 +205,8 @@ enum TranslationCommand {
 enum SourceCommand {
     Inspect {
         url: String,
+        #[arg(long)]
+        browser: Option<String>,
     },
     Start {
         url: String,
@@ -215,6 +214,8 @@ enum SourceCommand {
         confirm_media_id: String,
         #[arg(long, hide = true)]
         start_delay_ms: Option<u64>,
+        #[arg(long)]
+        browser: Option<String>,
     },
     Status {
         job_id: String,
@@ -895,13 +896,6 @@ fn envelope(payload: Value) -> Value {
     Value::Object(object)
 }
 
-fn validate_desktop_request_text(label: &str, value: &str, max_chars: usize) -> Result<()> {
-    if value.trim().is_empty() || value.chars().count() > max_chars || value.contains('\0') {
-        bail!("invalid_request: Desktop 结构化请求中的{label}无效")
-    }
-    Ok(())
-}
-
 fn run_desktop_request(database: &mut rusqlite::Connection, input: &PathBuf) -> Result<Value> {
     const MAX_DESKTOP_REQUEST_BYTES: usize = 64 * 1024;
     let payload =
@@ -909,65 +903,9 @@ fn run_desktop_request(database: &mut rusqlite::Connection, input: &PathBuf) -> 
     if payload.len() > MAX_DESKTOP_REQUEST_BYTES {
         bail!("invalid_request: Desktop 结构化请求超过 64 KiB")
     }
-    let request: DesktopRequest = serde_json::from_slice(&payload)
+    let request: desktop_api::DesktopRequest = serde_json::from_slice(&payload)
         .map_err(|_| anyhow!("invalid_request: Desktop 结构化请求 JSON 无效"))?;
-    match request {
-        DesktopRequest::TranscriptOffset {
-            project_id,
-            segment_ids,
-            delta,
-        } => {
-            validate_desktop_request_text("项目 ID", &project_id, 256)?;
-            if segment_ids.is_empty()
-                || segment_ids.len() > 1000
-                || segment_ids
-                    .iter()
-                    .collect::<std::collections::BTreeSet<_>>()
-                    .len()
-                    != segment_ids.len()
-            {
-                bail!("invalid_request: Desktop 批量偏移请求无效")
-            }
-            for segment_id in &segment_ids {
-                validate_desktop_request_text("字幕段 ID", segment_id, 256)?;
-            }
-            let result = subtitle_workbench::offset(database, &project_id, &segment_ids, delta)?;
-            Ok(envelope(json!({
-                "projectId": project_id,
-                "structureEdit": result,
-                "message": "选中字幕与对应词级证据已批量偏移。"
-            })))
-        }
-        DesktopRequest::TranscriptionStart {
-            project_id,
-            language,
-            prompt,
-            hotwords,
-        } => {
-            validate_desktop_request_text("项目 ID", &project_id, 256)?;
-            if !["auto", "en", "zh"].contains(&language.as_str()) || hotwords.len() > 512 {
-                bail!("invalid_request: Desktop 多人转写请求无效")
-            }
-            if let Some(value) = prompt.as_deref() {
-                validate_desktop_request_text("Prompt", value, 1200)?;
-            }
-            for hotword in &hotwords {
-                validate_desktop_request_text("热词", hotword, 200)?;
-            }
-            let job = transcription::start(
-                database,
-                &project_id,
-                Some(&language),
-                prompt.as_deref(),
-                &hotwords,
-                None,
-            )?;
-            Ok(envelope(json!({
-                "transcriptionJob": job,
-                "message": "多人长音频转写已进入后台队列；不会静默回退到快速转写。"
-            })))
-        }
-    }
+    Ok(envelope(desktop_api::execute(database, request)?))
 }
 
 fn run_ai_request() -> Result<Value> {
@@ -996,7 +934,11 @@ fn run(cli: Cli) -> Result<Value> {
     if matches!(&cli.command, Commands::AiRequest) {
         return run_ai_request();
     }
-    let mut database = db::open()?;
+    let mut database = if matches!(&cli.command, Commands::DesktopRequest { .. }) {
+        db::open_desktop()?
+    } else {
+        db::open()?
+    };
     tasks::reconcile_expired(&mut database)?;
     models::reconcile_interrupted(&database)?;
     resource_jobs::reconcile_interrupted(&database)?;
@@ -1058,25 +1000,24 @@ fn run(cli: Cli) -> Result<Value> {
             ))
         }
         Commands::Source(command) => match command {
-            SourceCommand::Inspect { url } => {
-                let source = source_import::inspect(&url)?;
-                Ok(envelope(json!({
-                    "source": source,
-                    "message": "已读取公开单视频信息；确认前不会下载或创建项目。"
-                })))
-            }
+            SourceCommand::Inspect { url, browser } => Ok(envelope(desktop_control::execute(
+                &mut database,
+                desktop_control::DesktopControl::SourceInspect { url, browser },
+            )?)),
             SourceCommand::Start {
                 url,
                 confirm_media_id,
                 start_delay_ms,
-            } => {
-                let job = source_import::start(&database, &url, &confirm_media_id, start_delay_ms)?;
-                Ok(envelope(json!({
-                    "sourceJobId": job.id,
-                    "sourceJob": job,
-                    "message": "已确认视频信息并开始后台下载；项目将在完整校验成功后创建。"
-                })))
-            }
+                browser,
+            } => Ok(envelope(desktop_control::execute(
+                &mut database,
+                desktop_control::DesktopControl::SourceStart {
+                    url,
+                    confirm_media_id,
+                    start_delay_ms,
+                    browser,
+                },
+            )?)),
             SourceCommand::Status { job_id } => {
                 let job = source_import::load(&database, &job_id)?;
                 Ok(envelope(json!({
@@ -1087,22 +1028,14 @@ fn run(cli: Cli) -> Result<Value> {
             SourceCommand::Jobs => Ok(envelope(json!({
                 "sourceJobs": source_import::list(&database)?
             }))),
-            SourceCommand::Cancel { job_id } => {
-                let job = source_import::cancel(&database, &job_id)?;
-                Ok(envelope(json!({
-                    "sourceJobId": job.id,
-                    "sourceJob": job,
-                    "message": "已请求取消 URL 导入；部分下载保留到显式继续。"
-                })))
-            }
-            SourceCommand::Resume { job_id } => {
-                let job = source_import::resume(&database, &job_id)?;
-                Ok(envelope(json!({
-                    "sourceJobId": job.id,
-                    "sourceJob": job,
-                    "message": "URL 导入已显式继续，将复用已下载部分。"
-                })))
-            }
+            SourceCommand::Cancel { job_id } => Ok(envelope(desktop_control::execute(
+                &mut database,
+                desktop_control::DesktopControl::SourceCancel { job_id },
+            )?)),
+            SourceCommand::Resume { job_id } => Ok(envelope(desktop_control::execute(
+                &mut database,
+                desktop_control::DesktopControl::SourceResume { job_id },
+            )?)),
         },
         Commands::Speech(command) => match command {
             SpeechCommand::Analyze { project_id } => {
@@ -1120,30 +1053,33 @@ fn run(cli: Cli) -> Result<Value> {
             SpeechCommand::AudioStart {
                 project_id,
                 start_delay_ms,
-            } => {
-                let job = audio_analysis::start(&database, &project_id, start_delay_ms)?;
-                Ok(envelope(json!({
-                    "audioAnalysisJob": job,
-                    "message": "已开始本地音频质量分析；媒体不会上传。"
-                })))
-            }
+            } => Ok(envelope(desktop_control::execute(
+                &mut database,
+                desktop_control::DesktopControl::AudioStart {
+                    project_id,
+                    start_delay_ms,
+                },
+            )?)),
             SpeechCommand::AudioStatus { job_id } => Ok(envelope(json!({
                 "audioAnalysisJob": audio_analysis::load(&database, &job_id)?
             }))),
             SpeechCommand::AudioLatest { project_id } => Ok(envelope(json!({
                 "audioAnalysisJob": audio_analysis::latest(&database, &project_id)?
             }))),
-            SpeechCommand::AudioCancel { job_id } => Ok(envelope(json!({
-                "audioAnalysisJob": audio_analysis::cancel(&database, &job_id)?,
-                "message": "已请求取消本地音频分析。"
-            }))),
+            SpeechCommand::AudioCancel { job_id } => Ok(envelope(desktop_control::execute(
+                &mut database,
+                desktop_control::DesktopControl::AudioCancel { job_id },
+            )?)),
             SpeechCommand::AudioResume {
                 job_id,
                 start_delay_ms,
-            } => Ok(envelope(json!({
-                "audioAnalysisJob": audio_analysis::resume(&database, &job_id, start_delay_ms)?,
-                "message": "已显式继续本地音频分析。"
-            }))),
+            } => Ok(envelope(desktop_control::execute(
+                &mut database,
+                desktop_control::DesktopControl::AudioResume {
+                    job_id,
+                    start_delay_ms,
+                },
+            )?)),
         },
         Commands::Project(command) => match command {
             ProjectCommand::List => Ok(envelope(json!({"projects":project::list(&database)?}))),
@@ -1483,7 +1419,6 @@ fn run(cli: Cli) -> Result<Value> {
                 })))
             }
             TranscriptCommand::Export(arguments) => {
-                let project = project::load(&database, &arguments.project_id)?;
                 let subtitle_mode = export::resolve_subtitle_mode(
                     arguments.subtitle_mode.as_deref(),
                     arguments.lang.as_deref(),
@@ -1496,19 +1431,12 @@ fn run(cli: Cli) -> Result<Value> {
                     include_cuts: arguments.include_cuts,
                     allow_stale_translation: arguments.confirm_stale_translation,
                 };
-                export::validate_subtitle_mode(&project, &options)?;
-                let report = export::audit_for_options(&project, &options);
-                if report["ready"] != Value::Bool(true) {
-                    bail!("导出前审计未通过，请先处理无效字幕或媒体问题")
-                }
-                fs::write(&arguments.output, export::render(&project, &options)?)?;
-                Ok(envelope(json!({
-                    "projectId": project.id,
-                    "output": arguments.output,
-                    "format": arguments.format,
-                    "subtitleMode": subtitle_mode,
-                    "audit": report
-                })))
+                Ok(envelope(export_delivery::transcript(
+                    &database,
+                    &arguments.project_id,
+                    &arguments.output,
+                    &options,
+                )?))
             }
         },
         Commands::Task(command) => match command {
@@ -1637,20 +1565,14 @@ fn run(cli: Cli) -> Result<Value> {
                     json!({"projectId":project_id,"taskId":task.id,"task":task,"message":"任务已记录为失败，可重新排队。"}),
                 ))
             }
-            TaskCommand::Retry { task_id } => {
-                let project_id = tasks::project_id(&database, &task_id)?;
-                let task = tasks::retry(&mut database, &task_id)?;
-                Ok(envelope(
-                    json!({"projectId":project_id,"taskId":task.id,"task":task,"message":"任务已重新排队。"}),
-                ))
-            }
-            TaskCommand::Cancel { task_id } => {
-                let project_id = tasks::project_id(&database, &task_id)?;
-                let task = tasks::cancel(&mut database, &task_id)?;
-                Ok(envelope(
-                    json!({"projectId":project_id,"taskId":task.id,"task":task,"message":"任务已取消。"}),
-                ))
-            }
+            TaskCommand::Retry { task_id } => Ok(envelope(desktop_control::execute(
+                &mut database,
+                desktop_control::DesktopControl::TaskRetry { task_id },
+            )?)),
+            TaskCommand::Cancel { task_id } => Ok(envelope(desktop_control::execute(
+                &mut database,
+                desktop_control::DesktopControl::TaskCancel { task_id },
+            )?)),
             TaskCommand::Events { task_id, after } => {
                 let project_id = tasks::project_id(&database, &task_id)?;
                 let events = tasks::events(&database, &task_id, after)?;
@@ -1749,29 +1671,20 @@ fn run(cli: Cli) -> Result<Value> {
                 let runs = agent_runner::list(&database, project_id.as_deref())?;
                 Ok(envelope(json!({"projectId":project_id,"agentRuns":runs})))
             }
-            AgentCommand::Cancel { run_id } => {
-                let run = agent_runner::cancel(&mut database, &run_id)?;
-                Ok(envelope(json!({
-                    "projectId": run.project_id,
-                    "taskId": run.task_id,
-                    "agentRunId": run.id,
-                    "agentRun": run,
-                    "message": "AI 辅助已取消；项目内容未自动修改。"
-                })))
-            }
+            AgentCommand::Cancel { run_id } => Ok(envelope(desktop_control::execute(
+                &mut database,
+                desktop_control::DesktopControl::AgentCancel { run_id },
+            )?)),
             AgentCommand::Resume {
                 run_id,
                 start_delay_ms,
-            } => {
-                let run = agent_runner::resume(&mut database, &run_id, start_delay_ms)?;
-                Ok(envelope(json!({
-                    "projectId": run.project_id,
-                    "taskId": run.task_id,
-                    "agentRunId": run.id,
-                    "agentRun": run,
-                    "message": "AI 辅助已重新排队。"
-                })))
-            }
+            } => Ok(envelope(desktop_control::execute(
+                &mut database,
+                desktop_control::DesktopControl::AgentResume {
+                    run_id,
+                    start_delay_ms,
+                },
+            )?)),
         },
         Commands::Workflow(command) => match command {
             WorkflowCommand::Create {
@@ -1814,88 +1727,30 @@ fn run(cli: Cli) -> Result<Value> {
             }
         },
         Commands::Auto(command) => match command {
-            AutoWorkflowCommand::Start(arguments) => {
-                let AutoWorkflowStartArgs {
-                    profile,
-                    media,
-                    url,
-                    title,
-                    confirm_media_id,
-                    model,
-                    language,
-                    locale,
-                    translate,
-                    ai_execution,
-                    ai_service_config_id,
-                    ai_service_revision,
-                    ai_network_revision,
-                    ai_model_id,
-                    confirm_ai_text_send,
-                    output,
-                    burn_subtitles,
-                    subtitle_mode,
-                    start_delay_ms,
-                } = *arguments;
-                let input = match (media, url) {
-                    (Some(media), None) => {
-                        if confirm_media_id.is_some() {
-                            bail!("auto_workflow_input_invalid: 本地文件不使用 --confirm-media-id")
-                        }
-                        auto_workflow::WorkflowInput::Local { media, title }
-                    }
-                    (None, Some(url)) => {
-                        if title.is_some() {
-                            bail!(
-                                "auto_workflow_input_invalid: URL 标题来自预检结果，不使用 --title"
-                            )
-                        }
-                        auto_workflow::WorkflowInput::Url {
-                            url,
-                            confirmed_media_id: confirm_media_id.ok_or_else(|| {
-                                anyhow!("auto_workflow_confirmation_required: URL 输入必须提供 --confirm-media-id")
-                            })?,
-                        }
-                    }
-                    _ => bail!("auto_workflow_input_invalid: 必须且只能提供 --media 或 --url"),
-                };
-                let subtitle_mode = model::SubtitleMode::parse(&subtitle_mode)
-                    .ok_or_else(|| anyhow!("auto_workflow_subtitle_mode_invalid: 字幕模式必须为 source、translated 或 bilingual"))?;
-                let profile = model::WorkflowProfile::parse(&profile).ok_or_else(|| {
-                    anyhow!(
-                        "auto_workflow_profile_invalid: 流程预设必须为 draft、balanced 或 delivery"
-                    )
-                })?;
-                let translation_execution = agent::execution::ExecutionTarget::auto_from_cli(
-                    &ai_execution,
-                    ai_service_config_id,
-                    ai_service_revision,
-                    ai_network_revision,
-                    ai_model_id,
-                    confirm_ai_text_send,
-                    translate.is_some(),
-                )?;
-                let workflow = auto_workflow::start(
-                    &mut database,
-                    auto_workflow::StartRequest {
-                        input,
-                        model,
-                        transcribe_language: language,
-                        instruction_locale: locale,
-                        translation_language: translate,
-                        output,
-                        burn_subtitles,
-                        subtitle_mode,
-                        profile,
-                        start_delay_ms,
-                        translation_execution,
-                    },
-                )?;
-                Ok(envelope(json!({
-                    "workflowId": workflow.id,
-                    "workflow": workflow,
-                    "message": "自动工作流已启动；内容判断阶段仍会暂停等待确认。"
-                })))
-            }
+            AutoWorkflowCommand::Start(arguments) => Ok(envelope(desktop_workflow::start(
+                &mut database,
+                desktop_workflow::StartWorkflow {
+                    profile: arguments.profile,
+                    media: arguments.media,
+                    url: arguments.url,
+                    title: arguments.title,
+                    confirm_media_id: arguments.confirm_media_id,
+                    model: arguments.model,
+                    language: arguments.language,
+                    locale: arguments.locale,
+                    translate: arguments.translate,
+                    ai_execution: arguments.ai_execution,
+                    ai_service_config_id: arguments.ai_service_config_id,
+                    ai_service_revision: arguments.ai_service_revision,
+                    ai_network_revision: arguments.ai_network_revision,
+                    ai_model_id: arguments.ai_model_id,
+                    confirm_ai_text_send: arguments.confirm_ai_text_send,
+                    output: arguments.output,
+                    burn_subtitles: arguments.burn_subtitles,
+                    subtitle_mode: arguments.subtitle_mode,
+                    start_delay_ms: arguments.start_delay_ms,
+                },
+            )?)),
             AutoWorkflowCommand::Status { workflow_id } => {
                 let workflow = auto_workflow::load(&database, &workflow_id)?;
                 Ok(envelope(json!({
@@ -1907,21 +1762,15 @@ fn run(cli: Cli) -> Result<Value> {
             AutoWorkflowCommand::List => Ok(envelope(json!({
                 "workflows": auto_workflow::list(&database)?
             }))),
-            AutoWorkflowCommand::Cancel { workflow_id } => {
-                let workflow = auto_workflow::cancel(&mut database, &workflow_id)?;
-                Ok(envelope(json!({
-                    "workflowId": workflow.id,
-                    "workflow": workflow,
-                    "message": "自动工作流已取消。"
-                })))
-            }
+            AutoWorkflowCommand::Cancel { workflow_id } => Ok(envelope(desktop_control::execute(
+                &mut database,
+                desktop_control::DesktopControl::AutoCancel { workflow_id },
+            )?)),
             AutoWorkflowCommand::Continue { workflow_id } => {
-                let workflow = auto_workflow::continue_workflow(&mut database, &workflow_id)?;
-                Ok(envelope(json!({
-                    "workflowId": workflow.id,
-                    "workflow": workflow,
-                    "message": "自动工作流已显式继续。"
-                })))
+                Ok(envelope(desktop_control::execute(
+                    &mut database,
+                    desktop_control::DesktopControl::AutoContinue { workflow_id },
+                )?))
             }
             AutoWorkflowCommand::Events { workflow_id, after } => Ok(envelope(json!({
                 "workflowId": workflow_id,
@@ -1997,15 +1846,10 @@ fn run(cli: Cli) -> Result<Value> {
             }
         },
         Commands::Media(command) => match command {
-            MediaCommand::Prepare { project_id } => {
-                let artifacts = artifacts::prepare(&mut database, &project_id)?;
-                Ok(envelope(json!({
-                    "projectId":project_id,
-                    "artifacts":artifacts,
-                    "project":project::load(&database,&project_id)?,
-                    "message":"预览资源已生成；原片未修改。"
-                })))
-            }
+            MediaCommand::Prepare { project_id } => Ok(envelope(desktop_control::execute(
+                &mut database,
+                desktop_control::DesktopControl::MediaPrepare { project_id },
+            )?)),
             MediaCommand::Status { project_id } => Ok(envelope(json!({
                 "projectId":project_id,
                 "artifacts":artifacts::load(&database,&project_id)?
@@ -2078,37 +1922,23 @@ fn run(cli: Cli) -> Result<Value> {
                 "projectId":project_id,
                 "jobs":video_export::for_project(&database,&project_id)?
             }))),
-            VideoCommand::Cancel { job_id } => {
-                let job = video_export::cancel(&database, &job_id)?;
-                Ok(envelope(json!({
-                    "projectId":job.project_id,
-                    "jobId":job.id,
-                    "job":job,
-                    "message":"已请求取消视频导出。"
-                })))
-            }
-            VideoCommand::Retry { job_id } => {
-                let job = video_export::retry(&database, &job_id)?;
-                Ok(envelope(json!({
-                    "projectId":job.project_id,
-                    "jobId":job.id,
-                    "job":job,
-                    "message":"视频导出已重新开始。"
-                })))
-            }
+            VideoCommand::Cancel { job_id } => Ok(envelope(desktop_control::execute(
+                &mut database,
+                desktop_control::DesktopControl::VideoCancel { job_id },
+            )?)),
+            VideoCommand::Retry { job_id } => Ok(envelope(desktop_control::execute(
+                &mut database,
+                desktop_control::DesktopControl::VideoRetry { job_id },
+            )?)),
         },
         Commands::Model(command) => match command {
             ModelCommand::List { verify } => Ok(envelope(json!({
                 "models": models::catalog(verify)?
             }))),
-            ModelCommand::Install { model_id } => {
-                let job = models::create_download(&database, &model_id)?;
-                Ok(envelope(json!({
-                    "jobId": job.id,
-                    "modelJob": job,
-                    "message": "模型下载已开始；只会访问界面显示的模型来源。"
-                })))
-            }
+            ModelCommand::Install { model_id } => Ok(envelope(desktop_control::execute(
+                &mut database,
+                desktop_control::DesktopControl::ModelInstall { model_id },
+            )?)),
             ModelCommand::Status { job_id } => {
                 let job = models::load_job(&database, &job_id)?;
                 Ok(envelope(json!({"jobId":job.id,"modelJob":job})))
@@ -2116,55 +1946,44 @@ fn run(cli: Cli) -> Result<Value> {
             ModelCommand::Jobs => Ok(envelope(json!({
                 "modelJobs": models::list_jobs(&database)?
             }))),
-            ModelCommand::Cancel { job_id } => {
-                let job = models::cancel(&database, &job_id)?;
-                Ok(envelope(json!({
-                    "jobId":job.id,
-                    "modelJob":job,
-                    "message":"已请求取消模型下载；已下载部分可用于以后继续。"
-                })))
-            }
+            ModelCommand::Cancel { job_id } => Ok(envelope(desktop_control::execute(
+                &mut database,
+                desktop_control::DesktopControl::ModelCancel { job_id },
+            )?)),
             ModelCommand::Verify { model_id } => Ok(envelope(json!({
                 "model": models::verify(&model_id)?
             }))),
-            ModelCommand::Remove { model_id } => {
-                models::remove(&database, &model_id)?;
-                Ok(envelope(json!({
-                    "modelId":model_id,
-                    "message":"模型已从本机移除；项目和原始媒体未受影响。"
-                })))
-            }
+            ModelCommand::Remove { model_id } => Ok(envelope(desktop_control::execute(
+                &mut database,
+                desktop_control::DesktopControl::ModelRemove { model_id },
+            )?)),
         },
         Commands::Speaker(command) => match command {
             SpeakerCommand::Package { verify } => Ok(envelope(json!({
                 "speakerPackage": speaker::package_status(verify)?
             }))),
-            SpeakerCommand::Install => {
-                let job = speaker::create_install(&database)?;
-                Ok(envelope(json!({
-                    "speakerJob": job,
-                    "message": "说话人模型包已进入本机下载队列；完成前不会启用分析。"
-                })))
-            }
+            SpeakerCommand::Install => Ok(envelope(desktop_control::execute(
+                &mut database,
+                desktop_control::DesktopControl::SpeakerInstall,
+            )?)),
             SpeakerCommand::Jobs => Ok(envelope(json!({
                 "speakerJobs": speaker::list_jobs(&database)?
             }))),
             SpeakerCommand::JobStatus { job_id } => Ok(envelope(json!({
                 "speakerJob": speaker::load_job(&database, &job_id)?
             }))),
-            SpeakerCommand::Cancel { job_id } => Ok(envelope(json!({
-                "speakerJob": speaker::cancel(&database, &job_id)?,
-                "message": "说话人任务已取消；字幕、剪辑和原片未修改。"
-            }))),
-            SpeakerCommand::Resume { job_id } => Ok(envelope(json!({
-                "speakerJob": speaker::resume(&database, &job_id)?,
-                "message": "说话人任务已显式继续。"
-            }))),
-            SpeakerCommand::Analyze { project_id } => Ok(envelope(json!({
-                "projectId": project_id,
-                "speakerJob": speaker::create_analysis(&database, &project_id)?,
-                "message": "本地说话人分析已开始；结果只进入待审阅说话人轨。"
-            }))),
+            SpeakerCommand::Cancel { job_id } => Ok(envelope(desktop_control::execute(
+                &mut database,
+                desktop_control::DesktopControl::SpeakerCancel { job_id },
+            )?)),
+            SpeakerCommand::Resume { job_id } => Ok(envelope(desktop_control::execute(
+                &mut database,
+                desktop_control::DesktopControl::SpeakerResume { job_id },
+            )?)),
+            SpeakerCommand::Analyze { project_id } => Ok(envelope(desktop_control::execute(
+                &mut database,
+                desktop_control::DesktopControl::SpeakerAnalyze { project_id },
+            )?)),
             SpeakerCommand::Track { project_id } => Ok(envelope(json!({
                 "projectId": project_id,
                 "speakerTrack": speaker::load_track(&database, &project_id)?
@@ -2205,10 +2024,12 @@ fn run(cli: Cli) -> Result<Value> {
                      "defaultEndpoint": transcription::DEFAULT_ENDPOINT, "config": transcription::config(&database)?}
                 ]
             }))),
-            TranscriptionCommand::Configure { endpoint, model } => Ok(envelope(json!({
-                "config": transcription::configure(&database, &endpoint, &model)?,
-                "message": "MOSS 本机服务配置已保存；不会发送 API 密钥或连接远程地址。"
-            }))),
+            TranscriptionCommand::Configure { endpoint, model } => {
+                Ok(envelope(desktop_control::execute(
+                    &mut database,
+                    desktop_control::DesktopControl::TranscriptionConfigure { endpoint, model },
+                )?))
+            }
             TranscriptionCommand::Health => Ok(envelope(
                 json!({"providerHealth": transcription::health(&database)?}),
             )),
@@ -2269,23 +2090,14 @@ fn run(cli: Cli) -> Result<Value> {
                 output,
                 include_speaker_labels,
                 confirm_warnings,
-            } => {
-                let (content, audit) = transcription::render_structured_export(
-                    &database,
-                    &project_id,
-                    &format,
-                    include_speaker_labels,
-                    confirm_warnings,
-                )?;
-                fs::write(&output, content)?;
-                Ok(envelope(json!({
-                    "projectId": project_id,
-                    "output": output,
-                    "format": format,
-                    "audit": audit,
-                    "message": "结构化多人转写已导出；JSON/Markdown 保留说话人证据。"
-                })))
-            }
+            } => Ok(envelope(export_delivery::structured(
+                &database,
+                &project_id,
+                &output,
+                &format,
+                include_speaker_labels,
+                confirm_warnings,
+            )?)),
         },
         Commands::Runtime(command) => match command {
             RuntimeCommand::Status => Ok(envelope(json!({"runtime":runtime::status()?}))),
@@ -2316,81 +2128,74 @@ fn run(cli: Cli) -> Result<Value> {
             ResourceCommand::Status => Ok(envelope(json!({
                 "localResources": local_resources::status()?
             }))),
-            ResourceCommand::CheckUpdates { capability } => Ok(envelope(json!({
-                "localResources": local_resources::status()?,
-                "resourceUpdateCheck": local_resources::check_updates(capability.as_deref())?,
-                "message": "已检查本地组件更新。"
-            }))),
+            ResourceCommand::CheckUpdates { capability } => Ok(envelope(desktop_control::execute(
+                &mut database,
+                desktop_control::DesktopControl::ResourceCheckUpdates { capability },
+            )?)),
             ResourceCommand::Plan {
                 capability,
                 profile,
             } => Ok(envelope(json!({
                 "resourcePlan": local_resources::plan(&capability, profile.as_deref())?
             }))),
-            ResourceCommand::Configure { root } => Ok(envelope(json!({
-                "localResources": local_resources::configure(&database, &root)?,
-                "message": "本地资源保存位置已设置。"
-            }))),
-            ResourceCommand::Migrate { root } => {
-                let migration = local_resources::migrate(&database, &root)?;
-                Ok(envelope(json!({
-                    "localResources": migration.status.clone(),
-                    "resourceMigration": migration,
-                    "message": "本地资源保存位置已更改。"
-                })))
-            }
+            ResourceCommand::Configure { root } => Ok(envelope(desktop_control::execute(
+                &mut database,
+                desktop_control::DesktopControl::ResourceConfigure { root },
+            )?)),
+            ResourceCommand::Migrate { root } => Ok(envelope(desktop_control::execute(
+                &mut database,
+                desktop_control::DesktopControl::ResourceMigrate { root },
+            )?)),
             ResourceCommand::Install {
                 capability,
                 profile,
-            } => Ok(envelope(json!({
-                "resourceJob": resource_jobs::create_install(&database, &capability, profile.as_deref())?,
-                "message": "正在准备所需的本地资源。"
-            }))),
+            } => Ok(envelope(desktop_control::execute(
+                &mut database,
+                desktop_control::DesktopControl::ResourceInstall {
+                    capability,
+                    profile,
+                },
+            )?)),
             ResourceCommand::Update {
                 capability,
                 profile,
-            } => Ok(envelope(json!({
-                "resourceJob": resource_jobs::create_install(&database, &capability, profile.as_deref())?,
-                "message": "正在更新所需的本地资源。"
-            }))),
+            } => Ok(envelope(desktop_control::execute(
+                &mut database,
+                desktop_control::DesktopControl::ResourceUpdate {
+                    capability,
+                    profile,
+                },
+            )?)),
             ResourceCommand::Job { job_id } => Ok(envelope(json!({
                 "resourceJob": resource_jobs::load_job(&database, &job_id)?
             }))),
             ResourceCommand::Jobs => Ok(envelope(json!({
                 "resourceJobs": resource_jobs::list_jobs(&database)?
             }))),
-            ResourceCommand::Cancel { job_id } => Ok(envelope(json!({
-                "resourceJob": resource_jobs::cancel(&database, &job_id)?,
-                "message": "正在取消本地资源准备。"
-            }))),
-            ResourceCommand::Resume { job_id } => Ok(envelope(json!({
-                "resourceJob": resource_jobs::resume(&database, &job_id)?,
-                "message": "已继续准备本地资源。"
-            }))),
-            ResourceCommand::Repair { capability } => Ok(envelope(json!({
-                "resourceJob": resource_jobs::repair(&database, &capability)?,
-                "message": "正在修复本地资源。"
-            }))),
-            ResourceCommand::Rollback { capability } => {
-                let rollback = local_resources::rollback(&database, &capability)?;
-                Ok(envelope(json!({
-                    "localResources": rollback.status.clone(),
-                    "resourceRollback": rollback,
-                    "message": "已恢复上一可用版本。"
-                })))
-            }
-            ResourceCommand::Remove { capability } => {
-                resource_jobs::remove(&database, &capability)?;
-                Ok(envelope(json!({
-                    "localResources": local_resources::status()?,
-                    "message": "已移除所选本地能力。"
-                })))
-            }
-            ResourceCommand::Cleanup => Ok(envelope(json!({
-                "resourceCleanup": local_resources::cleanup(&database)?,
-                "localResources": local_resources::status()?,
-                "message": "已清理不再使用的本地资源文件。"
-            }))),
+            ResourceCommand::Cancel { job_id } => Ok(envelope(desktop_control::execute(
+                &mut database,
+                desktop_control::DesktopControl::ResourceCancel { job_id },
+            )?)),
+            ResourceCommand::Resume { job_id } => Ok(envelope(desktop_control::execute(
+                &mut database,
+                desktop_control::DesktopControl::ResourceResume { job_id },
+            )?)),
+            ResourceCommand::Repair { capability } => Ok(envelope(desktop_control::execute(
+                &mut database,
+                desktop_control::DesktopControl::ResourceRepair { capability },
+            )?)),
+            ResourceCommand::Rollback { capability } => Ok(envelope(desktop_control::execute(
+                &mut database,
+                desktop_control::DesktopControl::ResourceRollback { capability },
+            )?)),
+            ResourceCommand::Remove { capability } => Ok(envelope(desktop_control::execute(
+                &mut database,
+                desktop_control::DesktopControl::ResourceRemove { capability },
+            )?)),
+            ResourceCommand::Cleanup => Ok(envelope(desktop_control::execute(
+                &mut database,
+                desktop_control::DesktopControl::ResourceCleanup,
+            )?)),
             ResourceCommand::Health => Ok(envelope(json!({
                 "resourceHealth": local_resources::health()?
             }))),
@@ -2424,7 +2229,7 @@ fn run(cli: Cli) -> Result<Value> {
 
 fn ipc_error(arguments: &[String], error: &anyhow::Error) -> ipc::Response {
     let code = contracts::error_code(error);
-    let message = error.to_string();
+    let message = contracts::error_message(error);
     let output = if arguments.iter().any(|argument| argument == "--json") {
         serde_json::to_string_pretty(&json!({
             "apiVersion": API_VERSION,
@@ -2478,7 +2283,7 @@ pub(crate) fn execute_args(arguments: Vec<String>) -> ipc::Response {
         }
         Err(error) => {
             let code = contracts::error_code(&error);
-            let message = error.to_string();
+            let message = contracts::error_message(&error);
             let value = json!({
                 "apiVersion":API_VERSION,
                 "status":"error",
@@ -2605,7 +2410,14 @@ async fn main() {
             std::process::exit(2)
         };
         let start_delay_ms = arguments.get(2).and_then(|value| value.parse().ok());
-        if let Err(error) = transcription::run_worker(job_id, start_delay_ms) {
+        if let Err(error) = transcription::run_worker(
+            job_id,
+            start_delay_ms,
+            arguments
+                .get(3)
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(1),
+        ) {
             eprintln!("SiaoCut transcription worker: {error}");
             std::process::exit(1)
         }

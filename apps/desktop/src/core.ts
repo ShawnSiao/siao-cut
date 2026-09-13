@@ -1,13 +1,34 @@
-import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
-import { open, save } from "@tauri-apps/plugin-dialog";
+import { Channel,convertFileSrc,invoke } from "@tauri-apps/api/core";
+import { open,save } from "@tauri-apps/plugin-dialog";
+import type { DesktopRequest,ProjectPage } from "./generated/core-contract";
 import { tr } from "./i18n";
-import type { CoreEnvelope, Project, RuntimeInfo, UpdateDownloadEvent, UpdateMetadata, UpdatePolicy } from "./types";
+import type { CoreEnvelope,Project,RuntimeInfo,UpdateDownloadEvent,UpdateMetadata,UpdatePolicy } from "./types";
+
+import { requiredCoreCapabilities } from "./generated/core-contract";
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
 
+let capabilityCheck: Promise<void> | null = null;
+export function assertCoreCapabilities(capabilities: unknown) {
+  const supported = new Set(Array.isArray(capabilities) ? capabilities : []);
+  const missing = requiredCoreCapabilities.filter((capability) => !supported.has(capability));
+  if (missing.length) throw new CoreRequestError("core_version_mismatch", `Core 版本不匹配，请更新桌面应用与 Core。缺少能力：${missing.join(", ")}`);
+}
+export async function verifyCoreCapabilities() {
+  if (!isTauri()) return;
+  capabilityCheck ??= invoke<{ capabilities?: string[] }>("run_core", { args: ["contract"] })
+    .then((contract) => assertCoreCapabilities(contract.capabilities))
+    .catch((error) => { capabilityCheck = null; throw error; });
+  return capabilityCheck;
+}
+
+export class CoreRequestError extends Error {
+  constructor(public readonly code: string, message: string, public readonly technicalDetails?: string | null) { super(message); this.name = "CoreRequestError"; }
+}
+
 function ensureOk(envelope: CoreEnvelope): CoreEnvelope {
   if (envelope.status === "error") {
-    throw new Error(envelope.error?.message ?? envelope.message ?? tr("app.core.requestFailed"));
+    throw new CoreRequestError(envelope.error?.code ?? envelope.code ?? "request_failed", envelope.error?.message ?? envelope.message ?? tr("app.core.requestFailed"), envelope.error?.technicalDetails);
   }
   return envelope;
 }
@@ -18,14 +39,14 @@ async function runMockCore(args: string[]): Promise<CoreEnvelope> {
 }
 
 export async function runCore(args: string[]): Promise<CoreEnvelope> {
+  await verifyCoreCapabilities();
   return ensureOk(isTauri() ? await invoke<CoreEnvelope>("run_core", { args }) : await runMockCore(args));
 }
 
-export type StructuredCoreRequest =
-  | { kind: "transcript_offset"; projectId: string; segmentIds: string[]; delta: number }
-  | { kind: "transcription_start"; projectId: string; language: "auto" | "en" | "zh"; prompt?: string; hotwords: string[] };
+export type StructuredCoreRequest = DesktopRequest;
 
 function expandStructuredCoreRequest(request: StructuredCoreRequest): string[] {
+  if (request.kind === "export_command" || request.kind === "project_command" || request.kind === "desktop_control" || request.kind === "editing" || request.kind === "ai_approval" || request.kind === "transcription_job" || request.kind === "project_query" || request.kind === "desktop_query") throw new Error("Editing requests use the structured mock adapter");
   if (request.kind === "transcript_offset") {
     return ["transcript", "offset", request.projectId, ...request.segmentIds.flatMap((segmentId) => ["--segment", segmentId]), "--delta", String(request.delta)];
   }
@@ -50,20 +71,23 @@ export function structuredCoreErrorMessage(error: unknown): string {
 
 export async function runCoreStructured(request: StructuredCoreRequest): Promise<CoreEnvelope> {
   try {
+    await verifyCoreCapabilities();
     const envelope = isTauri()
       ? await invoke<CoreEnvelope>("run_core_structured", { payload: JSON.stringify(request) })
-      : await runMockCore(expandStructuredCoreRequest(request));
+      : request.kind === "export_command" ? await (await import("./mock-export-command")).mockExportCommand(request.request) : request.kind === "project_command" ? await (await import("./mock-project-command")).mockProjectCommand(request.request) : request.kind === "desktop_control" ? await (await import("./mock-desktop-control")).mockDesktopControl(request.request) : request.kind === "desktop_query" ? await (await import("./mock-desktop-query")).mockDesktopQuery(request.request) : request.kind === "project_query" ? await (await import("./core.mock")).mockProjectQuery(request.request) : request.kind === "transcription_job" ? await (await import("./core.mock")).mockTranscriptionCommand(request.request) : request.kind === "ai_approval" ? await (await import("./features/ai-assistance/mock-ai-approval")).mockAiApproval(request.request) : request.kind === "editing" ? await (await import("./core.mock")).mockEditingRequest(request.request) : await runMockCore(expandStructuredCoreRequest(request));
     return ensureOk(envelope);
   } catch (error) {
+    if (error instanceof CoreRequestError) throw error;
     throw new Error(structuredCoreErrorMessage(error));
   }
 }
 
-export async function runAiRequest<T extends object>(request: T): Promise<CoreEnvelope> {
+export async function runAiRequest(request: import("./generated/core-contract").AiRequest): Promise<CoreEnvelope> {
   if (!isTauri()) {
     const { mockAiRequest } = await import("./features/environment-settings/mock-ai-settings");
     return ensureOk(await mockAiRequest(request));
   }
+  await verifyCoreCapabilities();
   return ensureOk(await invoke<CoreEnvelope>("run_ai_request", { payload: JSON.stringify(request) }));
 }
 
@@ -131,14 +155,16 @@ export async function installUpdate(onEvent: (event: UpdateDownloadEvent) => voi
   return invoke<void>("install_update", { onEvent: channel });
 }
 
-export async function listProjects(): Promise<Project[]> {
-  return (await runCore(["project", "list"])).projects ?? [];
+export async function listProjects(offset = 0): Promise<ProjectPage> {
+  const page = (await runCoreStructured({ kind: "project_query", request: { action: "list", offset, limit: 50 } })).projectPage;
+  if (!page) throw new Error("Core 未返回项目列表");
+  return page;
 }
 
 export async function loadProject(projectId: string): Promise<Project> {
-  const project = (await runCore(["project", "show", projectId])).project;
+  const project = (await runCoreStructured({ kind: "project_query", request: { action: "show", projectId } })).project;
   if (!project) throw new Error(tr("app.core.projectMissing"));
-  return project;
+  return { ...project, readModels: {} };
 }
 
 export async function pickMedia(): Promise<string | null> {

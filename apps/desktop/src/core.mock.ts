@@ -1,5 +1,7 @@
+import { emptySpeakerTrack, analyzedSpeakerTrack } from "./features/ai-assistance/mock-speaker-track";
 import { sampleProject } from "./mock";
-import type { AgentRun, AudioAnalysisJob, AutoWorkflow, CoreEnvelope, ExportJob, LocalCapabilityId, LocalResourceJob, LocalResourceStatus, LocalTranscriptionProfile, ModelDownloadJob, ModelStatus, Project, ResourceUpdateCheck, RuntimeInfo, SourceImportJob, SourcePreview, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SubtitleImportPreview, SubtitleStructureEdit, TranscriptionJob, TranscriptionProviderConfig, TranscriptionProviderHealth, TranscriptionReviewItem, UpdateDownloadEvent, UpdateMetadata, UpdatePolicy } from "./types";
+import type { AgentRun,AudioAnalysisJob,AutoWorkflow,CoreEnvelope,ExportJob,LocalCapabilityId,LocalResourceJob,LocalResourceStatus,LocalTranscriptionProfile,ModelDownloadJob,ModelStatus,Project,ResourceUpdateCheck,SourceImportJob,SourcePreview,SpeakerJob,SpeakerPackageStatus,SpeakerTrack,SubtitleImportPreview,SubtitleStructureEdit,TranscriptionJob,TranscriptionProviderConfig,TranscriptionProviderHealth,TranscriptionReviewItem } from "./types";
+import { resetMockTranscriptionCommands,runMockTranscription } from "./workbench/mock-transcription";
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
 const mockSubtitleStylePresets = [
@@ -85,6 +87,7 @@ export function resetMockLocalResourcesForTest() {
 
 export function setMockProjectForTest(project: Project) {
   mockProjectListOverride = structuredClone(project);
+  mockProjects = [];
 }
 
 export function setMockAuthorizedMediaForTest(url: string) {
@@ -97,7 +100,27 @@ export function mockAuthorizeMedia(): string | null {
 
 export function resetMockProjectForTest() {
   mockProjectListOverride = null;
+  mockProjects = [];
   mockAuthorizedMediaUrl = null;
+  resetMockBackgroundState();
+}
+
+function resetMockBackgroundState() {
+    mockJobs.clear();
+    mockSourceJobs.clear();
+    mockSourcePolls.clear();
+    mockAutoWorkflows.clear();
+    mockAutoPolls.clear();
+    mockAudioJobs.clear();
+    mockSpeakerJobs.clear();
+    mockSpeakerTracks.clear();
+    mockTranscriptionJobs.clear();
+    resetMockTranscriptionCommands();
+    mockAgentRuns.clear();
+    mockAgentPolls.clear();
+    mockTranscriptionReviews = [];
+    mockStructureCounter = 0;
+    mockSpeakerPackage = { ...mockSpeakerPackage, installed: false, verified: null, verificationStatus: "not_installed", assets: speakerAssets.map((asset) => ({ ...asset, installed: false, verified: null, verificationStatus: "not_installed" as const })) };
 }
 
 function syncMockProject(next: Project): Project {
@@ -151,42 +174,6 @@ let mockSpeakerPackage: SpeakerPackageStatus = {
   assets: speakerAssets.map((asset) => ({ ...asset, installed: false, verified: null, verificationStatus: "not_installed" as const })),
 };
 
-const emptySpeakerTrack = (): SpeakerTrack => ({
-  status: "not_analyzed",
-  runtimeVersion: "sherpa-onnx 1.13.2",
-  segmentationModel: "pyannote segmentation 3.0 int8",
-  embeddingModel: "3D-Speaker ERes2Net Base 16 kHz",
-  providerId: "legacy_diarization",
-  modelId: "",
-  sourceKind: "cascade",
-  generatedAt: null,
-  speakers: [],
-  turns: [],
-  associations: [],
-});
-
-const analyzedSpeakerTrack = (): SpeakerTrack => {
-  const createdAt = new Date().toISOString();
-  return {
-    ...emptySpeakerTrack(),
-    status: "ready",
-    generatedAt: createdAt,
-    speakers: [
-      { id: "voice-a", sourceLabel: "speaker_00", label: "说话人 1", colorIndex: 0, createdAt },
-      { id: "voice-b", sourceLabel: "speaker_01", label: "说话人 2", colorIndex: 1, createdAt },
-    ],
-    turns: [
-      { id: "turn-a", speakerId: "voice-a", start: 12.4, end: 18.6, confidence: null, source: "sherpa-onnx", modelVersion: "sherpa-onnx 1.13.2", createdAt },
-      { id: "turn-b", speakerId: "voice-b", start: 18.6, end: 27.2, confidence: null, source: "sherpa-onnx", modelVersion: "sherpa-onnx 1.13.2", createdAt },
-    ],
-    associations: [
-      { segmentId: "s1", speakerId: "voice-a", source: "overlap", confidence: 1, updatedAt: createdAt },
-      { segmentId: "s2", speakerId: "voice-a", source: "overlap", confidence: 1, updatedAt: createdAt },
-      { segmentId: "s3", speakerId: "voice-b", source: "overlap", confidence: 1, updatedAt: createdAt },
-      { segmentId: "s4", speakerId: "voice-b", source: "overlap", confidence: 1, updatedAt: createdAt },
-    ],
-  };
-};
 const mockSourcePreview: SourcePreview = {
   originalUrl: "https://www.youtube.com/watch?v=HOfdboHvshg",
   webpageUrl: "https://www.youtube.com/watch?v=HOfdboHvshg",
@@ -199,7 +186,29 @@ const mockSourcePreview: SourcePreview = {
   thumbnailUrl: null,
   toolVersion: "2026.08.19",
   toolSha256: "66674953fe251b89f4d08c5f0e35e0728679bd67ab3d7d05c0562af101dd3e7a",
+  authMode: "anonymous",
+  browser: null,
   requiresConfirmation: true,
+};
+const mockSourcePreviewForUrl = (url: string): SourcePreview => {
+  let host = "";
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    // Invalid URL behavior is exercised by the real input validator, not the mock Core.
+  }
+  if (["x.com", "www.x.com", "twitter.com", "www.twitter.com", "mobile.twitter.com"].includes(host)) {
+    return {
+      ...mockSourcePreview,
+      originalUrl: url,
+      webpageUrl: url,
+      siteMediaId: "2091957857650716672",
+      extractor: "Twitter",
+      title: "Public X video",
+      fileSizeBytes: null,
+    };
+  }
+  return { ...mockSourcePreview, originalUrl: url, webpageUrl: url };
 };
 const mockSubtitlePreview: SubtitleImportPreview = {
   format: "srt",
@@ -438,20 +447,7 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
     secondary.history = { canUndo: false, canRedo: false, currentVersionId: null };
     mockProjects = [mockProject, secondary];
     resetMockHistory(mockProject);
-    mockJobs.clear();
-    mockSourceJobs.clear();
-    mockSourcePolls.clear();
-    mockAutoWorkflows.clear();
-    mockAutoPolls.clear();
-    mockAudioJobs.clear();
-    mockSpeakerJobs.clear();
-    mockSpeakerTracks.clear();
-    mockTranscriptionJobs.clear();
-    mockAgentRuns.clear();
-    mockAgentPolls.clear();
-    mockTranscriptionReviews = [];
-    mockStructureCounter = 0;
-    mockSpeakerPackage = { ...mockSpeakerPackage, installed: false, verified: null, verificationStatus: "not_installed", assets: speakerAssets.map((asset) => ({ ...asset, installed: false, verified: null, verificationStatus: "not_installed" as const })) };
+    resetMockBackgroundState();
     return { apiVersion: "0.1", status: "ok", projects: mockProjects };
   }
   if (command === "project" && subcommand === "show") {
@@ -1012,14 +1008,17 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
   if (command === "transcription" && subcommand === "resolve") { const item = mockTranscriptionReviews.find((candidate) => candidate.id === args[2]); if (item) { item.status = valueAfter("--action") as TranscriptionReviewItem["status"]; item.resolvedAt = new Date().toISOString(); } return { apiVersion: "0.1", status: "ok", reviewItem: structuredClone(item) }; }
   if (command === "transcription" && subcommand === "export") return { apiVersion: "0.1", status: "ok", projectId: args[2], output: valueAfter("--output"), format: valueAfter("--format"), audit: { ready: true, openErrorCount: 0, openWarningCount: mockTranscriptionReviews.filter((item) => item.status === "open" && item.severity === "warning").length, warningsConfirmed: args.includes("--confirm-warnings") } };
   if (command === "source" && subcommand === "inspect") {
-    return { apiVersion: "0.1", status: "ok", source: { ...mockSourcePreview, originalUrl: args[2], webpageUrl: args[2] }, message: "已读取公开单视频信息；确认前不会下载或创建项目。" };
+    const browser = valueAfter("--browser") as SourcePreview["browser"];
+    return { apiVersion: "0.1", status: "ok", source: { ...mockSourcePreviewForUrl(args[2]), authMode: browser ? "browser" : "anonymous", browser: browser || null }, message: "已读取单视频信息；确认前不会下载或创建项目。" };
   }
   if (command === "source" && subcommand === "jobs") {
     return { apiVersion: "0.1", status: "ok", sourceJobs: Array.from(mockSourceJobs.values()).reverse() };
   }
   if (command === "source" && subcommand === "start") {
+    const sourcePreview = mockSourcePreviewForUrl(args[2]);
+    const browser = valueAfter("--browser") as SourceImportJob["browser"];
     const confirmedId = args[args.indexOf("--confirm-media-id") + 1];
-    if (confirmedId !== mockSourcePreview.siteMediaId) {
+    if (confirmedId !== sourcePreview.siteMediaId) {
       return { apiVersion: "0.1", status: "error", error: { code: "source_confirmation_mismatch", message: "站点媒体 ID 已变化，请重新确认。" } };
     }
     const now = new Date().toISOString();
@@ -1029,19 +1028,21 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
       originalUrl: args[2],
       webpageUrl: args[2],
       siteMediaId: confirmedId,
-      extractor: "youtube",
-      title: mockSourcePreview.title,
-      durationSeconds: mockSourcePreview.durationSeconds,
-      fileSizeBytes: mockSourcePreview.fileSizeBytes,
+      extractor: sourcePreview.extractor,
+      title: sourcePreview.title,
+      durationSeconds: sourcePreview.durationSeconds,
+      fileSizeBytes: sourcePreview.fileSizeBytes,
       status: "running",
       progress: 0.18,
       bytesDownloaded: 2173516,
-      totalBytes: mockSourcePreview.fileSizeBytes,
+      totalBytes: sourcePreview.fileSizeBytes,
       outputDirectory: "C:\\SiaoCut\\imports\\src-1",
       outputPath: null,
       outputSha256: null,
       toolVersion: mockSourcePreview.toolVersion,
       toolSha256: mockSourcePreview.toolSha256,
+      authMode: browser ? "browser" : "anonymous",
+      browser: browser || null,
       cancelRequestedAt: null,
       errorMessage: null,
       createdAt: now,
@@ -1128,7 +1129,7 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
       transcriptVersionId: null,
       agentTaskId: null,
       audioAnalysisJobId: null,
-      aiExecutionKind: valueAfter("--ai-execution") as AutoWorkflow["aiExecutionKind"],
+      aiExecutionKind: valueAfter("--ai-execution") === "api" ? "api" : valueAfter("--ai-execution") === "codex" ? "codex" : null,
       aiServiceConfigId: valueAfter("--ai-service-config-id"),
       aiServiceRevision: valueAfter("--ai-service-revision") ? Number(valueAfter("--ai-service-revision")) : null,
       aiNetworkRevision: valueAfter("--ai-network-revision") ? Number(valueAfter("--ai-network-revision")) : null,
@@ -1190,10 +1191,10 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
         workflow.progress = 0.45;
         workflow.transcriptVersionId = "v-auto-transcript";
       } else if (workflow.translationLanguage) {
-        workflow.status = "needs_agent";
+        workflow.status = workflow.aiExecutionKind ? "awaiting_authorization" : "needs_agent";
         workflow.currentStage = "translate";
         workflow.progress = workflow.profile === "delivery" ? 0.60 : 0.50;
-        workflow.agentTaskId = "t-auto-translate";
+        workflow.agentTaskId = (await mockRun(["workflow", "create", mockProject.id, "--kind", "translate", "--lang", workflow.translationLanguage])).taskId ?? null;
       } else {
         workflow.status = "needs_review";
         workflow.currentStage = "review";
@@ -1467,4 +1468,106 @@ export async function mockRun(args: string[]): Promise<CoreEnvelope> {
       technicalDetails: "Mock Core only returns success for explicitly implemented commands.",
     },
   };
+}
+
+
+// Browser preview only. Production journals and receipts are owned by Rust/SQLite.
+const previewMutationReceipts = new Map<string, { request: string; response: CoreEnvelope }>();
+const previewReceipts = new Map<string, { request: string; receipt: import("./generated/core-contract").EditReceipt }>();
+export async function mockEditingRequest(request: import("./generated/core-contract").EditingRequest): Promise<CoreEnvelope> {
+  const storageKey = "siaocut.preview.editing-journal.v1";
+  type Journal = import("./generated/core-contract").Draft & { discarded?: boolean };
+  const drafts: Journal[] = JSON.parse(localStorage.getItem(storageKey) ?? "[]");
+  const ok = (value: Partial<CoreEnvelope> = {}): CoreEnvelope => ({ apiVersion: "0.1", status: "ok", ...value });
+  const fail = (code: string, message: string): CoreEnvelope => ({ apiVersion: "0.1", status: "error", error: { code, message } });
+  if (request.action === "list") return ok({ drafts: drafts.filter((d) => d.projectId === request.projectId && !d.discarded) });
+  if (request.action === "mutate") {
+    const m = request.mutation, op = m.operation, id = m.projectId;
+    const previous = previewMutationReceipts.get(m.mutationId);
+    if (previous) return previous.request === JSON.stringify(m) ? structuredClone(previous.response) : fail("editing_mutation_reused", "操作标识已被使用");
+    const p = mockProject.id === id ? mockProject : mockProjects.find((item) => item.id === id);
+    if (!p || p.history.currentVersionId !== m.expectedVersionId) return fail("editing_version_conflict", "项目版本已变化");
+    let args: string[];
+    switch (op.kind) {
+      case "relink_media": args=["project","relink",id,op.path];break;
+      case "replace_glossary": args=["glossary","replace",id,"--lang",op.language,"--expected-version",String(op.expectedGlossaryVersion),...op.entries.flatMap(([source,target])=>["--entry",`${source}=${target}`])];break;
+      case "create_workflow": args=["workflow","create",id,"--kind",op.workflowKind,"--locale",op.locale,...(op.language?["--lang",op.language]:[])];break;
+      case "import_subtitle": args=["transcript","import-file",id,op.path,"--confirm-replace","--expected-sha256",op.sha256,"--expected-version",op.previewVersionId];break;
+      case "review_patch": args = ["task","review",op.patchItemId,"--action",op.action]; break;
+      case "resolve_transcription_review": args = ["transcription", "resolve", op.itemId, "--action", op.action]; break;
+      case "review_all": args = ["task","review-all",op.taskId,"--action",op.action]; break;
+      case "detect_cuts": args = ["cut", "detect", id]; break;
+      case "set_cut_status": args = ["cut", op.action, id, op.editId]; break;
+      case "create_word_cut": args = ["cut", "create", id, "--segment", op.segmentId, "--from-word", op.fromWordId, "--to-word", op.toWordId, "--padding-ms", String(op.paddingMs)]; break;
+      case "split": args = ["transcript","split",id,op.segmentId,"--text-offset",String(op.textOffset),"--at",String(op.at)]; break;
+      case "merge": args = ["transcript","merge",id,op.firstId,op.secondId]; break;
+      case "timing": args = ["transcript","timing",id,op.segmentId,"--start",String(op.start),"--end",String(op.end)]; break;
+      case "offset": args = ["transcript","offset",id,...op.segmentIds.flatMap((segmentId) => ["--segment",segmentId]),"--delta",String(op.delta)]; break;
+      case "replace": args = ["transcript","replace",id,"--find",op.search,"--replace",op.replacement]; break;
+      case "undo": case "redo": args = ["project",op.kind,id]; break;
+      case "restore": args = ["project","restore",id,op.versionId]; break;
+      case "canvas": args = ["canvas","set",id,"--aspect-ratio",op.aspectRatio,"--framing",op.framing]; break;
+      case "style": args = ["transcript","set-style",id,"--preset",op.preset,"--position",op.position,...(op.sourceFontSize == null ? [] : ["--source-font-size",String(op.sourceFontSize)]),...(op.translationFontSize == null ? [] : ["--translation-font-size",String(op.translationFontSize)]),...(op.boxWidthPercent == null ? [] : ["--box-width-percent",String(op.boxWidthPercent)]),...(op.boxHeightLines == null ? [] : ["--box-height-lines",String(op.boxHeightLines)])]; break;
+      case "rename_speaker": args = ["speaker","rename",id,op.speakerId,"--name",op.name]; break;
+      case "merge_speaker": args = ["speaker","merge",id,"--from",op.fromId,"--into",op.intoId]; break;
+      case "assign_speaker": args = ["speaker","assign",id,op.segmentId,op.speakerId]; break;
+    }
+    const response = await mockRun(args);
+    if (response.status === "error") return response;
+    response.versionId = mockProject.history.currentVersionId; response.mutationId = m.mutationId;
+    previewMutationReceipts.set(m.mutationId, { request: JSON.stringify(m), response: structuredClone(response) });
+    return response;
+  }
+  const d = request.action === "save" ? request.edit.draft : request.draft;
+  const same = (item: Journal) => item.projectId === d.projectId && item.sessionId === d.sessionId && item.segmentId === d.segmentId && item.field === d.field;
+  const updateJournal = (discarded: boolean) => {
+    const old = drafts.find(same);
+    if (old && (discarded ? old.revision > d.revision : old.revision >= d.revision)) return;
+    localStorage.setItem(storageKey, JSON.stringify([...drafts.filter((item) => !same(item)), { ...d, ...(discarded ? { text: "", baseText: "", discarded: true } : {}) }]));
+  };
+  if (request.action === "journal") { updateJournal(false); return ok(); }
+  if (request.action === "discard") { updateJournal(true); return ok(); }
+  const raw = JSON.stringify(request.edit), key = `${d.projectId}:${request.edit.mutationId}`;
+  const previous = previewReceipts.get(key);
+  if (previous) return previous.request === raw ? ok({ editReceipt: previous.receipt }) : fail("editing_mutation_reused", "保存标识已被使用");
+  const project = mockProject.id === d.projectId ? mockProject : mockProjects.find((p) => p.id === d.projectId);
+  if (!project) return fail("project_not_found", "项目不存在");
+  if (project.history.currentVersionId !== request.edit.expectedVersionId) return fail("editing_version_conflict", "项目版本已变化，请核对草稿");
+  const segment = d.field === "source" ? project.transcript.segments.find((s) => s.id === d.segmentId) : project.translations[d.field.slice(12)]?.segments.find((s) => s.segmentId === d.segmentId);
+  if (!segment || segment.text !== d.baseText) return fail("editing_content_conflict", "字幕已变化，请核对草稿");
+  if (!d.text.trim()) return fail("editing_text_empty", "字幕文本不能为空");
+  recordMockSnapshot(); segment.text = d.text;
+  if (d.field === "source") markTextDependentsStale(project, [d.segmentId]);
+  else {
+    const translation = project.translations[d.field.slice(12)];
+    const translated = translation.segments.find((item) => item.segmentId === d.segmentId)!;
+    translated.status = "current"; translated.sourceHash = `manual:${project.transcript.segments.find((item) => item.id === d.segmentId)?.text ?? ""}`;
+    translated.updatedAt = new Date().toISOString();
+    translation.status = translation.segments.some((item) => item.status !== "current") ? "stale" : "current";
+  }
+  const versionId = `v-${crypto.randomUUID()}`;
+  project.history = { currentVersionId: versionId, canUndo: true, canRedo: false };
+  project.versions.push({ id: versionId, reason: "编辑字幕", createdAt: new Date().toISOString() });
+  syncMockProject(project); updateJournal(true);
+  const receipt = { mutationId: request.edit.mutationId, projectId: d.projectId, versionId, segmentId: d.segmentId, field: d.field, text: d.text, history: project.history, version: project.versions.at(-1) ?? null, changedDomains: ["transcript", "translations", "history", "quality", "edits"] };
+  previewReceipts.set(key, { request: raw, receipt }); return ok({ editReceipt: receipt });
+}
+
+export function mockAuthorizeAutoTask(taskId: string) {
+  for (const workflow of mockAutoWorkflows.values()) {
+    if (workflow.agentTaskId === taskId && workflow.status === "awaiting_authorization") {
+      workflow.status = "needs_agent"; workflow.aiAuthorized = true;
+    }
+  }
+}
+
+
+export async function mockTranscriptionCommand(request: import("./generated/core-contract").TranscriptionCommand): Promise<CoreEnvelope> {
+  if (request.action === "start_multispeaker") return mockRun(["transcription","start",request.projectId,"--language",request.language,...(request.prompt?["--prompt",request.prompt]:[]),...request.hotwords.flatMap(word => ["--hotword",word])]);
+  return runMockTranscription(request, { mockTranscriptionJobs, mockProject, mockProjects, mockRun });
+}
+
+export async function mockProjectQuery(request: import("./generated/core-contract").ProjectQuery): Promise<CoreEnvelope> {
+  const {queryMockProject} = await import("./mock-project-query");
+  return queryMockProject(request, {project: () => mockProject, projects: () => mockProjects, run: mockRun});
 }

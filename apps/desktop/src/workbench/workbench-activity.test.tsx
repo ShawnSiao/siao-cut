@@ -6,7 +6,7 @@ import WorkbenchActivityCenter from "./workbench-activity-center";
 
 const now = "2026-08-22T10:00:00.000Z";
 
-function transcription(status: TranscriptionJob["status"], stage = status): TranscriptionJob {
+function transcription(status: TranscriptionJob["status"], stage: string = status): TranscriptionJob {
   return { id: "transcription-1", projectId: "p1", providerId: "moss_openai", endpoint: "http://127.0.0.1:8000", modelId: "moss", language: null, prompt: null, hotwords: [], status, stage, resultRunId: null, baseVersionId: null, sourceSha256: null, inputAudioSha256: null, cancelRequestedAt: null, errorMessage: null, createdAt: now, updatedAt: now, completedAt: null, attemptCount: 1, candidate: null };
 }
 
@@ -44,4 +44,12 @@ it("renders one primary status region and keeps remaining activities in details"
   expect(screen.getByText("候选结果等待确认")).toBeTruthy();
   fireEvent.click(screen.getByText("查看其余 1 项任务"));
   expect(screen.getByText("流程失败 · 本地转录")).toBeTruthy();
+});
+
+
+it("labels a local Whisper job without claiming MOSS speaker detection", () => {
+  const job = { ...transcription("running", "requesting_model"), providerId: "whisper_local" };
+  const [activity] = deriveWorkbenchActivities({ transcriptionJob: job });
+  expect(transcriptionStageLabel(activity.stage, activity.providerId)).toBe("Whisper 正在转写");
+  expect(activity.progress).toBeNull();
 });

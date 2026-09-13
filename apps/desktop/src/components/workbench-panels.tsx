@@ -1,3 +1,6 @@
+import { useSyncExternalStore } from "react";
+import { fieldKey, type EditingSession } from "../features/editing/editing-session";
+import { FieldSaveStatus } from "../features/editing/EditingStatus";
 import { useEffect, useRef, useState } from "react";
 import { Activity, Check, CircleAlert, Clock3, Cpu, Database, Download, FileVideo2, FolderOpen, HardDrive, Headphones, LoaderCircle, RefreshCw, ShieldCheck, Users } from "lucide-react";
 import { getUiLocale, tr } from "../i18n";
@@ -309,7 +312,10 @@ export function SpeakerPackageManager({ packageStatus, job, disabled, onInstall,
     <p className="runtime-disclosure">{tr("app.s0633")}</p>
   </section>;
 }
-export function SegmentRow({ segment, speaker, speakerManual, selected, active, translation, translationLanguage, onSelect, onSave, onSaveTranslation, onSplitAt, onMergePrevious }: {
+export function SegmentRow({ playbackActive, editingSession, projectId, segment, speaker, speakerManual, selected, active, translation, translationLanguage, onSelect, onSave, onSaveTranslation, onSplitAt, onMergePrevious }: {
+    playbackActive?: boolean;
+    editingSession?: EditingSession;
+    projectId?: string;
     segment: Segment;
     speaker?: SpeakerIdentity;
     speakerManual?: boolean;
@@ -323,38 +329,49 @@ export function SegmentRow({ segment, speaker, speakerManual, selected, active, 
     onSplitAt: (text: string, offset: number) => void;
     onMergePrevious: (text: string) => void;
 }) {
-    const [draft, setDraft] = useState(segment.text);
+    const [localDraft, setLocalDraft] = useState(segment.text);
+    useSyncExternalStore(editingSession?.subscribe ?? (() => () => {}), editingSession?.snapshot ?? (() => 0));
+    const sourceKey = fieldKey(projectId ?? "", segment.id, "source");
+    const sourceState = editingSession?.state(sourceKey);
+    const draft = sourceState?.draft.text ?? localDraft;
+    const setDraft = (text: string) => sourceState ? editingSession!.change(sourceKey, text) : setLocalDraft(text);
+    const saveSource = () => sourceState ? void editingSession!.save(sourceKey, true).catch(() => {}) : onSave(draft);
+    const composing = useRef(false);
     const translatedSegment = translation?.segments.find((item) => item.segmentId === segment.id);
     const translated = translatedSegment?.text;
-    const [translationDraft, setTranslationDraft] = useState(translated ?? "");
+    const [localTranslationDraft, setLocalTranslationDraft] = useState(translated ?? "");
+    const translationKey = fieldKey(projectId ?? "", segment.id, `translation:${translationLanguage}`);
+    const translationState = editingSession?.state(translationKey);
+    const translationDraft = translationState?.draft.text ?? localTranslationDraft;
+    const setTranslationDraft = (text: string) => translationState ? editingSession!.change(translationKey, text) : setLocalTranslationDraft(text);
     const rowRef = useRef<HTMLElement>(null);
     const suppressBlurSaveRef = useRef(false);
-    useEffect(() => setDraft(segment.text), [segment.text]);
-    useEffect(() => setTranslationDraft(translated ?? ""), [translated]);
-    useEffect(() => {
-        if (active && typeof rowRef.current?.scrollIntoView === "function")
-            rowRef.current.scrollIntoView({ block: "nearest" });
-    }, [active]);
+    const previousSource = useRef(segment.text);
+    const previousTranslation = useRef(translated ?? "");
+    useEffect(() => { const previous = previousSource.current; setLocalDraft((value) => value === previous ? segment.text : value); previousSource.current = segment.text; }, [segment.text]);
+    useEffect(() => { const previous = previousTranslation.current; setLocalTranslationDraft((value) => value === previous ? translated ?? "" : value); previousTranslation.current = translated ?? ""; }, [translated]);
     const saveTranslation = () => {
+        if (translationState) { void editingSession!.save(translationKey, true).catch(() => {}); return; }
         const next = translationDraft.trim();
         if (translatedSegment && onSaveTranslation && next && next !== translated)
             onSaveTranslation(next);
     };
-    return <article ref={rowRef} className={`segment-row ${selected ? "selected" : ""} ${active ? "active" : ""}`} data-segment-id={segment.id} aria-label={tr("app.s0634", { "0": formatTime(segment.start), "1": formatTime(segment.end) })} onClick={(event) => onSelect(event.shiftKey ? "range" : event.ctrlKey || event.metaKey ? "toggle" : "replace")}>
+    return <article ref={rowRef} className={`segment-row ${selected ? "selected" : ""} ${active ? "active" : ""} ${playbackActive ? "playback-active" : ""}`} data-segment-id={segment.id} aria-label={tr("app.s0634", { "0": formatTime(segment.start), "1": formatTime(segment.end) })} onClick={(event) => onSelect(event.shiftKey ? "range" : event.ctrlKey || event.metaKey ? "toggle" : "replace")}>
     <input className="segment-select" type="checkbox" aria-label={tr("app.s0635", { "0": formatTime(segment.start), "1": formatTime(segment.end) })} checked={selected} onClick={(event) => { event.stopPropagation(); onSelect(event.shiftKey ? "range" : "toggle"); }} onChange={() => undefined}/>
     <button className="segment-time" aria-label={tr("app.s0636", { "0": formatTime(segment.start) })}>{formatTime(segment.start)}{speaker && <small><i className={`speaker-color speaker-${speaker.colorIndex % 6}`}/>{speaker.label}{speakerManual ? tr("app.s0637") : ""}</small>}</button>
-    <div><textarea rows={1} value={draft} data-dirty={draft.trim() !== segment.text} onChange={(event) => setDraft(event.target.value)} onFocus={() => { if (!active)
+    <div><textarea rows={1} value={draft} data-dirty={draft.trim() !== segment.text} onChange={(event) => setDraft(event.target.value)} onCompositionStart={() => { composing.current = true; editingSession?.composition(sourceKey, true); }} onCompositionEnd={() => { composing.current = false; editingSession?.composition(sourceKey, false); }} onFocus={() => { if (!active)
         onSelect("replace"); }} onBlur={() => {
         if (suppressBlurSaveRef.current) {
             suppressBlurSaveRef.current = false;
             return;
         }
-        onSave(draft);
+        if (!composing.current) saveSource();
     }} onKeyDown={(event) => {
+        if (event.nativeEvent.isComposing || composing.current || event.keyCode === 229) return;
         const textarea = event.currentTarget;
         if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
             event.preventDefault();
-            onSave(draft);
+            if (!composing.current) saveSource();
             return;
         }
         if (!event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && event.key === "Enter" && textarea.selectionStart === textarea.selectionEnd) {
@@ -371,7 +388,7 @@ export function SegmentRow({ segment, speaker, speakerManual, selected, active, 
             suppressBlurSaveRef.current = true;
             onMergePrevious(draft);
         }
-    }} onClick={(event) => event.stopPropagation()} aria-label={tr("app.s0638", { "0": formatTime(segment.start) })} title={tr("app.s0639")}/>{translatedSegment && <div className={`translation-editor ${translatedSegment.status}`}><textarea rows={1} value={translationDraft} data-dirty={translationDraft.trim() !== translated} onChange={(event) => setTranslationDraft(event.target.value)} onBlur={saveTranslation} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); saveTranslation(); } }} onClick={(event) => event.stopPropagation()} aria-label={tr("app.creator.translation.edit", { time: formatTime(segment.start), language: translationLanguage?.toUpperCase() ?? "" })}/>{translatedSegment.status === "stale" && <small>{tr("app.s0373")}</small>}{translatedSegment.status === "quality_failed" && <small>{tr("app.creator.translation.qualityFailed")}</small>}</div>}</div>
+    }} onClick={(event) => event.stopPropagation()} aria-label={tr("app.s0638", { "0": formatTime(segment.start) })} title={tr("app.s0639")}/>{sourceState && (sourceState.status !== "saved" || sourceState.draft.revision > 0) && <FieldSaveStatus status={sourceState.status} journaled={sourceState.journaled}/>}{translatedSegment && <div className={`translation-editor ${translatedSegment.status}`}><textarea rows={1} value={translationDraft} data-dirty={translationDraft.trim() !== translated} onChange={(event) => setTranslationDraft(event.target.value)} onCompositionStart={() => editingSession?.composition(translationKey, true)} onCompositionEnd={() => editingSession?.composition(translationKey, false)} onBlur={saveTranslation} onKeyDown={(event) => { if (event.nativeEvent.isComposing || event.keyCode === 229) return; if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); saveTranslation(); } }} onClick={(event) => event.stopPropagation()} aria-label={tr("app.creator.translation.edit", { time: formatTime(segment.start), language: translationLanguage?.toUpperCase() ?? "" })}/>{translationState && (translationState.status !== "saved" || translationState.draft.revision > 0) && <FieldSaveStatus status={translationState.status} journaled={translationState.journaled}/>} {translatedSegment.status === "stale" && <small>{tr("app.s0373")}</small>}{translatedSegment.status === "quality_failed" && <small>{tr("app.creator.translation.qualityFailed")}</small>}</div>}</div>
     <span className={segment.confidence != null && segment.confidence < 0.8 ? "confidence low" : "confidence"}>{segment.confidence == null ? "—" : `${Math.round(segment.confidence * 100)}%`}</span>
   </article>;
 }

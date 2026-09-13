@@ -11,6 +11,14 @@ export default defineConfig({
   },
   envPrefix: ["VITE_", "TAURI_"],
   build: {
+    // Stable framework code is cached independently from the evolving workbench.
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (/node_modules[\\/](react|react-dom|scheduler)[\\/]/.test(id)) return "react-runtime";
+        },
+      },
+    },
     target: "es2022",
     minify: process.env.TAURI_ENV_DEBUG ? false : "esbuild",
     sourcemap: Boolean(process.env.TAURI_ENV_DEBUG),

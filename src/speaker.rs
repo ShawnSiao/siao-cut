@@ -7,9 +7,7 @@ use crate::{
 use anyhow::{Context, Result, anyhow, bail};
 use bzip2::read::BzDecoder;
 use reqwest::{StatusCode, blocking::Client, header::RANGE};
-use rusqlite::{
-    Connection, ErrorCode, OptionalExtension, Transaction, TransactionBehavior, params,
-};
+use rusqlite::{Connection, ErrorCode, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -123,13 +121,15 @@ const INSTALLED_ASSETS: &[InstalledAssetSpec] = &[
     },
 ];
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreSpeakerAssetStatusWire")]
 pub struct SpeakerAssetStatus {
     pub id: String,
     pub name: String,
     pub source: String,
     pub license: String,
+    #[ts(type = "number")]
     pub size: u64,
     pub sha256: String,
     pub installed: bool,
@@ -137,8 +137,9 @@ pub struct SpeakerAssetStatus {
     pub verification_status: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreSpeakerPackageStatusWire")]
 pub struct SpeakerPackageStatus {
     pub id: String,
     pub name: String,
@@ -146,7 +147,9 @@ pub struct SpeakerPackageStatus {
     pub description: String,
     pub source: String,
     pub license: String,
+    #[ts(type = "number")]
     pub download_size: u64,
+    #[ts(type = "number")]
     pub installed_size: u64,
     pub installed: bool,
     pub verified: Option<bool>,
@@ -154,8 +157,9 @@ pub struct SpeakerPackageStatus {
     pub assets: Vec<SpeakerAssetStatus>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreSpeakerIdentityWire")]
 pub struct SpeakerIdentity {
     pub id: String,
     pub source_label: String,
@@ -164,8 +168,9 @@ pub struct SpeakerIdentity {
     pub created_at: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreSpeakerTurnWire")]
 pub struct SpeakerTurn {
     pub id: String,
     pub speaker_id: String,
@@ -177,8 +182,9 @@ pub struct SpeakerTurn {
     pub created_at: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreSegmentSpeakerWire")]
 pub struct SegmentSpeaker {
     pub segment_id: String,
     pub speaker_id: String,
@@ -187,8 +193,9 @@ pub struct SegmentSpeaker {
     pub updated_at: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreSpeakerTrackWire")]
 pub struct SpeakerTrack {
     pub status: String,
     pub runtime_version: String,
@@ -232,8 +239,9 @@ fn cascade_source_kind() -> String {
     "cascade".into()
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreSpeakerJobWire")]
 pub struct SpeakerJob {
     pub id: String,
     pub kind: String,
@@ -241,7 +249,9 @@ pub struct SpeakerJob {
     pub status: String,
     pub stage: String,
     pub progress: f64,
+    #[ts(type = "number")]
     pub bytes_downloaded: u64,
+    #[ts(type = "number")]
     pub total_bytes: u64,
     pub cancel_requested_at: Option<String>,
     pub error_message: Option<String>,
@@ -1094,7 +1104,7 @@ fn analyze_project(db: &mut Connection, job_id: &str) -> Result<()> {
     if hash_file(&source)? != expected_source_sha256 {
         bail!("speaker_source_changed: 说话人分析期间原始媒体内容发生变化")
     }
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = crate::write_transaction::WriteTransaction::begin(db)?;
     if project::current_version_id(&tx, project_id)?.as_deref() != Some(base_version_id.as_str()) {
         bail!("speaker_project_changed: 说话人分析期间项目已被修改，结果未发布")
     }
@@ -1324,13 +1334,13 @@ pub fn load_track(db: &Connection, project_id: &str) -> Result<SpeakerTrack> {
 
 #[cfg(test)]
 fn replace_track(db: &mut Connection, project_id: &str, track: &SpeakerTrack) -> Result<()> {
-    let tx = db.transaction()?;
+    let tx = crate::write_transaction::WriteTransaction::begin(db)?;
     replace_track_tx(&tx, project_id, Some(track))?;
     tx.commit()?;
     Ok(())
 }
 
-pub(crate) fn clear_track_tx(tx: &Transaction<'_>, project_id: &str) -> Result<()> {
+pub(crate) fn clear_track_tx(tx: &Connection, project_id: &str) -> Result<()> {
     tx.execute(
         "DELETE FROM segment_speakers WHERE project_id=?1",
         [project_id],
@@ -1348,7 +1358,7 @@ pub(crate) fn clear_track_tx(tx: &Transaction<'_>, project_id: &str) -> Result<(
 }
 
 pub(crate) fn replace_track_tx(
-    tx: &Transaction<'_>,
+    tx: &Connection,
     project_id: &str,
     track: Option<&SpeakerTrack>,
 ) -> Result<()> {
@@ -1431,7 +1441,7 @@ pub fn merge(
     if count != 2 {
         bail!("speaker_not_found: 合并的说话人不存在")
     }
-    let tx = db.transaction()?;
+    let tx = crate::write_transaction::WriteTransaction::begin(db)?;
     tx.execute(
         "UPDATE speaker_turns SET speaker_id=?3 WHERE project_id=?1 AND speaker_id=?2",
         params![project_id, from_id, into_id],

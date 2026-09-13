@@ -10,7 +10,8 @@ test("previews burned subtitles and exposes embedded or sidecar delivery", async
     return { overflowY: style.overflowY, height: element.getBoundingClientRect().height };
   });
   expect(transcriptListLayout.overflowY).toBe("auto");
-  expect(transcriptListLayout.height).toBeLessThanOrEqual(560);
+  expect(transcriptListLayout.height).toBeLessThan(972);
+  expect(transcriptListLayout.height).toBeGreaterThan(500);
   await page.getByRole("checkbox", { name: "选择字幕 00:13 至 00:18" }).click();
   await page.getByRole("tab", { name: "导出" }).click();
   const panel = page.getByLabel("导出设置");

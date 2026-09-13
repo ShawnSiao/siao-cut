@@ -1,3 +1,5 @@
+#[path = "source_transport.rs"]
+mod transport;
 use crate::{
     db::{self, home_dir},
     media::{hash_file, tool_path},
@@ -25,6 +27,8 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+pub(crate) use transport::SafeConnectProxy;
+use transport::*;
 
 pub const MAX_DURATION_SECONDS: f64 = 2.0 * 60.0 * 60.0;
 pub const MAX_FILE_SIZE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
@@ -38,8 +42,9 @@ const MAX_SUBPROCESS_STDOUT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_SUBPROCESS_STDERR_BYTES: usize = 1024 * 1024;
 const DOWNLOAD_CONTROL_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreSourcePreviewWire")]
 pub struct SourcePreview {
     pub original_url: String,
     pub webpage_url: String,
@@ -47,16 +52,22 @@ pub struct SourcePreview {
     pub extractor: String,
     pub title: String,
     pub duration_seconds: f64,
+    #[ts(type = "number | null")]
     pub file_size_bytes: Option<u64>,
     pub file_size_known: bool,
     pub thumbnail_url: Option<String>,
     pub tool_version: String,
     pub tool_sha256: String,
+    pub auth_mode: String,
+    pub browser: Option<String>,
     pub requires_confirmation: bool,
+    #[serde(skip)]
+    pub(crate) resolved_download_url: Option<Url>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreSourceImportJobWire")]
 pub struct SourceImportJob {
     pub id: String,
     pub project_id: Option<String>,
@@ -66,17 +77,22 @@ pub struct SourceImportJob {
     pub extractor: String,
     pub title: String,
     pub duration_seconds: f64,
+    #[ts(type = "number | null")]
     pub file_size_bytes: Option<u64>,
     pub status: String,
     pub stage_code: Option<String>,
     pub progress: f64,
+    #[ts(type = "number")]
     pub bytes_downloaded: u64,
+    #[ts(type = "number | null")]
     pub total_bytes: Option<u64>,
     pub output_directory: String,
     pub output_path: Option<String>,
     pub output_sha256: Option<String>,
     pub tool_version: String,
     pub tool_sha256: String,
+    pub auth_mode: String,
+    pub browser: Option<String>,
     pub cancel_requested_at: Option<String>,
     pub error_message: Option<String>,
     pub error_code: Option<String>,
@@ -92,6 +108,52 @@ struct ToolIdentity {
     path: PathBuf,
     version: String,
     sha256: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum SourceAuth {
+    Anonymous,
+    Browser(String),
+}
+
+impl SourceAuth {
+    fn from_browser(browser: Option<&str>) -> Result<Self> {
+        let Some(browser) = browser else {
+            return Ok(Self::Anonymous);
+        };
+        let browser = browser.trim().to_ascii_lowercase();
+        if !matches!(browser.as_str(), "chrome" | "edge" | "firefox") {
+            bail!("source_browser_invalid: 登录态导入只支持 Chrome、Edge 或 Firefox")
+        }
+        Ok(Self::Browser(browser))
+    }
+
+    fn mode(&self) -> &'static str {
+        match self {
+            Self::Anonymous => "anonymous",
+            Self::Browser(_) => "browser",
+        }
+    }
+
+    fn browser(&self) -> Option<&str> {
+        match self {
+            Self::Anonymous => None,
+            Self::Browser(browser) => Some(browser),
+        }
+    }
+
+    fn add_arguments(&self, arguments: &mut Vec<String>) {
+        if let Self::Browser(browser) = self {
+            let separator = arguments
+                .iter()
+                .position(|argument| argument == "--")
+                .unwrap_or(arguments.len());
+            arguments.splice(
+                separator..separator,
+                ["--cookies-from-browser".to_owned(), browser.clone()],
+            );
+        }
+    }
 }
 
 pub fn yt_dlp_path() -> PathBuf {
@@ -111,15 +173,28 @@ pub fn configured() -> bool {
 }
 
 pub fn inspect(input: &str) -> Result<SourcePreview> {
-    let original = validate_public_https_url(input)?;
-    let tool = verify_tool(&yt_dlp_path())?;
-    inspect_with_tool(original, &tool)
+    inspect_internal(input, SourceAuth::Anonymous)
 }
 
-fn inspect_with_tool(original: Url, tool: &ToolIdentity) -> Result<SourcePreview> {
+pub fn inspect_with_browser(input: &str, browser: &str) -> Result<SourcePreview> {
+    inspect_internal(input, SourceAuth::from_browser(Some(browser))?)
+}
+
+fn inspect_internal(input: &str, auth: SourceAuth) -> Result<SourcePreview> {
+    let original = validate_public_https_url(input)?;
+    let tool = verify_tool(&yt_dlp_path())?;
+    inspect_with_tool(original, &tool, &auth)
+}
+
+fn inspect_with_tool(
+    original: Url,
+    tool: &ToolIdentity,
+    auth: &SourceAuth,
+) -> Result<SourcePreview> {
     preflight_public_url(&original)?;
     let proxy = SafeConnectProxy::start()?;
     let mut arguments = inspection_arguments(&original);
+    auth.add_arguments(&mut arguments);
     add_proxy_argument(&mut arguments, &proxy.url());
     let mut command = hidden_command(&tool.path);
     command.args(arguments);
@@ -131,14 +206,102 @@ fn inspect_with_tool(original: Url, tool: &ToolIdentity) -> Result<SourcePreview
     .context("无法启动固定版本的 yt-dlp")?;
     if !output.status.success() {
         let detail = String::from_utf8_lossy(&output.stderr);
+        let detail = detail.trim();
+        if let Some(resolved) = crate::x_public_video::resolve(&original)? {
+            return fallback_preview(original, resolved, tool, auth);
+        }
+        if browser_cookie_error(detail) {
+            bail!(
+                "source_browser_auth_failed: 无法从 {} 读取有效登录态。请确认该浏览器已登录 X 后重试。",
+                browser_display_name(auth.browser().unwrap_or_default())
+            )
+        }
+        if x_media_unavailable(detail) {
+            if matches!(auth, SourceAuth::Anonymous) {
+                bail!("source_login_required: X 未向公开访问返回此视频；可改用浏览器登录态重试")
+            }
+            bail!(
+                "source_browser_media_unavailable: 当前浏览器登录态仍未返回可下载视频；请确认该账号能够正常播放此视频"
+            )
+        }
         bail!(
-            "source_inspection_failed: yt-dlp 无法读取此公开单视频：{}",
-            detail.trim()
+            "source_inspection_failed: yt-dlp 无法读取此单视频：{}",
+            detail
         )
     }
     let metadata: Value = serde_json::from_slice(&output.stdout)
         .context("source_metadata_invalid: yt-dlp 返回了无效 JSON")?;
-    parse_metadata(original, &metadata, tool)
+    parse_metadata_with_auth(original, &metadata, tool, auth)
+}
+
+fn fallback_preview(
+    original: Url,
+    resolved: crate::x_public_video::ResolvedXVideo,
+    tool: &ToolIdentity,
+    auth: &SourceAuth,
+) -> Result<SourcePreview> {
+    if resolved.video_id.trim().is_empty() {
+        bail!("source_x_resolver_failed: X 公开解析服务未返回视频标识")
+    }
+    if resolved.duration_seconds > MAX_DURATION_SECONDS {
+        bail!("source_duration_limit: 视频时长超过 2 小时上限")
+    }
+    if resolved
+        .file_size_bytes
+        .is_some_and(|size| size > MAX_FILE_SIZE_BYTES)
+    {
+        bail!("source_size_limit: 视频大小超过 4 GB 上限")
+    }
+    let title = sanitize_windows_filename_component(&resolved.title);
+    Ok(SourcePreview {
+        original_url: original.to_string(),
+        webpage_url: resolved.webpage_url.to_string(),
+        site_media_id: resolved.video_id,
+        extractor: "Twitter".to_owned(),
+        title,
+        duration_seconds: resolved.duration_seconds,
+        file_size_bytes: resolved.file_size_bytes,
+        file_size_known: resolved.file_size_bytes.is_some(),
+        thumbnail_url: None,
+        tool_version: tool.version.clone(),
+        tool_sha256: tool.sha256.clone(),
+        auth_mode: auth.mode().to_owned(),
+        browser: auth.browser().map(str::to_owned),
+        requires_confirmation: true,
+        resolved_download_url: Some(resolved.media_url),
+    })
+}
+
+fn browser_display_name(browser: &str) -> &str {
+    match browser {
+        "chrome" => "Chrome",
+        "edge" => "Edge",
+        "firefox" => "Firefox",
+        _ => "所选浏览器",
+    }
+}
+
+fn browser_cookie_error(detail: &str) -> bool {
+    let detail = detail.to_ascii_lowercase();
+    [
+        "could not copy chrome cookie database",
+        "could not copy edge cookie database",
+        "could not copy firefox cookie database",
+        "could not find chrome cookies database",
+        "could not find edge cookies database",
+        "could not find firefox cookies database",
+        "failed to decrypt with dpapi",
+        "failed to decrypt cookie",
+        "no cookies could be loaded",
+    ]
+    .iter()
+    .any(|message| detail.contains(message))
+}
+
+fn x_media_unavailable(detail: &str) -> bool {
+    let detail = detail.to_ascii_lowercase();
+    detail.contains("video #") && detail.contains("is unavailable")
+        || detail.contains("no video could be found in this tweet")
 }
 
 pub fn start(
@@ -147,7 +310,31 @@ pub fn start(
     confirmed_media_id: &str,
     start_delay_ms: Option<u64>,
 ) -> Result<SourceImportJob> {
-    start_internal(db, input, confirmed_media_id, start_delay_ms, None)
+    start_internal(
+        db,
+        input,
+        confirmed_media_id,
+        start_delay_ms,
+        None,
+        SourceAuth::Anonymous,
+    )
+}
+
+pub fn start_with_browser(
+    db: &Connection,
+    input: &str,
+    confirmed_media_id: &str,
+    start_delay_ms: Option<u64>,
+    browser: &str,
+) -> Result<SourceImportJob> {
+    start_internal(
+        db,
+        input,
+        confirmed_media_id,
+        start_delay_ms,
+        None,
+        SourceAuth::from_browser(Some(browser))?,
+    )
 }
 
 pub(crate) fn start_with_job_id(
@@ -160,7 +347,14 @@ pub(crate) fn start_with_job_id(
     if let Ok(existing) = load(db, job_id) {
         return Ok(existing);
     }
-    start_internal(db, input, confirmed_media_id, start_delay_ms, Some(job_id))
+    start_internal(
+        db,
+        input,
+        confirmed_media_id,
+        start_delay_ms,
+        Some(job_id),
+        SourceAuth::Anonymous,
+    )
 }
 
 fn start_internal(
@@ -169,8 +363,11 @@ fn start_internal(
     confirmed_media_id: &str,
     start_delay_ms: Option<u64>,
     job_id: Option<&str>,
+    auth: SourceAuth,
 ) -> Result<SourceImportJob> {
-    let preview = inspect(input)?;
+    let original = validate_public_https_url(input)?;
+    let tool = verify_tool(&yt_dlp_path())?;
+    let preview = inspect_with_tool(original, &tool, &auth)?;
     if preview.site_media_id != confirmed_media_id {
         bail!(
             "source_confirmation_mismatch: 当前站点媒体 ID 为 {}，与确认值不一致",
@@ -257,6 +454,8 @@ fn insert_job_with_id_at(
         output_sha256: None,
         tool_version: preview.tool_version.clone(),
         tool_sha256: preview.tool_sha256.clone(),
+        auth_mode: preview.auth_mode.clone(),
+        browser: preview.browser.clone(),
         cancel_requested_at: None,
         error_message: None,
         error_code: None,
@@ -270,8 +469,8 @@ fn insert_job_with_id_at(
         "INSERT INTO source_imports(
              id,original_url,webpage_url,site_media_id,extractor,title,duration_seconds,
              file_size_bytes,status,progress,bytes_downloaded,total_bytes,output_directory,
-             tool_version,tool_sha256,created_at,updated_at,attempt_count
-         ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'queued',0,0,?8,?9,?10,?11,?12,?12,1)",
+             tool_version,tool_sha256,auth_mode,browser,created_at,updated_at,attempt_count
+         ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'queued',0,0,?8,?9,?10,?11,?12,?13,?14,?14,1)",
         params![
             &job.id,
             &job.original_url,
@@ -284,6 +483,8 @@ fn insert_job_with_id_at(
             &job.output_directory,
             &job.tool_version,
             &job.tool_sha256,
+            &job.auth_mode,
+            &job.browser,
             &job.created_at,
         ],
     );
@@ -317,12 +518,13 @@ pub fn load(db: &Connection, job_id: &str) -> Result<SourceImportJob> {
         "SELECT id,project_id,original_url,webpage_url,site_media_id,extractor,title,
                 duration_seconds,file_size_bytes,status,progress,bytes_downloaded,total_bytes,
                 output_directory,output_path,output_sha256,tool_version,tool_sha256,
-                cancel_requested_at,error_message,created_at,updated_at,completed_at,worker_pid,attempt_count
+                auth_mode,browser,cancel_requested_at,error_message,created_at,updated_at,
+                completed_at,worker_pid,attempt_count
          FROM source_imports WHERE id=?1",
         [job_id],
         |row| {
             let status = row.get::<_, String>(9)?;
-            let error_message = row.get::<_, Option<String>>(19)?;
+            let error_message = row.get::<_, Option<String>>(21)?;
             Ok(SourceImportJob {
                 id: row.get(0)?,
                 project_id: row.get(1)?,
@@ -343,17 +545,16 @@ pub fn load(db: &Connection, job_id: &str) -> Result<SourceImportJob> {
                 output_sha256: row.get(15)?,
                 tool_version: row.get(16)?,
                 tool_sha256: row.get(17)?,
-                cancel_requested_at: row.get(18)?,
-                error_code: crate::model::background_error_code(
-                    &status,
-                    error_message.as_deref(),
-                ),
+                auth_mode: row.get(18)?,
+                browser: row.get(19)?,
+                cancel_requested_at: row.get(20)?,
+                error_code: crate::model::background_error_code(&status, error_message.as_deref()),
                 error_message,
-                created_at: row.get(20)?,
-                updated_at: row.get(21)?,
-                completed_at: row.get(22)?,
-                worker_pid: row.get(23)?,
-                attempt_count: row.get::<_, i64>(24)? as u32,
+                created_at: row.get(22)?,
+                updated_at: row.get(23)?,
+                completed_at: row.get(24)?,
+                worker_pid: row.get(25)?,
+                attempt_count: row.get::<_, i64>(26)? as u32,
             })
         },
     )
@@ -514,18 +715,31 @@ fn run_download(db: &mut Connection, job_id: &str) -> Result<()> {
         return Ok(());
     }
     let original_url = validate_public_https_url(&job.original_url)?;
+    let auth = SourceAuth::from_browser(job.browser.as_deref())?;
+    if job.auth_mode != auth.mode() {
+        bail!("source_auth_state_invalid: URL 导入任务的登录态配置无效")
+    }
     let tool = verify_tool(&yt_dlp_path())?;
     if tool.version != job.tool_version || tool.sha256 != job.tool_sha256 {
         bail!("source_tool_changed: URL 导入任务绑定的 yt-dlp 版本或哈希已变化")
     }
-    let refreshed = inspect_with_tool(original_url.clone(), &tool)?;
+    let refreshed = inspect_with_tool(original_url.clone(), &tool, &auth)?;
     assert_source_identity(&job.site_media_id, &job.extractor, &refreshed)?;
     let tool = verify_tool(&tool.path)?;
     if tool.version != job.tool_version || tool.sha256 != job.tool_sha256 {
         bail!("source_tool_changed: URL 导入任务绑定的 yt-dlp 版本或哈希已变化")
     }
     let ffmpeg = tool_path("SIAOCUT_FFMPEG", "ffmpeg");
-    run_download_command(db, job_id, &original_url, &tool, &ffmpeg)
+    let download_url = refreshed
+        .resolved_download_url
+        .as_ref()
+        .unwrap_or(&original_url);
+    let download_auth = if refreshed.resolved_download_url.is_some() {
+        SourceAuth::Anonymous
+    } else {
+        auth
+    };
+    run_download_command(db, job_id, download_url, &tool, &ffmpeg, &download_auth)
 }
 
 fn assert_source_identity(
@@ -549,9 +763,18 @@ fn run_download_command(
     original_url: &Url,
     tool: &ToolIdentity,
     ffmpeg: &str,
+    auth: &SourceAuth,
 ) -> Result<()> {
     let proxy = SafeConnectProxy::start()?;
-    run_download_command_with_proxy(db, job_id, original_url, tool, ffmpeg, Some(proxy.url()))
+    run_download_command_with_proxy(
+        db,
+        job_id,
+        original_url,
+        tool,
+        ffmpeg,
+        Some(proxy.url()),
+        auth,
+    )
 }
 
 fn run_download_command_with_proxy(
@@ -561,11 +784,13 @@ fn run_download_command_with_proxy(
     tool: &ToolIdentity,
     ffmpeg: &str,
     proxy_url: Option<String>,
+    auth: &SourceAuth,
 ) -> Result<()> {
     let job = load(db, job_id)?;
     let output_directory = PathBuf::from(&job.output_directory);
     fs::create_dir_all(&output_directory)?;
     let mut arguments = download_arguments(original_url, &output_directory, ffmpeg);
+    auth.add_arguments(&mut arguments);
     if let Some(proxy_url) = proxy_url {
         add_proxy_argument(&mut arguments, &proxy_url);
     }
@@ -837,247 +1062,6 @@ fn finalize_download(db: &mut Connection, job_id: &str, output: &Path) -> Result
     Ok(())
 }
 
-fn add_proxy_argument(arguments: &mut Vec<String>, proxy_url: &str) {
-    let index = arguments
-        .iter()
-        .position(|argument| argument == "--")
-        .unwrap_or(arguments.len());
-    arguments.splice(index..index, ["--proxy".to_owned(), proxy_url.to_owned()]);
-}
-
-struct SafeConnectProxy {
-    address: SocketAddr,
-    stop: Arc<AtomicBool>,
-    worker: Option<thread::JoinHandle<()>>,
-}
-
-impl SafeConnectProxy {
-    fn start() -> Result<Self> {
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-            .context("source_proxy_failed: 无法启动 URL 安全代理")?;
-        listener.set_nonblocking(true)?;
-        let address = listener.local_addr()?;
-        let stop = Arc::new(AtomicBool::new(false));
-        let worker_stop = Arc::clone(&stop);
-        let worker = thread::spawn(move || {
-            while !worker_stop.load(Ordering::Relaxed) {
-                match listener.accept() {
-                    Ok((stream, _)) => {
-                        if stream.set_nonblocking(false).is_err() {
-                            continue;
-                        }
-                        thread::spawn(move || {
-                            let _ = handle_proxy_connection(stream);
-                        });
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        thread::sleep(Duration::from_millis(10));
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
-        Ok(Self {
-            address,
-            stop,
-            worker: Some(worker),
-        })
-    }
-
-    fn url(&self) -> String {
-        format!("http://{}", self.address)
-    }
-}
-
-impl Drop for SafeConnectProxy {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        let _ = TcpStream::connect(self.address);
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
-    }
-}
-
-fn handle_proxy_connection(mut client: TcpStream) -> Result<()> {
-    client.set_read_timeout(Some(Duration::from_secs(5)))?;
-    client.set_write_timeout(Some(Duration::from_secs(5)))?;
-    let mut request = Vec::with_capacity(1024);
-    let mut byte = [0_u8; 1];
-    while request.len() < 16 * 1024 && !request.ends_with(b"\r\n\r\n") {
-        if client.read(&mut byte)? == 0 {
-            return Ok(());
-        }
-        request.push(byte[0]);
-    }
-    let first_line = String::from_utf8_lossy(&request)
-        .lines()
-        .next()
-        .unwrap_or_default()
-        .to_owned();
-    let mut parts = first_line.split_whitespace();
-    if parts.next() != Some("CONNECT") {
-        let _ = std::io::Write::write_all(
-            &mut client,
-            b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-        );
-        return Ok(());
-    }
-    let authority = parts
-        .next()
-        .ok_or_else(|| anyhow!("source_proxy_target_invalid: CONNECT 缺少目标"))?;
-    let target = Url::parse(&format!("https://{authority}/"))
-        .context("source_proxy_target_invalid: CONNECT 目标无效")?;
-    let host = target
-        .host_str()
-        .ok_or_else(|| anyhow!("source_proxy_target_invalid: CONNECT 缺少主机"))?;
-    let port = target.port_or_known_default().unwrap_or(443);
-    let addresses = public_socket_addresses(host, port);
-    let Ok(addresses) = addresses else {
-        let _ = std::io::Write::write_all(
-            &mut client,
-            b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-        );
-        return Ok(());
-    };
-    let mut upstream = None;
-    for address in addresses {
-        if let Ok(stream) = TcpStream::connect_timeout(&address, Duration::from_secs(8)) {
-            upstream = Some(stream);
-            break;
-        }
-    }
-    let Some(mut upstream) = upstream else {
-        let _ = std::io::Write::write_all(
-            &mut client,
-            b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-        );
-        return Ok(());
-    };
-    client.set_read_timeout(Some(Duration::from_secs(45)))?;
-    client.set_write_timeout(Some(Duration::from_secs(45)))?;
-    upstream.set_read_timeout(Some(Duration::from_secs(45)))?;
-    upstream.set_write_timeout(Some(Duration::from_secs(45)))?;
-    std::io::Write::write_all(&mut client, b"HTTP/1.1 200 Connection Established\r\n\r\n")?;
-    let mut client_reader = client.try_clone()?;
-    let mut upstream_writer = upstream.try_clone()?;
-    let upload = thread::spawn(move || {
-        let _ = std::io::copy(&mut client_reader, &mut upstream_writer);
-        let _ = upstream_writer.shutdown(Shutdown::Write);
-    });
-    let _ = std::io::copy(&mut upstream, &mut client);
-    let _ = client.shutdown(Shutdown::Write);
-    let _ = upload.join();
-    Ok(())
-}
-
-#[derive(Debug)]
-struct BoundedOutput {
-    status: ExitStatus,
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
-}
-
-fn output_with_timeout(
-    command: Command,
-    timeout: Duration,
-    timeout_message: &str,
-) -> Result<BoundedOutput> {
-    output_with_timeout_after_isolation(command, timeout, timeout_message, || Ok(()))
-}
-
-fn output_with_timeout_after_isolation(
-    mut command: Command,
-    timeout: Duration,
-    timeout_message: &str,
-    after_isolation: impl FnOnce() -> Result<()>,
-) -> Result<BoundedOutput> {
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = command.spawn()?;
-    let mut process_job = Some(assign_source_process_job(
-        &mut child,
-        "source_process_isolation_failed: 无法隔离工具子进程",
-    )?);
-    if let Err(error) = after_isolation() {
-        terminate_source_process(&mut child, &mut process_job);
-        return Err(error);
-    }
-    let mut stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| anyhow!("无法读取子进程标准输出"))?;
-    let mut stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| anyhow!("无法读取子进程错误输出"))?;
-    let stdout_reader =
-        thread::spawn(move || read_bounded(&mut stdout, MAX_SUBPROCESS_STDOUT_BYTES));
-    let stderr_reader =
-        thread::spawn(move || read_bounded(&mut stderr, MAX_SUBPROCESS_STDERR_BYTES));
-    let deadline = Instant::now() + timeout;
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
-        }
-        if Instant::now() >= deadline {
-            terminate_source_process(&mut child, &mut process_job);
-            let _ = stdout_reader.join();
-            let _ = stderr_reader.join();
-            bail!("{timeout_message}")
-        }
-        thread::sleep(Duration::from_millis(50));
-    };
-    release_source_process_job(&mut process_job);
-    Ok(BoundedOutput {
-        status,
-        stdout: stdout_reader
-            .join()
-            .map_err(|_| anyhow!("无法汇总子进程标准输出"))?,
-        stderr: stderr_reader
-            .join()
-            .map_err(|_| anyhow!("无法汇总子进程错误输出"))?,
-    })
-}
-
-fn assign_source_process_job(child: &mut Child, error_message: &str) -> Result<KillOnCloseJob> {
-    // Supported Windows versions allow nested jobs. If a restrictive host policy
-    // rejects assignment, continuing would make timeouts and cancellation
-    // unenforceable for descendants, so return a diagnosable error instead.
-    match KillOnCloseJob::assign(child) {
-        Ok(job) => Ok(job),
-        Err(error) => {
-            crate::util::terminate_process_tree(child);
-            Err(error).with_context(|| error_message.to_owned())
-        }
-    }
-}
-
-fn release_source_process_job(process_job: &mut Option<KillOnCloseJob>) {
-    drop(process_job.take());
-}
-
-fn terminate_source_process(child: &mut Child, process_job: &mut Option<KillOnCloseJob>) {
-    if process_job.is_some() {
-        release_source_process_job(process_job);
-        let _ = child.wait();
-    } else {
-        crate::util::terminate_process_tree(child);
-    }
-}
-
-fn read_bounded(reader: &mut impl Read, limit: usize) -> Vec<u8> {
-    let mut stored = Vec::with_capacity(limit.min(64 * 1024));
-    let mut chunk = [0_u8; 64 * 1024];
-    while let Ok(length) = reader.read(&mut chunk) {
-        if length == 0 {
-            break;
-        }
-        let remaining = limit.saturating_sub(stored.len());
-        stored.extend_from_slice(&chunk[..length.min(remaining)]);
-    }
-    stored
-}
-
 fn finish_cancelled(db: &Connection, job_id: &str) -> Result<()> {
     let timestamp = now();
     db.execute(
@@ -1255,10 +1239,20 @@ fn validate_selected_download_urls(metadata: &Value) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn parse_metadata(
     original_url: Url,
     metadata: &Value,
     tool: &ToolIdentity,
+) -> Result<SourcePreview> {
+    parse_metadata_with_auth(original_url, metadata, tool, &SourceAuth::Anonymous)
+}
+
+fn parse_metadata_with_auth(
+    original_url: Url,
+    metadata: &Value,
+    tool: &ToolIdentity,
+    auth: &SourceAuth,
 ) -> Result<SourcePreview> {
     let source_type = metadata
         .get("_type")
@@ -1271,15 +1265,16 @@ fn parse_metadata(
     if source_type != "video" || has_entries {
         bail!("source_playlist_not_allowed: URL 必须指向一个视频，不能是播放列表或合集")
     }
-    if metadata
-        .get("availability")
-        .and_then(Value::as_str)
-        .is_some_and(|value| {
-            matches!(
-                value,
-                "private" | "premium_only" | "subscriber_only" | "needs_auth"
-            )
-        })
+    if matches!(auth, SourceAuth::Anonymous)
+        && metadata
+            .get("availability")
+            .and_then(Value::as_str)
+            .is_some_and(|value| {
+                matches!(
+                    value,
+                    "private" | "premium_only" | "subscriber_only" | "needs_auth"
+                )
+            })
     {
         bail!("source_auth_not_allowed: 不支持登录、订阅或私有内容")
     }
@@ -1326,7 +1321,10 @@ fn parse_metadata(
         thumbnail_url,
         tool_version: tool.version.clone(),
         tool_sha256: tool.sha256.clone(),
+        auth_mode: auth.mode().to_owned(),
+        browser: auth.browser().map(str::to_owned),
         requires_confirmation: true,
+        resolved_download_url: None,
     })
 }
 
@@ -1404,7 +1402,7 @@ fn selected_file_size(metadata: &Value) -> Option<u64> {
     })
 }
 
-fn validate_public_https_url(input: &str) -> Result<Url> {
+pub(crate) fn validate_public_https_url(input: &str) -> Result<Url> {
     let url = Url::parse(input).map_err(|_| anyhow!("source_url_invalid: URL 格式无效"))?;
     if url.scheme() != "https" {
         bail!("source_https_required: 只接受公开 HTTPS URL")
@@ -1419,44 +1417,6 @@ fn validate_public_https_url(input: &str) -> Result<Url> {
         .to_ascii_lowercase();
     public_socket_addresses(&host, url.port_or_known_default().unwrap_or(443))?;
     Ok(url)
-}
-
-fn public_socket_addresses(host: &str, port: u16) -> Result<Vec<SocketAddr>> {
-    let host = host.trim_end_matches('.').to_ascii_lowercase();
-    if host == "localhost"
-        || host.ends_with(".localhost")
-        || host.ends_with(".local")
-        || host.ends_with(".internal")
-        || host.ends_with(".home.arpa")
-    {
-        bail!("source_private_network: 已拒绝本机或私网地址")
-    }
-    let addresses = if let Ok(ip) = host.parse::<IpAddr>() {
-        ensure_public_ip(ip)?;
-        vec![ip]
-    } else {
-        let addresses = (host.as_str(), port)
-            .to_socket_addrs()
-            .context("source_dns_failed: 无法解析 URL 主机")?
-            .map(|address| address.ip())
-            .collect::<Vec<_>>();
-        if addresses.is_empty() {
-            bail!("source_dns_failed: URL 主机没有可用地址")
-        }
-        let addresses = if addresses.iter().all(|address| fake_tunnel_ip(*address)) {
-            resolve_public_dns_over_https(&host)?
-        } else {
-            addresses
-        };
-        for address in &addresses {
-            ensure_public_ip(*address)?;
-        }
-        addresses
-    };
-    Ok(addresses
-        .into_iter()
-        .map(|address| SocketAddr::new(address, port))
-        .collect())
 }
 
 fn fake_tunnel_ip(ip: IpAddr) -> bool {
@@ -1889,7 +1849,15 @@ mod tests {
             params![job_id, std::process::id(), now()],
         )?;
         let tool = verify_tool(yt_dlp)?;
-        run_download_command_with_proxy(&mut database, job_id, url, &tool, ffmpeg, None)
+        run_download_command_with_proxy(
+            &mut database,
+            job_id,
+            url,
+            &tool,
+            ffmpeg,
+            None,
+            &SourceAuth::Anonymous,
+        )
     }
 
     #[test]
@@ -1998,6 +1966,114 @@ mod tests {
     }
 
     #[test]
+    fn source_import_accepts_x_single_video_metadata_for_confirmation() {
+        let original =
+            validate_public_https_url("https://x.com/example/status/2091959711423996249?s=20")
+                .unwrap();
+        let arguments = inspection_arguments(&original);
+        assert_eq!(
+            arguments.last().map(String::as_str),
+            Some("https://x.com/example/status/2091959711423996249?s=20")
+        );
+
+        let preview = parse_metadata(
+            original,
+            &json!({
+                "_type": "video",
+                "id": "2091957857650716672",
+                "extractor_key": "Twitter",
+                "title": "Public X video",
+                "duration": 52.5,
+                "webpage_url": "https://x.com/example/status/2091959711423996249"
+            }),
+            &tool(),
+        )
+        .unwrap();
+
+        assert_eq!(preview.extractor, "Twitter");
+        assert_eq!(preview.site_media_id, "2091957857650716672");
+        assert_eq!(
+            preview.webpage_url,
+            "https://x.com/example/status/2091959711423996249"
+        );
+        assert!(preview.requires_confirmation);
+    }
+
+    #[test]
+    fn source_import_browser_auth_is_explicit_and_bound_to_the_preview() {
+        let auth = SourceAuth::from_browser(Some("Chrome")).unwrap();
+        let mut inspect = inspection_arguments(&public_url());
+        auth.add_arguments(&mut inspect);
+        let browser_index = inspect
+            .iter()
+            .position(|argument| argument == "--cookies-from-browser")
+            .unwrap();
+        let separator_index = inspect
+            .iter()
+            .position(|argument| argument == "--")
+            .unwrap();
+        assert!(browser_index < separator_index);
+        assert_eq!(inspect[browser_index + 1], "chrome");
+
+        let preview = parse_metadata_with_auth(
+            public_url(),
+            &json!({
+                "_type": "video",
+                "id": "login-media",
+                "extractor_key": "Twitter",
+                "title": "Login-visible X video",
+                "duration": 124.0,
+                "availability": "needs_auth",
+                "webpage_url": "https://93.184.216.34/watch/123"
+            }),
+            &tool(),
+            &auth,
+        )
+        .unwrap();
+
+        assert_eq!(preview.auth_mode, "browser");
+        assert_eq!(preview.browser.as_deref(), Some("chrome"));
+        assert!(SourceAuth::from_browser(Some("safari")).is_err());
+        assert!(x_media_unavailable(
+            "ERROR: [twitter] 123: Video #1 is unavailable"
+        ));
+        assert!(browser_cookie_error(
+            "ERROR: Could not copy Chrome cookie database"
+        ));
+        assert_eq!(browser_display_name("edge"), "Edge");
+    }
+
+    #[test]
+    fn source_import_x_fallback_binds_the_resolved_media_url() {
+        let original =
+            Url::parse("https://x.com/example/status/2093953961590231113/video/1").unwrap();
+        let media_url = Url::parse(
+            "https://video.twimg.com/amplify_video/2093953852827664384/vid/avc1/1280x720/video.mp4",
+        )
+        .unwrap();
+        let preview = fallback_preview(
+            original,
+            crate::x_public_video::ResolvedXVideo {
+                webpage_url: Url::parse("https://x.com/example/status/2093953961590231113")
+                    .unwrap(),
+                media_url: media_url.clone(),
+                video_id: "2093953852827664384".to_owned(),
+                title: "Public X video".to_owned(),
+                duration_seconds: 54.868,
+                file_size_bytes: Some(5_526_471),
+            },
+            &tool(),
+            &SourceAuth::Anonymous,
+        )
+        .unwrap();
+
+        assert_eq!(preview.extractor, "Twitter");
+        assert_eq!(preview.site_media_id, "2093953852827664384");
+        assert_eq!(preview.resolved_download_url, Some(media_url));
+        assert_eq!(preview.auth_mode, "anonymous");
+    }
+
+    #[test]
     fn source_import_refuses_a_media_identity_changed_after_confirmation() {
         let preview = SourcePreview {
             original_url: "https://93.184.216.34/watch/123".to_owned(),
@@ -2011,7 +2087,10 @@ mod tests {
             thumbnail_url: None,
             tool_version: PINNED_YTDLP_VERSION.to_owned(),
             tool_sha256: PINNED_YTDLP_SHA256.to_owned(),
+            auth_mode: "anonymous".to_owned(),
+            browser: None,
             requires_confirmation: true,
+            resolved_download_url: None,
         };
 
         let error = assert_source_identity("media-123", "Example", &preview)
@@ -2098,6 +2177,11 @@ mod tests {
             .unwrap();
         assert!(proxy_index < separator_index);
         assert_eq!(proxied[proxy_index + 1], "http://127.0.0.1:43123");
+        assert!(
+            !proxied
+                .iter()
+                .any(|argument| argument == "--cookies-from-browser")
+        );
     }
 
     #[test]
@@ -2132,7 +2216,7 @@ mod tests {
     #[test]
     fn safe_connect_proxy_rejects_private_targets_before_connecting() {
         let proxy = SafeConnectProxy::start().unwrap();
-        let mut stream = TcpStream::connect(proxy.address).unwrap();
+        let mut stream = TcpStream::connect(proxy.url().trim_start_matches("http://")).unwrap();
         thread::sleep(Duration::from_millis(100));
         stream
             .write_all(b"CONNECT 127.0.0.1:443 HTTP/1.1\r\nHost: 127.0.0.1:443\r\n\r\n")
@@ -2357,7 +2441,10 @@ mod tests {
             thumbnail_url: None,
             tool_version: tool.version.clone(),
             tool_sha256: tool.sha256.clone(),
+            auth_mode: "anonymous".to_owned(),
+            browser: None,
             requires_confirmation: true,
+            resolved_download_url: None,
         };
         let job = insert_job_at(&db, &preview, &temp.path().join("imports")).unwrap();
         let job_id = job.id.clone();

@@ -2,6 +2,8 @@
 
 本文记录 SiaoCut Windows 应用程序包的可复现验收要求。候选包仅用于本地发布准备，不属于正式 Release。
 
+2026 年 9 月 12 日基于 `834b513` 的新增原生恢复、故障和隔离安装升级结果见 [桌面成熟度验收记录](windows-maturity-acceptance-2026-09-12.md)。下列包信息与自动验收表保留为 2026 年 8 月的历史记录。
+
 当前包配置为 `app-only`：安装包只包含桌面主程序、`siaocut-core`、前端资源、图标和静态组件元数据。FFmpeg、FFprobe、Whisper CPU/Vulkan、VAD、模型权重和 `yt-dlp` 均在安装包外部按需配置。
 
 ## 候选包

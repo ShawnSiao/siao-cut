@@ -1,8 +1,11 @@
+#[path = "../../../../src/platform_contract.rs"]
+mod platform_contract;
+use platform_contract::RuntimeInfo;
 mod app_updates;
 mod diagnostics;
 
 use diagnostics::Diagnostics;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::Value;
 use std::{
     collections::BTreeMap,
@@ -14,31 +17,6 @@ use std::{
 use tauri::Manager;
 use tokio::io::AsyncWriteExt;
 use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RuntimeInfo {
-    core_path: String,
-    core_api_version: String,
-    ffmpeg_configured: bool,
-    asr_configured: bool,
-    vad_configured: bool,
-    vad_timeline_verified: bool,
-    vad_status: String,
-    vad_reason_code: Option<String>,
-    yt_dlp_configured: bool,
-    asr_backend: String,
-    asr_device: Option<String>,
-    available_asr_backends: Vec<String>,
-    ffmpeg_path: Option<String>,
-    whisper_path: Option<String>,
-    yt_dlp_path: Option<String>,
-    runtime_manifest_path: Option<String>,
-    default_model_path: String,
-    default_model_available: bool,
-    log_directory: Option<String>,
-    diagnostics_available: bool,
-}
 
 #[derive(Clone, Debug)]
 struct RuntimePaths {
@@ -334,6 +312,7 @@ fn configure_sync_command(command: &mut Command, runtime: &RuntimePaths) {
 fn validate_core_args_with_limit(args: &[String], default_max_args: usize) -> Result<(), String> {
     const ALLOWED: &[&str] = &[
         "health",
+        "contract",
         "import",
         "project",
         "glossary",
@@ -380,6 +359,22 @@ fn validate_core_args(args: &[String]) -> Result<(), String> {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", deny_unknown_fields)]
 enum StructuredCoreRequest {
+    #[serde(rename = "export_command")]
+    Export { request: Value },
+    #[serde(rename = "project_command")]
+    ProjectCommand { request: Value },
+    #[serde(rename = "desktop_control")]
+    Control { request: Value },
+    #[serde(rename = "desktop_query")]
+    Query { request: Value },
+    #[serde(rename = "project_query")]
+    ProjectQuery { request: Value },
+    #[serde(rename = "ai_approval")]
+    AiApproval { request: Value },
+    #[serde(rename = "transcription_job")]
+    TranscriptionJob { request: Value },
+    #[serde(rename = "editing")]
+    Editing { request: Value },
     #[serde(rename = "transcript_offset")]
     TranscriptOffset {
         #[serde(rename = "projectId")]
@@ -414,6 +409,20 @@ fn validate_structured_core_request(payload: &str) -> Result<(), String> {
     let request: StructuredCoreRequest = serde_json::from_str(payload)
         .map_err(|error| format!("structured_core_payload_invalid: {error}"))?;
     match request {
+        StructuredCoreRequest::Editing { request }
+        | StructuredCoreRequest::AiApproval { request }
+        | StructuredCoreRequest::TranscriptionJob { request }
+        | StructuredCoreRequest::ProjectQuery { request }
+        | StructuredCoreRequest::Query { request }
+        | StructuredCoreRequest::Control { request }
+        | StructuredCoreRequest::ProjectCommand { request }
+        | StructuredCoreRequest::Export { request } => {
+            if !request.is_object() {
+                return Err(
+                    "structured_core_request_invalid: domain request must be an object".into(),
+                );
+            }
+        }
         StructuredCoreRequest::TranscriptOffset {
             project_id,
             segment_ids,
@@ -914,6 +923,7 @@ mod tests {
     #[test]
     fn allows_public_auto_workflow_commands() {
         assert!(validate_core_args(&["auto".into(), "list".into()]).is_ok());
+        assert!(validate_core_args(&["contract".into()]).is_ok());
     }
 
     #[test]
@@ -944,6 +954,14 @@ mod tests {
         assert!(
             validate_core_args(&["resources".into(), "install".into(), "url_import".into()])
                 .is_ok()
+        );
+    }
+
+    #[test]
+    fn structured_desktop_query_keeps_unicode_and_rejects_non_object_body() {
+        assert!(validate_structured_core_request(r#"{"kind":"desktop_query","request":{"action":"inspect_subtitle","projectId":"项目一","path":"D:/字幕/最终版本.srt"}}"#).is_ok());
+        assert!(
+            validate_structured_core_request(r#"{"kind":"desktop_query","request":[]}"#).is_err()
         );
     }
 

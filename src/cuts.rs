@@ -5,7 +5,7 @@ use crate::{
 };
 use anyhow::{Result, anyhow, bail};
 use rusqlite::{Connection, params};
-use serde_json::{Value, json};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 
@@ -377,6 +377,16 @@ pub fn create_word_range(
     Ok(edit)
 }
 
+#[derive(serde::Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CutPreview {
+    pub cut_id: String,
+    pub preview_start: f64,
+    pub cut_start: f64,
+    pub cut_end: f64,
+    pub preview_end: f64,
+    pub skip_range: bool,
+}
 pub fn preview(db: &Connection, project_id: &str, cut_id: &str) -> Result<Value> {
     let project = project::load(db, project_id)?;
     let edit = project
@@ -385,14 +395,15 @@ pub fn preview(db: &Connection, project_id: &str, cut_id: &str) -> Result<Value>
         .find(|edit| edit.id == cut_id && edit.kind == "word_cut")
         .ok_or_else(|| anyhow!("软剪辑不存在：{cut_id}"))?;
     let duration = project.timeline.source_duration;
-    Ok(json!({
-        "cutId": edit.id,
-        "previewStart": (edit.start - 1.0).max(0.0),
-        "cutStart": edit.start,
-        "cutEnd": edit.end,
-        "previewEnd": (edit.end + 1.0).min(duration),
-        "skipRange": true
-    }))
+    serde_json::to_value(CutPreview {
+        cut_id: edit.id.clone(),
+        preview_start: (edit.start - 1.0).max(0.0),
+        cut_start: edit.start,
+        cut_end: edit.end,
+        preview_end: (edit.end + 1.0).min(duration),
+        skip_range: true,
+    })
+    .map_err(Into::into)
 }
 
 pub fn set_status(
@@ -457,6 +468,7 @@ mod tests {
     use super::*;
     use crate::{db, project};
     use serde::Deserialize;
+    use serde_json::json;
     use std::collections::BTreeMap;
     use std::fs;
     use tempfile::tempdir;

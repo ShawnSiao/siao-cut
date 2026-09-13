@@ -32,10 +32,6 @@ export function useFocusReviewState(options: FocusReviewStateOptions) {
   const enterFocusReview = () => {
     if (!options.projectAvailable)
       return;
-    if (!options.mediaAvailable) {
-      options.setError(options.mediaMissingMessage);
-      return;
-    }
     returnState.current = {
       drawerTab: options.drawerTab,
       selectedId: options.selectedId,

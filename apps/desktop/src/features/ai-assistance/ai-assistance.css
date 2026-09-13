@@ -279,3 +279,5 @@
     grid-template-columns: 1fr;
   }
 }
+
+.ai-payload-preview pre { max-height: 240px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.6; }

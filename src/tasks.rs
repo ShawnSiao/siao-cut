@@ -162,7 +162,7 @@ pub(crate) fn create_for_workflow(
         workflow_id: workflow_id.map(str::to_owned),
         instruction_locale: instruction_locale.to_owned(),
     };
-    let tx = db.transaction()?;
+    let tx = crate::write_transaction::WriteTransaction::begin(db)?;
     tx.execute(
         "INSERT INTO tasks(id,project_id,kind,language,status,created_at,base_version_id,progress,attempt_count,workflow_id,instruction_locale,glossary_version) VALUES(?1,?2,?3,?4,?5,?6,?7,0,0,?8,?9,?10)",
         params![&task.id, project_id, &task.kind, &task.language, &task.status, &task.created_at, &task.base_version_id, &task.workflow_id, &task.instruction_locale, glossary_version.map(i64::from)],
@@ -537,7 +537,11 @@ fn attach_claim_lease(mut payload: Value, lease_id: &str, attempt_count: i64) ->
     Ok(payload)
 }
 
-fn build_claim_payload(db: &Connection, project: &Project, task: &Task) -> Result<Value> {
+pub(crate) fn build_claim_payload(
+    db: &Connection,
+    project: &Project,
+    task: &Task,
+) -> Result<Value> {
     if project.history.current_version_id != task.base_version_id {
         bail!("task_base_version_conflict: 项目版本已变化，请重新创建或重试任务")
     }

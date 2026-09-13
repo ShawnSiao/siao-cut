@@ -1,13 +1,15 @@
 use anyhow::{Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ts_rs::TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ExecutionTarget {
     Codex,
     Api {
         service_config_id: String,
+        #[ts(type = "number")]
         service_revision: u64,
+        #[ts(type = "number")]
         network_revision: u64,
         model_id: String,
     },

@@ -20,8 +20,9 @@ pub fn ensure_available() -> Result<()> {
     ffmpeg_version(&tool_path("SIAOCUT_FFMPEG", "ffmpeg")).map(|_| ())
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreAudioAnalysisThresholdsWire")]
 pub struct AudioAnalysisThresholds {
     pub silence_noise_db: f64,
     pub silence_min_seconds: f64,
@@ -42,8 +43,9 @@ impl Default for AudioAnalysisThresholds {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(rename = "CoreAudioRiskKindWire")]
 pub enum AudioRiskKind {
     Silence,
     SuspectedClipping,
@@ -51,8 +53,9 @@ pub enum AudioRiskKind {
     LoudnessHigh,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreAudioRiskWire")]
 pub struct AudioRisk {
     pub kind: AudioRiskKind,
     pub start: f64,
@@ -63,8 +66,9 @@ pub struct AudioRisk {
     pub tool_version: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreAudioAnalysisReportWire")]
 pub struct AudioAnalysisReport {
     pub analyzer_version: String,
     pub tool_version: String,
@@ -76,8 +80,9 @@ pub struct AudioAnalysisReport {
     pub risks: Vec<AudioRisk>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreAudioAnalysisJobWire")]
 pub struct AudioAnalysisJob {
     pub id: String,
     pub project_id: String,

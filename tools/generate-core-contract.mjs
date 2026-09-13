@@ -24,6 +24,7 @@ if (result.status !== 0) {
 
 const contract = JSON.parse(result.stdout);
 const declarations = [
+  ["requiredCoreCapabilities", "CoreCapability", contract.capabilities],
   ["backgroundJobStatuses", "BackgroundJobStatus", contract.statusSets.backgroundJob],
   ["agentRunStatuses", "AgentRunStatus", contract.statusSets.agentRun],
   ["localResourceStates", "LocalResourceState", contract.statusSets.localResource],
@@ -45,6 +46,7 @@ const source = [
     `export type ${typeName} = typeof ${constantName}[number];`,
     "",
   ]),
+  ...(contract.typeDeclarations ?? []).map((declaration) => `export ${declaration}`.split("\n").map((line) => line.trimEnd()).join("\n")),
   "export type CoreErrorCode = KnownCoreErrorCode | (string & {});",
   "",
 ].join("\n");

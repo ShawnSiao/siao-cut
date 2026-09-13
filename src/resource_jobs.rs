@@ -99,8 +99,9 @@ struct InstallSpec {
     kind: InstallKind,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreResourceJobWire")]
 pub struct ResourceJob {
     pub id: String,
     pub capability_id: String,
@@ -108,7 +109,9 @@ pub struct ResourceJob {
     pub status: String,
     pub stage: String,
     pub progress: f64,
+    #[ts(type = "number")]
     pub bytes_downloaded: u64,
+    #[ts(type = "number")]
     pub total_bytes: u64,
     pub target_root: String,
     pub cancel_requested_at: Option<String>,

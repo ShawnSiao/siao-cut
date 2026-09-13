@@ -1,101 +1,60 @@
-import { changeUiLocale, getUiLocale, tr, type UiLocale } from "../i18n";
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type SyntheticEvent } from "react";
-import { Activity, Bot, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Clock3, Copy, Cpu, Database, Download, FileVideo2, FileText, Film, FolderOpen, FolderPlus, HardDrive, History, Link2, LoaderCircle, Play, RefreshCw, RotateCcw, Search, Scissors, Settings2, ShieldCheck, Sparkles, Trash2, Undo2, Redo2, Headphones, ListChecks, MoreHorizontal, MoveHorizontal, Users, X, } from "lucide-react";
-import { authorizeArtifact, authorizeMedia, localFileAvailable, openLogDirectory, pickMedia, pickModel, pickResourceDirectory, pickSubtitleFile, pickTranscriptPath, pickVideoPath, runtimeInfo, selectAsrBackend, updaterPolicy } from "../core";
-import type { AgentRun, AudioAnalysisJob, AudioRisk, AutoWorkflow, CanvasSettings, CodexHealth, CutPreview, ExportJob, LocalCapabilityId, LocalResourceJob, LocalResourcePlan, LocalResourceStatus, LocalTranscriptionProfile, ModelDownloadJob, ModelStatus, Project, ProjectDeletionPreflight, RuntimeInfo, Segment, SourceImportJob, SourcePreview, SpeakerIdentity, SpeakerJob, SpeakerPackageStatus, SpeakerTrack, SpeechEvidence, SpeechInsights, SpeechPause, SubtitleImportPreview, SubtitleQualityIssue, Task, TranscriptReplacementPreflight, TranscriptionJob, TranscriptionLanguage, TranscriptionProviderConfig, TranscriptionProviderHealth, TranscriptionReviewItem, WorkflowProfile } from "../types";
-import { Button, Dialog, IconButton, StatusBadge } from "../components/ui";
+import { TaskRecords } from "../features/ai-assistance/TaskRecords";
+import { TranscriptionStatus } from "../features/background-tasks/TranscriptionStatus";
+import { Bot,Check,ChevronDown,ChevronRight,ChevronUp,CircleAlert,Clock3,Copy,Cpu,Download,FileText,FileVideo2,FolderOpen,FolderPlus,Headphones,History,Link2,ListChecks,LoaderCircle,MoreHorizontal,MoveHorizontal,Play,Redo2,RefreshCw,RotateCcw,Scissors,Search,Settings2,ShieldCheck,Sparkles,Trash2,Undo2,Users,X } from "lucide-react";
+import { lazy,Suspense,useCallback,useEffect,useMemo,useRef,useState,type CSSProperties,type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { agentTaskStatusLabel,audioRiskLabel,audioUnitLabel,autoStageLabel,autoStatusLabel,cutSuggestionLabel,editReasonLabel,formatTime,getProjectCapabilities,hasMeaningfulSubtitleText,parseTranscriptionLanguage,segmentCountLabel,structureEditLabel,subtitleCountLabel,subtitleIssueLabel,subtitleQualityStatusLabel,taskLabel,TRANSCRIPTION_LANGUAGE_STORAGE_KEY,versionReasonLabel,wordCountLabel,workflowProfileLabel,type SegmentSelectionMode } from "../app-view-model";
 import { JobFailureDetails } from "../components/job-failure";
-import { AudioQualityPanel, PatchReviewCard, RuntimeChecklist, SegmentRow, SpeakerTrackPanel, SpeechInsightsPanel, TranscriptionReviewPanel } from "../components/workbench-panels";
-import { useAppUpdater } from "../hooks/use-app-updater";
-export { AudioQualityPanel, PatchReviewCard, SpeakerPackageManager, SpeakerTrackPanel, SpeechInsightsPanel } from "../components/workbench-panels";
-import { agentTaskStatusLabel, audioRiskLabel, audioUnitLabel, autoStageLabel, autoStatusLabel, clearTransientCoreError, cutSuggestionLabel, DEFAULT_EXPORT_PREFERENCES, editReasonLabel, formatTime, getProjectCapabilities, hasMeaningfulSubtitleText, isHttpsSourceUrl, modelDescription, modelName, parseExportPreferences, parseTranscriptionLanguage, patchReasonLabel, segmentCountLabel, sourceStatusLabel, structureEditLabel, subtitleCountLabel, subtitleIssueLabel, subtitleQualityStatusLabel, taskLabel, TRANSCRIPTION_LANGUAGE_STORAGE_KEY, versionReasonLabel, wordCountLabel, workflowProfileLabel, type ExportPreferencesV1, type SegmentSelectionMode, type StructureEditMode } from "../app-view-model";
+import { Button,Dialog,IconButton,StatusBadge } from "../components/ui";
+import { AudioQualityPanel,PatchReviewCard,RuntimeChecklist,SegmentRow,SpeakerTrackPanel,SpeechInsightsPanel,TranscriptionReviewPanel } from "../components/workbench-panels";
 import { agentReviewClient } from "../domains/agent-review-client";
-import type { AiExecutionSelection } from "../features/ai-assistance/types";
-import { backgroundTaskClient } from "../domains/background-task-client";
+import { authorizeArtifact,authorizeMedia,pickMedia } from "../domains/desktop-platform-client";
 import { exportRuntimeClient } from "../domains/export-runtime-client";
 import { projectSessionClient } from "../domains/project-session-client";
-import { transcriptEditingClient } from "../domains/transcript-editing-client";
-import { translationClient } from "../domains/translation-client";
-import { localResourceClient } from "../domains/local-resource-client";
-import { useBackgroundTaskRegistry } from "../hooks/use-background-task-registry";
+import { isValidAgentIdentity,useAiReviewSession } from "../features/ai-assistance/use-ai-review-session";
+import { ACTIVE_AUTO_WORKFLOW_STATUSES,AUTO_WORKFLOW_DISMISSED_STORAGE_KEY,TERMINAL_AUTO_WORKFLOW_STATUSES } from "../features/background-tasks/auto-workflow-snapshots";
+import { resourceMaintenance } from "../features/background-tasks/resource-maintenance";
+import { localResourceError } from "../features/background-tasks/resource-messages";
+import { useAudioAnalysisSession } from "../features/background-tasks/use-audio-analysis-session";
+import { useAutoWorkflowSession } from "../features/background-tasks/use-auto-workflow-session";
+import { useBackgroundSession } from "../features/background-tasks/use-background-session";
+import { useResourceCompletion } from "../features/background-tasks/use-resource-completion";
+import { useResourceSession } from "../features/background-tasks/use-resource-session";
+import { useRuntimeSession } from "../features/background-tasks/use-runtime-session";
+import { useSourceImportSession } from "../features/background-tasks/use-source-import-session";
+import { useSpeakerSession } from "../features/background-tasks/use-speaker-session";
+import { useTranscriptionReviewSession } from "../features/background-tasks/use-transcription-review-session";
+import { useTranscriptionStartSession } from "../features/background-tasks/use-transcription-start-session";
+import { EditingStatus } from "../features/editing/EditingStatus";
+import { createTranscriptCommands } from "../features/editing/transcript-commands";
+import { useEditingSession } from "../features/editing/use-editing-session";
+import { useStructureEditing } from "../features/editing/use-structure-editing";
+import { useSubtitleImportSession } from "../features/editing/use-subtitle-import-session";
+import { VirtualTranscript } from "../features/editing/virtual-transcript";
+import { createPresentationCommands } from "../features/export/presentation-commands";
+import { useExportSession } from "../features/export/use-export-session";
+import { createMediaCommands } from "../features/playback/media-commands";
+import { resolveImportedProjectMedia,usePlaybackSession } from "../features/playback/use-playback-session";
+import { useProjectDeletion } from "../features/project-session/use-project-deletion";
+import { useProjectLifecycle } from "../features/project-session/use-project-lifecycle";
+import { useProjectReadModels } from "../features/project-session/use-project-read-models";
+import { useProjectSession } from "../features/project-session/use-project-session";
+import { useWorkbenchStartup } from "../features/project-session/use-workbench-startup";
+import { useAppUpdater } from "../hooks/use-app-updater";
 import { useWorkbenchFeedback } from "../hooks/use-workbench-feedback";
-import type { TimelineReviewMarker } from "./subtitle-timeline-panel";
-import type { WorkbenchActivity, WorkbenchActivityInputs } from "./workbench-activity";
-import type { WorkbenchActivityAction } from "./workbench-activity-center";
+import { changeUiLocale,getUiLocale,tr,type UiLocale } from "../i18n";
+import type { AudioRisk,AutoWorkflow,Project,Segment,SourceImportJob,SpeechEvidence,SpeechPause,SubtitleQualityIssue,TranscriptionLanguage } from "../types";
 import type { ReviewQueueItem } from "./review-queue";
 import { groupSubtitleQualityIssues } from "./subtitle-quality-groups";
+import type { TimelineReviewMarker } from "./subtitle-timeline-panel";
 import { useFocusReviewState } from "./use-focus-review-state";
+import { cycleWorkbenchFocus,useTranscriptNavigation } from "./use-transcript-navigation";
+import type { WorkbenchActivity,WorkbenchActivityInputs } from "./workbench-activity";
+import type { WorkbenchActivityAction } from "./workbench-activity-center";
+export { AudioQualityPanel,PatchReviewCard,SpeakerPackageManager,SpeakerTrackPanel,SpeechInsightsPanel } from "../components/workbench-panels";
+export { AUTO_WORKFLOW_DISMISSED_STORAGE_KEY,parseDismissedAutoWorkflowIds,upsertAutoWorkflowSnapshot } from "../features/background-tasks/auto-workflow-snapshots";
 
-const RESOURCE_SETUP_DEFERRED_KEY = "siaocut.localResourcesSetupDeferred.v1";
 
-function localCapabilityLabel(capability: LocalCapabilityId) {
-    return {
-        basic_media: tr("app.resources.capability.basic_media"),
-        url_import: tr("app.resources.capability.url_import"),
-        local_transcription: tr("app.resources.capability.local_transcription"),
-        speaker_identity: tr("app.resources.capability.speaker_identity"),
-    }[capability];
-}
-
-function localResourceError(error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    const code = message.split(":", 1)[0];
-    return ({
-        resource_setup_required: tr("app.resources.error.locationRequired"),
-        resource_root_unavailable: tr("app.resources.error.locationUnavailable"),
-        resource_root_not_writable: tr("app.resources.error.locationUnavailable"),
-        resource_root_low_space: tr("app.resources.error.lowSpace"),
-        resource_insufficient_space: tr("app.resources.error.lowSpace"),
-        resource_job_active: tr("app.resources.error.active"),
-        resource_move_target_not_empty: tr("app.resources.error.locationNotEmpty"),
-        resource_move_target_invalid: tr("app.resources.error.locationNested"),
-    } as Record<string, string>)[code] ?? tr("app.resources.error.generic");
-}
-
-export async function resolveCanvasMedia(
-    projectId: string,
-    authorizePreview: typeof authorizeArtifact = authorizeArtifact,
-    authorizeSource: typeof authorizeMedia = authorizeMedia,
-) {
-    let warning: string | null = null;
-    try {
-        const preview = await authorizePreview(projectId, "preview");
-        if (preview)
-            return { mediaUrl: preview, warning: null };
-    }
-    catch (cause) {
-        warning = cause instanceof Error ? cause.message : String(cause);
-    }
-    try {
-        return { mediaUrl: await authorizeSource(projectId), warning };
-    }
-    catch (cause) {
-        const sourceWarning = cause instanceof Error ? cause.message : String(cause);
-        return { mediaUrl: null, warning: warning ? `${warning}; ${sourceWarning}` : sourceWarning };
-    }
-}
-
-export async function resolveImportedProjectMedia(
-    projectId: string,
-    authorizeProjectArtifact: typeof authorizeArtifact = authorizeArtifact,
-    authorizeProjectSource: typeof authorizeMedia = authorizeMedia,
-) {
-    const [canvas, waveform] = await Promise.all([
-        resolveCanvasMedia(projectId, authorizeProjectArtifact, authorizeProjectSource),
-        authorizeProjectArtifact(projectId, "waveform")
-            .then((waveformUrl) => ({ waveformUrl, warning: null as string | null }))
-            .catch((cause) => ({
-                waveformUrl: null,
-                warning: cause instanceof Error ? cause.message : String(cause),
-            })),
-    ]);
-    return {
-        mediaUrl: canvas.mediaUrl,
-        waveformUrl: waveform.waveformUrl,
-        warning: [canvas.warning, waveform.warning].filter(Boolean).join("; ") || null,
-    };
-}
-
+export { resolveCanvasMedia,resolveImportedProjectMedia } from "../features/playback/use-playback-session";
 export function resolveCaptionKaraokeStyle(
     playing: boolean,
     progress: number,
@@ -135,14 +94,11 @@ export function resolveFocusCaptionText(
     return { primary: sourceText, secondary: "", missingTranslation: false };
 }
 
-export function resolvePlaybackDuration(mediaDuration: number, fallbackDuration: number | null | undefined) {
-    return Number.isFinite(mediaDuration) && mediaDuration > 0 ? mediaDuration : fallbackDuration ?? 0;
-}
+export { resolvePlaybackDuration } from "../features/playback/use-playback-session";
 
-const isValidAgentIdentity = (value: string) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value);
 const TranscriptionCandidateDialog = lazy(() => import("../components/transcription-candidate-dialog"));
 const ExportPanel = lazy(() => import("../components/export-panel"));
-const WorkbenchActivityCenter = lazy(() => import("./workbench-activity-center"));
+const WorkbenchTaskMenu = lazy(() => import("./workbench-task-menu"));
 const FocusReviewPanel = lazy(() => import("./focus-review-panel"));
 const FocusReviewToolbar = lazy(() => import("./focus-review-panel").then((module) => ({ default: module.FocusReviewToolbar })));
 const SubtitleTimelinePanel = lazy(() => import("./subtitle-timeline-panel").then((module) => ({ default: module.SubtitleTimelinePanel }))); const AutoWorkflowProfileSelector = lazy(() => import("./auto-workflow-profile-selector"));
@@ -156,48 +112,6 @@ const AiExecutionConfirm = lazy(() => import("../features/ai-assistance/AiExecut
 const AutoWorkflowAiTarget = lazy(() => import("../features/ai-assistance/AutoWorkflowAiTarget"));
 const SubtitleImportDialog = lazy(() => import("../components/subtitle-import-dialog"));
 const QuickRetranscriptionDialog = lazy(() => import("../components/quick-retranscription-dialog"));
-
-function upsertById<T extends { id: string }>(items: T[], next: T): T[] {
-    const index = items.findIndex((item) => item.id === next.id);
-    if (index < 0)
-        return [next, ...items];
-    return items.map((item) => item.id === next.id ? next : item);
-}
-
-export function upsertAutoWorkflowSnapshot(items: AutoWorkflow[], next: AutoWorkflow): AutoWorkflow[] {
-    const current = items.find((item) => item.id === next.id);
-    if (current && Date.parse(current.updatedAt) > Date.parse(next.updatedAt))
-        return items;
-    return upsertById(items, next);
-}
-
-function selectAutoWorkflowSnapshot(current: AutoWorkflow | null, next: AutoWorkflow): AutoWorkflow | null {
-    if (current?.id !== next.id)
-        return current;
-    return Date.parse(current.updatedAt) > Date.parse(next.updatedAt) ? current : { ...next };
-}
-
-export const AUTO_WORKFLOW_DISMISSED_STORAGE_KEY = "siaocut.dismissedAutoWorkflows.v1";
-const ACTIVE_AUTO_WORKFLOW_STATUSES = new Set(["queued", "running", "needs_agent", "needs_review"]);
-const ACTIONABLE_AUTO_WORKFLOW_STATUSES = new Set([...ACTIVE_AUTO_WORKFLOW_STATUSES, "failed", "interrupted"]);
-const TERMINAL_AUTO_WORKFLOW_STATUSES = new Set(["completed", "cancelled", "failed", "interrupted"]);
-
-export function parseDismissedAutoWorkflowIds(value: string | null): string[] {
-    if (!value)
-        return [];
-    try {
-        const parsed: unknown = JSON.parse(value);
-        if (!Array.isArray(parsed))
-            return [];
-        return Array.from(new Set(parsed
-            .filter((item): item is string => typeof item === "string")
-            .map((item) => item.trim())
-            .filter(Boolean)));
-    }
-    catch {
-        return [];
-    }
-}
 
 function WorkbenchController() {
     const [uiLocale, setUiLocale] = useState<UiLocale>(() => getUiLocale());
@@ -215,89 +129,37 @@ function WorkbenchController() {
         localStorage.setItem("siaocut.transcriptionMode", mode);
         setTranscriptionMode(mode);
     };
-    const [projects, setProjects] = useState<Project[]>([]);
-    const [project, setProject] = useState<Project | null>(null);
+    const { projects,setProjects,project,projectRef,setProject,activeProjectIdRef,beginProjectLoad,isCurrentProjectLoad,invalidateProjectLoads,updateProjectSummary,acknowledgeEdit,nextProjectOffset,replaceProjectPage,projectPageLoading,loadMoreProjects } = useProjectSession();
+    const { mediaUrl,setMediaUrl,waveformUrl,setWaveformUrl,cutPreview,setCutPreview,playback,setPlayback,videoRef,handleVideoTimeUpdate,handleVideoLoadedMetadata,seekTimeline,toggleTimelinePlayback } = usePlaybackSession(project);
     const [selectedId, setSelectedId] = useState<string | null>(null);
     const [selectedSegmentIds, setSelectedSegmentIds] = useState<string[]>([]);
     const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
-    const [mediaUrl, setMediaUrl] = useState<string | null>(null);
-    const [waveformUrl, setWaveformUrl] = useState<string | null>(null);
-    const [activeExport, setActiveExport] = useState<ExportJob | null>(null);
-    const [audioAnalysisJob, setAudioAnalysisJob] = useState<AudioAnalysisJob | null>(null);
-    const [speakerPackage, setSpeakerPackage] = useState<SpeakerPackageStatus | null>(null);
-    const [speakerTrack, setSpeakerTrack] = useState<SpeakerTrack | null>(null);
-    const [speakerJob, setSpeakerJob] = useState<SpeakerJob | null>(null);
-    const [speakerJobs, setSpeakerJobs] = useState<SpeakerJob[]>([]);
-    const [transcriptionMode, setTranscriptionMode] = useState<"quick" | "multispeaker">(() => localStorage.getItem("siaocut.transcriptionMode") === "multispeaker" ? "multispeaker" : "quick");
-    const [transcriptionConfig, setTranscriptionConfig] = useState<TranscriptionProviderConfig | null>(null);
-    const [transcriptionHealth, setTranscriptionHealth] = useState<TranscriptionProviderHealth | null>(null);
-    const [transcriptionJob, setTranscriptionJob] = useState<TranscriptionJob | null>(null);
-    const [showTranscriptionCandidate, setShowTranscriptionCandidate] = useState(false);
-    const [transcriptionApplyConfirmed, setTranscriptionApplyConfirmed] = useState(false);
-    const [transcriptionReviews, setTranscriptionReviews] = useState<TranscriptionReviewItem[]>([]);
-    const [transcriptionPrompt, setTranscriptionPrompt] = useState("");
-    const [transcriptionHotwords, setTranscriptionHotwords] = useState("");
     const { busy, notice, error, setBusy, setNotice, setError } = useWorkbenchFeedback(tr("app.s0038"));
-    const [runtime, setRuntime] = useState<RuntimeInfo | null>(null);
-    const [localResources, setLocalResources] = useState<LocalResourceStatus | null>(null);
-    const [resourcePlan, setResourcePlan] = useState<LocalResourcePlan | null>(null);
-    const [resourceJob, setResourceJob] = useState<LocalResourceJob | null>(null);
-    const [resourceCapability, setResourceCapability] = useState<LocalCapabilityId>("basic_media");
-    const [resourceProfile, setResourceProfile] = useState<LocalTranscriptionProfile>("standard");
-    const [resourceSetupReason, setResourceSetupReason] = useState<"first_run" | "on_demand" | "manage">("first_run");
-    const [resourceSelectedRoot, setResourceSelectedRoot] = useState("");
-    const [resourceBusy, setResourceBusy] = useState(false);
-    const [resourceError, setResourceError] = useState<string | null>(null);
-    const [showResourceSetup, setShowResourceSetup] = useState(false);
-    const [pendingResourceAction, setPendingResourceAction] = useState<"inspect_url" | "transcribe" | null>(null);
+    const { audioAnalysisJob,setAudioAnalysisJob,speakerJob,setSpeakerJob,speakerJobs,setSpeakerJobs,sourceJob,setSourceJob,modelJob,setModelJob,resourceJob,setResourceJob,autoWorkflow,setAutoWorkflow,autoWorkflows,setAutoWorkflows,transcriptionCommands,transcriptionTasks,transcriptionJob,setTranscriptionJob } = useBackgroundSession({projectId:project?.id,activeProjectIdRef,setError,setNotice,
+      onSourceCompleted:(job)=>onSourceJobCompleted(job),onWorkflowTransition:(job)=>onWorkflowTransition(job),
+      onModelsReady:(available,id)=>{setModels(available);const installed=available.find((model)=>model.id===id);if(installed){localStorage.setItem("siaocut.modelPath",installed.path);setModelPath(installed.path);setModelPathAvailable(installed.installed&&installed.verified===true);}},
+      onSpeakerPackageReady:(status)=>setSpeakerPackage(status),onSpeakerAnalysisReady:async(id)=>{await refreshProject(id);await refreshSpeakerTrack(id);},
+      onSourceError:(message)=>setSourceError(message),onResourceError:(error)=>setResourceError(localResourceError(error)),
+      onTranscriptionApplied:async(job)=>{if(activeProjectIdRef.current!==job.projectId)return;await refreshProject(job.projectId,true);if(activeProjectIdRef.current===job.projectId)setNotice(tr("app.moss.job.completed"));},
+    });
+    const editing = useEditingSession(project, acknowledgeEdit);
+    const { transcriptionMode, setTranscriptionMode, transcriptionConfig, setTranscriptionConfig, transcriptionHealth, setTranscriptionHealth, pendingCandidateJobId, setPendingCandidateJobId, showTranscriptionCandidate, setShowTranscriptionCandidate, transcriptionApplyConfirmed, setTranscriptionApplyConfirmed, transcriptionReviews, setTranscriptionReviews, transcriptionPrompt, setTranscriptionPrompt, transcriptionHotwords, setTranscriptionHotwords, refreshTranscription, saveTranscriptionProvider, checkTranscriptionProvider, cancelTranscription, resumeTranscription, applyTranscriptionCandidate, discardTranscriptionCandidate, resolveTranscriptionReview } = useTranscriptionReviewSession({project, editing: editing.session, transcriptionJob, setTranscriptionJob, transcriptionCommands, activeProjectIdRef, isCurrentProjectLoad, refreshProject: (id) => refreshProject(id), refreshSpeakerTrack: (id) => refreshSpeakerTrack(id), withBusy: (label, action) => withBusy(label, action), setNotice});
+    const { speakerPackage, setSpeakerPackage, speakerTrack, setSpeakerTrack, refreshSpeakerTrack, installSpeakerPackage, startSpeakerAnalysis, cancelSpeakerJob, resumeSpeakerJob, renameSpeaker, mergeSpeaker, assignSpeaker } = useSpeakerSession({project, editing: editing.session, speakerJob, setSpeakerJob, setSpeakerJobs, activeProjectIdRef, isCurrentProjectLoad, refreshProject: (id) => refreshProject(id), withBusy: (label, action) => withBusy(label, action), setNotice});
+    const { runtime, setRuntime, models, setModels, modelPath, setModelPath, modelPathAvailable, setModelPathAvailable, changeAsrBackend, openDiagnostics, chooseModel, installModel, cancelModel, removeModel } = useRuntimeSession({modelJob, setModelJob, setNotice, withBusy: (label, action) => withBusy(label, action)});
+    const { refreshLatestAudioAnalysis, startAudioAnalysis, cancelAudioAnalysis, resumeAudioAnalysis } = useAudioAnalysisSession({project, mediaUrl, runtime, audioAnalysisJob, setAudioAnalysisJob, activeProjectIdRef, isCurrentProjectLoad, setNotice, withBusy: (label, action) => withBusy(label, action)});
+    const { localResources, setLocalResources, resourcePlan, setResourcePlan, resourceCapability, setResourceCapability, resourceProfile, setResourceProfile, resourceSetupReason, setResourceSetupReason, resourceSelectedRoot, setResourceSelectedRoot, resourceBusy, setResourceBusy, resourceError, setResourceError, showResourceSetup, setShowResourceSetup, pendingResourceAction, setPendingResourceAction, handledResourceJobRef, openResourcePreparation, changeResourceProfile, chooseResourceLocation, confirmResourceLocation, startResourcePreparation, cancelResourcePreparation, resumeResourcePreparation, closeResourcePreparation } = useResourceSession({getJob: () => resourceJob, setJob: (job) => setResourceJob(job), setRuntime, setShowRuntime: (show) => setShowRuntime(show), setShowSourceImport: (show) => setShowSourceImport(show), setNotice});
+    const {removeResourceCapability, cleanupLocalResources, rollbackResourceCapability} = resourceMaintenance({setResourceBusy, setLocalResources, setRuntime, setNotice, setError});
     const [resumeSourceInspection, setResumeSourceInspection] = useState(false);
-    const [resumeLocalTranscription, setResumeLocalTranscription] = useState(false);
-    const handledResourceJobRef = useRef<string | null>(null);
     const { updatePolicy, setUpdatePolicy, availableUpdate, updateBusy, updateError, checkUpdates, confirmUpdateInstall } = useAppUpdater(setNotice);
-    const [models, setModels] = useState<ModelStatus[]>([]);
-    const [modelJob, setModelJob] = useState<ModelDownloadJob | null>(null);
-    const [sourcePreview, setSourcePreview] = useState<SourcePreview | null>(null);
-    const [sourceJob, setSourceJob] = useState<SourceImportJob | null>(null);
-    const [sourceUrl, setSourceUrl] = useState("");
-    const [sourceAuthorized, setSourceAuthorized] = useState(false);
-    const [sourceBusy, setSourceBusy] = useState<string | null>(null);
-    const [sourceError, setSourceError] = useState<string | null>(null);
-    const [showSourceImport, setShowSourceImport] = useState(false);
-    const [autoWorkflow, setAutoWorkflow] = useState<AutoWorkflow | null>(null);
-    const [autoWorkflows, setAutoWorkflows] = useState<AutoWorkflow[]>([]);
-    const [showAutoWorkflow, setShowAutoWorkflow] = useState(false);
-    const [trackedAutoWorkflowIds, setTrackedAutoWorkflowIds] = useState<string[]>([]);
-    const [dismissedAutoWorkflowIds, setDismissedAutoWorkflowIds] = useState<string[]>(() => parseDismissedAutoWorkflowIds(localStorage.getItem(AUTO_WORKFLOW_DISMISSED_STORAGE_KEY)));
-    const [autoInputKind, setAutoInputKind] = useState<"local" | "url">("local");
-    const [autoMediaPath, setAutoMediaPath] = useState("");
-    const [autoUrl, setAutoUrl] = useState("");
-    const [autoSourcePreview, setAutoSourcePreview] = useState<SourcePreview | null>(null);
-    const [autoAuthorized, setAutoAuthorized] = useState(false);
-    const [autoTranslate, setAutoTranslate] = useState(false); const [autoProfile, setAutoProfile] = useState<WorkflowProfile>("balanced");
-    const [autoAiSelection, setAutoAiSelection] = useState<AiExecutionSelection | null>(null);
-    const [autoTranslationLanguage, setAutoTranslationLanguage] = useState("en");
+    const { sourcePreview, setSourcePreview, sourceUrl, setSourceUrl, sourceAuthorized, setSourceAuthorized, sourceAuthMode, setSourceAuthMode, sourceBrowser, setSourceBrowser, sourceBrowserAuthorized, setSourceBrowserAuthorized, sourceBusy, setSourceBusy, sourceError, setSourceError, showSourceImport, setShowSourceImport, sourceJobOriginProjectIdsRef, inspectSource, startSourceImport, cancelSourceImport, resumeSourceImport, resetSourceImport } = useSourceImportSession({localResources, runtime, activeProjectIdRef, getJob: () => sourceJob, setJob: (job) => setSourceJob(job), setNotice, prepareResources: async () => {setPendingResourceAction("inspect_url"); await openResourcePreparation("url_import", "on_demand");}});
     const [transcriptionLanguage, setTranscriptionLanguage] = useState<TranscriptionLanguage>(() => parseTranscriptionLanguage(localStorage.getItem(TRANSCRIPTION_LANGUAGE_STORAGE_KEY)));
-    const [agentWorkflowKind, setAgentWorkflowKind] = useState<"polish" | "proofread" | "edit" | "translate" | "punctuate" | "speaker_names">("polish");
-    const [codexHealth, setCodexHealth] = useState<CodexHealth | null>(null);
-    const [agentRun, setAgentRun] = useState<AgentRun | null>(null);
-    const [showAgentHandoff, setShowAgentHandoff] = useState(false);
-    const [showAiExecutionConfirm, setShowAiExecutionConfirm] = useState(false);
-    const [agentHandoffTaskId, setAgentHandoffTaskId] = useState<string | null>(null);
-    const [agentIdentity, setAgentIdentity] = useState("external-agent");
-    const [agentHandoffReady, setAgentHandoffReady] = useState(false);
-    const [agentHandoffCopied, setAgentHandoffCopied] = useState(false);
-    const [taskActions, setTaskActions] = useState<Record<string, "retry" | "cancel">>({});
-    const [autoBurnSubtitles, setAutoBurnSubtitles] = useState(true);
-    const [autoSubtitleMode, setAutoSubtitleMode] = useState<"source" | "translated" | "bilingual">("source");
-    const [autoBusy, setAutoBusy] = useState<string | null>(null);
-    const [autoError, setAutoError] = useState<string | null>(null);
-    const [autoWorkflowErrors, setAutoWorkflowErrors] = useState<Record<string, string>>({});
-    const [modelPath, setModelPath] = useState<string | null>(() => localStorage.getItem("siaocut.modelPath"));
-    const [modelPathAvailable, setModelPathAvailable] = useState(false);
+    const { showAutoWorkflow, setShowAutoWorkflow, trackedAutoWorkflowIds, setTrackedAutoWorkflowIds, dismissedAutoWorkflowIds, setDismissedAutoWorkflowIds, autoInputKind, setAutoInputKind, autoMediaPath, setAutoMediaPath, autoUrl, setAutoUrl, autoSourcePreview, setAutoSourcePreview, autoAuthorized, setAutoAuthorized, autoTranslate, setAutoTranslate, autoProfile, setAutoProfile, autoAiSelection, setAutoAiSelection, autoTranslationLanguage, setAutoTranslationLanguage, autoBurnSubtitles, setAutoBurnSubtitles, autoSubtitleMode, setAutoSubtitleMode, autoBusy, setAutoBusy, autoError, setAutoError, autoWorkflowErrors, setAutoWorkflowErrors, autoWorkflowOriginProjectIdsRef, chooseAutoMedia, inspectAutoSource, showAutoWorkflowStatus, dismissAutoWorkflowStatus, startAutoWorkflow, cancelAutoWorkflow, continueAutoWorkflow, openAutoProject } = useAutoWorkflowSession({runtime, modelPath, modelPathAvailable, setModelPathAvailable, transcriptionLanguage, uiLocale, activeProjectIdRef, getWorkflow: () => autoWorkflow, setWorkflow: setAutoWorkflow, setWorkflows: setAutoWorkflows, openProject: async (id) => {await activateProject(id);}, setNotice});
     const [showRuntime, setShowRuntime] = useState(false);
     const [showExportPanel, setShowExportPanel] = useState(false);
     const [drawerTab, setDrawerTab] = useState<"review" | "quality" | "analysis" | "history" | "export">("review");
-    const [playerExpanded, setPlayerExpanded] = useState(true);
+    const readModels = useProjectReadModels(project,drawerTab,setProject,setError);
+    const [playerExpanded, setPlayerExpanded] = useState(false);
+    const [navigationCollapsed, setNavigationCollapsed] = useState(false);
     const [reviewFocusDetailId, setReviewFocusDetailId] = useState<string | null>(null);
     const [showSubtitleSafeArea, setShowSubtitleSafeArea] = useState(true);
     const [showMoreMenu, setShowMoreMenu] = useState(false);
@@ -305,78 +167,48 @@ function WorkbenchController() {
     const [replacement, setReplacement] = useState("");
     const [emptyReplacementConfirmed, setEmptyReplacementConfirmed] = useState(false);
     const [qualityFilter, setQualityFilter] = useState<"all" | "warning" | "error">("all");
-    const [showSubtitleImport, setShowSubtitleImport] = useState(false);
-    const [subtitleImportPath, setSubtitleImportPath] = useState("");
-    const [subtitleImportPreview, setSubtitleImportPreview] = useState<SubtitleImportPreview | null>(null);
-    const [subtitleImportBusy, setSubtitleImportBusy] = useState<string | null>(null);
-    const [subtitleImportError, setSubtitleImportError] = useState<string | null>(null);
-    const [subtitleReplaceConfirmed, setSubtitleReplaceConfirmed] = useState(false);
-    const [showQuickRetranscription, setShowQuickRetranscription] = useState(false);
-    const [quickRetranscriptionPreflight, setQuickRetranscriptionPreflight] = useState<TranscriptReplacementPreflight | null>(null);
-    const [quickRetranscriptionChecking, setQuickRetranscriptionChecking] = useState(false);
-    const [quickRetranscriptionConfirmed, setQuickRetranscriptionConfirmed] = useState(false);
-    const [quickRetranscriptionError, setQuickRetranscriptionError] = useState<string | null>(null);
-    const [structureEditMode, setStructureEditMode] = useState<StructureEditMode | null>(null);
-    const [structureStart, setStructureStart] = useState("");
-    const [structureEnd, setStructureEnd] = useState("");
-    const [structureTextOffset, setStructureTextOffset] = useState("");
-    const [structureDelta, setStructureDelta] = useState("0.100");
-    const [structureBusy, setStructureBusy] = useState(false);
-    const [structureError, setStructureError] = useState<string | null>(null);
-    const [exportFormat, setExportFormat] = useState<"srt" | "vtt" | "ass" | "markdown" | "json">(() => parseExportPreferences(localStorage.getItem("siaocut.exportPreferences.v1")).transcriptFormat);
-    const [includeSpeakerLabels, setIncludeSpeakerLabels] = useState(true);
-    const [confirmTranscriptionWarnings, setConfirmTranscriptionWarnings] = useState(false);
-    const [confirmStaleTranslation, setConfirmStaleTranslation] = useState(false);
-    const [confirmUncutExport, setConfirmUncutExport] = useState(false);
-    const [subtitleDelivery, setSubtitleDelivery] = useState<ExportPreferencesV1["subtitleDelivery"]>(() => parseExportPreferences(localStorage.getItem("siaocut.exportPreferences.v1")).subtitleDelivery);
-    const [glossaryDraft, setGlossaryDraft] = useState("");
-    const [subtitleMode, setSubtitleMode] = useState<"source" | "translated" | "bilingual">(() => parseExportPreferences(localStorage.getItem("siaocut.exportPreferences.v1")).subtitleMode);
-    const [subtitleLanguage, setSubtitleLanguage] = useState(() => parseExportPreferences(localStorage.getItem("siaocut.exportPreferences.v1")).subtitleLanguage);
+    const { showSubtitleImport, setShowSubtitleImport, subtitleImportPath, setSubtitleImportPath, subtitleImportPreview, setSubtitleImportPreview, subtitleImportBusy, setSubtitleImportBusy, subtitleImportError, setSubtitleImportError, subtitleReplaceConfirmed, setSubtitleReplaceConfirmed, openSubtitleImport, inspectSubtitleFile, confirmSubtitleImport } = useSubtitleImportSession({project, editing: editing.session, setNotice, onApplied: async (next) => {
+        setProject(next); updateProjectSummary(next); setSelectedId(next.transcript.segments[0]?.id ?? null);
+        setWordRange(null); setCutPreview(null); setQualityFilter("all");
+        await Promise.all([refreshSpeakerTrack(next.id), refreshTranscription(next.id)]);
+    }});
+    const { activeExport,setActiveExport,exportFormat,setExportFormat,includeSpeakerLabels,setIncludeSpeakerLabels,confirmTranscriptionWarnings,setConfirmTranscriptionWarnings,confirmStaleTranslation,setConfirmStaleTranslation,confirmUncutExport,setConfirmUncutExport,subtitleDelivery,setSubtitleDelivery,subtitleMode,setSubtitleMode,subtitleLanguage,setSubtitleLanguage,translationLanguages,translationLanguageOptions,selectedSubtitleLanguage,selectedTranslation,translation,selectedTranslationPending,selectedTranslationStale,transcriptionExportErrors,transcriptionExportWarnings,structuredExport,transcriptionExportBlocked,exportTranscript,exportVideo,cancelExport,retryExport } = useExportSession({getVersion: (id) => projectRef.current?.id === id ? projectRef.current.history.currentVersionId ?? null : null,project,speakerTrack,transcriptionReviews,mediaUrl,setNotice,setError,activeProjectIdRef,withBusy:(label,action) => withBusy(label,action),flush:() => editing.session.flush(project?.id)});
+    const { agentWorkflowKind,setAgentWorkflowKind,codexHealth,setCodexHealth,agentRun,setAgentRun,showAgentHandoff,setShowAgentHandoff,showAiExecutionConfirm,setShowAiExecutionConfirm,aiApprovalTaskId,setAiApprovalTaskId,agentHandoffTaskId,setAgentHandoffTaskId,agentIdentity,setAgentIdentity,agentHandoffReady,setAgentHandoffReady,agentHandoffCopied,setAgentHandoffCopied,taskActions,setTaskActions,glossaryDraft,setGlossaryDraft,agentButtonRef,agentHandoffReturnFocusRef,taskActionIdsRef,openAgentHandoff,openExistingAgentHandoff,saveGlossary,createAgentTask,startAiAssistance,cancelCodexAgent,resumeCodexAgent,handoffTask,lockedHandoffIdentity,handoffIdentity,handoffIdentityLocked,handoffText,aiConfirmationSegments,aiConfirmationCharacters,aiConfirmationLabel,aiConfirmationContext,copyAgentHandoff,updateTask,reviewPatch,reviewAll } = useAiReviewSession({project,mediaUrl,subtitleLanguage,uiLocale,editing:editing.session,setProject,updateProjectSummary,setConfirmStaleTranslation,setNotice,setError,activeProjectIdRef,invalidateProjectLoads,onReview:() => setDrawerTab("review"),refreshProject:(id) => refreshProject(id),withBusy:(label,action) => withBusy(label,action)});
     const [wordRange, setWordRange] = useState<{
         segmentId: string;
         start: number;
         end: number;
     } | null>(null);
     const [cutPadding, setCutPadding] = useState<30 | 100 | 200>(100);
-    const [cutPreview, setCutPreview] = useState<CutPreview | null>(null);
-    const [playback, setPlayback] = useState({ playing: false, currentTime: 0, duration: 0 });
-    const [deleteCandidate, setDeleteCandidate] = useState<Project | null>(null);
-    const [deleteBusy, setDeleteBusy] = useState(false);
-    const [deleteError, setDeleteError] = useState<string | null>(null);
-    const [deletionPreflight, setDeletionPreflight] = useState<ProjectDeletionPreflight | null>(null);
-    const [deletePreflightBusy, setDeletePreflightBusy] = useState(false);
-    const videoRef = useRef<HTMLVideoElement>(null);
+    const transcriptNavigation = useTranscriptNavigation(project, playback.currentTime, playback.playing);
+    const { currentDeleteCandidate, deleteBusy, deleteError, deletionPreflight, deletePreflightBusy, deleteBlockMessage, openDeleteDialog, closeDeleteDialog, deleteProject } = useProjectDeletion({
+        projects, onDeleted: async (deleting) => {
+            const remaining = projects.filter((item) => item.id !== deleting.id);
+            setProjects(remaining);
+            if (projectRef.current?.id === deleting.id) {
+                activeProjectIdRef.current = remaining[0]?.id ?? null;
+                resetProjectScopedState();
+                if (remaining[0]) await refreshProject(remaining[0].id, true);
+            }
+            setNotice(tr("app.s0082", { "0": deleting.title }));
+        },
+    });
     const runtimeButtonRef = useRef<HTMLButtonElement>(null);
     const sourceButtonRef = useRef<HTMLButtonElement>(null);
     const autoButtonRef = useRef<HTMLButtonElement>(null);
-    const agentButtonRef = useRef<HTMLButtonElement>(null);
-    const agentHandoffReturnFocusRef = useRef<HTMLElement>(null);
     const exportButtonRef = useRef<HTMLButtonElement>(null);
     const exportPanelRef = useRef<HTMLElement>(null);
     const commandMoreRef = useRef<HTMLDivElement>(null);
     const searchInputRef = useRef<HTMLInputElement>(null);
     const replacementInputRef = useRef<HTMLInputElement>(null);
     const subtitleImportButtonRef = useRef<HTMLButtonElement>(null);
-    const activeProjectIdRef = useRef<string | null>(null);
-    const projectLoadSequenceRef = useRef(new Map<string, number>());
-    const autoWorkflowOriginProjectIdsRef = useRef(new Map<string, string | null>());
-    const sourceJobOriginProjectIdsRef = useRef(new Map<string, string | null>());
-    const taskActionIdsRef = useRef(new Set<string>());
     const busyRef = useRef(false);
+    const { showQuickRetranscription, quickRetranscriptionPreflight, quickRetranscriptionChecking, quickRetranscriptionConfirmed, setQuickRetranscriptionConfirmed, quickRetranscriptionError, resumeLocalTranscription, setResumeLocalTranscription, transcribe, openQuickRetranscription, closeQuickRetranscription, confirmQuickRetranscription } = useTranscriptionStartSession({project, projectRef, mediaUrl, runtime, modelPath, modelPathAvailable, setModelPathAvailable, transcriptionMode, transcriptionHealth, transcriptionLanguage, transcriptionPrompt, transcriptionHotwords, transcriptionCommands, setTranscriptionJob, localResources, setPendingResourceAction, openResourcePreparation, busyRef, setBusy, setError, setNotice, editing: editing.session, withBusy: (label, action) => withBusy(label, action), refreshProject: (id, media) => refreshProject(id, media), refreshSpeakerTrack: (id) => refreshSpeakerTrack(id), refreshTranscription: (id) => refreshTranscription(id)});
     const { focusReview, enterFocusReview, exitFocusReview, resetFocusReview } = useFocusReviewState({
         projectAvailable: Boolean(project), mediaAvailable: Boolean(mediaUrl), mediaMissingMessage: tr("app.focusReview.mediaMissing"),
         drawerTab, selectedId, selectedSegmentIds, playerExpanded, setDrawerTab, setSelectedId, setSelectedSegmentIds,
         setSelectionAnchorId, setPlayerExpanded, setShowExportPanel, setError,
     });
-    const beginProjectLoad = useCallback((projectId: string) => {
-        const sequence = (projectLoadSequenceRef.current.get(projectId) ?? 0) + 1;
-        projectLoadSequenceRef.current.set(projectId, sequence);
-        return sequence;
-    }, []);
-    const isCurrentProjectLoad = useCallback((projectId: string, sequence: number) => projectLoadSequenceRef.current.get(projectId) === sequence, []);
-    const invalidateProjectLoads = useCallback((projectId: string) => {
-        beginProjectLoad(projectId);
-    }, [beginProjectLoad]);
     const resetProjectScopedState = useCallback((next: Project | null = null) => {
         videoRef.current?.pause();
         setPlayback({ playing: false, currentTime: 0, duration: next?.media.durationSeconds ?? 0 });
@@ -403,221 +235,46 @@ function WorkbenchController() {
         if (activeProjectIdRef.current === projectId && (loadSequence === undefined || isCurrentProjectLoad(projectId, loadSequence)))
             setActiveExport(envelope.jobs?.[0] ?? null);
     }, [isCurrentProjectLoad]);
-    const refreshLatestAudioAnalysis = useCallback(async (projectId: string, loadSequence?: number) => {
-        const envelope = await backgroundTaskClient.latestAudioAnalysis(projectId);
-        if (activeProjectIdRef.current === projectId && (loadSequence === undefined || isCurrentProjectLoad(projectId, loadSequence)))
-            setAudioAnalysisJob(envelope.audioAnalysisJob ?? null);
-    }, [isCurrentProjectLoad]);
-    const refreshSpeakerTrack = useCallback(async (projectId: string, loadSequence?: number) => {
-        const envelope = await transcriptEditingClient.getSpeakerTrack(projectId);
-        if (activeProjectIdRef.current === projectId && (loadSequence === undefined || isCurrentProjectLoad(projectId, loadSequence)))
-            setSpeakerTrack(envelope.speakerTrack ?? null);
-    }, [isCurrentProjectLoad]);
-    const refreshTranscription = useCallback(async (projectId: string, loadSequence?: number) => {
-        const [latest, reviews] = await Promise.all([
-            backgroundTaskClient.latestTranscription(projectId),
-            backgroundTaskClient.listTranscriptionReviews(projectId),
-        ]);
-        if (activeProjectIdRef.current === projectId && (loadSequence === undefined || isCurrentProjectLoad(projectId, loadSequence))) {
-            setTranscriptionJob(latest.transcriptionJob ?? null);
-            setTranscriptionReviews(reviews.reviewItems ?? []);
-        }
-    }, [isCurrentProjectLoad]);
-    const refreshProject = useCallback(async (projectId: string, refreshMedia = false) => {
-        const loadSequence = beginProjectLoad(projectId);
-        const next = await projectSessionClient.loadProject(projectId);
-        const [nextMediaUrl, nextWaveformUrl] = refreshMedia
-            ? await Promise.all([
-                authorizeArtifact(next.id, "preview").then((preview) => preview ?? authorizeMedia(next.id)),
-                authorizeArtifact(next.id, "waveform"),
-            ])
-            : [null, null];
-        if (!isCurrentProjectLoad(projectId, loadSequence))
-            return next;
-        setProjects((current) => upsertById(current, next));
-        if (activeProjectIdRef.current !== projectId)
-            return next;
-        if (refreshMedia) {
-            videoRef.current?.pause();
-            setPlayback({ playing: false, currentTime: 0, duration: next.media.durationSeconds ?? 0 });
-            setMediaUrl(nextMediaUrl);
-            setWaveformUrl(nextWaveformUrl);
-            setActiveExport(null);
-            setWordRange(null);
-            setCutPreview(null);
-        }
-        setProject(next);
-        setSelectedId((current) => next.transcript.segments.some((segment) => segment.id === current) ? current : next.transcript.segments[0]?.id ?? null);
-        const [, , , , runs] = await Promise.all([
-            refreshLatestExport(next.id, loadSequence),
-            refreshLatestAudioAnalysis(next.id, loadSequence),
-            refreshSpeakerTrack(next.id, loadSequence),
-            refreshTranscription(next.id, loadSequence),
-            agentReviewClient.listAgentRuns(next.id).catch(() => null),
-        ]);
-        if (activeProjectIdRef.current === projectId && isCurrentProjectLoad(projectId, loadSequence))
-            setAgentRun(runs?.agentRuns?.[0] ?? null);
-        return next;
-    }, [beginProjectLoad, isCurrentProjectLoad, refreshLatestAudioAnalysis, refreshLatestExport, refreshSpeakerTrack, refreshTranscription]);
-    const initialize = useCallback(async () => {
-        setBusy(tr("app.s0039"));
-        setError(null);
-        const [projectsResult, runtimeResult, modelsResult, modelJobsResult, sourceJobsResult, autoWorkflowsResult, updatePolicyResult, speakerPackageResult, speakerJobsResult, transcriptionHealthResult, codexHealthResult, localResourcesResult, resourceJobsResult, recommendedPlanResult] = await Promise.allSettled([
-            projectSessionClient.listProjects(),
-            runtimeInfo(),
-            backgroundTaskClient.listModels(true),
-            backgroundTaskClient.listModelJobs(),
-            backgroundTaskClient.listSourceJobs(),
-            backgroundTaskClient.listAutoWorkflows(),
-            updaterPolicy(),
-            backgroundTaskClient.getSpeakerPackage(),
-            backgroundTaskClient.listSpeakerJobs(),
-            backgroundTaskClient.getTranscriptionHealth(),
-            agentReviewClient.getCodexHealth(),
-            localResourceClient.status(),
-            localResourceClient.listJobs(),
-            localResourceClient.plan("basic_media"),
-        ]);
-        const errors: string[] = [];
-        let activeAutoWorkflow: AutoWorkflow | null = null;
-        const autoWorkflowSourceIds = new Set<string>();
-        if (updatePolicyResult.status === "fulfilled")
-            setUpdatePolicy(updatePolicyResult.value);
-        if (autoWorkflowsResult.status === "fulfilled") {
-            const workflows = autoWorkflowsResult.value.workflows ?? [];
-            activeAutoWorkflow = workflows.find((item) => ["queued", "running", "needs_agent", "needs_review", "failed", "interrupted"].includes(item.status)) ?? null;
-            workflows.forEach((workflow) => {
-                if (workflow.sourceImportId)
-                    autoWorkflowSourceIds.add(workflow.sourceImportId);
-            });
-            setAutoWorkflows(workflows);
-            setAutoWorkflow(activeAutoWorkflow);
-            setTrackedAutoWorkflowIds((current) => Array.from(new Set([
-                ...current,
-                ...workflows.filter((workflow) => ACTIONABLE_AUTO_WORKFLOW_STATUSES.has(workflow.status)).map((workflow) => workflow.id),
-            ])));
-        }
-        else {
-            errors.push(tr("app.s0040", { "0": autoWorkflowsResult.reason instanceof Error ? autoWorkflowsResult.reason.message : String(autoWorkflowsResult.reason) }));
-        }
-        let managedModelPath: string | null = null;
-        if (modelsResult.status === "fulfilled") {
-            const available = modelsResult.value.models ?? [];
-            setModels(available);
-            managedModelPath = available.find((item) => item.installed && item.verified === true && item.recommended)?.path
-                ?? available.find((item) => item.installed && item.verified === true)?.path
-                ?? null;
-        }
-        else {
-            errors.push(tr("app.s0041", { "0": modelsResult.reason instanceof Error ? modelsResult.reason.message : String(modelsResult.reason) }));
-        }
-        if (modelJobsResult.status === "fulfilled") {
-            setModelJob(modelJobsResult.value.modelJobs?.find((item) => ["queued", "running"].includes(item.status)) ?? null);
-        }
-        if (speakerPackageResult.status === "fulfilled") {
-            setSpeakerPackage(speakerPackageResult.value.speakerPackage ?? null);
-        }
-        else {
-            errors.push(tr("app.s0042", { "0": speakerPackageResult.reason instanceof Error ? speakerPackageResult.reason.message : String(speakerPackageResult.reason) }));
-        }
-        if (speakerJobsResult.status === "fulfilled") {
-            const jobs = speakerJobsResult.value.speakerJobs ?? [];
-            setSpeakerJobs(jobs);
-            setSpeakerJob(jobs.find((item) => ["queued", "running"].includes(item.status)) ?? jobs[0] ?? null);
-        }
-        if (transcriptionHealthResult.status === "fulfilled" && transcriptionHealthResult.value.providerHealth) {
-            const next = transcriptionHealthResult.value.providerHealth;
-            setTranscriptionHealth(next);
-            setTranscriptionConfig({ providerId: next.providerId, endpoint: next.endpoint, modelId: next.modelId, updatedAt: next.checkedAt });
-        }
-        setCodexHealth(codexHealthResult.status === "fulfilled" ? codexHealthResult.value.codex ?? null : null);
-        if (localResourcesResult.status === "fulfilled" && localResourcesResult.value.localResources) {
-            const next = localResourcesResult.value.localResources;
-            setLocalResources(next);
-            setResourceProfile(next.transcriptionProfile);
-            if (!next.configured && localStorage.getItem(RESOURCE_SETUP_DEFERRED_KEY) !== "1") {
-                setResourceCapability("basic_media");
-                setResourceSetupReason("first_run");
-                setResourcePlan(recommendedPlanResult.status === "fulfilled" ? recommendedPlanResult.value.resourcePlan ?? null : null);
-                setShowResourceSetup(true);
-            }
-        }
-        else {
-            errors.push(tr("app.resources.error.generic"));
-        }
-        if (resourceJobsResult.status === "fulfilled") {
-            const jobs = resourceJobsResult.value.resourceJobs ?? [];
-            setResourceJob(jobs.find((item) => ["queued", "running"].includes(item.status)) ?? null);
-        }
-        if (sourceJobsResult.status === "fulfilled") {
-            const jobs = (sourceJobsResult.value.sourceJobs ?? []).filter((item) => !autoWorkflowSourceIds.has(item.id));
-            setSourceJob(jobs.find((item) => ["queued", "running", "finalizing"].includes(item.status)) ?? jobs[0] ?? null);
-        }
-        else {
-            errors.push(tr("app.s0043", { "0": sourceJobsResult.reason instanceof Error ? sourceJobsResult.reason.message : String(sourceJobsResult.reason) }));
-        }
-        if (runtimeResult.status === "fulfilled") {
-            setRuntime(runtimeResult.value);
-            const stored = localStorage.getItem("siaocut.modelPath");
-            const candidates = Array.from(new Set([
-                stored,
-                managedModelPath,
-                runtimeResult.value.defaultModelAvailable ? runtimeResult.value.defaultModelPath : null,
-            ].filter((value): value is string => Boolean(value))));
-            let nextModelPath: string | null = null;
-            for (const candidate of candidates) {
-                const managedCandidate = modelsResult.status === "fulfilled"
-                    ? (modelsResult.value.models ?? []).find((model) => model.path === candidate)
-                    : undefined;
-                const available = managedCandidate
-                    ? managedCandidate.installed && managedCandidate.verified === true
-                    : await localFileAvailable(candidate);
-                if (available) {
-                    nextModelPath = candidate;
-                    break;
-                }
-            }
-            setModelPath(nextModelPath);
-            setModelPathAvailable(Boolean(nextModelPath));
-            if (nextModelPath)
-                localStorage.setItem("siaocut.modelPath", nextModelPath);
-            else
-                localStorage.removeItem("siaocut.modelPath");
-        }
-        else {
-            errors.push(tr("app.s0044", { "0": runtimeResult.reason instanceof Error ? runtimeResult.reason.message : String(runtimeResult.reason) }));
-        }
-        if (projectsResult.status === "fulfilled") {
-            setProjects(projectsResult.value);
-            const first = projectsResult.value[0] ?? null;
-            activeProjectIdRef.current = first?.id ?? null;
-            resetProjectScopedState(first);
-            const firstSegmentId = first?.transcript.segments[0]?.id ?? null;
-            setSelectedId(firstSegmentId);
-            setSelectedSegmentIds(firstSegmentId ? [firstSegmentId] : []);
-            setSelectionAnchorId(firstSegmentId);
-            if (first) {
-                try {
-                    setMediaUrl(await authorizeArtifact(first.id, "preview") ?? await authorizeMedia(first.id));
-                    setWaveformUrl(await authorizeArtifact(first.id, "waveform"));
-                    await Promise.all([refreshLatestExport(first.id), refreshLatestAudioAnalysis(first.id), refreshSpeakerTrack(first.id), refreshTranscription(first.id)]);
-                    const runs = await agentReviewClient.listAgentRuns(first.id).catch(() => null);
+    const { refreshProject, activateProject } = useProjectLifecycle(
+        { projectRef, activeProjectIdRef, beginProjectLoad, isCurrentProjectLoad, setProject, updateProjectSummary },
+        {
+            reset: resetProjectScopedState,
+            prepareMedia: async (next) => {
+                const [mediaUrl, waveformUrl] = await Promise.all([
+                    authorizeArtifact(next.id, "preview").then((preview) => preview ?? authorizeMedia(next.id)),
+                    authorizeArtifact(next.id, "waveform"),
+                ]);
+                return { mediaUrl, waveformUrl };
+            },
+            mediaReady: (next, media) => {
+                videoRef.current?.pause();
+                setPlayback({ playing: false, currentTime: 0, duration: next.media.durationSeconds ?? 0 });
+                setMediaUrl(media.mediaUrl); setWaveformUrl(media.waveformUrl);
+                setActiveExport(null); setWordRange(null); setCutPreview(null);
+            },
+            projectReady: async (next, sequence, opening) => {
+                setSelectedId((current) => next.transcript.segments.some((segment) => segment.id === current) ? current : next.transcript.segments[0]?.id ?? null);
+                if (!opening) return;
+                const [, , , , runs] = await Promise.all([
+                    refreshLatestExport(next.id, sequence), refreshLatestAudioAnalysis(next.id, sequence),
+                    refreshSpeakerTrack(next.id, sequence), refreshTranscription(next.id, sequence),
+                    agentReviewClient.listAgentRuns(next.id).catch(() => null),
+                ]);
+                if (activeProjectIdRef.current === next.id && isCurrentProjectLoad(next.id, sequence))
                     setAgentRun(runs?.agentRuns?.[0] ?? null);
-                }
-                catch (cause) {
-                    errors.push(tr("app.s0045", { "0": cause instanceof Error ? cause.message : String(cause) }));
-                }
-            }
-        }
-        else {
-            errors.push(tr("app.s0046", { "0": projectsResult.reason instanceof Error ? projectsResult.reason.message : String(projectsResult.reason) }));
-        }
-        setError(errors.length ? errors.join(" ") : null);
-        setBusy(null);
-    }, [refreshLatestAudioAnalysis, refreshLatestExport, refreshSpeakerTrack, refreshTranscription, resetProjectScopedState]);
-    useEffect(() => {
-        void initialize();
-    }, [initialize]);
+            },
+        },
+    );
+    const initialize = useWorkbenchStartup({
+        setBusy, setError, setUpdatePolicy, setAutoWorkflows, setAutoWorkflow, setTrackedAutoWorkflowIds, setModels, setModelJob, setSpeakerPackage, setSpeakerJobs, setSpeakerJob, setTranscriptionHealth, setTranscriptionConfig, setCodexHealth, setLocalResources, setResourceProfile, setResourceCapability, setResourceSetupReason, setResourcePlan, setShowResourceSetup, setResourceJob, setSourceJob, setRuntime, setModelPath, setModelPathAvailable, replaceProjectPage,
+        flush: () => editing.session.flush(activeProjectIdRef.current ?? undefined),
+        restoreProject: async (page) => {
+            const id = activeProjectIdRef.current ?? page.items[0]?.id;
+            if (!id) { resetProjectScopedState(); return; }
+            if (projectRef.current?.id === id) await refreshProject(id);
+            else await activateProject(id);
+        },
+    });
     useEffect(() => {
         if (dismissedAutoWorkflowIds.length)
             localStorage.setItem(AUTO_WORKFLOW_DISMISSED_STORAGE_KEY, JSON.stringify(dismissedAutoWorkflowIds));
@@ -639,222 +296,18 @@ function WorkbenchController() {
             return next.length === current.length ? current : next;
         });
     }, [autoWorkflows]);
-    useEffect(() => {
-        let cancelled = false;
-        if (!modelPath) {
-            setModelPathAvailable(false);
-            return;
-        }
-        void localFileAvailable(modelPath).then((available) => {
-            if (!cancelled)
-                setModelPathAvailable(available);
-        }).catch(() => {
-            if (!cancelled)
-                setModelPathAvailable(false);
-        });
-        return () => {
-            cancelled = true;
-        };
-    }, [modelPath]);
-    useEffect(() => {
-        if (!resourceJob || !["queued", "running"].includes(resourceJob.status))
-            return;
-        let cancelled = false;
-        const poll = () => localResourceClient.getJob(resourceJob.id).then((envelope) => {
-            if (!cancelled && envelope.resourceJob)
-                setResourceJob(envelope.resourceJob);
-        }).catch((cause) => {
-            if (!cancelled)
-                setResourceError(localResourceError(cause));
-        });
-        void poll();
-        const timer = window.setInterval(() => void poll(), 800);
-        return () => {
-            cancelled = true;
-            window.clearInterval(timer);
-        };
-    }, [resourceJob?.id, resourceJob?.status]);
-    useBackgroundTaskRegistry([
-        agentRun && ["queued", "running", "submitting"].includes(agentRun.status) ? {
-            key: `codex-agent:${agentRun.id}`,
-            intervalMs: 1200,
-            poll: () => agentReviewClient.getAgentRun(agentRun.id).then(async (envelope) => {
-                if (!envelope.agentRun)
-                    return;
-                const next = envelope.agentRun;
-                const isActiveProject = activeProjectIdRef.current === next.projectId;
-                if (isActiveProject)
-                    setAgentRun(next);
-                if (next.status === "completed") {
-                    await refreshProject(next.projectId);
-                    if (activeProjectIdRef.current === next.projectId) {
-                        setDrawerTab("review");
-                        setNotice(tr("app.creator.agent.completed"));
-                    }
-                }
-                if (isActiveProject && ["failed", "interrupted"].includes(next.status))
-                    setError(next.errorMessage ?? tr("app.creator.agent.failed"));
-                if (isActiveProject && next.status === "cancelled")
-                    setNotice(tr("app.creator.agent.cancelled"));
-            }).catch((cause) => {
-                if (activeProjectIdRef.current === agentRun.projectId)
-                    setError(cause instanceof Error ? cause.message : String(cause));
-            }),
-        } : null,
-        project?.tasks.some((task) => ["queued", "claimed", "running", "failed", "interrupted"].includes(task.status)) ? {
-            key: `agent-project:${project.id}`,
-            intervalMs: project.tasks.some((task) => ["queued", "claimed", "running"].includes(task.status)) ? 2500 : 5000,
-            poll: () => {
-                const loadSequence = beginProjectLoad(project.id);
-                return projectSessionClient.loadProject(project.id).then((next) => {
-                if (!isCurrentProjectLoad(next.id, loadSequence))
-                    return;
-                if (activeProjectIdRef.current === next.id) {
-                    setError(clearTransientCoreError);
-                    setProject(next);
-                }
-                setProjects((current) => current.map((item) => item.id === next.id ? next : item));
-                }).catch(() => undefined);
-            },
-        } : null,
-        activeExport && ["queued", "running"].includes(activeExport.status) ? {
-            key: `video-export:${activeExport.id}`,
-            intervalMs: 1000,
-            poll: () => exportRuntimeClient.getVideoExport(activeExport.id).then((envelope) => {
-                setError(clearTransientCoreError);
-                if (!envelope.job)
-                    return;
-                if (activeProjectIdRef.current === envelope.job.projectId)
-                    setActiveExport(envelope.job);
-                if (envelope.job.status === "completed")
-                    setNotice(tr("app.s0051", { "0": envelope.job.outputPath }));
-                if (envelope.job.status === "failed")
-                    setError(envelope.job.errorMessage ?? tr("app.s0052"));
-                if (envelope.job.status === "cancelled")
-                    setNotice(tr("app.s0053"));
-            }).catch((cause) => setError(cause instanceof Error ? cause.message : String(cause))),
-        } : null,
-        audioAnalysisJob && ["queued", "running"].includes(audioAnalysisJob.status) ? {
-            key: `audio-analysis:${audioAnalysisJob.id}`,
-            intervalMs: 700,
-            poll: () => backgroundTaskClient.getAudioAnalysis(audioAnalysisJob.id).then((envelope) => {
-                setError(clearTransientCoreError);
-                if (!envelope.audioAnalysisJob)
-                    return;
-                if (activeProjectIdRef.current === envelope.audioAnalysisJob.projectId)
-                    setAudioAnalysisJob(envelope.audioAnalysisJob);
-                if (envelope.audioAnalysisJob.status === "completed")
-                    setNotice(tr("app.s0054"));
-                if (["failed", "interrupted"].includes(envelope.audioAnalysisJob.status))
-                    setError(envelope.audioAnalysisJob.errorMessage ?? tr("app.s0055"));
-                if (envelope.audioAnalysisJob.status === "cancelled")
-                    setNotice(tr("app.s0056"));
-            }).catch((cause) => setError(cause instanceof Error ? cause.message : String(cause))),
-        } : null,
-        modelJob && ["queued", "running"].includes(modelJob.status) ? {
-            key: `model:${modelJob.id}`,
-            intervalMs: 800,
-            poll: () => backgroundTaskClient.getModelJob(modelJob.id).then(async (envelope) => {
-                setError(clearTransientCoreError);
-                if (!envelope.modelJob)
-                    return;
-                setModelJob(envelope.modelJob);
-                if (envelope.modelJob.status === "completed") {
-                    const catalog = await backgroundTaskClient.listModels(true);
-                    const available = catalog.models ?? [];
-                    setModels(available);
-                    const installed = available.find((item) => item.id === envelope.modelJob?.modelId);
-                    if (installed) {
-                        localStorage.setItem("siaocut.modelPath", installed.path);
-                        setModelPath(installed.path);
-                        setModelPathAvailable(installed.installed && installed.verified === true);
-                    }
-                    setNotice(tr("app.s0057"));
-                }
-                if (envelope.modelJob.status === "failed")
-                    setError(envelope.modelJob.errorMessage ?? tr("app.s0058"));
-                if (envelope.modelJob.status === "cancelled")
-                    setNotice(tr("app.s0059"));
-            }).catch((cause) => setError(cause instanceof Error ? cause.message : String(cause))),
-        } : null,
-        ...speakerJobs.filter((trackedJob) => ["queued", "running"].includes(trackedJob.status)).map((trackedJob) => ({
-            key: `speaker:${trackedJob.id}`,
-            intervalMs: 800,
-            poll: () => backgroundTaskClient.getSpeakerJob(trackedJob.id).then(async (envelope) => {
-                setError(clearTransientCoreError);
-                if (!envelope.speakerJob)
-                    return;
-                const next = envelope.speakerJob;
-                setSpeakerJobs((current) => upsertById(current, next));
-                setSpeakerJob((current) => current?.id === next.id ? next : current);
-                if (next.status === "completed" && next.kind === "install") {
-                    const status = await backgroundTaskClient.getSpeakerPackage();
-                    setSpeakerPackage(status.speakerPackage ?? null);
-                    setNotice(tr("app.s0060"));
-                }
-                if (next.status === "completed" && next.kind === "analyze" && next.projectId) {
-                    await Promise.all([refreshProject(next.projectId), refreshSpeakerTrack(next.projectId)]);
-                    setNotice(tr("app.s0061"));
-                }
-                if (["failed", "interrupted"].includes(next.status))
-                    setError(next.errorMessage ?? tr("app.s0062"));
-                if (next.status === "cancelled")
-                    setNotice(tr("app.s0063"));
-            }).catch((cause) => setError(cause instanceof Error ? cause.message : String(cause))),
-        })),
-        transcriptionJob && ["queued", "running", "finalizing"].includes(transcriptionJob.status) ? {
-            key: `transcription:${transcriptionJob.id}`,
-            intervalMs: 1000,
-            poll: () => backgroundTaskClient.getTranscriptionJob(transcriptionJob.id).then(async (envelope) => {
-                setError(clearTransientCoreError);
-                if (!envelope.transcriptionJob)
-                    return;
-                const next = envelope.transcriptionJob;
-                if (activeProjectIdRef.current === next.projectId)
-                    setTranscriptionJob(next);
-                if (next.status === "completed") {
-                    await Promise.all([refreshProject(next.projectId, true), refreshSpeakerTrack(next.projectId), refreshTranscription(next.projectId)]);
-                    setNotice(tr("app.moss.job.completed"));
-                }
-                if (["failed", "interrupted"].includes(next.status))
-                    setError(next.errorMessage ?? tr("app.moss.job.failed"));
-                if (next.status === "cancelled")
-                    setNotice(tr("app.moss.job.cancelled"));
-            }).catch((cause) => setError(cause instanceof Error ? cause.message : String(cause))),
-        } : null,
-        sourceJob && ["queued", "running", "finalizing"].includes(sourceJob.status) ? {
-            key: `source:${sourceJob.id}`,
-            intervalMs: 600,
-            poll: () => backgroundTaskClient.getSourceJob(sourceJob.id).then(async (envelope) => {
-                setError(clearTransientCoreError);
-                if (!envelope.sourceJob)
-                    return;
-                const nextJob = envelope.sourceJob;
-                setSourceJob(nextJob);
-                if (nextJob.status === "failed") {
-                    const message = nextJob.errorMessage ?? tr("app.s0064");
-                    setSourceError(message);
-                    setError(message);
-                }
-                if (nextJob.status === "interrupted") {
-                    const message = nextJob.errorMessage ?? tr("app.s0065");
-                    setSourceError(message);
-                    setError(message);
-                }
-                if (nextJob.status === "cancelled")
-                    setNotice(tr("app.s0066"));
-                if (nextJob.status === "completed" && nextJob.projectId) {
+    const onSourceJobCompleted = async (nextJob:SourceImportJob) => {
                     setSourceError(null);
                     let imported: Project;
                     try {
-                        imported = await projectSessionClient.loadProject(nextJob.projectId);
+                        imported = await projectSessionClient.loadProject(nextJob.projectId!);
                     }
                     catch (cause) {
                         setSourceError(cause instanceof Error ? cause.message : String(cause));
                         setNotice(tr("app.error.sourceImportOpenFailed"));
                         return;
                     }
-                    setProjects((current) => upsertById(current, imported));
+                    updateProjectSummary(imported);
                     setShowSourceImport(false);
                     setNotice(tr("app.s0067"));
                     const hasOrigin = sourceJobOriginProjectIdsRef.current.has(nextJob.id);
@@ -873,23 +326,8 @@ function WorkbenchController() {
                         if (media.warning)
                             setError(tr("app.error.sourceImportPreviewUnavailable"));
                     }
-                }
-            }).catch((cause) => {
-                const message = cause instanceof Error ? cause.message : String(cause);
-                setSourceError(message);
-                setError(message);
-            }),
-        } : null,
-        ...autoWorkflows.filter((trackedWorkflow) => ["queued", "running", "needs_agent", "needs_review"].includes(trackedWorkflow.status)).map((trackedWorkflow) => ({
-            key: `auto:${trackedWorkflow.id}`,
-            intervalMs: 800,
-            poll: () => backgroundTaskClient.getAutoWorkflow(trackedWorkflow.id).then(async (envelope) => {
-                setError(clearTransientCoreError);
-                if (!envelope.workflow)
-                    return;
-                const next = envelope.workflow;
-                setAutoWorkflows((current) => upsertAutoWorkflowSnapshot(current, { ...next }));
-                setAutoWorkflow((current) => selectAutoWorkflowSnapshot(current, next));
+    };
+    const onWorkflowTransition = async (next:AutoWorkflow) => {
                 if (next.projectId) {
                     const hasOrigin = autoWorkflowOriginProjectIdsRef.current.has(next.id);
                     const originProjectId = autoWorkflowOriginProjectIdsRef.current.get(next.id);
@@ -911,15 +349,7 @@ function WorkbenchController() {
                         await refreshProject(next.projectId);
                     }
                 }
-                if (next.status === "completed")
-                    setNotice(tr("app.s0068", { "0": next.outputPath }));
-                if (next.status === "failed")
-                    setError(next.errorMessage ?? tr("app.s0069"));
-                if (next.status === "interrupted")
-                    setError(next.errorMessage ?? tr("app.s0070"));
-            }).catch((cause) => setError(cause instanceof Error ? cause.message : String(cause))),
-        })),
-    ]);
+    };
     const selected = project?.transcript.segments.find((segment) => segment.id === selectedId) ?? null;
     const selectedWords = project?.transcript.words.filter((word) => word.segmentId === selectedId) ?? [];
     const activeWordRange = wordRange?.segmentId === selectedId ? wordRange : null;
@@ -933,35 +363,19 @@ function WorkbenchController() {
     const allVisibleSegmentsSelected = filteredSegments.length > 0 && filteredSegments.every((segment) => selectedSegmentIds.includes(segment.id));
     const selectedScopeLabel = selectedSegments.length
         ? tr("app.s0071", { "0": selectedSegments.length, "1": formatTime(selectedSegments[0].start), "2": formatTime(selectedSegments.at(-1)!.end) }) : tr("app.s0072");
-    const firstSelectedIndex = project?.transcript.segments.findIndex((segment) => segment.id === selectedSegments[0]?.id) ?? -1;
-    const secondSelectedIndex = project?.transcript.segments.findIndex((segment) => segment.id === selectedSegments[1]?.id) ?? -1;
-    const mergeCandidatesAdjacent = selectedSegments.length === 2 && firstSelectedIndex >= 0 && secondSelectedIndex === firstSelectedIndex + 1;
+    const { structureEditMode,setStructureEditMode,structureStart,setStructureStart,structureEnd,setStructureEnd,structureTextOffset,setStructureTextOffset,structureDelta,setStructureDelta,structureBusy,setStructureBusy,structureError,setStructureError,firstSelectedIndex,secondSelectedIndex,mergeCandidatesAdjacent,splitTextOffset,splitCharacters,splitLeftText,splitRightText,splitInputsValid,timingStart,timingEnd,timingInputsValid,timingChanged,structureSubmitDisabled,openStructureEdit,splitSegmentFromEditor,mergePreviousFromEditor,applyStructureEdit,nudgeTimelineSegment } = useStructureEditing({project,selectedSegments,editing:editing.session,setSelectedId,setSelectedSegmentIds,setSelectionAnchorId,setNotice,withBusy:(label,action)=>withBusy(label,action),onSaveField:(segment,text)=>editSegment(segment,text),onApplied:async(result)=>{const nextProject=result.project;            setProject(nextProject);
+            updateProjectSummary(nextProject);
+            const nextSelection = result.affectedSegmentIds.filter((id) => nextProject.transcript.segments.some((segment) => segment.id === id));
+            setSelectedSegmentIds(nextSelection);
+            setSelectedId(nextSelection[0] ?? nextProject.transcript.segments[0]?.id ?? null);
+            setSelectionAnchorId(nextSelection[0] ?? null);
+            setWordRange(null);
+            setCutPreview(null);
+            await Promise.all([refreshSpeakerTrack(nextProject.id), refreshTranscription(nextProject.id)]);
+}});
     const replaceMatchCount = useMemo(() => search && project
         ? project.transcript.segments.reduce((count, segment) => count + (segment.text.split(search).length - 1), 0)
         : 0, [project, search]);
-    const splitTextOffset = Number(structureTextOffset);
-    const splitCharacters = Array.from(selectedSegments[0]?.text ?? "");
-    const splitLeftText = splitCharacters.slice(0, Number.isInteger(splitTextOffset) ? splitTextOffset : 0).join("").trim();
-    const splitRightText = splitCharacters.slice(Number.isInteger(splitTextOffset) ? splitTextOffset : 0).join("").trim();
-    const splitInputsValid = Number.isInteger(splitTextOffset)
-        && splitTextOffset > 0
-        && splitTextOffset < splitCharacters.length
-        && Number(structureStart) > (selectedSegments[0]?.start ?? Number.POSITIVE_INFINITY)
-        && Number(structureStart) < (selectedSegments[0]?.end ?? Number.NEGATIVE_INFINITY)
-        && hasMeaningfulSubtitleText(splitLeftText)
-        && hasMeaningfulSubtitleText(splitRightText);
-    const timingStart = Number(structureStart);
-    const timingEnd = Number(structureEnd);
-    const timingInputsValid = Number.isFinite(timingStart)
-        && Number.isFinite(timingEnd)
-        && timingStart >= 0
-        && timingEnd > timingStart;
-    const timingChanged = Boolean(selectedSegments[0])
-        && (Math.abs(timingStart - selectedSegments[0].start) >= 0.0005 || Math.abs(timingEnd - selectedSegments[0].end) >= 0.0005);
-    const structureSubmitDisabled = structureBusy || (structureEditMode === "split" && !splitInputsValid)
-        || (structureEditMode === "merge" && !mergeCandidatesAdjacent)
-        || (structureEditMode === "timing" && (!timingInputsValid || !timingChanged))
-        || (structureEditMode === "offset" && (!Number.isFinite(Number(structureDelta)) || Number(structureDelta) === 0));
     useEffect(() => {
         const segmentIds = new Set(project?.transcript.segments.map((segment) => segment.id) ?? []);
         setSelectedSegmentIds((current) => {
@@ -972,22 +386,6 @@ function WorkbenchController() {
         });
         setSelectionAnchorId((current) => current && segmentIds.has(current) ? current : selectedId && segmentIds.has(selectedId) ? selectedId : null);
     }, [project, selectedId]);
-    const translationLanguages = project ? Object.keys(project.translations) : [];
-    const pendingTranslationLanguages = project?.tasks
-        .filter((task) => task.kind === "translate" && task.language && !["done", "completed", "cancelled", "canceled"].includes(task.status))
-        .map((task) => task.language!) ?? [];
-    const translationLanguageOptions = Array.from(new Set([...translationLanguages, ...pendingTranslationLanguages]));
-    const selectedSubtitleLanguage = translationLanguageOptions.includes(subtitleLanguage) ? subtitleLanguage : translationLanguageOptions[0] ?? "";
-    const selectedTranslation = selectedSubtitleLanguage ? project?.translations[selectedSubtitleLanguage] : undefined;
-    const translation = selectedTranslation ? [selectedSubtitleLanguage, selectedTranslation] as const : undefined;
-    const selectedTranslationIncomplete = Boolean(selectedTranslation && project?.transcript.segments.some(
-        (source) => !selectedTranslation.segments.some((translated) => translated.segmentId === source.id),
-    ));
-    const selectedTranslationPending = Boolean(subtitleMode !== "source" && selectedSubtitleLanguage && (!selectedTranslation || selectedTranslationIncomplete));
-    const selectedTranslationStale = Boolean(subtitleMode !== "source" && !selectedTranslationIncomplete && selectedTranslation && (
-        selectedTranslation.status !== "current"
-        || selectedTranslation.segments.some((segment) => segment.status !== "current")
-    ));
     const capabilities = useMemo(() => getProjectCapabilities(project, {
         mediaUrl,
         modelPath,
@@ -1059,17 +457,6 @@ function WorkbenchController() {
     const captionPrimaryStyle = project && subtitleMode === "translated"
         ? { ...captionKaraokeStyle, fontSize: `${Math.max(12, Math.round(project.subtitleStyle.secondaryFontSize * 0.36))}px` }
         : captionKaraokeStyle;
-    const currentDeleteCandidate = deleteCandidate ? projects.find((item) => item.id === deleteCandidate.id) ?? deleteCandidate : null;
-    const deleteBlockMessage = deletionPreflight?.blockers.length
-        ? deletionPreflight.blockers.map((blocker) => ({
-            agent_task: tr("app.delete.blocker.agent"),
-            export: tr("app.delete.blocker.export"),
-            audio_analysis: tr("app.delete.blocker.audio"),
-            speaker_analysis: tr("app.delete.blocker.speaker"),
-            auto_workflow: tr("app.delete.blocker.workflow"),
-            transcription: blocker.status === "awaiting_apply" ? tr("app.delete.blocker.transcriptionCandidate") : tr("app.delete.blocker.transcription"),
-        }[blocker.kind] ?? tr("app.delete.blocker.unknown", { kind: blocker.kind, status: blocker.status }))).join(" ")
-        : null;
     const quickRetranscriptionBlockMessage = quickRetranscriptionPreflight && !quickRetranscriptionPreflight.canReplace
         ? tr("app.quickRetranscribe.blocked", {
             edits: quickRetranscriptionPreflight.blockers.edits,
@@ -1085,7 +472,8 @@ function WorkbenchController() {
     const workbenchActivityInputs: WorkbenchActivityInputs = {
         busyMessage: busy,
         sourceJob,
-        transcriptionJob,
+        transcriptionJobs: transcriptionTasks.jobs,
+        projectTitles: Object.fromEntries(projects.map((item) => [item.id, item.title])),
         agentRun,
         audioAnalysisJob,
         exportJob: activeExport,
@@ -1093,16 +481,15 @@ function WorkbenchController() {
         autoWorkflowErrors,
     };
     const recentAutoWorkflows = autoWorkflows.slice(0, 5);
-    const humanState = busy ? tr("app.s0001") : taskLabel(project);
+    const activeTranscription = transcriptionTasks.jobs.some((job) => job.projectId === project?.id && ["queued", "running", "finalizing"].includes(job.status));
+    const humanState = busy || activeTranscription ? tr("app.s0001") : taskLabel(project);
     const humanStateTone = humanState === tr("app.s0003") ? "warning" : humanState === tr("app.s0002") ? "agent" : humanState === tr("app.s0001") ? "info" : "success";
     const orderedPatchSets = project?.patchSets
         .map((set) => ({ ...set, items: set.items.filter((item) => ["pending", "conflict"].includes(item.status)).sort((left, right) => Number(right.status === "conflict") - Number(left.status === "conflict")) }))
         .filter((set) => set.items.length)
         .sort((left, right) => Number(right.items.some((item) => item.status === "conflict")) - Number(left.items.some((item) => item.status === "conflict"))) ?? [];
     const pendingEdits = project?.edits.filter((edit) => ["suggested", "proposed"].includes(edit.status)) ?? [];
-    const failedTasks = project?.tasks.filter((task) => ["failed", "interrupted"].includes(task.status) && task.id !== agentRun?.taskId) ?? [];
     const processingTasks = project?.tasks.filter((task) => ["queued", "claimed", "running"].includes(task.status)) ?? [];
-    const recentTasks = project?.tasks.filter((task) => ["completed", "cancelled", "canceled"].includes(task.status)).slice(-5).reverse() ?? [];
     const audioRisks = audioAnalysisJob?.status === "completed" ? audioAnalysisJob.report?.risks ?? [] : [];
     const projectSpeakerJob = speakerJobs
         .filter((job) => job.kind === "analyze" && job.projectId === project?.id)
@@ -1112,36 +499,13 @@ function WorkbenchController() {
         .sort((left, right) => Number(["queued", "running"].includes(right.status)) - Number(["queued", "running"].includes(left.status)))[0] ?? null;
     const speakerById = new Map(speakerTrack?.speakers.map((speaker) => [speaker.id, speaker]) ?? []);
     const associationBySegment = new Map(speakerTrack?.associations.map((association) => [association.segmentId, association]) ?? []);
-    const actionableReviewCount = orderedPatchSets.reduce((count, set) => count + set.items.length, 0) + pendingEdits.length + failedTasks.length + audioRisks.length + transcriptionReviews.length + Number(Boolean(projectSpeakerJob && ["failed", "interrupted"].includes(projectSpeakerJob.status)));
+    const actionableReviewCount = orderedPatchSets.reduce((count, set) => count + set.items.length, 0) + pendingEdits.length + audioRisks.length + transcriptionReviews.length + Number(Boolean(projectSpeakerJob && ["failed", "interrupted"].includes(projectSpeakerJob.status)));
     const focusReviewCount = (project?.subtitleQuality.issues.filter((issue) => issue.severity === "error").length ?? 0)
         + orderedPatchSets.reduce((count, set) => count + set.items.length, 0)
         + pendingEdits.length
         + transcriptionReviews.filter((item) => item.status === "open").length
         + audioRisks.length;
     const mossWordTimingUnavailable = speakerTrack?.providerId === "moss_openai" && speakerTrack.sourceKind === "end_to_end";
-    const transcriptionExportErrors = transcriptionReviews.filter((item) => item.status === "open" && item.severity === "error");
-    const transcriptionExportWarnings = transcriptionReviews.filter((item) => item.status === "open" && item.severity === "warning");
-    const structuredExport = exportFormat === "json" || (exportFormat === "markdown" && speakerTrack?.status === "ready");
-    const transcriptionExportBlocked = structuredExport && (transcriptionExportErrors.length > 0 || (transcriptionExportWarnings.length > 0 && !confirmTranscriptionWarnings));
-    useEffect(() => {
-        localStorage.setItem("siaocut.exportPreferences.v1", JSON.stringify({
-            version: 1,
-            subtitleMode,
-            subtitleDelivery,
-            subtitleLanguage,
-            transcriptFormat: exportFormat,
-        } satisfies ExportPreferencesV1));
-    }, [exportFormat, subtitleDelivery, subtitleLanguage, subtitleMode]);
-    useEffect(() => {
-        if (!project || subtitleMode === "source")
-            return;
-        if (translationLanguageOptions.length && !translationLanguageOptions.includes(subtitleLanguage))
-            setSubtitleLanguage(translationLanguageOptions[0]);
-    }, [project, subtitleLanguage, subtitleMode, translationLanguageOptions]);
-    useEffect(() => {
-        const entries = project?.glossary.entries.filter((entry) => entry.language === subtitleLanguage) ?? [];
-        setGlossaryDraft(entries.map((entry) => `${entry.source}=${entry.target}`).join("\n"));
-    }, [project?.id, project?.glossary.version, subtitleLanguage]);
     useEffect(() => {
         setConfirmUncutExport(false);
     }, [project?.id, project?.timeline.cuts.length]);
@@ -1159,14 +523,17 @@ function WorkbenchController() {
         setShowSubtitleImport(false);
         setSubtitleImportPreview(null);
         setSubtitleImportPath("");
-        setShowQuickRetranscription(false);
-        setQuickRetranscriptionPreflight(null);
-        setQuickRetranscriptionConfirmed(false);
-        setQuickRetranscriptionError(null);
         setStructureEditMode(null);
         setShowTranscriptionCandidate(false);
         resetFocusReview();
     }, [project?.id, resetFocusReview]);
+    useEffect(() => {
+        if (pendingCandidateJobId && transcriptionJob?.id === pendingCandidateJobId && transcriptionJob.status === "awaiting_apply") {
+            setTranscriptionApplyConfirmed(false);
+            setShowTranscriptionCandidate(true);
+            setPendingCandidateJobId(null);
+        }
+    }, [project?.id, transcriptionJob?.id, transcriptionJob?.status, pendingCandidateJobId]);
     useEffect(() => {
         if (!showExportPanel)
             return;
@@ -1197,6 +564,7 @@ function WorkbenchController() {
         return () => window.cancelAnimationFrame(frame);
     }, [drawerTab, reviewFocusDetailId]);
     const selectSegment = (segment: Segment) => {
+        transcriptNavigation.locate(segment.id);
         setSelectedId(segment.id);
         setSelectedSegmentIds([segment.id]);
         setSelectionAnchorId(segment.id);
@@ -1286,20 +654,6 @@ function WorkbenchController() {
             setBusy(null);
         }
     };
-    const activateProject = async (projectId: string) => {
-        const previousProjectId = activeProjectIdRef.current;
-        activeProjectIdRef.current = projectId;
-        resetProjectScopedState();
-        try {
-            await refreshProject(projectId, true);
-        }
-        catch (cause) {
-            activeProjectIdRef.current = previousProjectId;
-            if (previousProjectId)
-                await refreshProject(previousProjectId, true).catch(() => undefined);
-            throw cause;
-        }
-    };
     const importMedia = () => withBusy(tr("app.s0078"), async () => {
         const path = await pickMedia();
         if (!path)
@@ -1309,11 +663,12 @@ function WorkbenchController() {
             throw new Error(tr("app.s0079"));
         activeProjectIdRef.current = envelope.project.id;
         resetProjectScopedState(envelope.project);
-        setProjects((current) => upsertById(current, envelope.project!));
+        updateProjectSummary(envelope.project!);
         setMediaUrl(await authorizeMedia(envelope.project.id));
         setNotice(tr("app.s0080"));
     });
-    const switchProject = (projectId: string) => {
+    const switchProject = async (projectId: string) => {
+        try { await editing.session.flush(project?.id); } catch (error) { setError(String(error)); return; }
         if (project?.id === projectId || busyRef.current || structureBusy || Boolean(subtitleImportBusy) || deleteBusy || deletePreflightBusy || Boolean(autoBusy) || Boolean(sourceBusy))
             return;
         setNotice(null);
@@ -1322,1223 +677,21 @@ function WorkbenchController() {
             await activateProject(projectId);
         });
     };
-    const refreshDeletionPreflight = async (projectId: string) => {
-        const envelope = await projectSessionClient.deletePreflight(projectId);
-        if (!envelope.deletionPreflight)
-            throw new Error(tr("app.delete.preflightMissing"));
-        setDeletionPreflight(envelope.deletionPreflight);
-        return envelope.deletionPreflight;
-    };
-    const openDeleteDialog = (candidate: Project) => {
-        setDeleteError(null);
-        setDeletionPreflight(null);
-        setDeleteCandidate(candidate);
-        setDeletePreflightBusy(true);
-        void refreshDeletionPreflight(candidate.id).catch((cause) => {
-            setDeleteError(cause instanceof Error ? cause.message : String(cause));
-        }).finally(() => setDeletePreflightBusy(false));
-    };
-    const closeDeleteDialog = () => {
-        if (deleteBusy || deletePreflightBusy)
-            return;
-        setDeleteCandidate(null);
-        setDeleteError(null);
-        setDeletionPreflight(null);
-    };
-    const deleteProject = async () => {
-        if (!currentDeleteCandidate || deletePreflightBusy || !deletionPreflight || deletionPreflight.projectId !== currentDeleteCandidate.id)
-            return;
-        const deleting = currentDeleteCandidate;
-        const confirmedPreflight = deletionPreflight;
-        setDeleteBusy(true);
-        setDeleteError(null);
-        try {
-            if (!confirmedPreflight.deletable)
-                return;
-            await projectSessionClient.deleteProject(deleting.id, confirmedPreflight.expectedVersionId);
-            const remaining = projects.filter((item) => item.id !== deleting.id);
-            setProjects(remaining);
-            setDeleteCandidate(null);
-            if (project?.id === deleting.id) {
-                activeProjectIdRef.current = remaining[0]?.id ?? null;
-                resetProjectScopedState();
-                if (remaining[0]) {
-                    await refreshProject(remaining[0].id, true);
-                }
-            }
-            setNotice(tr("app.s0082", { "0": deleting.title }));
-        }
-        catch (cause) {
-            const message = cause instanceof Error ? cause.message : String(cause);
-            const versionMismatch = message.includes("project_delete_version_mismatch");
-            setDeleteError(versionMismatch
-                ? tr("app.projectDelete.versionMismatch")
-                : message.replace(/^project_busy:\s*/, ""));
-            if (versionMismatch)
-                setDeletionPreflight(null);
-            else
-                await refreshDeletionPreflight(deleting.id).catch(() => undefined);
-        }
-        finally {
-            setDeleteBusy(false);
-        }
-    };
-    const openResourcePreparation = async (capability: LocalCapabilityId, reason: "first_run" | "on_demand" | "manage") => {
-        const profile = capability === "local_transcription" ? localResources?.transcriptionProfile ?? resourceProfile : undefined;
-        setResourceCapability(capability);
-        if (profile)
-            setResourceProfile(profile);
-        setResourceSetupReason(reason);
-        setResourceSelectedRoot("");
-        setResourceError(null);
-        if (reason === "manage")
-            setShowRuntime(false);
-        if (reason === "on_demand")
-            setShowSourceImport(false);
-        setShowResourceSetup(true);
-        try {
-            const envelope = await localResourceClient.plan(capability, profile);
-            setResourcePlan(envelope.resourcePlan ?? null);
-        }
-        catch (cause) {
-            setResourceError(localResourceError(cause));
-        }
-    };
-    const changeResourceProfile = async (profile: LocalTranscriptionProfile) => {
-        setResourceProfile(profile);
-        setResourceBusy(true);
-        setResourceError(null);
-        try {
-            const envelope = await localResourceClient.plan("local_transcription", profile);
-            setResourcePlan(envelope.resourcePlan ?? null);
-        }
-        catch (cause) {
-            setResourceError(localResourceError(cause));
-        }
-        finally {
-            setResourceBusy(false);
-        }
-    };
-    const chooseResourceLocation = async () => {
-        const path = await pickResourceDirectory();
-        if (path) {
-            setResourceSelectedRoot(path);
-            setResourceError(null);
-        }
-    };
-    const confirmResourceLocation = async () => {
-        if (!resourceSelectedRoot)
-            return;
-        setResourceBusy(true);
-        setResourceError(null);
-        try {
-            const changingLocation = Boolean(localResources?.configured);
-            const envelope = changingLocation
-                ? await localResourceClient.migrate(resourceSelectedRoot)
-                : await localResourceClient.configure(resourceSelectedRoot);
-            if (!envelope.localResources)
-                throw new Error("resource_setup_required");
-            setLocalResources(envelope.localResources);
-            setResourceSelectedRoot("");
-            setRuntime(await runtimeInfo());
-            localStorage.removeItem(RESOURCE_SETUP_DEFERRED_KEY);
-            setNotice(tr(changingLocation ? "app.resources.locationMoved" : "app.resources.locationConfirmed"));
-            if (changingLocation && resourceSetupReason === "manage") {
-                setShowResourceSetup(false);
-                setShowRuntime(true);
-            }
-        }
-        catch (cause) {
-            setResourceError(localResourceError(cause));
-        }
-        finally {
-            setResourceBusy(false);
-        }
-    };
-    const startResourcePreparation = async () => {
-        if (!localResources?.configured || resourceSelectedRoot)
-            return;
-        setResourceBusy(true);
-        setResourceError(null);
-        handledResourceJobRef.current = null;
-        try {
-            const isUpdate = localResources.capabilities.some((capability) => capability.id === resourceCapability && capability.state === "update_available");
-            const envelope = isUpdate
-                ? await localResourceClient.update(resourceCapability, resourceCapability === "local_transcription" ? resourceProfile : undefined)
-                : await localResourceClient.install(resourceCapability, resourceCapability === "local_transcription" ? resourceProfile : undefined);
-            if (!envelope.resourceJob)
-                throw new Error("resource_job_not_found");
-            setResourceJob(envelope.resourceJob);
-            setNotice(tr("app.resources.preparingNotice", { capability: localCapabilityLabel(resourceCapability) }));
-        }
-        catch (cause) {
-            setResourceError(localResourceError(cause));
-        }
-        finally {
-            setResourceBusy(false);
-        }
-    };
-    const cancelResourcePreparation = async () => {
-        if (!resourceJob)
-            return;
-        setResourceBusy(true);
-        try {
-            const envelope = await localResourceClient.cancel(resourceJob.id);
-            if (envelope.resourceJob)
-                setResourceJob(envelope.resourceJob);
-        }
-        catch (cause) {
-            setResourceError(localResourceError(cause));
-        }
-        finally {
-            setResourceBusy(false);
-        }
-    };
-    const resumeResourcePreparation = async () => {
-        if (!resourceJob)
-            return;
-        setResourceBusy(true);
-        setResourceError(null);
-        handledResourceJobRef.current = null;
-        try {
-            const envelope = await localResourceClient.resume(resourceJob.id);
-            if (!envelope.resourceJob)
-                throw new Error("resource_job_not_found");
-            setResourceJob(envelope.resourceJob);
-        }
-        catch (cause) {
-            setResourceError(localResourceError(cause));
-        }
-        finally {
-            setResourceBusy(false);
-        }
-    };
-    const closeResourcePreparation = () => {
-        if (resourceJob && ["queued", "running"].includes(resourceJob.status))
-            return;
-        setShowResourceSetup(false);
-        setResourceSelectedRoot("");
-        setResourceError(null);
-        if (resourceSetupReason === "first_run")
-            localStorage.setItem(RESOURCE_SETUP_DEFERRED_KEY, "1");
-        if (resourceSetupReason === "manage")
-            setShowRuntime(true);
-        if (pendingResourceAction === "inspect_url") {
-            setPendingResourceAction(null);
-            setShowSourceImport(true);
-        }
-        else if (pendingResourceAction === "transcribe") {
-            setPendingResourceAction(null);
-        }
-    };
-    const removeResourceCapability = async (capability: LocalCapabilityId) => {
-        if (!window.confirm(tr("app.resources.removeConfirm", { capability: localCapabilityLabel(capability) })))
-            return;
-        setResourceBusy(true);
-        try {
-            const envelope = await localResourceClient.remove(capability);
-            if (envelope.localResources)
-                setLocalResources(envelope.localResources);
-            setRuntime(await runtimeInfo());
-            setNotice(tr("app.resources.removedNotice", { capability: localCapabilityLabel(capability) }));
-        }
-        catch (cause) {
-            setError(localResourceError(cause));
-        }
-        finally {
-            setResourceBusy(false);
-        }
-    };
-    const cleanupLocalResources = async () => {
-        if (!window.confirm(tr("app.resources.cleanupConfirm")))
-            return;
-        setResourceBusy(true);
-        try {
-            const envelope = await localResourceClient.cleanup();
-            if (envelope.localResources)
-                setLocalResources(envelope.localResources);
-            setNotice(tr("app.resources.cleanupNotice"));
-        }
-        catch (cause) {
-            setError(localResourceError(cause));
-        }
-        finally {
-            setResourceBusy(false);
-        }
-    };
-    const rollbackResourceCapability = async (capability: LocalCapabilityId) => {
-        if (!window.confirm(tr("app.resources.rollbackConfirm", { capability: localCapabilityLabel(capability) })))
-            return;
-        setResourceBusy(true);
-        try {
-            const envelope = await localResourceClient.rollback(capability);
-            if (envelope.localResources)
-                setLocalResources(envelope.localResources);
-            setRuntime(await runtimeInfo());
-            setNotice(tr("app.resources.rollbackNotice", { capability: localCapabilityLabel(capability) }));
-        }
-        catch (cause) {
-            setError(localResourceError(cause));
-        }
-        finally {
-            setResourceBusy(false);
-        }
-    };
-    const withSourceBusy = async (label: string, action: () => Promise<void>) => {
-        setSourceBusy(label);
-        setSourceError(null);
-        try {
-            await action();
-        }
-        catch (cause) {
-            setSourceError(cause instanceof Error ? cause.message : String(cause));
-        }
-        finally {
-            setSourceBusy(null);
-        }
-    };
-    const inspectSource = () => withSourceBusy(tr("app.s0083"), async () => {
-        const url = sourceUrl.trim();
-        if (!isHttpsSourceUrl(url))
-            throw new Error(tr("app.s0085"));
-        const urlCapability = localResources?.capabilities.find((capability) => capability.id === "url_import");
-        if (!["ready", "update_available"].includes(urlCapability?.state ?? "not_ready") || !runtime?.ytDlpConfigured) {
-            setPendingResourceAction("inspect_url");
-            await openResourcePreparation("url_import", "on_demand");
-            return;
-        }
-        const envelope = await backgroundTaskClient.inspectSource(url);
-        if (!envelope.source)
-            throw new Error(tr("app.s0086"));
-        setSourcePreview(envelope.source);
-        setSourceJob(null);
-        setSourceAuthorized(false);
-    });
-    const startSourceImport = () => sourcePreview && withSourceBusy(tr("app.s0087"), async () => {
-        if (!sourceAuthorized)
-            throw new Error(tr("app.s0088"));
-        const envelope = await backgroundTaskClient.startSourceImport(sourcePreview.originalUrl, sourcePreview.siteMediaId);
-        if (!envelope.sourceJob)
-            throw new Error(tr("app.s0089"));
-        sourceJobOriginProjectIdsRef.current.set(envelope.sourceJob.id, activeProjectIdRef.current);
-        setSourceJob(envelope.sourceJob);
-        setNotice(tr("app.s0090"));
-    });
-    const cancelSourceImport = () => sourceJob && withSourceBusy(tr("app.s0091"), async () => {
-        const envelope = await backgroundTaskClient.cancelSourceImport(sourceJob.id);
-        if (!envelope.sourceJob)
-            throw new Error(tr("app.s0092"));
-        setSourceJob(envelope.sourceJob);
-    });
-    const resumeSourceImport = () => sourceJob && withSourceBusy(tr("app.s0093"), async () => {
-        const envelope = await backgroundTaskClient.resumeSourceImport(sourceJob.id);
-        if (!envelope.sourceJob)
-            throw new Error(tr("app.s0094"));
-        sourceJobOriginProjectIdsRef.current.set(envelope.sourceJob.id, activeProjectIdRef.current);
-        setSourceJob(envelope.sourceJob);
-        setNotice(tr("app.s0095", { "0": envelope.sourceJob.attemptCount }));
-    });
-    const resetSourceImport = () => {
-        if (sourceJob && ["queued", "running", "finalizing"].includes(sourceJob.status))
-            return;
-        setSourcePreview(null);
-        setSourceJob(null);
-        setSourceUrl("");
-        setSourceAuthorized(false);
-        setSourceError(null);
-    };
-    useEffect(() => {
-        if (!resourceJob || handledResourceJobRef.current === resourceJob.id)
-            return;
-        if (["failed", "interrupted"].includes(resourceJob.status)) {
-            setResourceError(localResourceError(new Error(`${resourceJob.errorCode ?? "resource_job_state_changed"}: resource preparation failed`)));
-            return;
-        }
-        if (resourceJob.status !== "completed")
-            return;
-        handledResourceJobRef.current = resourceJob.id;
-        void Promise.allSettled([
-            localResourceClient.status(),
-            runtimeInfo(),
-            backgroundTaskClient.listModels(true),
-            backgroundTaskClient.getSpeakerPackage(),
-        ]).then(([resourceResult, runtimeResult, modelsResult, speakerResult]) => {
-            if (resourceResult.status === "rejected")
-                throw resourceResult.reason;
-            if (runtimeResult.status === "rejected")
-                throw runtimeResult.reason;
-            const resourceEnvelope = resourceResult.value;
-            const nextRuntime = runtimeResult.value;
-            if (resourceEnvelope.localResources)
-                setLocalResources(resourceEnvelope.localResources);
-            setRuntime(nextRuntime);
-            const nextModels = modelsResult.status === "fulfilled"
-                ? modelsResult.value.models ?? []
-                : models;
-            if (modelsResult.status === "fulfilled")
-                setModels(nextModels);
-            if (speakerResult.status === "fulfilled")
-                setSpeakerPackage(speakerResult.value.speakerPackage ?? null);
-            const nextModelPath = nextRuntime.defaultModelAvailable
-                ? nextRuntime.defaultModelPath
-                : nextModels.find((model) => model.installed && model.verified === true)?.path ?? null;
-            setModelPath(nextModelPath);
-            setModelPathAvailable(Boolean(nextModelPath));
-            if (nextModelPath)
-                localStorage.setItem("siaocut.modelPath", nextModelPath);
-            else
-                localStorage.removeItem("siaocut.modelPath");
-            setResourceJob(null);
-            setShowResourceSetup(false);
-            setResourceSelectedRoot("");
-            setResourceError(null);
-            localStorage.removeItem(RESOURCE_SETUP_DEFERRED_KEY);
-            setNotice(tr("app.resources.readyNotice", { capability: localCapabilityLabel(resourceJob.capabilityId) }));
-            if (pendingResourceAction === "inspect_url") {
-                setPendingResourceAction(null);
-                setShowSourceImport(true);
-                setResumeSourceInspection(true);
-            }
-            else if (pendingResourceAction === "transcribe") {
-                setPendingResourceAction(null);
-                setResumeLocalTranscription(true);
-            }
-            else if (resourceSetupReason === "manage") {
-                setShowRuntime(true);
-            }
-        }).catch((cause) => setResourceError(localResourceError(cause)));
-    }, [models, pendingResourceAction, resourceJob, resourceSetupReason, setNotice]);
+    useResourceCompletion({resourceJob, handledResourceJobRef, setResourceError, setLocalResources, setRuntime, models, setModels, setSpeakerPackage, setModelPath, setModelPathAvailable, setResourceJob, setShowResourceSetup, setResourceSelectedRoot, setNotice, pendingResourceAction, setPendingResourceAction, setShowSourceImport, setResumeSourceInspection, setResumeLocalTranscription, resourceSetupReason, setShowRuntime});
     useEffect(() => {
         if (!resumeSourceInspection || !showSourceImport)
             return;
         setResumeSourceInspection(false);
         void inspectSource();
     }, [resumeSourceInspection, showSourceImport]);
-    const withAutoBusy = async (
-        label: string,
-        action: () => Promise<void>,
-        workflowId?: string,
-    ) => {
-        setAutoBusy(label);
-        if (workflowId) {
-            setAutoWorkflowErrors((current) => {
-                if (!(workflowId in current))
-                    return current;
-                const next = { ...current };
-                delete next[workflowId];
-                return next;
-            });
-        }
-        else {
-            setAutoError(null);
-        }
-        try {
-            await action();
-        }
-        catch (cause) {
-            const message = cause instanceof Error ? cause.message : String(cause);
-            if (workflowId)
-                setAutoWorkflowErrors((current) => ({ ...current, [workflowId]: message }));
-            else
-                setAutoError(message);
-        }
-        finally {
-            setAutoBusy(null);
-        }
-    };
-    const chooseAutoMedia = () => withAutoBusy(tr("app.s0096"), async () => {
-        const path = await pickMedia();
-        if (path)
-            setAutoMediaPath(path);
-    });
-    const inspectAutoSource = () => withAutoBusy(tr("app.s0083"), async () => {
-        if (!runtime?.ytDlpConfigured)
-            throw new Error(tr("app.s0084"));
-        if (!autoUrl.trim())
-            throw new Error(tr("app.s0085"));
-        const envelope = await backgroundTaskClient.inspectSource(autoUrl.trim());
-        if (!envelope.source)
-            throw new Error(tr("app.s0086"));
-        setAutoSourcePreview(envelope.source);
-        setAutoAuthorized(false);
-    });
-    const showAutoWorkflowStatus = (target: AutoWorkflow) => {
-        setTrackedAutoWorkflowIds((current) => current.includes(target.id) ? current : [...current, target.id]);
-        setDismissedAutoWorkflowIds((current) => current.filter((id) => id !== target.id));
-        setAutoWorkflow({ ...target });
-    };
-    const dismissAutoWorkflowStatus = (target: AutoWorkflow) => {
-        setTrackedAutoWorkflowIds((current) => current.filter((id) => id !== target.id));
-        setDismissedAutoWorkflowIds((current) => current.includes(target.id) ? current : [...current, target.id]);
-    };
-    const startAutoWorkflow = () => withAutoBusy(tr("app.s0097"), async () => {
-        if (!modelPath || !modelPathAvailable || !await localFileAvailable(modelPath)) {
-            setModelPathAvailable(false);
-            throw new Error(tr("app.s0098"));
-        }
-        if (autoTranslate && !autoTranslationLanguage.trim())
-            throw new Error(tr("app.s0099"));
-        if (autoInputKind === "local" && !autoMediaPath)
-            throw new Error(tr("app.s0100"));
-        if (autoInputKind === "url" && (!autoSourcePreview || !autoAuthorized))
-            throw new Error(tr("app.s0101"));
-        const output = await pickVideoPath(autoSourcePreview?.title ?? tr("app.s0102"));
-        if (!output)
-            return;
-        const input = autoInputKind === "local"
-            ? { kind: "local" as const, mediaPath: autoMediaPath, title: tr("app.s0103") }
-            : { kind: "url" as const, url: autoSourcePreview!.originalUrl, confirmedMediaId: autoSourcePreview!.siteMediaId };
-        const envelope = await backgroundTaskClient.startAutoWorkflow({
-            input,
-            modelPath,
-            language: transcriptionLanguage,
-            locale: uiLocale,
-            output,
-            subtitleMode: autoTranslate ? autoSubtitleMode : "source", profile: autoProfile,
-            translationLanguage: autoTranslate ? autoTranslationLanguage : undefined,
-            burnSubtitles: autoBurnSubtitles,
-            aiExecution: autoTranslate ? autoAiSelection ?? undefined : undefined,
-        });
-        if (!envelope.workflow)
-            throw new Error(tr("app.s0104"));
-        autoWorkflowOriginProjectIdsRef.current.set(envelope.workflow.id, activeProjectIdRef.current);
-        setAutoWorkflows((current) => upsertAutoWorkflowSnapshot(current, { ...envelope.workflow! }));
-        showAutoWorkflowStatus(envelope.workflow);
-        setAutoWorkflow({ ...envelope.workflow });
-        setShowAutoWorkflow(false);
-        setNotice(tr("app.s0105"));
-    });
-    const cancelAutoWorkflow = (target: AutoWorkflow | null = autoWorkflow) => {
-        if (!target)
-            return;
-        setAutoWorkflow({ ...target });
-        return withAutoBusy(tr("app.s0106"), async () => {
-        const envelope = await backgroundTaskClient.cancelAutoWorkflow(target.id);
-        if (!envelope.workflow)
-            throw new Error(tr("app.s0107"));
-        setAutoWorkflows((current) => upsertAutoWorkflowSnapshot(current, { ...envelope.workflow! }));
-        setAutoWorkflow((current) => selectAutoWorkflowSnapshot(current, envelope.workflow!));
-        setNotice(tr("app.s0108"));
-        }, target.id);
-    };
-    const continueAutoWorkflow = (target: AutoWorkflow | null = autoWorkflow) => {
-        if (!target)
-            return;
-        showAutoWorkflowStatus(target);
-        return withAutoBusy(tr("app.s0109"), async () => {
-        const envelope = await backgroundTaskClient.continueAutoWorkflow(target.id);
-        if (!envelope.workflow)
-            throw new Error(tr("app.s0110"));
-        setAutoWorkflows((current) => upsertAutoWorkflowSnapshot(current, { ...envelope.workflow! }));
-        showAutoWorkflowStatus(envelope.workflow);
-        setAutoWorkflow((current) => selectAutoWorkflowSnapshot(current, envelope.workflow!));
-        setNotice(tr("app.s0111", { "0": envelope.workflow.attemptCount }));
-        }, target.id);
-    };
-    const openAutoProject = (target: AutoWorkflow | null = autoWorkflow) => {
-        if (!target?.projectId)
-            return;
-        setAutoWorkflow({ ...target });
-        return withAutoBusy(tr("app.s0112"), async () => {
-            await activateProject(target.projectId!);
-        }, target.id);
-    };
-    const changeAsrBackend = (backend: "cpu" | "vulkan") => withBusy(tr("app.s0113"), async () => {
-        const next = await selectAsrBackend(backend);
-        setRuntime(next);
-        setNotice(backend === "vulkan" ? tr("app.s0114") : tr("app.s0115"));
-    });
-    const openDiagnostics = () => withBusy(tr("app.s0116"), async () => {
-        await openLogDirectory();
-        setNotice(tr("app.s0117"));
-    });
-    const relinkMedia = () => project && withBusy(tr("app.s0118"), async () => {
-        const path = await pickMedia();
-        if (!path)
-            return;
-        await projectSessionClient.relinkMedia(project.id, path);
-        await refreshProject(project.id, true);
-        setNotice(tr("app.s0119"));
-    });
-    const transcribe = () => project && withBusy(tr("app.s0120"), async () => {
-        if (!capabilities.hasBoundMedia)
-            throw new Error(tr("app.capability.mediaRequired"));
-        if (transcriptionMode === "multispeaker") {
-            if (!runtime?.ffmpegConfigured)
-                throw new Error(tr("app.s0121"));
-            if (transcriptionHealth?.state !== "healthy")
-                throw new Error(tr("app.moss.health.required"));
-            const envelope = await backgroundTaskClient.startTranscription({
-                projectId: project.id,
-                language: transcriptionLanguage,
-                prompt: transcriptionPrompt.trim() || undefined,
-                hotwords: transcriptionHotwords.split(/[,，\n]/).map((value) => value.trim()).filter(Boolean),
-            });
-            if (!envelope.transcriptionJob)
-                throw new Error(tr("app.moss.job.missing"));
-            setTranscriptionJob(envelope.transcriptionJob);
-            if (envelope.transcriptionJob.status === "completed") {
-                await Promise.all([refreshProject(project.id, true), refreshSpeakerTrack(project.id), refreshTranscription(project.id)]);
-                setNotice(tr("app.moss.job.completed"));
-            }
-            else if (envelope.transcriptionJob.status === "awaiting_apply") {
-                setNotice(tr("app.moss.job.awaitingApply"));
-            }
-            else {
-                setNotice(tr("app.moss.job.started"));
-            }
-            return;
-        }
-        const localTranscription = localResources?.capabilities.find((capability) => capability.id === "local_transcription");
-        const activeModelPath = modelPath;
-        const modelReady = Boolean(activeModelPath && modelPathAvailable && await localFileAvailable(activeModelPath));
-        if (!["ready", "update_available"].includes(localTranscription?.state ?? "not_ready") || !runtime?.ffmpegConfigured || !runtime.asrConfigured || !activeModelPath || !modelReady) {
-            setModelPathAvailable(false);
-            setPendingResourceAction("transcribe");
-            await openResourcePreparation("local_transcription", "on_demand");
-            return;
-        }
-        const expectedVersionId = project.history.currentVersionId;
-        if (!expectedVersionId)
-            throw new Error(tr("app.quickRetranscribe.versionMissing"));
-        const result = await transcriptEditingClient.quickTranscribe(project.id, activeModelPath, transcriptionLanguage, expectedVersionId);
-        await refreshProject(project.id);
-        setNotice(Number(result.segments ?? 0) === 0 ? tr("app.s0124") : tr("app.s0125"));
-    });
-    useEffect(() => {
-        if (!resumeLocalTranscription)
-            return;
-        setResumeLocalTranscription(false);
-        void transcribe();
-    }, [resumeLocalTranscription]);
-    const openQuickRetranscription = async () => {
-        if (!project || quickRetranscriptionChecking)
-            return;
-        setShowQuickRetranscription(true);
-        setQuickRetranscriptionPreflight(null);
-        setQuickRetranscriptionConfirmed(false);
-        setQuickRetranscriptionError(null);
-        setQuickRetranscriptionChecking(true);
-        try {
-            const envelope = await transcriptEditingClient.transcriptReplacementPreflight(project.id);
-            if (!envelope.transcriptReplacementPreflight)
-                throw new Error(tr("app.quickRetranscribe.preflightMissing"));
-            setQuickRetranscriptionPreflight(envelope.transcriptReplacementPreflight);
-        }
-        catch (cause) {
-            setQuickRetranscriptionError(cause instanceof Error ? cause.message : String(cause));
-        }
-        finally {
-            setQuickRetranscriptionChecking(false);
-        }
-    };
-    const closeQuickRetranscription = () => {
-        if (busyRef.current)
-            return;
-        setShowQuickRetranscription(false);
-        setQuickRetranscriptionPreflight(null);
-        setQuickRetranscriptionConfirmed(false);
-        setQuickRetranscriptionError(null);
-    };
-    const confirmQuickRetranscription = async () => {
-        if (!project || !quickRetranscriptionPreflight?.canReplace || !quickRetranscriptionConfirmed || busyRef.current)
-            return;
-        busyRef.current = true;
-        setBusy(tr("app.quickRetranscribe.running"));
-        setError(null);
-        setQuickRetranscriptionError(null);
-        try {
-            if (!capabilities.hasBoundMedia)
-                throw new Error(tr("app.capability.mediaRequired"));
-            if (!runtime?.ffmpegConfigured)
-                throw new Error(tr("app.s0121"));
-            if (!runtime.asrConfigured)
-                throw new Error(tr("app.s0122"));
-            if (!modelPath || !modelPathAvailable || !await localFileAvailable(modelPath)) {
-                setModelPathAvailable(false);
-                throw new Error(tr("app.s0123"));
-            }
-            const result = await transcriptEditingClient.quickTranscribe(
-                project.id,
-                modelPath,
-                transcriptionLanguage,
-                quickRetranscriptionPreflight.currentVersionId,
-                true,
-            );
-            if (result.timingValidation?.status !== "verified"
-                || result.timingValidation.timeDomain !== "original_media"
-                || result.timingValidation.vadUsed) {
-                throw new Error(tr("app.quickRetranscribe.validationMissing"));
-            }
-            await refreshProject(project.id);
-            setShowQuickRetranscription(false);
-            setQuickRetranscriptionPreflight(null);
-            setQuickRetranscriptionConfirmed(false);
-            setNotice(tr("app.quickRetranscribe.completed", { count: result.timingValidation.segmentCount }));
-        }
-        catch (cause) {
-            setQuickRetranscriptionError(cause instanceof Error ? cause.message : String(cause));
-        }
-        finally {
-            busyRef.current = false;
-            setBusy(null);
-        }
-    };
-    const saveTranscriptionProvider = (endpoint: string, modelId: string) => withBusy(tr("app.moss.settings.saving"), async () => {
-        const envelope = await backgroundTaskClient.configureTranscription(endpoint, modelId);
-        if (!envelope.config)
-            throw new Error(tr("app.moss.settings.missing"));
-        setTranscriptionConfig(envelope.config);
-        const checked = await backgroundTaskClient.getTranscriptionHealth();
-        setTranscriptionHealth(checked.providerHealth ?? null);
-        setNotice(tr("app.moss.settings.saved"));
-    });
-    const checkTranscriptionProvider = () => withBusy(tr("app.moss.health.checking"), async () => {
-        const envelope = await backgroundTaskClient.getTranscriptionHealth();
-        setTranscriptionHealth(envelope.providerHealth ?? null);
-    });
-    const cancelTranscription = () => transcriptionJob && withBusy(tr("app.moss.job.cancelling"), async () => {
-        const envelope = await backgroundTaskClient.cancelTranscription(transcriptionJob.id);
-        setTranscriptionJob(envelope.transcriptionJob ?? null);
-    });
-    const resumeTranscription = () => transcriptionJob && withBusy(tr("app.moss.job.resuming"), async () => {
-        const envelope = await backgroundTaskClient.resumeTranscription(transcriptionJob.id);
-        if (!envelope.transcriptionJob)
-            throw new Error(tr("app.moss.job.missing"));
-        setTranscriptionJob(envelope.transcriptionJob);
-    });
-    const applyTranscriptionCandidate = () => transcriptionJob?.candidate && project && withBusy(tr("app.moss.candidate.applying"), async () => {
-        const envelope = await backgroundTaskClient.applyTranscription(transcriptionJob.id, transcriptionJob.candidate!.currentVersionId ?? "");
-        if (!envelope.transcriptionJob)
-            throw new Error(tr("app.moss.job.missing"));
-        setShowTranscriptionCandidate(false);
-        setTranscriptionApplyConfirmed(false);
-        await refreshProject(project.id);
-        setNotice(tr("app.moss.candidate.applied"));
-    });
-    const discardTranscriptionCandidate = () => transcriptionJob && withBusy(tr("app.moss.candidate.discarding"), async () => {
-        const envelope = await backgroundTaskClient.discardTranscription(transcriptionJob.id);
-        if (!envelope.transcriptionJob)
-            throw new Error(tr("app.moss.job.missing"));
-        setTranscriptionJob(envelope.transcriptionJob);
-        setShowTranscriptionCandidate(false);
-        setTranscriptionApplyConfirmed(false);
-        setNotice(tr("app.moss.candidate.discarded"));
-    });
-    const resolveTranscriptionReview = (itemId: string, action: "resolved" | "ignored") => withBusy(tr("app.moss.review.saving"), async () => {
-        await backgroundTaskClient.resolveTranscriptionReview(itemId, action);
-        if (project)
-            await refreshTranscription(project.id);
-    });
-    const startAudioAnalysis = () => project && withBusy(tr("app.s0126"), async () => {
-        if (!capabilities.hasBoundMedia)
-            throw new Error(tr("app.capability.mediaRequired"));
-        if (!runtime?.ffmpegConfigured)
-            throw new Error(tr("app.s0121"));
-        const envelope = await backgroundTaskClient.startAudioAnalysis(project.id);
-        if (!envelope.audioAnalysisJob)
-            throw new Error(tr("app.s0127"));
-        setAudioAnalysisJob(envelope.audioAnalysisJob);
-        setNotice(tr("app.s0128"));
-    });
-    const cancelAudioAnalysis = () => audioAnalysisJob && withBusy(tr("app.s0129"), async () => {
-        const envelope = await backgroundTaskClient.cancelAudioAnalysis(audioAnalysisJob.id);
-        if (envelope.audioAnalysisJob)
-            setAudioAnalysisJob(envelope.audioAnalysisJob);
-    });
-    const resumeAudioAnalysis = () => audioAnalysisJob && withBusy(tr("app.s0130"), async () => {
-        const envelope = await backgroundTaskClient.resumeAudioAnalysis(audioAnalysisJob.id);
-        if (!envelope.audioAnalysisJob)
-            throw new Error(tr("app.s0131"));
-        setAudioAnalysisJob(envelope.audioAnalysisJob);
-        setNotice(tr("app.s0132", { "0": envelope.audioAnalysisJob.attemptCount }));
-    });
-    const installSpeakerPackage = () => withBusy(tr("app.s0133"), async () => {
-        const envelope = await backgroundTaskClient.installSpeakerPackage();
-        if (!envelope.speakerJob)
-            throw new Error(tr("app.s0134"));
-        setSpeakerJobs((current) => upsertById(current, envelope.speakerJob!));
-        setSpeakerJob(envelope.speakerJob);
-        if (envelope.speakerJob.status === "completed") {
-            const status = await backgroundTaskClient.getSpeakerPackage();
-            setSpeakerPackage(status.speakerPackage ?? null);
-            setNotice(tr("app.s0135"));
-        }
-        else {
-            setNotice(tr("app.s0136"));
-        }
-    });
-    const startSpeakerAnalysis = () => project && withBusy(tr("app.s0137"), async () => {
-        if (!speakerPackage?.installed || speakerPackage.verified !== true)
-            throw new Error(tr("app.s0138"));
-        const envelope = await backgroundTaskClient.startSpeakerAnalysis(project.id);
-        if (!envelope.speakerJob)
-            throw new Error(tr("app.s0139"));
-        setSpeakerJobs((current) => upsertById(current, envelope.speakerJob!));
-        setSpeakerJob(envelope.speakerJob);
-        if (envelope.speakerJob.status === "completed") {
-            await Promise.all([refreshProject(project.id), refreshSpeakerTrack(project.id)]);
-            setNotice(tr("app.s0061"));
-        }
-        else {
-            setNotice(tr("app.s0140"));
-        }
-    });
-    const cancelSpeakerJob = (target: SpeakerJob | null = speakerJob) => target && withBusy(tr("app.s0141"), async () => {
-        const envelope = await backgroundTaskClient.cancelSpeakerJob(target.id);
-        if (envelope.speakerJob) {
-            setSpeakerJobs((current) => upsertById(current, envelope.speakerJob!));
-            setSpeakerJob(envelope.speakerJob);
-        }
-    });
-    const resumeSpeakerJob = (target: SpeakerJob | null = speakerJob) => target && withBusy(tr("app.s0142"), async () => {
-        const envelope = await backgroundTaskClient.resumeSpeakerJob(target.id);
-        if (!envelope.speakerJob)
-            throw new Error(tr("app.s0143"));
-        setSpeakerJobs((current) => upsertById(current, envelope.speakerJob!));
-        setSpeakerJob(envelope.speakerJob);
-        setNotice(tr("app.s0144", { "0": envelope.speakerJob.attemptCount }));
-    });
-    const renameSpeaker = (speakerId: string, name: string) => project && withBusy(tr("app.s0145"), async () => {
-        const envelope = await transcriptEditingClient.renameSpeaker(project.id, speakerId, name);
-        if (!envelope.speakerTrack)
-            throw new Error(tr("app.s0146"));
-        setSpeakerTrack(envelope.speakerTrack);
-        await refreshProject(project.id);
-        setNotice(tr("app.s0147"));
-    });
-    const mergeSpeaker = (fromId: string, intoId: string) => project && withBusy(tr("app.s0148"), async () => {
-        const envelope = await transcriptEditingClient.mergeSpeaker(project.id, fromId, intoId);
-        if (!envelope.speakerTrack)
-            throw new Error(tr("app.s0149"));
-        setSpeakerTrack(envelope.speakerTrack);
-        await refreshProject(project.id);
-        setNotice(tr("app.s0150"));
-    });
-    const assignSpeaker = (segmentId: string, speakerId: string) => project && withBusy(tr("app.s0151"), async () => {
-        const envelope = await transcriptEditingClient.assignSpeaker(project.id, segmentId, speakerId);
-        if (!envelope.speakerTrack)
-            throw new Error(tr("app.s0146"));
-        setSpeakerTrack(envelope.speakerTrack);
-        await refreshProject(project.id);
-        setNotice(tr("app.s0152"));
-    });
-    const editSegment = (segment: Segment, text: string) => project && text.trim() !== segment.text && withBusy(tr("app.s0153"), async () => {
-        await transcriptEditingClient.editSegment(project.id, segment.id, text.trim());
-        await refreshProject(project.id);
-        setNotice(tr("app.s0154"));
-    });
-    const editTranslationSegment = (segment: Segment, text: string) => {
-        const translated = selectedTranslation?.segments.find((item) => item.segmentId === segment.id);
-        const expectedVersion = project?.history.currentVersionId;
-        if (!project || !selectedSubtitleLanguage || !translated || text.trim() === translated.text)
-            return;
-        if (!expectedVersion) {
-            setError(tr("app.creator.translation.versionUnavailable"));
-            return;
-        }
-        void withBusy(tr("app.creator.translation.editing"), async () => {
-            await translationClient.editSegment(project.id, segment.id, selectedSubtitleLanguage, text.trim(), expectedVersion);
-            await refreshProject(project.id);
-            setNotice(tr("app.creator.translation.edited"));
-        });
-    };
-    const replaceAll = () => project && search && (replacement || emptyReplacementConfirmed) && withBusy(tr("app.s0155"), async () => {
-        const result = await transcriptEditingClient.replaceAll(project.id, search, replacement);
-        await refreshProject(project.id);
-        setEmptyReplacementConfirmed(false);
-        setNotice(Number(result.changedSegments ?? 0) === 0 ? tr("app.s0156") : tr("app.s0157", { "0": result.changedSegments }));
-    });
-    const openStructureEdit = (mode: StructureEditMode, targetOverride?: Segment, textOffsetOverride?: number, useWordTiming = true) => {
-        const target = targetOverride ?? selectedSegments[0];
-        if (!project || !target)
-            return;
-        if (targetOverride) {
-            setSelectedId(target.id);
-            setSelectedSegmentIds([target.id]);
-            setSelectionAnchorId(target.id);
-        }
-        setStructureError(null);
-        if (mode === "split") {
-            const characterCount = Array.from(target.text).length;
-            const requestedOffset = Math.max(1, Math.min(characterCount - 1, textOffsetOverride ?? Math.floor(characterCount / 2)));
-            const targetWords = useWordTiming ? project.transcript.words
-                .filter((word) => word.segmentId === target.id && Number.isFinite(word.start) && Number.isFinite(word.end) && word.start >= target.start && word.end <= target.end && word.end > word.start)
-                .sort((left, right) => left.start - right.start) : [];
-            let scanFrom = 0;
-            const wordBoundaries = targetWords.slice(0, -1).flatMap((word) => {
-                const index = target.text.indexOf(word.text, scanFrom);
-                if (index < 0)
-                    return [];
-                scanFrom = index + word.text.length;
-                return [{ textOffset: Array.from(target.text.slice(0, scanFrom)).length, at: word.end }];
-            });
-            const credibleBoundary = wordBoundaries
-                .filter((boundary) => boundary.textOffset > 0 && boundary.textOffset < characterCount && boundary.at > target.start && boundary.at < target.end)
-                .sort((left, right) => Math.abs(left.textOffset - requestedOffset) - Math.abs(right.textOffset - requestedOffset))[0];
-            setStructureTextOffset(String(credibleBoundary?.textOffset ?? requestedOffset));
-            setStructureStart(credibleBoundary ? credibleBoundary.at.toFixed(3) : "");
-        }
-        else if (mode === "timing") {
-            setStructureStart(target.start.toFixed(3));
-            setStructureEnd(target.end.toFixed(3));
-        }
-        else if (mode === "offset") {
-            setStructureDelta("0.100");
-        }
-        setStructureEditMode(mode);
-    };
-    const saveBeforeStructureEdit = async (segment: Segment, draft: string) => {
-        const text = draft.trim();
-        if (!project || text === segment.text)
-            return { saved: true, segment };
-        let saved = false;
-        await withBusy(tr("app.s0153"), async () => {
-            await transcriptEditingClient.editSegment(project.id, segment.id, text);
-            await refreshProject(project.id);
-            setNotice(tr("app.s0154"));
-            saved = true;
-        });
-        return { saved, segment: { ...segment, text } };
-    };
-    const splitSegmentFromEditor = async (segment: Segment, draft: string, textOffset: number) => {
-        const changed = draft.trim() !== segment.text;
-        const result = await saveBeforeStructureEdit(segment, draft);
-        if (!result.saved)
-            return;
-        openStructureEdit("split", result.segment, textOffset, !changed);
-    };
-    const mergePreviousFromEditor = async (segment: Segment, draft: string) => {
-        if (!project)
-            return;
-        const result = await saveBeforeStructureEdit(segment, draft);
-        if (!result.saved)
-            return;
-        const index = project.transcript.segments.findIndex((candidate) => candidate.id === segment.id);
-        const previous = project.transcript.segments[index - 1];
-        if (!previous) {
-            setNotice(tr("app.creator.editor.noPrevious"));
-            return;
-        }
-        setSelectedId(previous.id);
-        setSelectedSegmentIds([previous.id, segment.id]);
-        setSelectionAnchorId(previous.id);
-        setStructureError(null);
-        setStructureEditMode("merge");
-    };
-    const applyStructureEdit = async () => {
-        if (!project || !structureEditMode || !selectedSegments.length)
-            return;
-        setStructureBusy(true);
-        setStructureError(null);
-        try {
-            let request: Promise<Awaited<ReturnType<typeof transcriptEditingClient.splitSegment>>>;
-            if (structureEditMode === "split") {
-                const textOffset = Number(structureTextOffset);
-                const at = Number(structureStart);
-                if (!Number.isInteger(textOffset) || textOffset <= 0 || !Number.isFinite(at))
-                    throw new Error(tr("app.s0158"));
-                if (!hasMeaningfulSubtitleText(splitLeftText) || !hasMeaningfulSubtitleText(splitRightText))
-                    throw new Error(tr("app.structure.splitMeaningful"));
-                request = transcriptEditingClient.splitSegment(project.id, selectedSegments[0].id, textOffset, at);
-            }
-            else if (structureEditMode === "merge") {
-                if (!mergeCandidatesAdjacent)
-                    throw new Error(tr("app.s0159"));
-                request = transcriptEditingClient.mergeSegments(project.id, selectedSegments[0].id, selectedSegments[1].id);
-            }
-            else if (structureEditMode === "timing") {
-                const start = Number(structureStart);
-                const end = Number(structureEnd);
-                if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start)
-                    throw new Error(tr("app.s0160"));
-                if (!timingChanged)
-                    throw new Error(tr("app.structure.timingUnchanged"));
-                request = transcriptEditingClient.updateTiming(project.id, selectedSegments[0].id, start, end);
-            }
-            else {
-                const delta = Number(structureDelta);
-                if (!Number.isFinite(delta) || delta === 0)
-                    throw new Error(tr("app.s0161"));
-                request = transcriptEditingClient.offsetSegments(project.id, selectedSegments.map((segment) => segment.id), delta);
-            }
-            const envelope = await request;
-            if (!envelope.structureEdit?.project)
-                throw new Error(tr("app.s0162"));
-            const result = envelope.structureEdit;
-            const nextProject = result.project;
-            setProject(nextProject);
-            setProjects((current) => current.map((item) => item.id === nextProject.id ? nextProject : item));
-            const nextSelection = result.affectedSegmentIds.filter((id) => nextProject.transcript.segments.some((segment) => segment.id === id));
-            setSelectedSegmentIds(nextSelection);
-            setSelectedId(nextSelection[0] ?? nextProject.transcript.segments[0]?.id ?? null);
-            setSelectionAnchorId(nextSelection[0] ?? null);
-            setWordRange(null);
-            setCutPreview(null);
-            await Promise.all([refreshSpeakerTrack(project.id), refreshTranscription(project.id)]);
-            setStructureEditMode(null);
-            const messages: Record<StructureEditMode, string> = {
-                split: tr("app.s0163"),
-                merge: tr("app.s0164"),
-                timing: tr("app.s0165"),
-                offset: tr("app.s0166", { "0": selectedSegments.length, "1": Number(structureDelta) > 0 ? "+" : "", "2": Number(structureDelta).toFixed(3) }),
-            };
-            setNotice(messages[structureEditMode]);
-        }
-        catch (cause) {
-            setStructureError(cause instanceof Error ? cause.message : String(cause));
-        }
-        finally {
-            setStructureBusy(false);
-        }
-    };
-    const openSubtitleImport = () => {
-        setSubtitleImportPath("");
-        setSubtitleImportPreview(null);
-        setSubtitleImportError(null);
-        setSubtitleReplaceConfirmed(false);
-        setShowSubtitleImport(true);
-    };
-    const inspectSubtitleFile = async () => {
-        if (!project)
-            return;
-        setSubtitleImportBusy(tr("app.s0167"));
-        setSubtitleImportError(null);
-        try {
-            const path = await pickSubtitleFile();
-            if (!path)
-                return;
-            setSubtitleImportPath(path);
-            setSubtitleReplaceConfirmed(false);
-            const envelope = await transcriptEditingClient.inspectSubtitleFile(project.id, path);
-            if (!envelope.subtitleImportPreview)
-                throw new Error(tr("app.s0168"));
-            setSubtitleImportPreview(envelope.subtitleImportPreview);
-        }
-        catch (cause) {
-            setSubtitleImportPreview(null);
-            setSubtitleImportError(cause instanceof Error ? cause.message : String(cause));
-        }
-        finally {
-            setSubtitleImportBusy(null);
-        }
-    };
-    const confirmSubtitleImport = async () => {
-        if (!project || !subtitleImportPreview || !subtitleReplaceConfirmed)
-            return;
-        setSubtitleImportBusy(tr("app.s0169"));
-        setSubtitleImportError(null);
-        try {
-            const envelope = await transcriptEditingClient.importSubtitleFile(project.id, subtitleImportPath, subtitleImportPreview.sha256, subtitleImportPreview.expectedVersionId);
-            if (!envelope.project)
-                throw new Error(tr("app.s0170"));
-            setProject(envelope.project);
-            setProjects((current) => current.map((item) => item.id === envelope.project?.id ? envelope.project : item) as Project[]);
-            setSelectedId(envelope.project.transcript.segments[0]?.id ?? null);
-            setWordRange(null);
-            setCutPreview(null);
-            await Promise.all([refreshSpeakerTrack(project.id), refreshTranscription(project.id)]);
-            setShowSubtitleImport(false);
-            setQualityFilter("all");
-            setNotice(tr("app.s0171", { "0": envelope.project.transcript.segments.length }));
-        }
-        catch (cause) {
-            const message = cause instanceof Error ? cause.message : String(cause);
-            const versionMismatch = message.includes("subtitle_import_version_mismatch");
-            setSubtitleImportError(versionMismatch ? tr("app.subtitleImport.versionMismatch") : message);
-            if (versionMismatch) {
-                setSubtitleImportPreview(null);
-                setSubtitleReplaceConfirmed(false);
-            }
-        }
-        finally {
-            setSubtitleImportBusy(null);
-        }
-    };
     const locateSubtitleIssue = (issue: SubtitleQualityIssue) => {
         const segment = project?.transcript.segments.find((candidate) => candidate.id === issue.segmentId);
         if (segment)
             selectSegment(segment);
     };
-    const exportTranscript = () => project && withBusy(tr("app.s0172"), async () => {
-        const output = await pickTranscriptPath(project.title, exportFormat);
-        if (!output)
-            return;
-        if (structuredExport) {
-            await exportRuntimeClient.exportStructuredTranscript(project.id, exportFormat, output, includeSpeakerLabels, confirmTranscriptionWarnings);
-        }
-        else {
-            const subtitle = subtitleExportOptions();
-            await exportRuntimeClient.exportTranscript(project.id, exportFormat, output, subtitle.mode, subtitle.language, subtitle.confirmStaleTranslation);
-        }
-        setNotice(tr("app.s0173", { "0": exportFormat === "markdown" ? tr("app.s0174") : exportFormat === "json" ? tr("app.moss.export.json") : tr("app.s0175"), "1": output }));
-    });
-    const subtitleExportOptions = () => {
-        if (subtitleMode === "source")
-            return { mode: "source" as const, language: undefined, confirmStaleTranslation: false };
-        if (!selectedSubtitleLanguage)
-            throw new Error(tr("app.s0176"));
-        if (selectedTranslationPending)
-            throw new Error(tr("app.s0177", { "0": selectedSubtitleLanguage.toUpperCase() }));
-        return { mode: subtitleMode, language: selectedSubtitleLanguage, confirmStaleTranslation };
-    };
-    const changeCanvas = (settings: CanvasSettings) => {
-        if (!project)
-            return Promise.resolve();
-        const projectId = project.id;
-        const previousSettings = project.canvasSettings;
-        const updateCanvasState = (canvasSettings: CanvasSettings) => {
-            setProject((current) => current?.id === projectId ? { ...current, canvasSettings } : current);
-            setProjects((current) => current.map((item) => item.id === projectId ? { ...item, canvasSettings } : item));
-        };
-        updateCanvasState(settings);
-        return withBusy(tr("app.s0178"), async () => {
-            try {
-                const envelope = await transcriptEditingClient.setCanvas(projectId, settings);
-                if (!envelope.project)
-                    throw new Error(tr("app.canvas.projectMissing"));
-                setProject(envelope.project);
-                setProjects((current) => current.map((item) => item.id === envelope.project!.id ? envelope.project! : item));
-                const authorization = await resolveCanvasMedia(projectId);
-                setMediaUrl(authorization.mediaUrl);
-                const savedNotice = settings.aspectRatio === "9:16" ? tr("app.s0179") : tr("app.s0180");
-                setNotice(authorization.warning ? `${savedNotice} ${tr("app.canvas.previewUnavailable")}` : savedNotice);
-            }
-            catch (cause) {
-                updateCanvasState(previousSettings);
-                throw cause;
-            }
-        });
-    };
-    const changeSubtitleStyle = (preset: Project["subtitleStyle"]["preset"], position: Project["subtitleStyle"]["position"], sourceFontSize?: number, translationFontSize?: number, boxWidthPercent?: number, boxHeightLines?: number) => project && withBusy(tr("app.s0181"), async () => {
-        const envelope = await transcriptEditingClient.setSubtitleStyle(project.id, preset, position, sourceFontSize, translationFontSize, boxWidthPercent, boxHeightLines);
-        if (!envelope.project)
-            throw new Error(tr("app.s0182"));
-        setProject(envelope.project);
-        setProjects((current) => current.map((item) => item.id === envelope.project!.id ? envelope.project! : item));
-        setNotice(tr("app.s0183"));
-    });
-    const preparePreview = () => project && withBusy(tr("app.s0184"), async () => {
-        if (!capabilities.hasBoundMedia)
-            throw new Error(tr("app.capability.mediaRequired"));
-        await transcriptEditingClient.prepareMedia(project.id);
-        await refreshProject(project.id, true);
-        setNotice(tr("app.s0185"));
-    });
-    const exportVideo = () => project && withBusy(tr("app.s0186"), async () => {
-        if (!capabilities.hasBoundMedia)
-            throw new Error(tr("app.capability.mediaRequired"));
-        const output = await pickVideoPath(project.title, subtitleDelivery);
-        if (!output)
-            return;
-        const subtitle = subtitleExportOptions();
-        const envelope = await exportRuntimeClient.exportVideo(project.id, output, subtitleDelivery, subtitle.mode, subtitle.language, subtitle.confirmStaleTranslation);
-        if (!envelope.job)
-            throw new Error(tr("app.s0187"));
-        setActiveExport(envelope.job);
-        setNotice(envelope.job.status === "completed" ? tr("app.s0051", { "0": envelope.job.outputPath }) : tr("app.s0188"));
-    });
-    const cancelExport = () => activeExport && withBusy(tr("app.s0189"), async () => {
-        const envelope = await exportRuntimeClient.cancelVideoExport(activeExport.id);
-        if (envelope.job)
-            setActiveExport(envelope.job);
-        setNotice(tr("app.s0190"));
-    });
-    const retryExport = () => activeExport && withBusy(tr("app.s0191"), async () => {
-        const envelope = await exportRuntimeClient.retryVideoExport(activeExport.id);
-        if (!envelope.job)
-            throw new Error(tr("app.s0187"));
-        setActiveExport(envelope.job);
-        setNotice(tr("app.s0192"));
-    });
-    const updateCut = (editId: string, action: "apply" | "restore" | "dismiss") => project && withBusy(action === "apply" ? tr("app.s0193") : action === "dismiss" ? tr("app.cut.dismissing") : tr("app.s0194"), async () => {
-        await transcriptEditingClient.updateCut(project.id, editId, action);
-        await refreshProject(project.id);
-        setNotice(action === "apply" ? tr("app.s0195") : action === "dismiss" ? tr("app.cut.dismissed") : tr("app.s0196"));
-    });
-    const detectSuggestions = () => project && withBusy(tr("app.s0197"), async () => {
-        const envelope = await transcriptEditingClient.detectCuts(project.id);
-        const count = envelope.suggestions?.length ?? 0;
-        await refreshProject(project.id);
-        setNotice(count ? tr("app.s0198", { "0": count }) : tr("app.s0199"));
-    });
-    const startCutPreview = async (editId: string) => {
-        if (!project)
-            return;
-        const envelope = await transcriptEditingClient.previewCut(project.id, editId);
-        if (!envelope.preview)
-            throw new Error(tr("app.s0200"));
-        setCutPreview(envelope.preview);
-        const video = videoRef.current;
-        if (!video) {
-            setNotice(tr("app.s0201"));
-            return;
-        }
-        video.currentTime = envelope.preview.previewStart;
-        await video.play();
-        setNotice(tr("app.s0202"));
-    };
-    const previewCut = (editId: string) => withBusy(tr("app.s0203"), async () => {
-        await startCutPreview(editId);
-    });
-    const createWordCut = () => project && selected && activeWordRange && withBusy(tr("app.s0204"), async () => {
-        const from = selectedWords[activeWordRange.start];
-        const to = selectedWords[activeWordRange.end];
-        if (!from || !to)
-            throw new Error(tr("app.s0205"));
-        const envelope = await transcriptEditingClient.createWordCut(project.id, selected.id, from.id, to.id, cutPadding);
-        if (!envelope.cut)
-            throw new Error(tr("app.s0206"));
-        await refreshProject(project.id);
-        setWordRange(null);
-        await startCutPreview(envelope.cut.id);
-    });
-    const handleVideoTimeUpdate = () => {
-        const video = videoRef.current;
-        if (!video || !project)
-            return;
-        if (cutPreview) {
-            if (video.currentTime >= cutPreview.cutStart && video.currentTime < cutPreview.cutEnd - 0.01) {
-                video.currentTime = cutPreview.cutEnd;
-                return;
-            }
-            if (video.currentTime >= cutPreview.previewEnd) {
-                video.pause();
-                setCutPreview(null);
-                return;
-            }
-        }
-        const cut = project.timeline.cuts.find((candidate) => video.currentTime >= candidate.sourceStart && video.currentTime < candidate.sourceEnd - 0.01);
-        if (cut)
-            video.currentTime = cut.sourceEnd;
-        setPlayback((current) => ({
-            ...current,
-            currentTime: video.currentTime,
-            duration: Number.isFinite(video.duration) ? video.duration : current.duration,
-        }));
-    };
-    const handleVideoLoadedMetadata = (event: SyntheticEvent<HTMLVideoElement>) => {
-        // React clears SyntheticEvent.currentTarget after this callback returns. Capture the
-        // DOM value before entering a state updater, which React may invoke later.
-        const mediaDuration = event.currentTarget.duration;
-        const fallbackDuration = project?.media.durationSeconds;
-        setPlayback((current) => ({
-            ...current,
-            duration: resolvePlaybackDuration(mediaDuration, fallbackDuration),
-        }));
-    };
-    const restoreVersion = (versionId: string) => project && withBusy(tr("app.s0207"), async () => {
-        await projectSessionClient.restoreVersion(project.id, versionId);
-        await refreshProject(project.id, true);
-        setNotice(tr("app.s0208"));
-    });
-    const navigateHistory = (action: "undo" | "redo") => project && withBusy(action === "undo" ? tr("app.s0209") : tr("app.s0210"), async () => {
-        const envelope = await projectSessionClient.navigateHistory(project.id, action);
-        if (!envelope.project)
-            throw new Error(tr("app.s0211"));
-        await refreshProject(project.id, true);
-        setNotice(action === "undo" ? tr("app.s0212") : tr("app.s0213"));
-    });
+    const { changeCanvas, changeSubtitleStyle } = createPresentationCommands({project, setProject, updateProjectSummary, setMediaUrl, withBusy, setNotice, editing: editing.session});
+    const {relinkMedia, preparePreview} = createMediaCommands({project, mediaUrl, editing:editing.session, withBusy, refreshProject, setNotice});
+    const { editSegment, editTranslationSegment, replaceAll, updateCut, detectSuggestions, previewCut, createWordCut, restoreVersion, navigateHistory } = createTranscriptCommands({project, selected, selectedWords, activeWordRange, cutPadding, selectedSubtitleLanguage, search, replacement, emptyReplacementConfirmed, setEmptyReplacementConfirmed, setWordRange, videoRef, setCutPreview, withBusy, setNotice, refreshProject, refreshSpeakerTrack, refreshTranscription, editing: editing.session});
     useEffect(() => {
         if (!showMoreMenu)
             return;
@@ -2564,6 +717,7 @@ function WorkbenchController() {
                 commandMoreRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
                 return;
             }
+            if (!dialogOpen && event.key === "F6" && !event.isComposing) { event.preventDefault(); cycleWorkbenchFocus(event.shiftKey); return; }
             if (!dialogOpen && modifier && key === "f") {
                 event.preventDefault();
                 searchInputRef.current?.focus();
@@ -2635,260 +789,6 @@ function WorkbenchController() {
         window.addEventListener("keydown", handleShortcut);
         return () => window.removeEventListener("keydown", handleShortcut);
     }, [busy, currentDeleteCandidate, focusReview, mergeCandidatesAdjacent, project, selectedSegmentIds, showAgentHandoff, showAiExecutionConfirm, showAutoWorkflow, showMoreMenu, showResourceSetup, showRuntime, showSourceImport, showSubtitleImport, showTranscriptionCandidate, structureEditMode]);
-    const chooseModel = () => withBusy(tr("app.s0214"), async () => {
-        const path = await pickModel();
-        if (!path)
-            return;
-        if (!await localFileAvailable(path))
-            throw new Error(tr("app.capability.modelRequired"));
-        localStorage.setItem("siaocut.modelPath", path);
-        setModelPath(path);
-        setModelPathAvailable(true);
-        setNotice(tr("app.s0215"));
-    });
-    const installModel = (modelId: string) => withBusy(tr("app.s0216"), async () => {
-        const envelope = await backgroundTaskClient.installModel(modelId);
-        if (!envelope.modelJob)
-            throw new Error(tr("app.s0217"));
-        setModelJob(envelope.modelJob);
-        if (envelope.modelJob.status === "completed") {
-            const catalog = await backgroundTaskClient.listModels();
-            const available = catalog.models ?? [];
-            setModels(available);
-            const installed = available.find((item) => item.id === modelId);
-            if (installed) {
-                localStorage.setItem("siaocut.modelPath", installed.path);
-                setModelPath(installed.path);
-                setModelPathAvailable(installed.installed && installed.verified === true);
-            }
-            setNotice(tr("app.s0057"));
-            return;
-        }
-        setNotice(tr("app.s0218"));
-    });
-    const cancelModel = () => modelJob && withBusy(tr("app.s0219"), async () => {
-        const envelope = await backgroundTaskClient.cancelModel(modelJob.id);
-        if (envelope.modelJob)
-            setModelJob(envelope.modelJob);
-    });
-    const removeModel = (modelId: string) => withBusy(tr("app.s0220"), async () => {
-        await backgroundTaskClient.removeModel(modelId);
-        const catalog = await backgroundTaskClient.listModels();
-        const available = catalog.models ?? [];
-        setModels(available);
-        const selected = models.find((item) => item.id === modelId)?.path;
-        if (selected && selected === modelPath) {
-            localStorage.removeItem("siaocut.modelPath");
-            setModelPath(null);
-            setModelPathAvailable(false);
-        }
-        setNotice(tr("app.s0221"));
-    });
-    const openAgentHandoff = (trigger: HTMLElement | null) => {
-        agentHandoffReturnFocusRef.current = trigger;
-        setAgentHandoffTaskId(null);
-        setAgentHandoffReady(false);
-        setAgentHandoffCopied(false);
-        setShowAgentHandoff(true);
-    };
-    const openExistingAgentHandoff = (taskId: string, trigger: HTMLElement) => {
-        agentHandoffReturnFocusRef.current = trigger;
-        const claimedBy = project?.tasks.find((task) => task.id === taskId)?.lease?.worker;
-        if (claimedBy)
-            setAgentIdentity(claimedBy);
-        setAgentHandoffTaskId(taskId);
-        setAgentHandoffReady(true);
-        setAgentHandoffCopied(false);
-        setShowAgentHandoff(true);
-    };
-    const assertAgentWorkflowReady = () => {
-        if (!capabilities.hasBoundMedia)
-            throw new Error(tr("app.capability.mediaRequired"));
-        if (!capabilities.hasTranscript)
-            throw new Error(tr("app.capability.transcriptRequired"));
-        if (agentWorkflowKind === "translate" && !capabilities.hasTranslationTarget)
-            throw new Error(tr("app.capability.translationTargetRequired"));
-    };
-    const saveGlossary = () => project && withBusy(tr("app.creator.glossary.saving"), async () => {
-        const entries = glossaryDraft
-            .split(/\r?\n/)
-            .map((line) => line.trim())
-            .filter(Boolean)
-            .map((line) => {
-                const separator = line.indexOf("=");
-                if (separator <= 0 || separator === line.length - 1)
-                    throw new Error(tr("app.creator.glossary.invalid"));
-                return { source: line.slice(0, separator).trim(), target: line.slice(separator + 1).trim() };
-            });
-        const envelope = await translationClient.replaceGlossary(
-            project.id,
-            subtitleLanguage,
-            project.glossary.version,
-            entries,
-        );
-        if (!envelope.project)
-            throw new Error(tr("app.canvas.projectMissing"));
-        setProject(envelope.project);
-        setProjects((current) => current.map((item) => item.id === envelope.project!.id ? envelope.project! : item));
-        setConfirmStaleTranslation(false);
-        setNotice(tr("app.creator.glossary.saved", { version: envelope.project.glossary.version }));
-    });
-    const createAgentTask = () => project && withBusy(tr("app.s0222"), async () => {
-        assertAgentWorkflowReady();
-        const envelope = await agentReviewClient.createWorkflow(project.id, agentWorkflowKind, uiLocale, agentWorkflowKind === "translate" ? subtitleLanguage : undefined);
-        await refreshProject(project.id);
-        setAgentHandoffTaskId(envelope.taskId ?? null);
-        setNotice({
-            polish: tr("app.workflow.created.polish"),
-            proofread: tr("app.workflow.created.proofread"),
-            edit: tr("app.workflow.created.edit"),
-            translate: tr("app.workflow.created.translate", { language: subtitleLanguage.toUpperCase() }),
-            punctuate: tr("app.workflow.created.punctuate"),
-            speaker_names: tr("app.workflow.created.speakerNames"),
-        }[agentWorkflowKind]);
-    });
-    const startAiAssistance = (target: AiExecutionSelection) => project && withBusy(tr("app.creator.agent.starting"), async () => {
-        assertAgentWorkflowReady();
-        const workflow = await agentReviewClient.createWorkflow(project.id, agentWorkflowKind, uiLocale, agentWorkflowKind === "translate" ? subtitleLanguage : undefined);
-        if (!workflow.taskId)
-            throw new Error(tr("app.creator.agent.taskMissing"));
-        await refreshProject(project.id);
-        if (target.kind === "copy_prompt") {
-            agentHandoffReturnFocusRef.current = agentButtonRef.current;
-            setAgentHandoffTaskId(workflow.taskId);
-            setAgentHandoffReady(true);
-            setAgentHandoffCopied(false);
-            setShowAgentHandoff(true);
-            setNotice(tr("app.creator.agent.manualFallback"));
-            return;
-        }
-        const envelope = await agentReviewClient.startAgent(workflow.taskId, 900, target);
-        if (!envelope.agentRun)
-            throw new Error(tr("app.creator.agent.runMissing"));
-        setAgentRun(envelope.agentRun);
-        setDrawerTab("review");
-        setNotice(tr("app.creator.agent.started"));
-    });
-    const cancelCodexAgent = () => agentRun && withBusy(tr("app.creator.agent.cancelling"), async () => {
-        const envelope = await agentReviewClient.cancelAgent(agentRun.id);
-        if (envelope.agentRun)
-            setAgentRun(envelope.agentRun);
-        if (project)
-            await refreshProject(project.id);
-        setNotice(tr("app.creator.agent.cancelled"));
-    });
-    const resumeCodexAgent = () => agentRun && withBusy(tr("app.creator.agent.resuming"), async () => {
-        const envelope = await agentReviewClient.resumeAgent(agentRun.id);
-        if (!envelope.agentRun)
-            throw new Error(tr("app.creator.agent.runMissing"));
-        setAgentRun(envelope.agentRun);
-        setDrawerTab("review");
-        setNotice(tr("app.creator.agent.resumed"));
-    });
-    const handoffTask = agentHandoffTaskId ? project?.tasks.find((task) => task.id === agentHandoffTaskId) ?? null : null;
-    const lockedHandoffIdentity = handoffTask?.lease?.worker && ["claimed", "running"].includes(handoffTask.status)
-        ? handoffTask.lease.worker
-        : null;
-    const handoffIdentity = lockedHandoffIdentity ?? agentIdentity.trim();
-    const handoffPayloadFile = handoffTask ? `siaocut-${handoffTask.id}-claim.json` : "";
-    const handoffIdentityLocked = Boolean(lockedHandoffIdentity);
-    const handoffLeaseArgument = handoffTask?.lease?.id && ["claimed", "running"].includes(handoffTask.status)
-        ? ` --lease-id ${handoffTask.lease.id}`
-        : "";
-    const handoffText = handoffTask && isValidAgentIdentity(handoffIdentity) ? [
-        tr("app.agent.handoff.prompt.title", { taskId: handoffTask.id }),
-        tr("app.agent.handoff.prompt.context", { worker: handoffIdentity }),
-        tr("app.agent.handoff.prompt.claim", { taskId: handoffTask.id, worker: handoffIdentity, payloadFile: handoffPayloadFile, leaseArgument: handoffLeaseArgument }),
-        tr("app.agent.handoff.prompt.verify", { taskId: handoffTask.id }),
-        tr("app.agent.handoff.prompt.heartbeat", { taskId: handoffTask.id, worker: handoffIdentity }),
-        tr("app.agent.handoff.prompt.process"),
-        tr("app.agent.handoff.prompt.submit", { taskId: handoffTask.id, worker: handoffIdentity }),
-        tr("app.agent.handoff.prompt.review", { taskId: handoffTask.id }),
-    ].join("\n\n") : "";
-    const aiConfirmationSegments = project?.transcript.segments ?? [];
-    const aiConfirmationCharacters = aiConfirmationSegments.reduce((total, segment) => total + Array.from(segment.text).length, 0);
-    const aiConfirmationLabel = {
-        polish: tr("app.workflow.polish"),
-        proofread: tr("app.workflow.proofread"),
-        edit: tr("app.workflow.edit"),
-        translate: tr("app.workflow.translate"),
-        punctuate: tr("app.workflow.punctuate"),
-        speaker_names: tr("app.workflow.speakerNames"),
-    }[agentWorkflowKind];
-    const aiConfirmationContext = agentWorkflowKind === "translate"
-        ? `翻译术语表 ${glossaryDraft.split(/\r?\n/).filter((line) => line.trim()).length} 条`
-        : agentWorkflowKind === "speaker_names" ? "说话人文本证据（不含音频）" : null;
-    const copyAgentHandoff = async () => {
-        if (!handoffText) return;
-        try {
-            await navigator.clipboard.writeText(handoffText);
-            setAgentHandoffCopied(true);
-        }
-        catch {
-            setError(tr("app.agent.handoff.copyFailed"));
-        }
-    };
-    const applyTaskSnapshot = (projectId: string, task: Task) => {
-        const update = (current: Project) => current.id === projectId
-            ? { ...current, tasks: upsertById(current.tasks, task) }
-            : current;
-        setProject((current) => current && current.id === projectId ? update(current) : current);
-        setProjects((current) => current.map(update));
-    };
-    const updateTask = async (taskId: string, action: "retry" | "cancel") => {
-        if (!project || taskActionIdsRef.current.has(taskId))
-            return;
-        const projectId = project.id;
-        taskActionIdsRef.current.add(taskId);
-        setTaskActions((current) => ({ ...current, [taskId]: action }));
-        setError(null);
-        invalidateProjectLoads(projectId);
-        try {
-            const envelope = await agentReviewClient.updateTask(taskId, action);
-            const acceptedStatuses = action === "retry" ? ["queued", "claimed", "running"] : ["cancelled"];
-            if (!envelope.task || envelope.task.id !== taskId || !acceptedStatuses.includes(envelope.task.status))
-                throw new Error(tr("app.agent.task.actionInvalid"));
-            applyTaskSnapshot(projectId, envelope.task);
-            if (activeProjectIdRef.current === projectId) {
-                if (action === "retry") {
-                    setNotice(envelope.task.status === "queued"
-                        ? tr("app.agent.task.requeued", { attempt: (envelope.task.attemptCount ?? 0) + 1 })
-                        : tr("app.agent.task.reclaimed", {
-                            attempt: Math.max(1, envelope.task.attemptCount ?? 1),
-                            worker: envelope.task.lease?.worker ?? tr("app.agent.task.unknownWorker"),
-                        }));
-                }
-                else {
-                    setNotice(tr("app.s0227"));
-                }
-            }
-            await refreshProject(projectId);
-        }
-        catch (cause) {
-            if (activeProjectIdRef.current === projectId)
-                setError(cause instanceof Error ? cause.message : String(cause));
-        }
-        finally {
-            taskActionIdsRef.current.delete(taskId);
-            setTaskActions((current) => {
-                if (!(taskId in current))
-                    return current;
-                const next = { ...current };
-                delete next[taskId];
-                return next;
-            });
-        }
-    };
-    const reviewPatch = (patchItemId: string, action: "apply" | "keep") => project && withBusy(action === "apply" ? tr("app.s0228") : tr("app.s0229"), async () => {
-        await agentReviewClient.reviewPatch(patchItemId, action);
-        await refreshProject(project.id);
-        setNotice(action === "apply" ? tr("app.s0230") : tr("app.s0231"));
-    });
-    const reviewAll = (taskId: string, action: "apply" | "keep") => project && withBusy(action === "apply" ? tr("app.s0232") : tr("app.s0233"), async () => {
-        await agentReviewClient.reviewAll(taskId, action);
-        await refreshProject(project.id);
-        setNotice(action === "apply" ? tr("app.s0234") : tr("app.s0235"));
-    });
     const activityActionsFor = (activity: WorkbenchActivity): WorkbenchActivityAction[] => {
         if (activity.kind === "local")
             return [];
@@ -2907,14 +807,32 @@ function WorkbenchController() {
             return actions;
         }
         if (activity.kind === "transcription") {
-            if (activity.status === "awaiting_apply")
-                return [
-                    { id: "inspect", label: tr("app.activity.inspect"), primary: true, disabled: Boolean(busy), onClick: () => { setTranscriptionApplyConfirmed(false); setShowTranscriptionCandidate(true); } },
-                    { id: "discard", label: tr("app.activity.discard"), disabled: Boolean(busy), onClick: () => void discardTranscriptionCandidate() },
-                ];
-            if (["queued", "running"].includes(activity.status))
-                return [{ id: "cancel", label: tr("app.activity.cancel"), disabled: Boolean(busy), onClick: () => void cancelTranscription() }];
-            return [{ id: "resume", label: tr("app.activity.resume"), primary: true, disabled: Boolean(busy), onClick: () => void resumeTranscription() }];
+            const job = transcriptionTasks.jobs.find((item) => `transcription:${item.id}` === activity.id);
+            if (!job) return [];
+            const run = async (action: "review" | "cancel" | "retry" | "discard" | "open") => {
+                try {
+                    if (action === "review" || action === "open") {
+                        await editing.session.flush(project?.id);
+                        if (activeProjectIdRef.current === job.projectId) await refreshProject(job.projectId);
+                        else await activateProject(job.projectId);
+                        if (activeProjectIdRef.current !== job.projectId) return;
+                        if (action === "review") setPendingCandidateJobId(job.id);
+                        return;
+                    }
+                    const result = action === "cancel" ? await transcriptionCommands.cancel(job.id)
+                        : action === "retry" ? await transcriptionCommands.retry(job.id, job.attemptCount)
+                        : await transcriptionCommands.discard(job.id);
+                    setTranscriptionJob(result.transcriptionJob ?? null);
+                } catch (cause) { setError(String(cause)); }
+            };
+            if (job.stage === "cancelling") return [];
+            if (job.status === "awaiting_apply") return [
+                { id: "inspect", label: tr("app.activity.inspect"), primary: true, onClick: () => void run("review") },
+                { id: "discard", label: tr("app.activity.discard"), onClick: () => void run("discard") },
+            ];
+            if (["queued", "running", "finalizing"].includes(job.status)) return [{ id: "cancel", label: tr("app.activity.cancel"), onClick: () => void run("cancel") }];
+            if (job.status === "completed") return [{ id: "open", label: tr("app.activity.open"), onClick: () => void run("open") }];
+            return [{ id: "retry", label: tr("app.activity.resume"), onClick: () => void run("retry") }];
         }
         if (activity.kind === "agent") {
             if (["queued", "running", "submitting"].includes(activity.status))
@@ -2935,13 +853,22 @@ function WorkbenchController() {
         if (!workflow)
             return [];
         const actions: WorkbenchActivityAction[] = [];
-        if (workflow.projectId && ["needs_agent", "needs_review", "cancelled"].includes(workflow.status))
-            actions.push({ id: "open", label: tr("app.s0276"), primary: ["needs_agent", "needs_review"].includes(workflow.status), disabled: Boolean(autoBusy), onClick: () => void openAutoProject(workflow) });
+        if (workflow.status === "awaiting_authorization" && workflow.projectId && workflow.agentTaskId)
+            actions.push({ id: "authorize", label: "核对并授权发送", primary: true, disabled: Boolean(busy || autoBusy), onClick: () => {
+                void (async () => {
+                    await editing.session.flush(project?.id);
+                    await activateProject(workflow.projectId!);
+                    setAgentWorkflowKind("translate"); setSubtitleLanguage(workflow.translationLanguage ?? "en");
+                    setAiApprovalTaskId(workflow.agentTaskId!); setShowAiExecutionConfirm(true);
+                })().catch((cause) => setError(String(cause)));
+            } });
+        if (workflow.projectId && ["needs_agent", "awaiting_authorization", "needs_review", "cancelled"].includes(workflow.status))
+            actions.push({ id: "open", label: tr("app.s0276"), primary: ["needs_agent", "awaiting_authorization", "needs_review"].includes(workflow.status), disabled: Boolean(autoBusy), onClick: () => void openAutoProject(workflow) });
         if (workflow.status === "needs_review")
             actions.push({ id: "continue", label: tr("app.s0278"), disabled: Boolean(autoBusy), onClick: () => void continueAutoWorkflow(workflow) });
         if (["failed", "interrupted", "cancelled"].includes(workflow.status))
             actions.push({ id: "resume", label: tr("app.s0279"), primary: true, disabled: Boolean(autoBusy), onClick: () => void continueAutoWorkflow(workflow) });
-        if (["queued", "running", "needs_agent", "needs_review"].includes(workflow.status))
+        if (["queued", "running", "needs_agent", "awaiting_authorization", "needs_review"].includes(workflow.status))
             actions.push({ id: "cancel", label: tr("app.s0277"), disabled: Boolean(autoBusy), onClick: () => void cancelAutoWorkflow(workflow) });
         if (["completed", "cancelled"].includes(workflow.status))
             actions.push({ id: "details", label: tr("app.s0280"), disabled: Boolean(autoBusy), onClick: () => { setAutoWorkflow(workflow); setShowAutoWorkflow(true); } });
@@ -2965,22 +892,6 @@ function WorkbenchController() {
         setDrawerTab(tab);
         setShowExportPanel(tab === "export");
     };
-    const seekTimeline = (time: number) => {
-        const duration = playback.duration || project?.media.durationSeconds || project?.timeline.sourceDuration || 0;
-        const nextTime = Math.max(0, Math.min(duration, Number.isFinite(time) ? time : 0));
-        if (videoRef.current)
-            videoRef.current.currentTime = nextTime;
-        setPlayback((current) => ({ ...current, currentTime: nextTime }));
-    };
-    const toggleTimelinePlayback = () => {
-        const video = videoRef.current;
-        if (!video)
-            return;
-        if (video.paused)
-            void video.play();
-        else
-            video.pause();
-    };
     const locateFocusReviewItem = (item: ReviewQueueItem) => {
         const segment = item.segmentId ? project?.transcript.segments.find((candidate) => candidate.id === item.segmentId) : null;
         if (segment)
@@ -3001,36 +912,6 @@ function WorkbenchController() {
         setShowExportPanel(false);
         exitFocusReview(false);
     };
-    const nudgeTimelineSegment = async (segmentId: string, delta: number) => {
-        if (!project || structureBusy || busy)
-            return;
-        setStructureBusy(true);
-        setError(null);
-        try {
-            const envelope = await transcriptEditingClient.offsetSegments(project.id, [segmentId], delta);
-            if (!envelope.structureEdit?.project)
-                throw new Error(tr("app.s0162"));
-            const nextProject = envelope.structureEdit.project;
-            setProject(nextProject);
-            setProjects((current) => current.map((item) => item.id === nextProject.id ? nextProject : item));
-            setSelectedId(segmentId);
-            setSelectedSegmentIds([segmentId]);
-            setSelectionAnchorId(segmentId);
-            setWordRange(null);
-            setCutPreview(null);
-            await Promise.all([refreshSpeakerTrack(project.id), refreshTranscription(project.id)]);
-            setNotice(tr("app.timeline.nudgeCompleted", {
-                direction: delta < 0 ? tr("app.timeline.directionEarlier") : tr("app.timeline.directionLater"),
-                amount: Math.abs(delta).toFixed(1),
-            }));
-        }
-        catch (cause) {
-            setError(cause instanceof Error ? cause.message : String(cause));
-        }
-        finally {
-            setStructureBusy(false);
-        }
-    };
     const openTimelineReviewDetail = (marker: TimelineReviewMarker) => {
         const segment = project?.transcript.segments.find((candidate) => candidate.id === marker.segmentId);
         if (segment)
@@ -3045,8 +926,6 @@ function WorkbenchController() {
         : !capabilities.hasTranscript || transcriptionActive ? "transcribe"
             : agentRunActive ? "agent"
                 : actionableReviewCount > 0 ? "review" : "export";
-    const creatorSteps = ["prepare", "transcribe", "agent", "review", "export"] as const;
-    const creatorStepIndex = creatorSteps.indexOf(creatorPhase);
     const runCreatorPrimaryAction = () => {
         if (!project) {
             void importMedia();
@@ -3074,21 +953,22 @@ function WorkbenchController() {
         : !capabilities.hasTranscript ? tr("app.creator.action.transcribe")
             : agentRunActive ? tr("app.creator.action.viewAgent")
                 : actionableReviewCount > 0 ? tr("app.creator.action.review") : tr("app.creator.action.checkExport");
-    return (<main className={`app-shell${focusReview ? " focus-review" : ""}`}>
+    return (<main className={`app-shell${focusReview ? " focus-review" : ""}${navigationCollapsed ? " navigation-collapsed" : ""}`}>
       <aside className="rail">
-        <div className="brand"><span className="brand-mark">S</span><span>SiaoCut</span></div>
+        <div className="brand"><span className="brand-mark">S</span><span>SiaoCut</span><button className="navigation-toggle" aria-label={uiLocale === "zh-CN" ? "切换项目导航" : "Toggle project navigation"} aria-expanded={!navigationCollapsed} onClick={() => setNavigationCollapsed((value) => !value)}><ChevronRight size={15}/></button></div>
         <div className="new-project-actions">
-          <button className="new-project auto" aria-label={tr("app.s0237")} disabled={projectTransitionLocked} onClick={importMedia}><FolderPlus size={16}/>{tr("app.creator.action.import")}</button>
-          <details className="rail-advanced-actions"><summary><Settings2 size={14}/>{tr("app.creator.advanced")}</summary><div><button ref={sourceButtonRef} disabled={projectTransitionLocked} onClick={() => setShowSourceImport(true)}><Link2 size={14}/>{tr("app.s0238")}</button><button ref={autoButtonRef} disabled={projectTransitionLocked} onClick={() => setShowAutoWorkflow(true)}><Sparkles size={14}/>{tr("app.s0236")}</button></div></details>
+          <button className="new-project auto" aria-label={tr("app.s0237")} disabled={projectTransitionLocked} onClick={importMedia}><FolderPlus size={16}/><span>{tr("app.creator.action.import")}</span></button>
+          <details className="rail-advanced-actions"><summary aria-label={tr("app.creator.advanced")}><Settings2 size={14}/><span>{tr("app.creator.advanced")}</span></summary><div><button aria-label={tr("app.s0238")} ref={sourceButtonRef} disabled={projectTransitionLocked} onClick={() => setShowSourceImport(true)}><Link2 size={14}/><span>{tr("app.s0238")}</span></button><button aria-label={tr("app.s0236")} ref={autoButtonRef} disabled={projectTransitionLocked} onClick={() => setShowAutoWorkflow(true)}><Sparkles size={14}/><span>{tr("app.s0236")}</span></button></div></details>
         </div>
         <div className="rail-heading">{tr("app.s0239")}</div>
         <nav aria-label={tr("app.s0240")}>
           {projects.map((item) => (<div className={`project-entry ${project?.id === item.id ? "active" : ""}`} key={item.id}>
-              <button className="project-link" disabled={projectTransitionLocked} onClick={() => switchProject(item.id)}>
-                <span className="project-dot"/><span><strong>{item.title}</strong><small>{subtitleCountLabel(item.transcript.segments.length)}</small></span><ChevronRight size={14}/>
+              <button className="project-link" title={item.title} aria-label={item.title} disabled={projectTransitionLocked} onClick={() => switchProject(item.id)}>
+                <span className="project-dot"/><span><strong>{item.title}</strong><small>{subtitleCountLabel(item.segmentCount)}</small></span><ChevronRight size={14}/>
               </button>
               <button className="project-delete" disabled={projectTransitionLocked} aria-label={tr("app.s0242", { "0": item.title })} title={tr("app.s0243")} onClick={() => openDeleteDialog(item)}><Trash2 size={14}/></button>
             </div>))}
+          {nextProjectOffset !== null && <button className="project-link" disabled={projectPageLoading} onClick={() => void loadMoreProjects().catch((cause) => setError(String(cause)))}>{projectPageLoading ? (uiLocale === "zh-CN" ? "加载中…" : "Loading…") : (uiLocale === "zh-CN" ? "加载更多项目" : "Load more projects")}</button>}
           {!projects.length && !busy && <p className="empty-rail">{tr("app.s0244")}</p>}
         </nav>
         <section className="creator-readiness" aria-label={tr("app.creator.readiness.title")}>
@@ -3103,36 +983,34 @@ function WorkbenchController() {
         <div className="privacy"><ShieldCheck size={15}/><span>{tr("app.s0246")}</span></div>
       </aside>
 
-      <section className={`workbench${project ? "" : " empty-workbench"}`}>
+      <section className={`workbench${project ? "" : " empty-workbench"}${playerExpanded && !focusReview ? " preview-expanded" : ""}`}>
         {focusReview && project && <Suspense fallback={null}><FocusReviewToolbar remaining={focusReviewCount} subtitleMode={subtitleMode} translationPending={selectedTranslationPending} translationStale={selectedTranslationStale} onSubtitleModeChange={(mode) => { setSubtitleMode(mode); setConfirmStaleTranslation(false); }} onExit={() => exitFocusReview()}/></Suspense>}
         <header className="topbar">
-          <div className="topbar-heading"><p className="eyebrow">{tr("app.s0247")}</p><h1>{project?.title ?? tr("app.s0248")}</h1></div>
+          <div className="topbar-heading"><p className="eyebrow">{tr("app.s0247")}</p><h1 title={project?.title}>{project?.title ?? tr("app.s0248")}</h1><EditingStatus session={editing.session} projectId={project?.id} closeError={editing.closeError} onCancelClose={editing.clearCloseError} onCloseWithDrafts={editing.closeWithDrafts}/></div>
 	          <div className="command-bar creator-command-bar" aria-label={tr("app.s0249")}>
-	            <StatusBadge tone={humanStateTone}>{humanState}</StatusBadge>
+	            {project && <TaskRecords key={project.id} projectId={project.id} tasks={project.tasks} onRetry={(id) => { if (id === agentRun?.taskId) void resumeCodexAgent(); else void updateTask(id, "retry"); }} pending={taskActions} english={uiLocale === "en-US"}/>}<StatusBadge tone={humanStateTone}>{humanState}</StatusBadge><Suspense fallback={null}><WorkbenchTaskMenu error={transcriptionTasks.error} onRefresh={transcriptionTasks.refresh} inputs={workbenchActivityInputs} actionsFor={activityActionsFor}/></Suspense>
 	            <div className="command-history" aria-label={tr("app.s0250")}>
 	              <IconButton label={tr("app.s0251")} shortcut="Ctrl+Z" disabled={!project?.history.canUndo || Boolean(busy)} onClick={() => navigateHistory("undo")}><Undo2 size={15}/></IconButton>
 	              <IconButton label={tr("app.s0252")} shortcut="Ctrl+Shift+Z" disabled={!project?.history.canRedo || Boolean(busy)} onClick={() => navigateHistory("redo")}><Redo2 size={15}/></IconButton>
 	            </div>
-	            <Button variant="primary" className="creator-primary-action" disabled={Boolean(busy) || (creatorPhase === "transcribe" && (!canStartTranscription || transcriptionActive)) || (creatorPhase === "review" && focusReviewCount > 0 && !mediaUrl)} title={creatorPhase === "transcribe" ? transcribeCapabilityTitle : creatorPhase === "review" && focusReviewCount > 0 && !mediaUrl ? tr("app.focusReview.mediaMissing") : undefined} onClick={runCreatorPrimaryAction}>{creatorPhase === "review" ? <ListChecks size={15}/> : creatorPhase === "export" ? <Download size={15}/> : <Sparkles size={15}/>} {creatorPrimaryLabel}</Button>
+	            <Button variant="primary" className="creator-primary-action" disabled={Boolean(busy) || (creatorPhase === "transcribe" && (!canStartTranscription || transcriptionActive))} title={creatorPhase === "transcribe" ? transcribeCapabilityTitle : undefined} onClick={runCreatorPrimaryAction}>{creatorPhase === "review" ? <ListChecks size={15}/> : creatorPhase === "export" ? <Download size={15}/> : <Sparkles size={15}/>} {creatorPrimaryLabel}</Button>
 	            <div className="command-more" ref={commandMoreRef}><IconButton label={tr("app.s0256")} onClick={() => setShowMoreMenu((current) => !current)}><MoreHorizontal size={17}/></IconButton>{showMoreMenu && <Suspense fallback={null}><AppCommandMenu canDetectSuggestions={Boolean(project?.transcript.words.length) && !busy} canPreparePreview={capabilities.canPreparePreview && !busy} canRelinkMedia={capabilities.canRelinkMedia && !busy} canRetranscribe={Boolean(project?.transcript.segments.length) && capabilities.hasBoundMedia && !busy} mediaCapabilityTitle={mediaCapabilityTitle} onDetectSuggestions={() => { setShowMoreMenu(false); void detectSuggestions(); }} onPreparePreview={() => { setShowMoreMenu(false); void preparePreview(); }} onRelinkMedia={() => { setShowMoreMenu(false); void relinkMedia(); }} onRetranscribe={() => { setShowMoreMenu(false); void openQuickRetranscription(); }}/></Suspense>}</div>
 	          </div>
 	        </header>
-	        <nav className="creator-flow" aria-label={tr("app.creator.flow.label")}>{creatorSteps.map((step, index) => <span key={step} className={index < creatorStepIndex ? "done" : index === creatorStepIndex ? "active" : "pending"}><i>{index < creatorStepIndex ? <Check size={12}/> : index + 1}</i>{tr(`app.creator.step.${step}`)}</span>)}</nav>
 
+        <TranscriptionStatus projectId={project?.id} tasks={transcriptionTasks} titles={workbenchActivityInputs.projectTitles} actionsFor={activityActionsFor}/>
         {(notice || error) && <div className={`notice ${error ? "error" : ""}`} role="status" aria-live="polite">{error && <CircleAlert size={15}/>}<span>{error ? tr("app.error.unknownSummary") : notice}</span>{error && <details><summary>{tr("app.error.technicalDetails")}</summary><code>{error}</code></details>}{error && <button className="notice-action" onClick={() => void initialize()}>{tr("app.s0262")}</button>}<button aria-label={tr("app.s0263")} title={tr("app.s0263")} onClick={() => { setNotice(null); setError(null); }}>×</button></div>}
-        <Suspense fallback={null}><WorkbenchActivityCenter inputs={workbenchActivityInputs} actionsFor={activityActionsFor}/></Suspense>
 
         {!project ? (<section className="welcome-card">
             <div className="welcome-icon"><FileVideo2 size={30}/></div>
             <p className="eyebrow">{tr("app.s0281")}</p><h2>{tr("app.s0282")}</h2>
             <p>{tr("app.s0283")}</p>
             <RuntimeChecklist runtime={runtime} modelPath={modelPath} modelAvailable={modelPathAvailable} onChooseModel={chooseModel} compact/>
-	            <div className="welcome-actions"><button className="button primary" onClick={importMedia}><FolderPlus size={16}/>{tr("app.creator.action.import")}</button><button className="button quiet" onClick={() => setShowSourceImport(true)}><Link2 size={16}/>{tr("app.s0285")}</button></div>
+	            <div className="welcome-actions"><button className="button primary" onClick={importMedia}><FolderPlus size={16}/><span>{tr("app.creator.action.import")}</span></button><button className="button quiet" onClick={() => setShowSourceImport(true)}><Link2 size={16}/>{tr("app.s0285")}</button></div>
           </section>) : (<>
 	            <section className="stage-grid">
 	              <article className={`video-panel creator-player ${playerExpanded ? "expanded" : "collapsed"}`}>
 	                <header className="creator-player-header"><span><Play size={14}/><strong>{tr("app.creator.player.title")}</strong><small>{selected ? `${formatTime(selected.start)} — ${formatTime(selected.end)}` : tr("app.s0288")}</small></span><button aria-expanded={playerExpanded} onClick={() => setPlayerExpanded((current) => !current)}>{playerExpanded ? <ChevronUp size={14}/> : <ChevronDown size={14}/>}{playerExpanded ? tr("app.creator.player.collapse") : tr("app.creator.player.expand")}</button></header>
-	                {playerExpanded && <>
 	                <div className="video-frame">
                   {mediaUrl ? <video key={project.id} ref={videoRef} src={mediaUrl} controls preload="metadata" onLoadedMetadata={handleVideoLoadedMetadata} onPlay={() => setPlayback((current) => ({ ...current, playing: true }))} onPause={() => setPlayback((current) => ({ ...current, playing: false }))} onTimeUpdate={handleVideoTimeUpdate}/> : <div className="video-placeholder"><Play size={30}/><span>{tr("app.s0286")}</span></div>}
                   {showSubtitleSafeArea && (
@@ -3143,18 +1021,19 @@ function WorkbenchController() {
                     {captionSecondaryText && <span className="caption-secondary" style={{ color: project.subtitleStyle.secondaryColor, fontSize: `${Math.max(12, Math.round(project.subtitleStyle.secondaryFontSize * 0.36))}px` }}>{captionSecondaryText}</span>}
                   </div>}
                 </div>
-	                <div className="transport-summary"><Clock3 size={14}/><span>{selected ? `${formatTime(selected.start)} — ${formatTime(selected.end)}` : tr("app.s0288")}</span><span className="playback-state" role="status" aria-live="polite" aria-label={tr("app.playback.status")}>{playback.playing ? tr("app.playback.playing") : tr("app.playback.paused")} · {formatTime(playback.currentTime)} / {formatTime(playback.duration || project.media.durationSeconds || 0)}</span><button className="relink-media" onClick={relinkMedia}>{tr("app.s0258")}</button><span className="shortcut-hint">{tr("app.s0289")}</span><span className="spacer"/><span>{tr("app.composite.timelineSummary", { output: formatTime(project.timeline.outputDuration), source: formatTime(project.timeline.sourceDuration) })}</span></div>
+	                <div className="transport-summary"><Clock3 size={14}/><span>{selected ? `${formatTime(selected.start)} — ${formatTime(selected.end)}` : tr("app.s0288")}</span><span className="playback-state" role="status" aria-live="polite" aria-label={tr("app.playback.status")}>{playback.playing ? tr("app.playback.playing") : tr("app.playback.paused")} · {formatTime(playback.currentTime)} / {formatTime(playback.duration || project.media.durationSeconds || 0)}</span><button className="relink-media" onClick={relinkMedia}>{tr("app.s0258")}</button><span className="shortcut-hint">{tr("app.s0289")}</span><span className="spacer"/><span className="timeline-duration">{tr("app.composite.timelineSummary", { output: formatTime(project.timeline.outputDuration), source: formatTime(project.timeline.sourceDuration) })}</span></div>
 	                {audioRisks.length > 0 && <div className="audio-risk-strip" role="status"><CircleAlert size={14}/><strong>{tr("app.composite.audioRiskCount", { count: audioRisks.length })}</strong><span>{audioRiskLabel(audioRisks[0].kind)} · {formatTime(audioRisks[0].start)}</span><button onClick={() => locateAudioRisk(audioRisks[0])}>{tr("app.s0293")}</button></div>}
-	                </>}
 	              </article>
 
 	              <aside className="creator-drawer" aria-label={tr("app.creator.drawer.label")}>
-	                {focusReview && <Suspense fallback={null}><FocusReviewPanel project={project} transcriptionReviews={transcriptionReviews} audioRisks={audioRisks} busy={Boolean(busy)} error={error} onLocate={locateFocusReviewItem} onAgentReview={(item, action) => void reviewPatch(item.sourceId, action)} onCutReview={(item, action) => void updateCut(item.sourceId, action)} onTranscriptionReview={(item, action) => void resolveTranscriptionReview(item.sourceId, action)} onOpenEditor={openFocusReviewEditor} onTogglePlayback={toggleTimelinePlayback} onSeekDelta={(delta) => seekTimeline(playback.currentTime + delta)} onExit={() => exitFocusReview()}/></Suspense>}
+	                {focusReview && readModels.ready && <Suspense fallback={null}><FocusReviewPanel project={project} transcriptionReviews={transcriptionReviews} audioRisks={audioRisks} busy={Boolean(busy)} error={error} onLocate={locateFocusReviewItem} onAgentReview={(item, action) => void reviewPatch(item.sourceId, action)} onCutReview={(item, action) => void updateCut(item.sourceId, action)} onTranscriptionReview={(item, action) => void resolveTranscriptionReview(item.sourceId, action)} onOpenEditor={openFocusReviewEditor} onTogglePlayback={toggleTimelinePlayback} onSeekDelta={(delta) => seekTimeline(playback.currentTime + delta)} onExit={() => exitFocusReview()}/></Suspense>}
 	                <div className="creator-drawer-tabs" role="tablist" aria-label={tr("app.creator.drawer.tabs")}>
 	                  {drawerTabs.map((tab) => <button id={`creator-drawer-tab-${tab}`} key={tab} role="tab" aria-controls={`creator-drawer-panel-${tab}`} aria-selected={drawerTab === tab} tabIndex={drawerTab === tab ? 0 : -1} className={drawerTab === tab ? "active" : ""} onKeyDown={(event) => changeDrawerTabFromKeyboard(event, tab)} onClick={() => openCreatorDrawer(tab)}>{tr(({ review: "app.creator.drawer.review", quality: "app.creator.drawer.quality", analysis: "app.creator.drawer.analysis", history: "app.creator.drawer.history", export: "app.creator.drawer.export" } as const)[tab])}{tab === "review" && actionableReviewCount > 0 ? <i>{actionableReviewCount}</i> : null}{tab === "quality" && project.subtitleQuality.errorCount > 0 ? <i>{project.subtitleQuality.errorCount}</i> : null}</button>)}
 	                </div>
 	                <div className="creator-drawer-body" id={`creator-drawer-panel-${drawerTab}`} role="tabpanel" aria-labelledby={`creator-drawer-tab-${drawerTab}`}>
-	                  {drawerTab === "review" && <>
+                      {readModels.loading && <p role="status">{uiLocale === "zh-CN" ? "正在加载…" : "Loading…"}</p>}
+                      {readModels.error && <div role="alert"><p>{readModels.error}</p><button onClick={readModels.retry}>{uiLocale === "zh-CN" ? "重试" : "Retry"}</button></div>}
+	                  {drawerTab === "review" && readModels.reviewReady && <>
 	                    <section className="creator-agent-control">
 	                      <header><span><Bot size={15}/><strong>{tr("app.creator.agent.title")}</strong><small>{codexHealth?.available && codexHealth.authenticated ? tr("app.creator.agent.ready", { version: codexHealth.version ?? "Codex CLI" }) : tr("app.creator.agent.unavailable")}</small></span>{agentRunActive && agentRun ? <StatusBadge tone="agent">{Math.round(agentRun.progress * 100)}%</StatusBadge> : null}</header>
 	                      <label><span>{tr("app.workflow.label")}</span><select aria-label={tr("app.workflow.label")} value={agentWorkflowKind} disabled={agentRunActive} onChange={(event) => setAgentWorkflowKind(event.target.value as typeof agentWorkflowKind)}><option value="polish">{tr("app.workflow.polish")}</option><option value="proofread">{tr("app.workflow.proofread")}</option><option value="punctuate">{tr("app.workflow.punctuate")}</option><option value="edit">{tr("app.workflow.edit")}</option><option value="translate">{tr("app.workflow.translate")}</option><option value="speaker_names">{tr("app.workflow.speakerNames")}</option></select></label>
@@ -3167,7 +1046,7 @@ function WorkbenchController() {
 	                        </div>
 	                      </>}
 	                      {agentRun && <div className={`creator-agent-run ${agentRun.status}`} role="status"><span><strong>{tr(`app.creator.agent.status.${agentRun.status}` as Parameters<typeof tr>[0])}</strong><small>{tr("app.creator.agent.batch", { current: agentRun.currentBatch, total: agentRun.batchCount })}</small></span><progress max={1} value={agentRun.progress}/>{["queued", "running", "submitting"].includes(agentRun.status) ? <button onClick={() => void cancelCodexAgent()}>{tr("app.creator.agent.cancel")}</button> : ["failed", "interrupted", "cancelled"].includes(agentRun.status) ? <button onClick={() => void resumeCodexAgent()}><RefreshCw size={12}/>{tr("app.creator.agent.resume")}</button> : null}{agentRun.errorMessage && <JobFailureDetails context="agent" status={agentRun.status} errorCode={agentRun.errorCode} errorMessage={agentRun.errorMessage}/>}</div>}
-                      <div className="creator-agent-actions"><Button ref={agentButtonRef} variant="agent" disabled={!capabilities.canCreateAgentTask || agentRunActive || Boolean(busy) || (agentWorkflowKind === "speaker_names" && speakerTrack?.status !== "ready")} title={agentCapabilityTitle} onClick={() => { agentHandoffReturnFocusRef.current = agentButtonRef.current; setShowAiExecutionConfirm(true); }}><Bot size={14}/>{tr("app.creator.agent.start")}</Button><button className="button quiet" disabled={agentRunActive || Boolean(busy)} onClick={(event) => openAgentHandoff(event.currentTarget)}>{tr("app.creator.agent.manual")}</button></div>
+                      <div className="creator-agent-actions"><Button ref={agentButtonRef} variant="agent" disabled={!capabilities.canCreateAgentTask || agentRunActive || Boolean(busy) || (agentWorkflowKind === "speaker_names" && speakerTrack?.status !== "ready")} title={agentCapabilityTitle} onClick={() => { agentHandoffReturnFocusRef.current = agentButtonRef.current; void editing.session.flush(project!.id).then(() => { setAiApprovalTaskId(null); setShowAiExecutionConfirm(true); }).catch((cause) => setError(String(cause))); }}><Bot size={14}/>{tr("app.creator.agent.start")}</Button><button className="button quiet" disabled={agentRunActive || Boolean(busy)} onClick={(event) => openAgentHandoff(event.currentTarget)}>{tr("app.creator.agent.manual")}</button></div>
 	                      <p className="runtime-disclosure"><ShieldCheck size={13}/>{tr("app.creator.agent.boundary")}</p>
 	                    </section>
 	                    <div className="review-panel-scroll creator-review-list" role="region" aria-label={tr("app.s0297")} tabIndex={0}>
@@ -3175,15 +1054,7 @@ function WorkbenchController() {
 	                      {pendingEdits.map((edit) => <article className="review-item" key={edit.id} data-review-detail-id={`edit:${edit.id}`} tabIndex={-1}><span className="review-tag">{tr("app.composite.reviewSuggestion", { kind: cutSuggestionLabel(edit.suggestion?.suggestionType) })}</span><strong>{editReasonLabel(edit)}</strong><p>{edit.suggestion ? tr("app.composite.suggestionEvidence", { range: `${formatTime(edit.start)} — ${formatTime(edit.end)}`, confidence: Math.round(edit.suggestion.confidence * 100) }) : `${formatTime(edit.start)} — ${formatTime(edit.end)}`}</p><div className="cut-actions"><button onClick={() => selectSegment(project.transcript.segments.find((segment) => segment.id === edit.segmentId)!)}>{tr("app.s0303")}</button>{edit.kind === "word_cut" && <button onClick={() => previewCut(edit.id)}><Headphones size={11}/>{tr("app.s0304")}</button>}<button onClick={() => updateCut(edit.id, "dismiss")}>{tr("app.cut.dismiss")}</button><button onClick={() => updateCut(edit.id, "apply")}>{tr("app.s0305")}</button></div></article>)}
 	                      {audioRisks.map((risk, index) => <article className="review-item audio-risk-item" key={`${risk.kind}-${risk.start}-${index}`}><span className="review-tag warning"><CircleAlert size={12}/>{tr("app.s0306")}</span><strong>{audioRiskLabel(risk.kind)}</strong><p>{tr("app.composite.audioRiskEvidence", { range: `${formatTime(risk.start)} — ${formatTime(risk.end)}`, measured: risk.measuredValue, threshold: risk.threshold, unit: audioUnitLabel(risk.unit) })}</p><button onClick={() => locateAudioRisk(risk)}>{tr("app.s0309")}</button></article>)}
 	                      <TranscriptionReviewPanel items={transcriptionReviews} disabled={Boolean(busy)} onLocate={(segmentId) => { const segment = project.transcript.segments.find((item) => item.id === segmentId); if (segment) selectSegment(segment); }} onResolve={resolveTranscriptionReview}/>
-	                      {failedTasks.map((task) => <article className={`agent-task-status ${task.status}`} key={task.id}>
-                            <header><CircleAlert size={14}/><strong>Agent {task.status === "interrupted" ? tr("app.s0018") : tr("app.s0324")}</strong><small>{task.kind}</small></header>
-                            <p className="agent-task-next">{tr("app.agent.task.failedHelp")}</p>
-                            <JobFailureDetails context="agent" status={task.status} errorCode={task.errorCode} errorMessage={task.errorMessage}/>
-                            <small>{tr("app.agent.task.attempt", { attempt: task.attemptCount ?? 0 })}{task.lastActivity?.createdAt ? ` · ${tr("app.agent.task.lastActivity", { time: new Date(task.lastActivity.createdAt).toLocaleString(uiLocale) })}` : ""}</small>
-                            <div className="agent-task-actions"><button disabled={Boolean(taskActions[task.id])} onClick={() => void updateTask(task.id, "retry")}>{taskActions[task.id] === "retry" ? <LoaderCircle className="spin" size={11}/> : <RefreshCw size={11}/>} {taskActions[task.id] === "retry" ? tr("app.agent.task.retrying") : tr("app.s0325")}</button></div>
-                            <details><summary>{tr("app.agent.task.technical")}</summary><dl><div><dt>{tr("app.agent.task.id")}</dt><dd><code>{task.id}</code></dd></div></dl></details>
-                          </article>)}
-                      {processingTasks.filter((task) => task.id !== agentRun?.taskId).map((task) => <article className={`agent-task-status ${task.status}`} key={task.id}>
+	                      {processingTasks.filter((task) => task.id !== agentRun?.taskId).map((task) => <article className={`agent-task-status ${task.status}`} key={task.id}>
                             <header><Bot size={14}/><strong>{agentTaskStatusLabel(task)}</strong><small>{task.kind}</small></header>
                             <p className="agent-task-next">{task.status === "claimed"
                                 ? tr("app.agent.task.claimedHelp", { worker: task.lease?.worker ?? tr("app.agent.task.unknownWorker") })
@@ -3201,8 +1072,8 @@ function WorkbenchController() {
                       {actionableReviewCount === 0 && processingTasks.length === 0 && !agentRunActive && <div className="all-clear"><Check size={20}/><span>{tr("app.s0329")}</span></div>}
                     </div>
                   </>}
-                  {drawerTab === "quality" && <section className={`subtitle-quality-summary creator-quality ${project.subtitleQuality.status}`} aria-label={tr("app.s0357")}><div className="subtitle-quality-state">{project.subtitleQuality.status === "good" ? <Check size={15}/> : <CircleAlert size={15}/>}<span><strong>{project.subtitleQuality.errorCount > 0 ? subtitleQualityStatusLabel(project.subtitleQuality) : project.subtitleQuality.warningCount > 0 ? tr("app.creator.quality.advisorySummary", { count: project.subtitleQuality.warningCount }) : subtitleQualityStatusLabel(project.subtitleQuality)}</strong><small>{project.subtitleQuality.errorCount}{tr("app.s0358") + " "}{project.subtitleQuality.warningCount}{tr("app.s0359")}</small></span></div><div className="subtitle-quality-filters" aria-label={tr("app.s0360")}><button className={qualityFilter === "all" ? "active" : ""} onClick={() => setQualityFilter("all")}>{tr("app.s0361")}</button><button className={qualityFilter === "error" ? "active" : ""} disabled={!project.subtitleQuality.errorCount} onClick={() => setQualityFilter("error")}>{tr("app.s0362") + " "}{project.subtitleQuality.errorCount}</button><button className={qualityFilter === "warning" ? "active" : ""} disabled={!project.subtitleQuality.warningCount} onClick={() => setQualityFilter("warning")}>{tr("app.s0363") + " "}{project.subtitleQuality.warningCount}</button></div>{visibleQualityIssueGroups.length > 0 ? <><p className="quality-review-policy">{tr("app.creator.quality.reviewPolicy")}</p><div className="subtitle-quality-issues">{visibleQualityIssueGroups.map((group) => <button className={group.severity} key={group.id} data-review-detail-id={`quality:${group.first.id}`} onClick={() => locateSubtitleIssue(group.first)}><CircleAlert size={12}/><span><strong>{subtitleIssueLabel(group.kind)}{group.count > 1 ? ` · ${tr("app.creator.quality.groupCount", { count: group.count })}` : ""}</strong><small>{formatTime(group.start)} — {formatTime(group.end)}</small></span></button>)}</div></> : <div className="all-clear"><Check size={20}/><span>{tr("app.creator.quality.ready")}</span></div>}<button className="button primary full" onClick={() => openCreatorDrawer("export")}>{tr("app.creator.quality.continue")}</button></section>}
-                  {drawerTab === "analysis" && <div className="inspector-view creator-analysis">
+                  {drawerTab === "quality" && readModels.ready && <section className={`subtitle-quality-summary creator-quality ${project.subtitleQuality.status}`} aria-label={tr("app.s0357")}><div className="subtitle-quality-state">{project.subtitleQuality.status === "good" ? <Check size={15}/> : <CircleAlert size={15}/>}<span><strong>{project.subtitleQuality.errorCount > 0 ? subtitleQualityStatusLabel(project.subtitleQuality) : project.subtitleQuality.warningCount > 0 ? tr("app.creator.quality.advisorySummary", { count: project.subtitleQuality.warningCount }) : subtitleQualityStatusLabel(project.subtitleQuality)}</strong><small>{project.subtitleQuality.errorCount}{tr("app.s0358") + " "}{project.subtitleQuality.warningCount}{tr("app.s0359")}</small></span></div><div className="subtitle-quality-filters" aria-label={tr("app.s0360")}><button className={qualityFilter === "all" ? "active" : ""} onClick={() => setQualityFilter("all")}>{tr("app.s0361")}</button><button className={qualityFilter === "error" ? "active" : ""} disabled={!project.subtitleQuality.errorCount} onClick={() => setQualityFilter("error")}>{tr("app.s0362") + " "}{project.subtitleQuality.errorCount}</button><button className={qualityFilter === "warning" ? "active" : ""} disabled={!project.subtitleQuality.warningCount} onClick={() => setQualityFilter("warning")}>{tr("app.s0363") + " "}{project.subtitleQuality.warningCount}</button></div>{visibleQualityIssueGroups.length > 0 ? <><p className="quality-review-policy">{tr("app.creator.quality.reviewPolicy")}</p><div className="subtitle-quality-issues">{visibleQualityIssueGroups.map((group) => <button className={group.severity} key={group.id} data-review-detail-id={`quality:${group.first.id}`} onClick={() => locateSubtitleIssue(group.first)}><CircleAlert size={12}/><span><strong>{subtitleIssueLabel(group.kind)}{group.count > 1 ? ` · ${tr("app.creator.quality.groupCount", { count: group.count })}` : ""}</strong><small>{formatTime(group.start)} — {formatTime(group.end)}</small></span></button>)}</div></> : <div className="all-clear"><Check size={20}/><span>{tr("app.creator.quality.ready")}</span></div>}<button className="button primary full" onClick={() => openCreatorDrawer("export")}>{tr("app.creator.quality.continue")}</button></section>}
+                  {drawerTab === "analysis" && readModels.ready && <div className="inspector-view creator-analysis">
                     <SpeechInsightsPanel insights={project.speechInsights} onLocateEvidence={locateSpeechEvidence} onLocatePause={locateSpeechPause}/>
                     <AudioQualityPanel job={audioAnalysisJob} onStart={startAudioAnalysis} onCancel={cancelAudioAnalysis} onResume={resumeAudioAnalysis} onLocate={locateAudioRisk} disabled={!capabilities.canAnalyzeAudio || Boolean(busy)}/>
                     <SpeakerTrackPanel packageStatus={speakerPackage} track={speakerTrack} job={projectSpeakerJob} selectedSegmentId={selectedId} disabled={Boolean(busy)} onOpenRuntime={() => void openResourcePreparation("speaker_identity", "on_demand")} onAnalyze={startSpeakerAnalysis} onCancel={() => void cancelSpeakerJob(projectSpeakerJob)} onResume={() => void resumeSpeakerJob(projectSpeakerJob)} onRename={renameSpeaker} onMerge={mergeSpeaker} onAssign={assignSpeaker}/>
@@ -3212,16 +1083,14 @@ function WorkbenchController() {
                       {activeWordRange && <div className="word-cut-controls"><label>{tr("app.s0379")}<input aria-label={tr("app.s0380")} type="range" min="0" max={selectedWords.length - 1} value={activeWordRange.start} onChange={(event) => setWordRange({ ...activeWordRange, start: Math.min(Number(event.target.value), activeWordRange.end) })}/><small>{selectedWords[activeWordRange.start]?.text}</small></label><label>{tr("app.s0381")}<input aria-label={tr("app.s0382")} type="range" min="0" max={selectedWords.length - 1} value={activeWordRange.end} onChange={(event) => setWordRange({ ...activeWordRange, end: Math.max(Number(event.target.value), activeWordRange.start) })}/><small>{selectedWords[activeWordRange.end]?.text}</small></label><label className="padding-select">{tr("app.s0383")}<select aria-label={tr("app.s0383")} value={cutPadding} onChange={(event) => setCutPadding(Number(event.target.value) as 30 | 100 | 200)}><option value="30">30 ms</option><option value="100">100 ms</option><option value="200">200 ms</option></select></label><button className="create-word-cut" disabled={Boolean(busy)} onClick={createWordCut}><Scissors size={12}/>{tr("app.s0384")}</button></div>}
                     </section>}
                   </div>}
-                  {drawerTab === "history" && <div className="inspector-view"><div className="version-block"><div className="section-title"><div><p className="eyebrow">{tr("app.s0385")}</p><h2>{tr("app.s0386")}</h2></div><History size={16}/></div>{project.versions.slice().reverse().map((version) => <button className="version-row" key={version.id} onClick={() => restoreVersion(version.id)}><span><strong>{versionReasonLabel(version.reason)}</strong><small>{new Date(version.createdAt).toLocaleString(uiLocale)}</small></span><RotateCcw size={14}/></button>)}</div></div>}
+                  {drawerTab === "history" && readModels.ready && <div className="inspector-view"><div className="version-block"><div className="section-title"><div><p className="eyebrow">{tr("app.s0385")}</p><h2>{tr("app.s0386")}</h2></div><History size={16}/></div>{project.versions.slice().reverse().map((version) => <button className="version-row" key={version.id} onClick={() => restoreVersion(version.id)}><span><strong>{versionReasonLabel(version.reason)}</strong><small>{new Date(version.createdAt).toLocaleString(uiLocale)}</small></span><RotateCcw size={14}/></button>)}</div></div>}
                   {drawerTab === "export" && showExportPanel && <Suspense fallback={null}><ExportPanel embedded ref={exportPanelRef} project={project} busy={Boolean(busy)} subtitleDelivery={subtitleDelivery} subtitleMode={subtitleMode} translationLanguageOptions={translationLanguageOptions} translationLanguages={translationLanguages} selectedSubtitleLanguage={selectedSubtitleLanguage} selectedTranslationPending={selectedTranslationPending} selectedTranslationStale={selectedTranslationStale} confirmStaleTranslation={confirmStaleTranslation} confirmUncutExport={confirmUncutExport} exportFormat={exportFormat} structuredExport={structuredExport} includeSpeakerLabels={includeSpeakerLabels} transcriptionExportErrorCount={transcriptionExportErrors.length} transcriptionExportWarningCount={transcriptionExportWarnings.length} confirmTranscriptionWarnings={confirmTranscriptionWarnings} showSubtitleSafeArea={showSubtitleSafeArea} transcriptionExportBlocked={transcriptionExportBlocked} canExportVideo={capabilities.canExportVideo} activeExportRunning={Boolean(activeExport && ["queued", "running"].includes(activeExport.status))} mediaCapabilityTitle={mediaCapabilityTitle} onClose={() => { setShowExportPanel(false); setDrawerTab("quality"); }} onChangeCanvas={(settings) => void changeCanvas(settings)} onSubtitleDeliveryChange={setSubtitleDelivery} onSubtitleModeChange={(mode) => { setSubtitleMode(mode); setConfirmStaleTranslation(false); }} onSubtitleLanguageChange={(language) => { setSubtitleLanguage(language); setConfirmStaleTranslation(false); }} onExportFormatChange={(format) => { setExportFormat(format); setConfirmTranscriptionWarnings(false); }} onIncludeSpeakerLabelsChange={setIncludeSpeakerLabels} onConfirmWarningsChange={setConfirmTranscriptionWarnings} onConfirmStaleTranslationChange={setConfirmStaleTranslation} onConfirmUncutExportChange={setConfirmUncutExport} onSubtitleStyleChange={(preset, position, sourceFontSize, translationFontSize, boxWidthPercent, boxHeightLines) => void changeSubtitleStyle(preset, position, sourceFontSize, translationFontSize, boxWidthPercent, boxHeightLines)} onShowSafeAreaChange={setShowSubtitleSafeArea} onExportTranscript={exportTranscript} onExportVideo={exportVideo}/></Suspense>}
 	                </div>
 	              </aside>
 
-	            </section>
-
             <section className="editor-grid">
               <article className="transcript-panel">
-	                <header className="panel-header"><div><p className="eyebrow">{tr("app.s0332")}</p><h2>{tr("app.s0253")}</h2></div><div className="find-replace">{transcriptionMode === "multispeaker" && <button className="moss-transcribe-command" disabled={!canStartTranscription || transcriptionActive || Boolean(busy)} title={transcribeCapabilityTitle} onClick={transcribe}><Users size={12}/>{tr("app.moss.action.start")}</button>}<button ref={subtitleImportButtonRef} className="subtitle-import-command" disabled={Boolean(busy)} onClick={openSubtitleImport}><FileText size={12}/>{tr("app.s0333")}</button><button className="detect-suggestions" disabled={!project.transcript.words.length || Boolean(busy)} onClick={detectSuggestions}><Scissors size={12}/>{tr("app.s0334")}</button><label className="search"><Search size={14}/><input ref={searchInputRef} value={search} onChange={(event) => { setSearch(event.target.value); setEmptyReplacementConfirmed(false); }} placeholder={tr("app.s0335")} title="Ctrl+F"/></label><input ref={replacementInputRef} aria-label={tr("app.s0336")} value={replacement} onChange={(event) => { setReplacement(event.target.value); setEmptyReplacementConfirmed(false); }} placeholder={tr("app.s0336")} title="Ctrl+H"/>{search && <span className="replace-match-count">{tr("app.replace.matches", { count: replaceMatchCount })}</span>}{search && !replacement && <label className="replace-empty-confirm"><input type="checkbox" checked={emptyReplacementConfirmed} onChange={(event) => setEmptyReplacementConfirmed(event.target.checked)}/><span>{tr("app.replace.confirmDelete")}</span></label>}<button disabled={!search || (!replacement && !emptyReplacementConfirmed) || Boolean(busy)} onClick={replaceAll}>{tr("app.s0337")}</button></div></header>
+	                <header className="panel-header"><div><h2>{uiLocale === "zh-CN" ? "字幕文稿" : "Transcript"}</h2><label className="transcript-follow"><input type="checkbox" checked={transcriptNavigation.followPlayback} onChange={(event) => transcriptNavigation.setFollowPlayback(event.target.checked)}/>{uiLocale === "zh-CN" ? "跟随播放" : "Follow playback"}</label></div><div className="find-replace">{transcriptionMode === "multispeaker" && <button className="moss-transcribe-command" disabled={!canStartTranscription || transcriptionActive || Boolean(busy)} title={transcribeCapabilityTitle} onClick={transcribe}><Users size={12}/>{tr("app.moss.action.start")}</button>}<button ref={subtitleImportButtonRef} className="subtitle-import-command" disabled={Boolean(busy)} onClick={openSubtitleImport}><FileText size={12}/>{tr("app.s0333")}</button><button className="detect-suggestions" disabled={!project.transcript.words.length || Boolean(busy)} onClick={detectSuggestions}><Scissors size={12}/>{tr("app.s0334")}</button><label className="search"><Search size={14}/><input ref={searchInputRef} value={search} onChange={(event) => { setSearch(event.target.value); setEmptyReplacementConfirmed(false); }} placeholder={tr("app.s0335")} title="Ctrl+F"/></label><input ref={replacementInputRef} aria-label={tr("app.s0336")} value={replacement} onChange={(event) => { setReplacement(event.target.value); setEmptyReplacementConfirmed(false); }} placeholder={tr("app.s0336")} title="Ctrl+H"/>{search && <span className="replace-match-count">{tr("app.replace.matches", { count: replaceMatchCount })}</span>}{search && !replacement && <label className="replace-empty-confirm"><input type="checkbox" checked={emptyReplacementConfirmed} onChange={(event) => setEmptyReplacementConfirmed(event.target.checked)}/><span>{tr("app.replace.confirmDelete")}</span></label>}<button disabled={!search || (!replacement && !emptyReplacementConfirmed) || Boolean(busy)} onClick={replaceAll}>{tr("app.s0337")}</button></div></header>
                 <div className="transcript-meta"><span>{tr("app.s0338")}</span><span>{tr("app.composite.transcriptStats", { language: project.transcript.sourceLanguage.toUpperCase(), segments: segmentCountLabel(project.transcript.segments.length), words: wordCountLabel(project.transcript.words.length) })}</span></div>
                 {transcriptionMode === "multispeaker" && <details className="moss-advanced"><summary>{tr("app.moss.advanced.title")}</summary><div><label><span>{tr("app.moss.advanced.prompt")}</span><textarea value={transcriptionPrompt} maxLength={1200} onChange={(event) => setTranscriptionPrompt(event.target.value)} placeholder={tr("app.moss.advanced.promptPlaceholder")}/></label><label><span>{tr("app.moss.advanced.hotwords")}</span><input value={transcriptionHotwords} maxLength={500} onChange={(event) => setTranscriptionHotwords(event.target.value)} placeholder={tr("app.moss.advanced.hotwordsPlaceholder")}/></label><p>{tr("app.moss.advanced.experimental")}</p></div></details>}
                 {mossWordTimingUnavailable && <div className="capability-notice"><CircleAlert size={14}/><span><strong>{tr("app.moss.words.unavailable")}</strong><small>{tr("app.moss.words.explanation")}</small></span></div>}
@@ -3250,13 +1119,14 @@ function WorkbenchController() {
                     <button disabled={!selectedSegments.length || Boolean(busy)} title={tr("app.s0355")} onClick={() => openStructureEdit("offset")}><MoveHorizontal size={13}/>{tr("app.s0356")}</button>
                   </div>
                 </section>
-                <div className="segment-list" aria-label={tr("app.s0365")}>
-                  {filteredSegments.map((segment) => { const association = associationBySegment.get(segment.id); return <SegmentRow key={segment.id} segment={segment} speaker={association ? speakerById.get(association.speakerId) : undefined} speakerManual={association?.source === "manual"} selected={selectedSegmentIds.includes(segment.id)} active={segment.id === selectedId} translation={translation?.[1]} translationLanguage={translation?.[0]} onSelect={(mode) => selectSegmentInWorkbench(segment, mode)} onSave={(text) => editSegment(segment, text)} onSaveTranslation={(text) => editTranslationSegment(segment, text)} onSplitAt={(text, offset) => void splitSegmentFromEditor(segment, text, offset)} onMergePrevious={(text) => void mergePreviousFromEditor(segment, text)}/>; })}
-                  {!filteredSegments.length && <p className="empty-list">{project.transcript.segments.length ? tr("app.s0366") : tr("app.s0367")}</p>}
-                </div>
+                <VirtualTranscript listRef={transcriptNavigation.listRef} label={tr("app.s0365")} segments={filteredSegments}
+                  empty={<p className="empty-list">{project.transcript.segments.length ? tr("app.s0366") : tr("app.s0367")}</p>}
+                  renderRow={(segment) => { const association = associationBySegment.get(segment.id); return <SegmentRow playbackActive={segment.id === transcriptNavigation.playbackSegmentId} editingSession={editing.session} projectId={project.id} key={segment.id} segment={segment} speaker={association ? speakerById.get(association.speakerId) : undefined} speakerManual={association?.source === "manual"} selected={selectedSegmentIds.includes(segment.id)} active={segment.id === selectedId} translation={translation?.[1]} translationLanguage={translation?.[0]} onSelect={(mode) => selectSegmentInWorkbench(segment, mode)} onSave={(text) => editSegment(segment, text)} onSaveTranslation={(text) => editTranslationSegment(segment, text)} onSplitAt={(text, offset) => void splitSegmentFromEditor(segment, text, offset)} onMergePrevious={(text) => void mergePreviousFromEditor(segment, text)}/>; }} />
               </article>
 
 	            </section>
+
+            </section>
 
             <Suspense fallback={null}><SubtitleTimelinePanel
               project={project}
@@ -3278,12 +1148,14 @@ function WorkbenchController() {
               }}
               onOpenReviewDetail={openTimelineReviewDetail}
               onRestoreCut={(editId) => void updateCut(editId, "restore")}
-              canEnterFocusReview={Boolean(mediaUrl)}
+              canEnterFocusReview={Boolean(project)}
               onEnterFocusReview={enterFocusReview}
             /></Suspense>
           </>)}
       </section>
       {showAiExecutionConfirm && project && <Suspense fallback={null}><AiExecutionConfirm
+        scope={{ projectId: project.id, expectedVersionId: project.history.currentVersionId ?? "", kind: agentWorkflowKind,
+          language: agentWorkflowKind === "translate" ? subtitleLanguage : null, instructionLocale: uiLocale, taskId: aiApprovalTaskId }}
         returnFocusRef={agentHandoffReturnFocusRef}
         codexReady={Boolean(codexHealth?.available && codexHealth.authenticated)}
         taskLabel={`AI 辅助 · ${aiConfirmationLabel}`}
@@ -3293,7 +1165,7 @@ function WorkbenchController() {
         endTime={aiConfirmationSegments.at(-1)?.end ?? 0}
         contextLabel={aiConfirmationContext}
         onClose={() => setShowAiExecutionConfirm(false)}
-        onConfirm={(selection) => { setShowAiExecutionConfirm(false); void startAiAssistance(selection); }}
+        onConfirm={startAiAssistance}
       /></Suspense>}
       {showAgentHandoff && project && <Suspense fallback={null}><AgentHandoffDialog
         returnFocusRef={agentHandoffReturnFocusRef}
@@ -3460,11 +1332,17 @@ function WorkbenchController() {
         sourcePreview={sourcePreview}
         sourceJob={sourceJob}
         sourceAuthorized={sourceAuthorized}
+        sourceAuthMode={sourceAuthMode}
+        sourceBrowser={sourceBrowser}
+        sourceBrowserAuthorized={sourceBrowserAuthorized}
         sourceBusy={sourceBusy}
         sourceError={sourceError}
-        onClose={() => setShowSourceImport(false)}
-        onSourceUrlChange={(value) => { setSourceUrl(value); setSourcePreview(null); setSourceAuthorized(false); setSourceError(null); }}
+        onClose={() => { setShowSourceImport(false); setSourceBrowserAuthorized(false); }}
+        onSourceUrlChange={(value) => { setSourceUrl(value); setSourcePreview(null); setSourceAuthorized(false); setSourceBrowserAuthorized(false); setSourceError(null); }}
         onAuthorizedChange={setSourceAuthorized}
+        onAuthModeChange={(value) => { setSourceAuthMode(value); setSourcePreview(null); setSourceAuthorized(false); setSourceBrowserAuthorized(false); setSourceError(null); }}
+        onBrowserChange={(value) => { setSourceBrowser(value); setSourcePreview(null); setSourceAuthorized(false); setSourceBrowserAuthorized(false); setSourceError(null); }}
+        onBrowserAuthorizedChange={setSourceBrowserAuthorized}
         onInspect={() => void inspectSource()}
         onStart={() => void startSourceImport()}
         onCancel={() => void cancelSourceImport()}

@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { checkForUpdate, installUpdate } from "../core";
+import { shouldCheckForUpdates } from "../app-view-model";
+import { checkForUpdate, installUpdate } from "../domains/desktop-platform-client";
 import { tr } from "../i18n";
 import type { UpdateMetadata, UpdatePolicy } from "../types";
-import { shouldCheckForUpdates } from "../app-view-model";
 
 const LAST_CHECKED_AT_KEY = "siaocut.updateLastCheckedAt";
 

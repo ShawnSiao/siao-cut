@@ -29,8 +29,9 @@ const HEARTBEAT_SECONDS: u64 = 240;
 const MIN_PERMISSION_PROFILE_VERSION: (u64, u64, u64) = (0, 145, 0);
 const AGENT_PERMISSION_PROFILE: &str = "siaocut_text_only";
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreCodexHealthWire")]
 pub struct CodexHealth {
     pub available: bool,
     pub authenticated: bool,
@@ -114,6 +115,16 @@ pub fn start_with_execution(
     start_delay_ms: Option<u64>,
     execution: ExecutionTarget,
 ) -> Result<AgentRun> {
+    let run = enqueue_with_execution(db, task_id, timeout_seconds, execution)?;
+    launch_queued_run(db, &run.id, start_delay_ms)
+}
+
+pub(crate) fn enqueue_with_execution(
+    db: &mut Connection,
+    task_id: &str,
+    timeout_seconds: Option<u64>,
+    execution: ExecutionTarget,
+) -> Result<AgentRun> {
     let timeout_seconds = timeout_seconds.unwrap_or(DEFAULT_TIMEOUT_SECONDS);
     validate_timeout(timeout_seconds)?;
     execution.validate()?;
@@ -172,7 +183,7 @@ pub fn start_with_execution(
     };
     let run_id = new_id("ar");
     let timestamp = now();
-    let tx = db.transaction()?;
+    let tx = crate::write_transaction::WriteTransaction::begin(db)?;
     tx.execute(
         "INSERT INTO agent_runs(
              id,task_id,project_id,provider,execution_kind,service_config_id,
@@ -204,11 +215,19 @@ pub fn start_with_execution(
     )?;
     insert_batches(&tx, &run_id, &batches, &timestamp)?;
     tx.commit()?;
-    if let Err(error) = spawn_worker(&run_id, 1, start_delay_ms) {
-        mark_start_failed(db, &run_id, 1, &error)?;
+    load(db, &run_id)
+}
+
+pub(crate) fn launch_queued_run(
+    db: &mut Connection,
+    run_id: &str,
+    start_delay_ms: Option<u64>,
+) -> Result<AgentRun> {
+    if let Err(error) = spawn_worker(run_id, 1, start_delay_ms) {
+        mark_start_failed(db, run_id, 1, &error)?;
         return Err(error);
     }
-    load(db, &run_id)
+    load(db, run_id)
 }
 
 pub use crate::agent::repository::{list, load};
@@ -216,6 +235,9 @@ pub use crate::agent::repository::{list, load};
 pub fn cancel(db: &mut Connection, run_id: &str) -> Result<AgentRun> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let run = load(&tx, run_id)?;
+    if ["failed", "completed", "cancelled", "interrupted"].contains(&run.status.as_str()) {
+        return Ok(run);
+    }
     if !["queued", "running", "submitting"].contains(&run.status.as_str()) {
         bail!("agent_run_not_cancellable: 当前 Agent 运行不能取消")
     }
@@ -248,6 +270,7 @@ pub fn cancel(db: &mut Connection, run_id: &str) -> Result<AgentRun> {
 }
 
 pub fn resume(db: &mut Connection, run_id: &str, start_delay_ms: Option<u64>) -> Result<AgentRun> {
+    crate::ai_approval::validate_resume(db, run_id)?;
     let stored_run = load(db, run_id)?;
     let execution = ExecutionTarget::from_run(&stored_run)?;
     let cli_health = match &execution {
@@ -459,6 +482,7 @@ fn execute_run_with_executor(
         if task.base_version_id.as_deref() != Some(run.base_version_id.as_str()) {
             bail!("agent_project_version_conflict: Agent 任务基线已变化")
         }
+        let payload = crate::ai_approval::payload_for_run(db, &run, &payload)?;
         tasks::heartbeat(
             db,
             &run.task_id,
@@ -513,6 +537,7 @@ fn execute_run_with_executor(
                     .and_then(Value::as_str)
                     .unwrap_or_default(),
             );
+            crate::ai_approval::authorize_dispatch(db, &run, &batch.id)?;
             let mut batch_result = match &executor {
                 RunExecutor::Codex(config) => invoke_codex(
                     db,
@@ -1426,7 +1451,7 @@ fn validate_timeout(timeout_seconds: u64) -> Result<()> {
 }
 
 fn insert_batches(
-    tx: &rusqlite::Transaction<'_>,
+    tx: &Connection,
     run_id: &str,
     batches: &[Vec<String>],
     timestamp: &str,
@@ -1441,7 +1466,7 @@ fn insert_batches(
 }
 
 fn prepare_batches_for_resume(
-    tx: &rusqlite::Transaction<'_>,
+    tx: &Connection,
     run_id: &str,
     previous_base_version_id: &str,
     next_base_version_id: &str,
@@ -1459,6 +1484,12 @@ fn prepare_batches_for_resume(
                 stored.ordinal as usize == ordinal && stored.segment_ids == *expected
             });
     if !same_layout {
+        let dispatched: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM ai_approval_dispatches d JOIN ai_send_approvals a ON a.id=d.approval_id WHERE a.run_id=?1)", [run_id], |r| r.get(0))?;
+        if dispatched {
+            bail!(
+                "ai_dispatch_uncertain: 分批范围已变化，已发送任务不能自动重新分批；请新建任务并重新授权"
+            )
+        }
         tx.execute("DELETE FROM agent_run_batches WHERE run_id=?1", [run_id])?;
         insert_batches(tx, run_id, batches, timestamp)?;
         return Ok(0);
@@ -1644,6 +1675,15 @@ fn finalize_worker_error(
 
 fn public_error_message(code: &str) -> &'static str {
     match code {
+        "ai_approval_stale" => {
+            "发送授权已失效：字幕版本或执行配置发生变化。已完成批次保留；请重新预检并确认。"
+        }
+        "ai_dispatch_uncertain" => {
+            "此批次已发起过调用，结果尚未确认；为避免重复消耗额度，已停止发送。"
+        }
+        "ai_approval_configuration_unavailable" => {
+            "无法核对 AI 执行配置，已停止发送；请检查配置后重试。"
+        }
         "codex_cli_missing" => "Codex CLI 不可用。",
         "codex_not_logged_in" => "Codex CLI 尚未登录。",
         "codex_cli_unsupported" => "Codex CLI 版本不支持本机 Agent 所需的权限隔离。",
@@ -2064,6 +2104,46 @@ mod tests {
         assert_eq!(batch_after.id, batch_before);
         assert_eq!(batch_after.status, "completed");
         assert_eq!(batch_after.attempt_count, 1);
+    }
+
+    #[test]
+    fn cancel_terminal_run_preserves_result_and_task_state() {
+        for status in ["failed", "completed", "cancelled", "interrupted"] {
+            let (_temp, mut database, project, task, segment_id) = database_fixture();
+            let run_id = insert_test_run(
+                &mut database,
+                &task,
+                &project.id,
+                &segment_id,
+                status,
+                &now(),
+            );
+            database
+                .execute(
+                    "UPDATE agent_runs SET error_code='ai_approval_stale' WHERE id=?1",
+                    [&run_id],
+                )
+                .unwrap();
+            for _ in 0..2 {
+                let result = cancel(&mut database, &run_id).unwrap();
+                assert_eq!(result.status, status);
+                assert_eq!(result.error_code.as_deref(), Some("ai_approval_stale"));
+                assert!(result.cancel_requested_at.is_none());
+            }
+            let status: String = database
+                .query_row("SELECT status FROM tasks WHERE id=?1", [&task.id], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(status, "queued");
+        }
+    }
+
+    #[test]
+    fn approval_errors_are_not_reported_as_invalid_model_output() {
+        assert!(public_error_message("ai_approval_stale").contains("发送授权已失效"));
+        assert!(public_error_message("ai_dispatch_uncertain").contains("重复消耗额度"));
+        assert!(public_error_message("ai_approval_configuration_unavailable").contains("核对"));
     }
 
     #[test]

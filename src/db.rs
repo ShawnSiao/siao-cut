@@ -1,4 +1,7 @@
+#[path = "db_backup.rs"]
+mod backup;
 use anyhow::{Context, Result, bail};
+use backup::backup_before_upgrade;
 use chrono::Utc;
 use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 use std::{
@@ -7,7 +10,12 @@ use std::{
     time::Duration,
 };
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 33;
+#[path = "db_access.rs"]
+mod access;
+#[path = "db_lifecycle_migrations.rs"]
+mod lifecycle_migrations;
+
+pub const CURRENT_SCHEMA_VERSION: i64 = 38;
 
 struct Migration {
     version: i64,
@@ -147,6 +155,26 @@ const MIGRATIONS: &[Migration] = &[
         version: 33,
         apply: migration_33_subtitle_delivery,
     },
+    Migration {
+        version: 34,
+        apply: migration_34_source_browser_auth,
+    },
+    Migration {
+        version: 35,
+        apply: migration_35_editing_sessions,
+    },
+    Migration {
+        version: 36,
+        apply: migration_36_ai_approvals,
+    },
+    Migration {
+        version: 37,
+        apply: lifecycle_migrations::migration_37_transcription_commands,
+    },
+    Migration {
+        version: 38,
+        apply: lifecycle_migrations::migration_38_project_commands,
+    },
 ];
 
 pub fn home_dir() -> PathBuf {
@@ -171,64 +199,12 @@ pub fn open() -> Result<Connection> {
 }
 
 pub(crate) fn open_at(path: &Path) -> Result<Connection> {
-    backup_before_upgrade(path)?;
-    let mut db = Connection::open(path).context("无法打开 SiaoCut SQLite 数据库")?;
-    db.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")?;
-    db.busy_timeout(Duration::from_secs(120))?;
-    migrate(&mut db)?;
-    Ok(db)
+    access::open_at_with_timeout(path, access::BACKGROUND_WAIT)
 }
 
-fn backup_before_upgrade(path: &Path) -> Result<Option<PathBuf>> {
-    if !path.is_file() {
-        return Ok(None);
-    }
-    let source = Connection::open(path).context("无法读取待升级的 SiaoCut 数据库")?;
-    let has_migrations: bool = source.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations')",
-        [],
-        |row| row.get(0),
-    )?;
-    if !has_migrations {
-        return Ok(None);
-    }
-    let installed: i64 = source.query_row(
-        "SELECT COALESCE(MAX(version),0) FROM schema_migrations",
-        [],
-        |row| row.get(0),
-    )?;
-    if installed <= 0 || installed >= CURRENT_SCHEMA_VERSION {
-        return Ok(None);
-    }
-    let file_name = path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("siaocut.db");
-    let backup_path = path.with_file_name(format!("{file_name}.schema-{installed}.bak"));
-    if backup_path.exists() {
-        return Ok(Some(backup_path));
-    }
-    let partial_path =
-        backup_path.with_file_name(format!("{file_name}.schema-{installed}.bak.partial"));
-    if partial_path.is_file() {
-        fs::remove_file(&partial_path).context("无法清理未完成的数据库备份")?;
-    }
-    let backup_result = (|| -> Result<()> {
-        let mut destination =
-            Connection::open(&partial_path).context("无法创建数据库升级前备份")?;
-        let backup = rusqlite::backup::Backup::new(&source, &mut destination)
-            .context("无法初始化数据库升级前备份")?;
-        backup
-            .run_to_completion(128, Duration::from_millis(10), None)
-            .context("数据库升级前备份失败")?;
-        Ok(())
-    })();
-    if let Err(error) = backup_result {
-        let _ = fs::remove_file(&partial_path);
-        return Err(error);
-    }
-    fs::rename(&partial_path, &backup_path).context("无法完成数据库升级前备份")?;
-    Ok(Some(backup_path))
+pub fn open_desktop() -> Result<Connection> {
+    fs::create_dir_all(home_dir()).context("无法创建 SiaoCut 数据目录")?;
+    access::open_at_with_timeout(&database_path(), access::INTERACTIVE_WAIT)
 }
 
 fn migrate(db: &mut Connection) -> Result<()> {
@@ -252,6 +228,18 @@ fn migrate(db: &mut Connection) -> Result<()> {
 
     for migration in MIGRATIONS.iter().filter(|item| item.version > installed) {
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(version),0) FROM schema_migrations",
+            [],
+            |row| row.get(0),
+        )?;
+        if current > CURRENT_SCHEMA_VERSION {
+            bail!("database_version_unsupported: 数据库已由较新版本升级")
+        }
+        if current >= migration.version {
+            tx.commit()?;
+            continue;
+        }
         (migration.apply)(&tx).with_context(|| {
             format!(
                 "database_migration_failed: 迁移 {} 执行失败",
@@ -1091,6 +1079,11 @@ fn migration_33_subtitle_delivery(tx: &Transaction<'_>) -> Result<()> {
     Ok(())
 }
 
+fn migration_34_source_browser_auth(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute_batch(include_str!("migrations/34_source_browser_auth.sql"))?;
+    Ok(())
+}
+
 fn migration_24_translation_readiness(tx: &Transaction<'_>) -> Result<()> {
     tx.execute_batch(
         "ALTER TABLE translations ADD COLUMN glossary_version INTEGER NOT NULL DEFAULT 0;
@@ -1371,10 +1364,71 @@ fn migration_29_local_resource_profiles(tx: &Transaction<'_>) -> Result<()> {
     Ok(())
 }
 
+fn migration_35_editing_sessions(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute_batch(include_str!("migrations/35_editing_sessions.sql"))?;
+    Ok(())
+}
+
+fn migration_36_ai_approvals(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute_batch(include_str!("migrations/36_ai_approvals.sql"))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn concurrent_open_upgrades_the_previous_schema_once_and_keeps_backup() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("concurrent.db");
+        let mut old = Connection::open(&path).unwrap();
+        old.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,applied_at TEXT NOT NULL)").unwrap();
+        for migration in MIGRATIONS
+            .iter()
+            .filter(|m| m.version < CURRENT_SCHEMA_VERSION)
+        {
+            let tx = old.transaction().unwrap();
+            (migration.apply)(&tx).unwrap();
+            tx.execute(
+                "INSERT INTO schema_migrations VALUES(?1,'test')",
+                [migration.version],
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+        drop(old);
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let workers: Vec<_> = (0..2)
+            .map(|_| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let db = open_at(&path).unwrap();
+                    db.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .unwrap()
+                })
+            })
+            .collect();
+        for worker in workers {
+            assert_eq!(worker.join().unwrap(), CURRENT_SCHEMA_VERSION);
+        }
+        let backup = Connection::open(temp.path().join(format!(
+            "concurrent.db.schema-{}.bak",
+            CURRENT_SCHEMA_VERSION - 1
+        )))
+        .unwrap();
+        let old_version: i64 = backup
+            .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(old_version, CURRENT_SCHEMA_VERSION - 1);
+    }
 
     #[test]
     fn initializes_and_reopens_current_schema() {
@@ -1456,6 +1510,14 @@ mod tests {
             )
             .unwrap();
         assert!(source_import_table);
+        let source_auth_columns: i64 = second
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('source_imports') WHERE name IN ('auth_mode','browser')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(source_auth_columns, 2);
         let auto_workflow_table: bool = second
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='auto_workflows')",
@@ -2091,3 +2153,15 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "migration36_tests.rs"]
+mod migration36_tests;
+
+#[cfg(test)]
+#[path = "migration37_tests.rs"]
+mod migration37_tests;
+
+#[cfg(test)]
+#[path = "migration38_tests.rs"]
+mod migration38_tests;

@@ -59,6 +59,7 @@ pub const WORKFLOW_STATUSES: &[&str] = &[
 ];
 
 pub const AUTO_WORKFLOW_STATUSES: &[&str] = &[
+    "awaiting_authorization",
     "queued",
     "running",
     "needs_agent",
@@ -102,6 +103,11 @@ pub const LOCAL_RESOURCE_STATES: &[&str] = &[
 ];
 
 pub const CORE_ERROR_CODES: &[&str] = &[
+    "database_busy",
+    "editing_version_conflict",
+    "editing_content_conflict",
+    "editing_mutation_reused",
+    "editing_text_empty",
     "database_version_unsupported",
     "database_migration_failed",
     "project_version_conflict",
@@ -198,10 +204,14 @@ pub const CORE_ERROR_CODES: &[&str] = &[
     "transcription_timing_invalid",
     "transcription_import_failed",
     "transcription_cancelled",
+    "transcription_attempt_superseded",
+    "transcription_model_missing",
+    "transcription_model_failed",
     "transcription_interrupted",
     "transcription_active_job_exists",
     "transcription_job_state_invalid",
     "transcription_project_changed",
+    "transcription_review_required",
     "transcription_source_changed",
     "transcription_result_not_ready",
     "transcription_apply_confirmation_required",
@@ -221,6 +231,12 @@ pub const CORE_ERROR_CODES: &[&str] = &[
     "source_tool_timeout",
     "source_inspection_failed",
     "source_inspection_timeout",
+    "source_login_required",
+    "source_browser_invalid",
+    "source_browser_auth_failed",
+    "source_browser_media_unavailable",
+    "source_auth_state_invalid",
+    "source_x_resolver_failed",
     "source_metadata_invalid",
     "source_playlist_not_allowed",
     "source_auth_not_allowed",
@@ -374,12 +390,46 @@ pub const CORE_ERROR_CODES: &[&str] = &[
     "provider_unavailable",
     "invalid_response",
     "service_revision_changed",
+    "ai_approval_stale",
+    "ai_approval_not_found",
+    "ai_approval_configuration_unavailable",
+    "ai_dispatch_uncertain",
     "payload_too_large",
     "cancelled",
 ];
 
 pub fn contract() -> Value {
+    use ts_rs::TS;
+    let config = ts_rs::Config::default();
+    let mut declarations = vec![
+        crate::desktop_api::DesktopRequest::decl(&config),
+        crate::desktop_query::DesktopQuery::decl(&config),
+        crate::desktop_control::DesktopControl::decl(&config),
+        crate::desktop_export::ExportCommand::decl(&config),
+        crate::desktop_export::ExportOperation::decl(&config),
+        crate::desktop_workflow::StartWorkflow::decl(&config),
+        crate::project_query::ProjectSummary::decl(&config),
+        crate::project_query::ProjectPage::decl(&config),
+        crate::project_query::ProjectQuery::decl(&config),
+        crate::project_commands::ProjectCommand::decl(&config),
+        crate::editing::Draft::decl(&config),
+        crate::editing::SaveEdit::decl(&config),
+        crate::editing::EditReceipt::decl(&config),
+        crate::editing::ProjectOperation::decl(&config),
+        crate::editing::ProjectMutation::decl(&config),
+        crate::editing::EditingRequest::decl(&config),
+        crate::agent::execution::ExecutionTarget::decl(&config),
+        crate::ai_approval::AiSendSpec::decl(&config),
+        crate::ai_approval::AiSendPreview::decl(&config),
+        crate::ai_approval::AiApprovalRequest::decl(&config),
+        crate::transcription::desktop::TranscriptionCommand::decl(&config),
+        crate::transcription::desktop::JobSummary::decl(&config),
+    ];
+    declarations.extend(crate::model_contract::declarations(&config));
+    declarations.extend(crate::domain_contract::declarations());
     json!({
+        "typeDeclarations": declarations,
+        "capabilities": ["editing-v1", "ai-approval-v1", "transcription-jobs-v2", "project-query-v1", "edit-receipt-v2", "desktop-query-v1", "desktop-control-v2", "project-command-v1", "export-command-v1", "transcription-review-edit-v1"],
         "statusSets": {
             "backgroundJob": BACKGROUND_JOB_STATUSES,
             "transcriptionJob": TRANSCRIPTION_JOB_STATUSES,
@@ -397,6 +447,13 @@ pub fn contract() -> Value {
 }
 
 pub fn error_code(error: &Error) -> &'static str {
+    if error.chain().any(|cause| {
+        matches!(cause.downcast_ref::<rusqlite::Error>(),
+            Some(rusqlite::Error::SqliteFailure(inner, _)) if matches!(inner.code,
+                rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked))
+    }) {
+        return "database_busy";
+    }
     for cause in error.chain() {
         let message = cause.to_string();
         let candidate = message
@@ -414,10 +471,39 @@ pub fn error_code(error: &Error) -> &'static str {
     "invalid_request"
 }
 
+pub fn error_message(error: &Error) -> String {
+    if error_code(error) == "database_busy" {
+        "数据库暂时被占用，本次操作尚未完成。请稍后重试。".into()
+    } else {
+        error.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use anyhow::anyhow;
+
+    #[test]
+    fn sqlite_contention_is_retryable_even_inside_migration_context() {
+        for code in [
+            rusqlite::ffi::SQLITE_BUSY,
+            rusqlite::ffi::SQLITE_LOCKED,
+            rusqlite::ffi::SQLITE_BUSY_SNAPSHOT,
+        ] {
+            let error = anyhow!(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(code),
+                None
+            ))
+            .context("database_migration_failed: upgrading");
+            assert_eq!(error_code(&error), "database_busy");
+            assert!(error_message(&error).contains("稍后重试"));
+        }
+        assert_eq!(
+            error_code(&anyhow!("database is locked")),
+            "invalid_request"
+        );
+    }
 
     #[test]
     fn resolves_only_explicit_error_prefixes_across_context_layers() {

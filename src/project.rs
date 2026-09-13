@@ -10,7 +10,7 @@ use crate::{
     workflows,
 };
 use anyhow::{Context, Result, anyhow, bail};
-use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
@@ -21,6 +21,14 @@ use std::{
 };
 
 pub fn load(db: &Connection, id: &str) -> Result<Project> {
+    load_with_history(db, id, true)
+}
+
+pub fn load_workspace(db: &Connection, id: &str) -> Result<Project> {
+    load_with_history(db, id, false)
+}
+
+fn load_with_history(db: &Connection, id: &str, include_history: bool) -> Result<Project> {
     let base: (String, String, String, String, String, String, String, String) = db
         .query_row(
             "SELECT id,title,created_at,updated_at,source_language,canvas_aspect_ratio,canvas_framing,subtitle_style_json FROM projects WHERE id=?1",
@@ -72,6 +80,10 @@ pub fn load(db: &Connection, id: &str) -> Result<Project> {
         .optional()?;
     let segments = select_segments(db, id)?;
     let words = select_words(db, id)?;
+    let segments_by_id = segments
+        .iter()
+        .map(|segment| (segment.id.as_str(), segment))
+        .collect::<std::collections::HashMap<_, _>>();
     let mut translations = BTreeMap::new();
     let mut statement = db.prepare(
         "SELECT language,status,updated_at,glossary_version FROM translations WHERE project_id=?1 ORDER BY language",
@@ -94,22 +106,22 @@ pub fn load(db: &Connection, id: &str) -> Result<Project> {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         for translated in &mut translated_segments {
-            if let Some(source) = segments
-                .iter()
-                .find(|segment| segment.id == translated.segment_id)
-            {
+            if let Some(source) = segments_by_id.get(translated.segment_id.as_str()) {
                 translated.status =
                     translation::effective_segment_status(source, translated, &language);
             } else {
                 translated.status = "stale".to_owned();
             }
         }
+        let current_ids = translated_segments
+            .iter()
+            .filter(|segment| segment.status == "current")
+            .map(|segment| segment.segment_id.as_str())
+            .collect::<std::collections::HashSet<_>>();
         let complete = !segments.is_empty()
-            && segments.iter().all(|source| {
-                translated_segments.iter().any(|translated| {
-                    translated.segment_id == source.id && translated.status == "current"
-                })
-            });
+            && segments
+                .iter()
+                .all(|segment| current_ids.contains(segment.id.as_str()));
         translations.insert(
             language,
             Translation {
@@ -153,10 +165,15 @@ pub fn load(db: &Connection, id: &str) -> Result<Project> {
             }),
         })
     })?.collect::<rusqlite::Result<Vec<_>>>()?;
-    let tasks = db.prepare("SELECT id,kind,language,status,created_at,completed_at,lease_worker,lease_id,lease_expires_at,base_version_id,progress,error_message,attempt_count,cancel_requested_at,workflow_id,instruction_locale,(SELECT kind FROM task_events WHERE task_id=tasks.id ORDER BY id DESC LIMIT 1),(SELECT progress FROM task_events WHERE task_id=tasks.id ORDER BY id DESC LIMIT 1),(SELECT message FROM task_events WHERE task_id=tasks.id ORDER BY id DESC LIMIT 1),(SELECT created_at FROM task_events WHERE task_id=tasks.id ORDER BY id DESC LIMIT 1) FROM tasks WHERE project_id=?1 ORDER BY created_at")?.query_map([id],|row| { let worker:Option<String>=row.get(6)?; let status:String=row.get(3)?; let error_message:Option<String>=row.get(11)?; let activity_kind:Option<String>=row.get(16)?; Ok(Task{id:row.get(0)?,kind:row.get(1)?,language:row.get(2)?,error_code:crate::model::background_error_code(&status,error_message.as_deref()),status,created_at:row.get(4)?,completed_at:row.get(5)?,lease:worker.map(|worker| Lease { worker, id:row.get(7).unwrap_or_default(), expires_at:row.get(8).unwrap_or_default()}),last_activity:activity_kind.map(|kind| TaskActivity { kind, progress:row.get(17).unwrap_or(None), message:row.get(18).unwrap_or_default(), created_at:row.get(19).unwrap_or_default() }),base_version_id:row.get(9)?,progress:row.get(10)?,error_message,attempt_count:row.get(12)?,cancel_requested_at:row.get(13)?,workflow_id:row.get(14)?,instruction_locale:row.get(15)?})})?.collect::<rusqlite::Result<Vec<_>>>()?;
-    let versions = db
+    let tasks = if include_history {
+        select_tasks(db, id)?
+    } else {
+        Vec::new()
+    };
+    let versions = if include_history {
+        db
         .prepare(
-            "SELECT id,reason,created_at FROM versions WHERE project_id=?1 ORDER BY history_index",
+            "SELECT id,reason,created_at FROM versions WHERE project_id=?1 AND active_history=1 ORDER BY history_index",
         )?
         .query_map([id], |row| {
             Ok(Version {
@@ -165,7 +182,10 @@ pub fn load(db: &Connection, id: &str) -> Result<Project> {
                 created_at: row.get(2)?,
             })
         })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+        .collect::<rusqlite::Result<Vec<_>>>()?
+    } else {
+        Vec::new()
+    };
     let mut project = Project {
         id: base.0,
         title: base.1,
@@ -197,15 +217,25 @@ pub fn load(db: &Connection, id: &str) -> Result<Project> {
         tasks,
         versions,
         history: history_status(db, id)?,
-        patch_sets: patches::for_project(db, id)?,
-        workflows: workflows::for_project(db, id)?,
+        patch_sets: if include_history {
+            patches::for_project(db, id)?
+        } else {
+            Vec::new()
+        },
+        workflows: if include_history {
+            workflows::for_project(db, id)?
+        } else {
+            Vec::new()
+        },
     };
-    project.speech_insights = speech::analyze(&project.transcript);
-    project.subtitle_quality = subtitle_quality::inspect_with_language(
-        &project.transcript.segments,
-        project.media.duration_seconds,
-        &project.transcript.source_language,
-    );
+    if include_history {
+        project.speech_insights = speech::analyze(&project.transcript);
+        project.subtitle_quality = subtitle_quality::inspect_with_language(
+            &project.transcript.segments,
+            project.media.duration_seconds,
+            &project.transcript.source_language,
+        );
+    }
     project.timeline = timeline::build(&project);
     Ok(project)
 }
@@ -220,16 +250,18 @@ pub fn list(db: &Connection) -> Result<Vec<Project>> {
         .collect()
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreProjectDeletionBlockerWire")]
 pub struct ProjectDeletionBlocker {
     pub kind: String,
     pub id: String,
     pub status: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreProjectDeletionPreflightWire")]
 pub struct ProjectDeletionPreflight {
     pub project_id: String,
     pub expected_version_id: String,
@@ -237,16 +269,21 @@ pub struct ProjectDeletionPreflight {
     pub blockers: Vec<ProjectDeletionBlocker>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreTranscriptReplacementBlockersWire")]
 pub struct TranscriptReplacementBlockers {
+    #[ts(type = "number")]
     pub edits: i64,
+    #[ts(type = "number")]
     pub patch_items: i64,
+    #[ts(type = "number")]
     pub task_segments: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "CoreTranscriptReplacementPreflightWire")]
 pub struct TranscriptReplacementPreflight {
     pub can_replace: bool,
     pub current_version_id: String,
@@ -312,7 +349,7 @@ pub fn delete_at_version(
     project_id: &str,
     expected_version_id: &str,
 ) -> Result<()> {
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = crate::write_transaction::WriteTransaction::begin(db)?;
     let preflight = deletion_preflight(&tx, project_id)?;
     if preflight.expected_version_id != expected_version_id {
         bail!("project_delete_version_mismatch: 项目在删除确认后发生变化，请重新确认")
@@ -350,18 +387,18 @@ pub fn history_status(db: &Connection, project_id: &str) -> Result<HistoryState>
     };
     let current_version_id = db
         .query_row(
-            "SELECT id FROM versions WHERE project_id=?1 AND history_index=?2",
+            "SELECT id FROM versions WHERE project_id=?1 AND active_history=1 AND history_index=?2",
             params![project_id, cursor],
             |row| row.get(0),
         )
         .optional()?;
     let can_undo = db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM versions WHERE project_id=?1 AND history_index < ?2)",
+        "SELECT EXISTS(SELECT 1 FROM versions WHERE project_id=?1 AND active_history=1 AND history_index < ?2)",
         params![project_id, cursor],
         |row| row.get(0),
     )?;
     let can_redo = db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM versions WHERE project_id=?1 AND history_index > ?2)",
+        "SELECT EXISTS(SELECT 1 FROM versions WHERE project_id=?1 AND active_history=1 AND history_index > ?2)",
         params![project_id, cursor],
         |row| row.get(0),
     )?;
@@ -377,9 +414,18 @@ pub fn current_version_id(db: &Connection, project_id: &str) -> Result<Option<St
 }
 
 pub(crate) fn snapshot_in_transaction(
-    tx: &Transaction<'_>,
+    tx: &Connection,
     project_id: &str,
     reason: &str,
+) -> Result<Version> {
+    snapshot_with_group(tx, project_id, reason, None)
+}
+
+pub(crate) fn snapshot_with_group(
+    tx: &Connection,
+    project_id: &str,
+    reason: &str,
+    edit_group: Option<&str>,
 ) -> Result<Version> {
     let version = Version {
         id: new_id("v"),
@@ -429,17 +475,22 @@ pub(crate) fn snapshot_in_transaction(
         .optional()?
         .unwrap_or(0);
     let next = cursor + 1;
-    tx.execute(
-        "DELETE FROM versions WHERE project_id=?1 AND history_index > ?2",
-        params![project_id, cursor],
-    )?;
-    tx.execute("INSERT INTO versions(id,project_id,reason,created_at,snapshot_json,history_index) VALUES(?1,?2,?3,?4,?5,?6)",params![&version.id,project_id,&version.reason,&version.created_at,raw,next])?;
+    retire_history(tx, project_id, &format!("history_index > {cursor}"))?;
+    tx.execute("INSERT INTO versions(id,project_id,reason,created_at,snapshot_json,history_index,edit_group) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![&version.id,project_id,&version.reason,&version.created_at,raw,next,edit_group])?;
     tx.execute(
         "INSERT INTO project_history(project_id,cursor_index,updated_at) VALUES(?1,?2,?3)
          ON CONFLICT(project_id) DO UPDATE SET cursor_index=excluded.cursor_index,updated_at=excluded.updated_at",
         params![project_id, next, &version.created_at],
     )?;
-    tx.execute("DELETE FROM versions WHERE id IN (SELECT id FROM versions WHERE project_id=?1 ORDER BY history_index DESC LIMIT -1 OFFSET 40)",[project_id])?;
+    retire_history(
+        tx,
+        project_id,
+        "id NOT IN (
+        SELECT id FROM versions WHERE project_id=?1 AND active_history=1
+        GROUP BY COALESCE(edit_group,id) HAVING history_index=MAX(history_index)
+        ORDER BY MAX(history_index) DESC LIMIT 40
+    )",
+    )?;
     tx.execute(
         "UPDATE projects SET updated_at=?2 WHERE id=?1",
         params![project_id, &version.created_at],
@@ -454,6 +505,32 @@ pub(crate) fn snapshot_in_transaction(
         ],
     )?;
     Ok(version)
+}
+
+fn retire_history(tx: &Connection, project_id: &str, predicate: &str) -> Result<()> {
+    // The predicate contains only static SQL or an integer obtained from SQLite.
+    let selected = format!("project_id=?1 AND active_history=1 AND ({predicate})");
+    let pinned = "id IN (
+        SELECT base_version_id FROM tasks WHERE project_id=?1
+        UNION SELECT base_version_id FROM agent_patch_sets WHERE project_id=?1
+        UNION SELECT base_version_id FROM agent_runs WHERE project_id=?1
+        UNION SELECT base_version_id FROM transcription_jobs WHERE project_id=?1
+        UNION SELECT base_version_id FROM transcription_runs WHERE project_id=?1
+        UNION SELECT transcript_version_id FROM auto_workflows WHERE project_id=?1
+        UNION SELECT base_version_id FROM export_jobs WHERE project_id=?1
+        UNION SELECT base_version_id FROM speaker_jobs WHERE project_id=?1
+        UNION SELECT base_version_id FROM media_artifacts WHERE project_id=?1
+        UNION SELECT base_version_id FROM ai_send_approvals WHERE project_id=?1
+        UNION SELECT base_version_id FROM editing_drafts WHERE project_id=?1 AND discarded=0
+    )";
+    tx.execute(&format!("UPDATE versions SET active_history=0,history_index=-rowid WHERE {selected} AND {pinned}"), [project_id])?;
+    tx.execute(
+        &format!("DELETE FROM versions WHERE {selected}"),
+        [project_id],
+    )?;
+    // Release previously pinned snapshots once no task or journal references them.
+    tx.execute(&format!("DELETE FROM versions WHERE project_id=?1 AND active_history=0 AND id NOT IN (SELECT id FROM versions WHERE {pinned})"), [project_id])?;
+    Ok(())
 }
 
 pub fn transcript_replacement_preflight(
@@ -505,9 +582,9 @@ pub(crate) fn mutate_with_snapshot_at_version<T>(
     expected_version_id: Option<&str>,
     mismatch_message: &str,
     reason: &str,
-    mutate: impl FnOnce(&Transaction<'_>) -> Result<T>,
+    mutate: impl FnOnce(&Connection) -> Result<T>,
 ) -> Result<T> {
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = crate::write_transaction::WriteTransaction::begin(db)?;
     if current_version_id(&tx, project_id)?.as_deref() != expected_version_id {
         bail!("{mismatch_message}")
     }
@@ -529,9 +606,9 @@ pub(crate) fn mutate_with_snapshot<T>(
     db: &mut Connection,
     project_id: &str,
     reason: &str,
-    mutate: impl FnOnce(&Transaction<'_>) -> Result<T>,
+    mutate: impl FnOnce(&Connection) -> Result<T>,
 ) -> Result<T> {
-    let tx = db.transaction()?;
+    let tx = crate::write_transaction::WriteTransaction::begin(db)?;
     let result = mutate(&tx)?;
     snapshot_in_transaction(&tx, project_id, reason)?;
     tx.commit()?;
@@ -653,14 +730,14 @@ pub(crate) fn create_with_id(
         return Ok(project);
     }
     let media = prepare_media(media_path, title)?;
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = crate::write_transaction::WriteTransaction::begin(db)?;
     insert_prepared_with_id_in_transaction(&tx, &media, id)?;
     tx.commit()?;
     load(db, id)
 }
 
 pub(crate) fn insert_prepared_with_id_in_transaction(
-    tx: &Transaction<'_>,
+    tx: &Connection,
     media: &PreparedMedia,
     id: &str,
 ) -> Result<()> {
@@ -776,28 +853,37 @@ pub fn edit_segment(
         bail!("字幕文本不能为空")
     }
     mutate_with_snapshot(db, project_id, "编辑原文", |tx| {
-        let count = tx.execute(
-            "UPDATE segments SET text=?3 WHERE id=?1 AND project_id=?2",
-            params![segment_id, project_id, &text],
-        )?;
-        if count == 0 {
-            bail!("字幕段不存在：{segment_id}")
-        }
-        translation::invalidate_segments(tx, project_id, &[segment_id])?;
-        tx.execute(
-            "UPDATE word_range_cuts SET stale=1 WHERE edit_id IN (SELECT id FROM edits WHERE project_id=?1 AND segment_id=?2)",
-            params![project_id, segment_id],
-        )?;
-        tx.execute(
-            "UPDATE edits SET status='restored' WHERE project_id=?1 AND segment_id=?2 AND kind='word_cut' AND status='applied'",
-            params![project_id, segment_id],
-        )?;
-        Ok(())
+        edit_segment_in_transaction(tx, project_id, segment_id, &text)
     })?;
     select_segments(db, project_id)?
         .into_iter()
         .find(|segment| segment.id == segment_id)
         .ok_or_else(|| anyhow!("字幕段不存在：{segment_id}"))
+}
+
+pub(crate) fn edit_segment_in_transaction(
+    tx: &Connection,
+    project_id: &str,
+    segment_id: &str,
+    text: &str,
+) -> Result<()> {
+    let count = tx.execute(
+        "UPDATE segments SET text=?3 WHERE id=?1 AND project_id=?2",
+        params![segment_id, project_id, &text],
+    )?;
+    if count == 0 {
+        bail!("字幕段不存在：{segment_id}")
+    }
+    translation::invalidate_segments(tx, project_id, &[segment_id])?;
+    tx.execute(
+            "UPDATE word_range_cuts SET stale=1 WHERE edit_id IN (SELECT id FROM edits WHERE project_id=?1 AND segment_id=?2)",
+            params![project_id, segment_id],
+        )?;
+    tx.execute(
+            "UPDATE edits SET status='restored' WHERE project_id=?1 AND segment_id=?2 AND kind='word_cut' AND status='applied'",
+            params![project_id, segment_id],
+        )?;
+    Ok(())
 }
 
 pub fn replace_all(
@@ -849,7 +935,7 @@ pub fn replace_all(
 }
 
 pub fn restore_version(db: &mut Connection, project_id: &str, version_id: &str) -> Result<Version> {
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = crate::write_transaction::WriteTransaction::begin(db)?;
     assert_history_idle(&tx, project_id)?;
     let snapshot_json: String = tx
         .query_row(
@@ -942,7 +1028,7 @@ fn snapshot_value_for_patch(
 }
 
 fn restore_agent_review_state(
-    tx: &Transaction<'_>,
+    tx: &Connection,
     project_id: &str,
     project: &Project,
     speaker_track: Option<&speaker::SpeakerTrack>,
@@ -1119,13 +1205,18 @@ fn restore_agent_review_state(
 }
 
 fn apply_snapshot_in_transaction(
-    tx: &Transaction<'_>,
+    tx: &Connection,
     project_id: &str,
     snapshot_json: &str,
     history_move: Option<(i64, &str)>,
 ) -> Result<()> {
     let snapshot: Value = serde_json::from_str(snapshot_json)?;
     let project: Project = serde_json::from_value(snapshot.clone())?;
+    let restored_glossary_version = if snapshot.get("glossary").is_some() {
+        translation::restore_snapshot(tx, project_id, &project.glossary)?
+    } else {
+        translation::load_glossary(tx, project_id)?.version
+    };
     let speaker_track = snapshot
         .get("speakerTrack")
         .map(|value| serde_json::from_value::<speaker::SpeakerTrack>(value.clone()))
@@ -1301,7 +1392,11 @@ fn apply_snapshot_in_transaction(
                 language,
                 &translation.status,
                 &translation.updated_at,
-                i64::from(translation.glossary_version)
+                i64::from(if translation.glossary_version == project.glossary.version {
+                    restored_glossary_version
+                } else {
+                    translation.glossary_version
+                })
             ],
         )?;
         for segment in &translation.segments {
@@ -1366,7 +1461,7 @@ fn apply_snapshot_in_transaction(
 }
 
 fn move_history(db: &mut Connection, project_id: &str, undo: bool) -> Result<Project> {
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = crate::write_transaction::WriteTransaction::begin(db)?;
     assert_history_idle(&tx, project_id)?;
     let cursor = tx
         .query_row(
@@ -1380,7 +1475,7 @@ fn move_history(db: &mut Connection, project_id: &str, undo: bool) -> Result<Pro
     let direction = if undo { "DESC" } else { "ASC" };
     let query = format!(
         "SELECT history_index,snapshot_json FROM versions
-         WHERE project_id=?1 AND history_index {comparison} ?2
+         WHERE project_id=?1 AND active_history=1 AND history_index {comparison} ?2
          ORDER BY history_index {direction} LIMIT 1"
     );
     let target = tx
@@ -1413,10 +1508,15 @@ pub fn redo(db: &mut Connection, project_id: &str) -> Result<Project> {
     move_history(db, project_id, false)
 }
 
+pub(crate) fn select_tasks(db: &Connection, id: &str) -> Result<Vec<Task>> {
+    Ok(db.prepare("SELECT id,kind,language,status,created_at,completed_at,lease_worker,lease_id,lease_expires_at,base_version_id,progress,error_message,attempt_count,cancel_requested_at,workflow_id,instruction_locale,(SELECT kind FROM task_events WHERE task_id=tasks.id ORDER BY id DESC LIMIT 1),(SELECT progress FROM task_events WHERE task_id=tasks.id ORDER BY id DESC LIMIT 1),(SELECT message FROM task_events WHERE task_id=tasks.id ORDER BY id DESC LIMIT 1),(SELECT created_at FROM task_events WHERE task_id=tasks.id ORDER BY id DESC LIMIT 1) FROM tasks WHERE project_id=?1 ORDER BY created_at")?.query_map([id],|row| { let worker:Option<String>=row.get(6)?; let status:String=row.get(3)?; let error_message:Option<String>=row.get(11)?; let activity_kind:Option<String>=row.get(16)?; Ok(Task{id:row.get(0)?,kind:row.get(1)?,language:row.get(2)?,error_code:crate::model::background_error_code(&status,error_message.as_deref()),status,created_at:row.get(4)?,completed_at:row.get(5)?,lease:worker.map(|worker| Lease { worker, id:row.get(7).unwrap_or_default(), expires_at:row.get(8).unwrap_or_default()}),last_activity:activity_kind.map(|kind| TaskActivity { kind, progress:row.get(17).unwrap_or(None), message:row.get(18).unwrap_or_default(), created_at:row.get(19).unwrap_or_default() }),base_version_id:row.get(9)?,progress:row.get(10)?,error_message,attempt_count:row.get(12)?,cancel_requested_at:row.get(13)?,workflow_id:row.get(14)?,instruction_locale:row.get(15)?})})?.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{patches, tasks, workflows};
+    use rusqlite::TransactionBehavior;
     use serde_json::json;
     use tempfile::tempdir;
 
