@@ -1010,3 +1010,27 @@ test("opens fresh unchecked consent when a failed AI run cannot reuse approval",
   expect(await page.evaluate(() => (window as any).aiSendCount)).toBe(1);
   await expect(page.getByText(/原运行记录会保留/)).toBeVisible();
 });
+
+
+test("refreshes a failed run when cancellation loses the completion race", async ({ page }) => {
+  await page.goto("/"); await bindMockMedia(page);
+  await page.evaluate(async () => {
+    const approvalUrl = "/src/domains/ai-approval-client.ts", reviewUrl = "/src/domains/agent-review-client.ts";
+    const { aiApprovalClient } = await import(approvalUrl);
+    const { agentReviewClient } = await import(reviewUrl);
+    const execute = aiApprovalClient.execute;
+    aiApprovalClient.execute = async (id: string) => {
+      const result = await execute(id);
+      const running = { ...result.agentRun, status: "running" };
+      agentReviewClient.getAgentRun = async () => running;
+      agentReviewClient.cancelAgent = async () => ({ ...result, agentRun: { ...running, status: "failed", errorCode: "ai_approval_stale", errorMessage: "发送授权已失效" } });
+      return { ...result, agentRun: running };
+    };
+  });
+  await page.getByRole("button", { name: "开始 AI 辅助" }).click();
+  await confirmAiAssistance(page, "本机 Codex");
+  await page.getByRole("button", { name: "取消运行", exact: true }).click();
+  await expect(page.getByText("运行已结束，无需取消；已刷新最新状态。")).toBeVisible();
+  await expect(page.getByRole("button", { name: "显式继续" })).toBeVisible();
+  await expect(page.getByText("本机 Agent 已取消；项目内容未自动修改。")).not.toBeVisible();
+});

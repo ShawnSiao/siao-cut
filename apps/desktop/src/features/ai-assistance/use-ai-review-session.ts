@@ -128,7 +128,7 @@ export function useAiReviewSession({ project, mediaUrl, subtitleLanguage, uiLoca
       await refreshProject(project.id);
       await refreshReview(project.id, setProject);
     }
-    setNotice(tr("app.creator.agent.cancelled"));
+    setNotice(envelope.agentRun?.status === "cancelled" ? tr("app.creator.agent.cancelled") : "运行已结束，无需取消；已刷新最新状态。");
   });
   const resumeCodexAgent = () => agentRun && withBusy(tr("app.creator.agent.resuming"), () => resumeAgentWithRecovery({
     agentRun, project, activeProjectIdRef, refreshProject, setAgentWorkflowKind, setAiApprovalTaskId,

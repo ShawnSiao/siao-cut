@@ -235,6 +235,9 @@ pub use crate::agent::repository::{list, load};
 pub fn cancel(db: &mut Connection, run_id: &str) -> Result<AgentRun> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let run = load(&tx, run_id)?;
+    if ["failed", "completed", "cancelled", "interrupted"].contains(&run.status.as_str()) {
+        return Ok(run);
+    }
     if !["queued", "running", "submitting"].contains(&run.status.as_str()) {
         bail!("agent_run_not_cancellable: 当前 Agent 运行不能取消")
     }
@@ -1672,6 +1675,15 @@ fn finalize_worker_error(
 
 fn public_error_message(code: &str) -> &'static str {
     match code {
+        "ai_approval_stale" => {
+            "发送授权已失效：字幕版本或执行配置发生变化。已完成批次保留；请重新预检并确认。"
+        }
+        "ai_dispatch_uncertain" => {
+            "此批次已发起过调用，结果尚未确认；为避免重复消耗额度，已停止发送。"
+        }
+        "ai_approval_configuration_unavailable" => {
+            "无法核对 AI 执行配置，已停止发送；请检查配置后重试。"
+        }
         "codex_cli_missing" => "Codex CLI 不可用。",
         "codex_not_logged_in" => "Codex CLI 尚未登录。",
         "codex_cli_unsupported" => "Codex CLI 版本不支持本机 Agent 所需的权限隔离。",
@@ -2092,6 +2104,46 @@ mod tests {
         assert_eq!(batch_after.id, batch_before);
         assert_eq!(batch_after.status, "completed");
         assert_eq!(batch_after.attempt_count, 1);
+    }
+
+    #[test]
+    fn cancel_terminal_run_preserves_result_and_task_state() {
+        for status in ["failed", "completed", "cancelled", "interrupted"] {
+            let (_temp, mut database, project, task, segment_id) = database_fixture();
+            let run_id = insert_test_run(
+                &mut database,
+                &task,
+                &project.id,
+                &segment_id,
+                status,
+                &now(),
+            );
+            database
+                .execute(
+                    "UPDATE agent_runs SET error_code='ai_approval_stale' WHERE id=?1",
+                    [&run_id],
+                )
+                .unwrap();
+            for _ in 0..2 {
+                let result = cancel(&mut database, &run_id).unwrap();
+                assert_eq!(result.status, status);
+                assert_eq!(result.error_code.as_deref(), Some("ai_approval_stale"));
+                assert!(result.cancel_requested_at.is_none());
+            }
+            let status: String = database
+                .query_row("SELECT status FROM tasks WHERE id=?1", [&task.id], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(status, "queued");
+        }
+    }
+
+    #[test]
+    fn approval_errors_are_not_reported_as_invalid_model_output() {
+        assert!(public_error_message("ai_approval_stale").contains("发送授权已失效"));
+        assert!(public_error_message("ai_dispatch_uncertain").contains("重复消耗额度"));
+        assert!(public_error_message("ai_approval_configuration_unavailable").contains("核对"));
     }
 
     #[test]

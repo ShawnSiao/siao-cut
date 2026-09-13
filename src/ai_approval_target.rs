@@ -43,10 +43,10 @@ fn configuration_at(
             };
             Ok(ApprovalTarget {
                 revision: format!(
-                    "{}:{}:{:x}",
+                    "codex-v2:{}:{}:{}",
                     network.revision,
                     network_fingerprint,
-                    Sha256::digest(bytes)
+                    codex_fingerprint(&bytes)?
                 ),
                 receiver: "Codex：接收方未核实，可能使用远程模型".into(),
                 endpoint: None,
@@ -85,9 +85,83 @@ fn configuration_at(
     }
 }
 
+fn codex_fingerprint(bytes: &[u8]) -> Result<String> {
+    let invalid = || {
+        anyhow::anyhow!(
+            "ai_approval_configuration_unavailable: Codex 配置无法解析，请检查配置后重试"
+        )
+    };
+    let text = std::str::from_utf8(bytes).map_err(|_| invalid())?;
+    let mut config: toml::Table = toml::from_str(text).map_err(|_| invalid())?;
+    // Codex records per-directory trust while executing. Trust is not a receiver
+    // change, and this runner overrides permissions and ignores project rules.
+    // Retain every other key, including unknown/project-specific configuration.
+    if let Some(projects) = config
+        .get_mut("projects")
+        .and_then(toml::Value::as_table_mut)
+    {
+        projects.retain(|_, value| {
+            if let Some(project) = value.as_table_mut() {
+                project.remove("trust_level");
+                !project.is_empty()
+            } else {
+                true
+            }
+        });
+        if projects.is_empty() {
+            config.remove("projects");
+        }
+    }
+    Ok(format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&config)?)
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn batch_directory_trust_does_not_invalidate_consent_but_model_changes_do() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.toml");
+        std::fs::write(&path, "model = 'first'\n").unwrap();
+        let approved = configuration_at(&ExecutionTarget::Codex, temp.path(), temp.path()).unwrap();
+        for batch in 1..=2 {
+            std::fs::write(&path, format!("# batch {batch}\nmodel = 'first'\n[projects.'temporary/batch-{batch}']\ntrust_level = 'trusted'\n")).unwrap();
+            let next = configuration_at(&ExecutionTarget::Codex, temp.path(), temp.path()).unwrap();
+            assert_eq!(approved.revision, next.revision);
+        }
+        std::fs::write(&path, "model = 'second'\n").unwrap();
+        assert_ne!(
+            approved.revision,
+            configuration_at(&ExecutionTarget::Codex, temp.path(), temp.path())
+                .unwrap()
+                .revision
+        );
+    }
+
+    #[test]
+    fn fingerprint_retains_provider_and_project_overrides_and_rejects_invalid_toml() {
+        let base = codex_fingerprint(b"model = 'first'").unwrap();
+        for extra in [
+            "model_provider = 'other'",
+            "[model_providers.custom]\nbase_url = 'https://example.com'",
+            "[projects.'temporary']\nmodel = 'other'",
+            "unknown_future_option = true",
+        ] {
+            assert_ne!(
+                base,
+                codex_fingerprint(format!("model = 'first'\n{extra}").as_bytes()).unwrap()
+            );
+        }
+        assert!(codex_fingerprint(b"[invalid").is_err());
+        assert!(codex_fingerprint(&[255]).is_err());
+        assert_eq!(
+            codex_fingerprint(b"").unwrap(),
+            codex_fingerprint(b"[projects.'temporary']\ntrust_level = 'trusted'").unwrap()
+        );
+    }
     use crate::ai_services::{
         config::AiServiceStore,
         credentials::tests_support::MemoryCredentialStore,
