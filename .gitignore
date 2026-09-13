@@ -4,11 +4,28 @@
 
 # Local planning and agent output
 /docs/goal/
+/designs/
+/ARCHITECTURE.md
+/docs/desktop-architecture.md
+/tools/serve-prototype.mjs
+/.local-tools/
+/.agents/skills/baoyu-design/
+/docs/workspace-storage-policy.md
+/docs/user-manual.md
+/tools/set-build-environment.ps1
+/tools/check-workspace-size.ps1
+/tools/clean-workspace.ps1
+/docs/hackathon/
+/docs/Agent CLI 处理结果.png
+/docs/Agent处理字幕.png
+/docs/交接给外部 Agent.png
+/docs/任务准备交接.png
+/docs/英文界面.png
+/docs/运行环境设置.png
 /.codex-remote-attachments/
 /.playwright-cli/
 /output/
 /.tmp-*/
-designs/**/_d_meta.json
 
 # Dependencies, builds, and test output
 **/node_modules/
@@ -16,6 +33,9 @@ designs/**/_d_meta.json
 **/test-results/
 **/playwright-report/
 **/coverage/
+**/__pycache__/
+*.pyc
+*.pyo
 .nyc_output/
 *.lcov
 *.tsbuildinfo

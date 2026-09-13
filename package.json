@@ -11,7 +11,6 @@
     "test:rust": "cargo test",
     "contract:generate": "node tools/generate-core-contract.mjs",
     "contract:check": "node tools/generate-core-contract.mjs --check",
-    "prototype": "node tools/serve-prototype.mjs",
     "desktop:dev": "npm --prefix apps/desktop run tauri dev",
     "desktop:build": "npm --prefix apps/desktop run tauri build --",
     "test:ui": "npm --prefix apps/desktop run test:ui",

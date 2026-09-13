@@ -384,7 +384,6 @@ SRT 字幕块之间使用一个空行分隔，VTT 文件包含标准 `WEBVTT` �
 - [英文创作者源码 Beta](english-creator-beta.md)
 - [发布与更新](release-updates.md)
 - [仓库提交物规范](repository-artifact-policy.md)
-- [桌面工作台状态与接口](desktop-architecture.md)
 
 
 ## 文稿自动保存与草稿恢复

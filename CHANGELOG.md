@@ -6,6 +6,10 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+### Repository hygiene / 仓库提交物
+
+- Keep internal architecture and workbench prototypes local, remove their public links and launcher, and reject local-only paths in repository checks. / 内部架构和工作台原型仅留本地，移除公开引用和原型入口，并增加本地文件误提交检查。
+
 ### Added
 
 - Recoverable MOSS multispeaker transcription with loopback-only service configuration, background jobs, candidate review, speaker review, and structured export.
