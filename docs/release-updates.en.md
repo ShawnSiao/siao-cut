@@ -4,20 +4,21 @@
 
 ## Release states
 
-As of July 21, 2026, the GitHub repository has no tags or Releases. The source can be built, and an unsigned Windows 10 candidate has partial local acceptance evidence, but neither is a public release.
+As of September 13, 2026, the [0.2.0 local preview](https://github.com/ShawnSiao/siao-cut/releases/tag/local-preview-0.2.0-20260913) is available as a GitHub Pre-release. It is unsigned, has automatic updates disabled, provides no `latest.json`, and is not marked as the stable Latest release. See the [first-run guide](first-run.en.md).
 
 | State | Meaning | Current status |
 | --- | --- | --- |
-| Source beta | Built from the repository with the full development toolchain; intended only for invited testing | Available; external Creator Beta acceptance is incomplete |
-| Unsigned candidate | Built locally with `NotSigned` for installation and recovery tests | A Windows 10 candidate exists; it is not uploaded publicly |
-| GitHub prerelease | Formally signed and uploaded, but still awaiting real upgrade and recovery acceptance | Not created |
+| Source build | Built from the repository with the full development toolchain | Available; invited Creator Beta testing has separate acceptance requirements |
+| Unsigned candidate | Built locally with `NotSigned` for installation and recovery tests | Historical evidence exists; it does not validate a new package |
+| Public preview | An unsigned trial package marked as a GitHub Pre-release | The 0.2.0 preview is available; automatic updates are disabled |
+| Signed update candidate | Produced by the signing workflow below; remains a Pre-release until real upgrade and recovery acceptance is complete | Not available |
 | Formal Release | Signing, checksums, SBOM, provenance, and Windows 10/11 acceptance all pass | Not available |
 
-See the [Windows candidate acceptance record](windows-candidate-acceptance.en.md). Missing evidence must not be bypassed by renaming an artifact, uploading it manually, or removing the prerelease flag.
+A GitHub Pre-release label does not establish that an installer is signed. See the [Windows candidate acceptance record](windows-candidate-acceptance.en.md) for historical evidence. The preview still needs a complete native regression after installation, system scaling checks, upgrades from historical formal installers, real media and AI workflows, signing, and provenance acceptance. Renaming a package or removing its Pre-release label cannot substitute for stable-release acceptance.
 
 ## Signing boundary
 
-Windows updates use both a Tauri updater signature and Authenticode. A release build also records the installer SHA-256 and size in `latest.json`. The desktop app does not run an installer when any verification fails.
+The following workflow applies to signed update candidates and formal releases, not to the current unsigned preview. Signed Windows updates use both a Tauri updater signature and Authenticode, and record the installer SHA-256 and size in `latest.json`. The desktop app does not run an installer when any verification fails.
 
 - The Tauri updater public key may be committed or injected into build configuration.
 - The Tauri updater private key must stay outside the repository and retain an offline backup. Losing it prevents existing installations from verifying future updates.
@@ -56,7 +57,7 @@ The result is JSON. Missing requirements produce exit code `2`. Add `-AllowIncom
 
 ## Build release artifacts
 
-The release command requires a stable `latest.json` endpoint and a versioned installer URL:
+The release command requires the actual publishing repository's stable `latest.json` endpoint and versioned installer URL. A local Git remote alone does not configure updates:
 
 ```powershell
 $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = '<inject from password manager>'
@@ -75,7 +76,7 @@ The script succeeds only when:
 2. Tauri creates the matching `.sig`; and
 3. `latest.json` contains an HTTPS URL, inline Tauri signature, file size, and SHA-256.
 
-A tag-triggered workflow generates an SPDX JSON SBOM and `SHA256SUMS`, creates provenance for the release files through GitHub OIDC, and creates an SBOM attestation for the installer. It uploads exactly seven files to the prerelease:
+The signed-release workflow, triggered by a formal version tag, generates an SPDX JSON SBOM and `SHA256SUMS`, creates provenance for the release files through GitHub OIDC, and creates an SBOM attestation for the installer. It uploads exactly seven files to the signed candidate's prerelease. The manually published `local-preview-*` package is outside this workflow:
 
 1. the Windows NSIS installer;
 2. the matching Tauri `.sig`;

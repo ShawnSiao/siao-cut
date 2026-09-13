@@ -4,18 +4,19 @@
 
 ## 发布状态与术语
 
-截至 2026 年 7 月 21 日，GitHub 仓库没有标签或 Release。源码可以构建，Windows 10 未签名候选包已经完成部分本地验收，但仍不属于公开发行版。
+截至 2026 年 9 月 13 日，已发布 [0.2.0 本地预览版](https://github.com/ShawnSiao/siao-cut/releases/tag/local-preview-0.2.0-20260913)，标记为 GitHub Pre-release。该包未签名、自动更新关闭，不提供 `latest.json`，也不设为稳定版 Latest。首次体验见[首次使用指南](first-run.md)。
 
 | 状态 | 含义 | 当前情况 |
 | --- | --- | --- |
-| 源码 Beta | 从仓库构建，需要完整开发环境，只适合受邀测试 | 可用；外部 Creator Beta 验收仍未完成 |
-| 未签名候选包 | 本地生成、`NotSigned`，用于安装与恢复测试 | 已生成 Windows 10 候选包；不公开上传 |
-| GitHub prerelease | 经过正式签名并上传，仍需真实升级与恢复验收 | 尚未创建 |
+| 源码构建 | 从仓库构建，需要完整开发环境 | 可用；受邀 Creator Beta 有单独的验收要求 |
+| 未签名候选包 | 本地生成、`NotSigned`，用于安装与恢复测试 | 已有历史验收记录，不能作为新包的验收结论 |
+| 公开预览版 | 未签名的体验包，标记为 GitHub Pre-release | 已提供 0.2.0 预览版；自动更新关闭 |
+| 签名更新候选 | 按下述签名流程生成，完成真实升级与恢复验收前保留 Pre-release 标记 | 尚未提供 |
 | 正式 Release | 签名、校验、SBOM、来源证明和 Windows 10/11 验收全部通过 | 尚不可用 |
 
-候选包证据见 [Windows 候选包验收记录](windows-candidate-acceptance.md)。未完成项不得通过改名、手工上传或取消 prerelease 标记来绕过。
+GitHub Pre-release 标记只表示预发布状态，不代表安装包已经签名。历史证据见 [Windows 候选包验收记录](windows-candidate-acceptance.md)；本次预览包仍需完成原生安装后的完整实机回归、系统缩放、历史正式安装包升级、真实媒体与 AI 流程、签名和来源证明验收。不得通过改名或移除 Pre-release 标记将未完成验收的包当作稳定版。
 
-SiaoCut 的 Windows 更新同时使用 Tauri 更新签名和 Authenticode。发布构建还会在 `latest.json` 中记录安装包的 SHA-256 与大小。任一校验未通过时，桌面端不会执行安装器。
+以下流程适用于签名更新候选和正式发布，不用于当前未签名预览包。SiaoCut 的签名 Windows 更新同时使用 Tauri 更新签名和 Authenticode，并在 `latest.json` 中记录安装包的 SHA-256 与大小。任一校验未通过时，桌面端不会执行安装器。
 
 ## 密钥边界
 
@@ -56,7 +57,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/test-release-readiness
 
 ## 构建发布产物
 
-当前仓库没有固定 Git remote。发布命令必须显式传入稳定的 `latest.json` 地址和当前版本安装包地址：
+发布命令必须显式传入实际发布仓库的稳定 `latest.json` 地址和目标版本安装包地址，不能仅根据本机 Git remote 推断更新配置：
 
 ```powershell
 $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = '<从密码管理器注入>'
@@ -75,7 +76,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-signed-release.p
 2. Tauri 生成与安装包对应的 `.sig` 文件。
 3. `latest.json` 包含 HTTPS 下载地址、内联 Tauri 签名、文件大小和 SHA-256。
 
-tag 触发的工作流会先生成 SPDX JSON SBOM 和 `SHA256SUMS`，再通过 GitHub OIDC 为发布文件生成来源证明，并为安装包生成 SBOM 证明。工作流会把以下 7 个文件上传到 prerelease：
+正式版本 tag 触发的签名发布工作流会先生成 SPDX JSON SBOM 和 `SHA256SUMS`，再通过 GitHub OIDC 为发布文件生成来源证明，并为安装包生成 SBOM 证明。工作流会把以下 7 个文件上传到签名更新候选的 prerelease；当前手工发布的 `local-preview-*` 不属于这条流程：
 
 1. Windows NSIS 安装包；
 2. 同名 Tauri `.sig`；

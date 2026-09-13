@@ -17,6 +17,6 @@
     "test:e2e": "npm --prefix apps/desktop run test:e2e"
   },
   "engines": {
-    "node": ">=22"
+    "node": "^22.13.0 || >=24.0.0"
   }
 }

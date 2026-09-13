@@ -2,17 +2,20 @@
 
 This invitation-only beta is for English-language talking-head videos, YouTube explainers, courses, and video podcasts. It runs from source on Windows 10 or 11. It is not an installer or a production release.
 
+This guide covers the source-based testing program. For the separate unsigned public preview, use the [first-run guide](first-run.en.md). Local transcription and manual editing do not require an Agent; optional AI assistance can use a configured API service, local Codex, or manual handoff.
+
 ## Who this beta is for
 
 Join only if you can run PowerShell commands and already have:
 
 - Git;
-- Node.js 22 or later;
+- Node.js 22.13+ (22.x) or 24+; CI uses Node.js 24;
 - Rust stable with `rustfmt` and `clippy`;
 - Visual Studio 2022 Build Tools with the Desktop development with C++ workload;
 - Microsoft Edge WebView2 Runtime;
-- an external Agent environment that can run local SiaoCut commands for optional Agent workflows; and
 - English media you own or are authorized to process.
+
+Manual Agent handoff additionally requires an external Agent environment that can run local SiaoCut commands. Configured API services and local Codex are alternative optional execution paths.
 
 The beta does not include an installer, code signing, SmartScreen reputation, telemetry, billing, automatic updates, publishing integrations, or live developer setup support.
 
@@ -123,4 +126,4 @@ Copy the [beta evidence template](english-creator-beta-feedback-template.md) to 
 
 ## Invitation text
 
-> You are invited to test the SiaoCut English Creator source beta on Windows 10/11. This beta requires Git, Node.js 22, Rust, Visual Studio Build Tools, and an external Agent environment that can run local SiaoCut commands. Please use only media you are authorized to process. SiaoCut keeps media processing local and sends only transcript text, timestamps, and structural constraints to an external Agent. No installer or real-time setup support is provided. Feedback must be anonymized and must not include media, transcripts, local paths, or personal data.
+> You are invited to test the SiaoCut English Creator source beta on Windows 10/11. This source workflow requires Git, Node.js 22.13+ (22.x) or 24+, Rust, and Visual Studio Build Tools. Optional manual Agent handoff requires an environment that can run local SiaoCut commands. Please use only media you are authorized to process. SiaoCut keeps media processing local and sends only approved transcript text and structural context for AI assistance. This testing program covers source setup; a separate unsigned public preview is available through the first-run guide. No real-time setup support is provided. Feedback must be anonymized and must not include media, transcripts, local paths, or personal data.

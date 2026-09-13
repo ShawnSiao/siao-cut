@@ -65,12 +65,12 @@ Prompts and hotwords are experimental inputs. The model may ignore them; they ar
 
 ## Confirmation and conflicts
 
-If the project does not change during transcription, the Core saves the transcript and speaker track together as one undoable version.
+Core automatically saves the transcript and speaker track together as one undoable version only when the project still has no subtitles, its version is unchanged, and the source media hash matches.
 
 If the project or source changes, the result does not overwrite current content:
 
 - Changed source hash: the job fails until the byte-identical original is relinked.
-- Changed project version: the job enters `awaiting_apply` and the app shows a candidate result.
+- Existing subtitles or a changed project version: the job enters `awaiting_apply` and the app shows a candidate result. An unchanged version does not authorize overwriting existing subtitles.
 - Apply candidate: review the impact again and explicitly confirm replacing the current transcript and speaker track.
 - Discard candidate: remove the prepared result without modifying the project.
 

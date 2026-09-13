@@ -2,13 +2,15 @@
 
 This document records reproducible acceptance requirements for the SiaoCut Windows app-only package. The candidate is for local release preparation only and is not a formal Release.
 
+The [September 12 native acceptance record](windows-maturity-acceptance-2026-09-12.md) (Chinese) adds recovery, failure, and isolated installation/upgrade results based on `834b513`. It includes a successful short-clip retry and same-source installer tests, while ordinary window close, system scaling, Windows 11, and historical formal-installer upgrades remain unverified. The package information and automated acceptance table below are historical records from August 2026, not acceptance evidence for the [September 13 public preview](release-updates.en.md).
+
 The current package profile is `app-only`: the installer contains only the desktop app, `siaocut-core`, frontend assets, icons, and static component metadata. FFmpeg, FFprobe, Whisper CPU/Vulkan, VAD, model weights, and `yt-dlp` are configured externally on demand.
 
-## Candidate
+## Historical candidate — August 2, 2026
 
 | Item | Result |
 | --- | --- |
-| Source commit | This change set (see Git commit) |
+| Source commit | No exact commit is recorded in this table; it cannot identify the source of a new build |
 | File | `SiaoCut_0.2.0_x64-setup.exe` |
 | Size | 6,634,877 bytes (about 6.33 MiB) |
 | SHA-256 | `bdaaaf31e411d91ab9a6eeb2971f6fe885461724434e24f24643cc1991847677` |
