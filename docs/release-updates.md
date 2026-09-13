@@ -4,7 +4,7 @@
 
 ## 发布状态与术语
 
-截至 2026 年 9 月 13 日，已发布 [0.2.0 本地预览版](https://github.com/ShawnSiao/siao-cut/releases/tag/local-preview-0.2.0-20260913)，标记为 GitHub Pre-release。该包未签名、自动更新关闭，不提供 `latest.json`，也不设为稳定版 Latest。首次体验见[首次使用指南](first-run.md)。
+截至 2026 年 9 月 13 日，已发布 [0.2.0 本地预览版](https://github.com/ShawnSiao/siao-cut/releases/tag/local-preview-0.2.0-20260913-r2)，标记为 GitHub Pre-release。该包未签名、自动更新关闭，不提供 `latest.json`，也不设为稳定版 Latest。首次体验见[首次使用指南](first-run.md)。
 
 | 状态 | 含义 | 当前情况 |
 | --- | --- | --- |

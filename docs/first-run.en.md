@@ -6,10 +6,10 @@ The Windows x64 local preview is unsigned and has automatic updates disabled. St
 
 ## 1. Get the preview
 
-Download the installer whose name contains `local-preview` and `SHA256SUMS` from the [preview release page](https://github.com/ShawnSiao/siao-cut/releases/tag/local-preview-0.2.0-20260913). Check the downloaded file in PowerShell:
+Download the installer whose name contains `local-preview` and `SHA256SUMS` from the [preview release page](https://github.com/ShawnSiao/siao-cut/releases/tag/local-preview-0.2.0-20260913-r2). Check the downloaded file in PowerShell:
 
 ```powershell
-Get-FileHash -LiteralPath '.\SiaoCut_0.2.0_local-preview_20260913_x64-setup.exe' -Algorithm SHA256
+Get-FileHash -LiteralPath '.\SiaoCut_0.2.0_local-preview_20260913-r2_x64-setup.exe' -Algorithm SHA256
 ```
 
 Compare the result with the matching entry in `SHA256SUMS`. A matching hash establishes file integrity, not code signing. Read the release page's native acceptance limitations before installing; do not disable system protection to install the preview.

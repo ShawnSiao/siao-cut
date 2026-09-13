@@ -8,7 +8,7 @@
 
 SiaoCut 是面向 AI 口播创作者的 Windows 本地优先剪辑工作台。它以文稿和字幕为主要编辑入口，在本机完成媒体导入、语音转写、字幕审阅、软剪辑和视频导出。
 
-> **项目状态：开发中。** 已提供[未签名本地预览安装包](https://github.com/ShawnSiao/siao-cut/releases/tag/local-preview-0.2.0-20260913)，用于体验和反馈，自动更新关闭。尚未完成正式发布验收，不应视为稳定版。
+> **项目状态：开发中。** 已提供[未签名本地预览安装包](https://github.com/ShawnSiao/siao-cut/releases/tag/local-preview-0.2.0-20260913-r2)，用于体验和反馈，自动更新关闭。尚未完成正式发布验收，不应视为稳定版。
 
 首次体验可按[首次使用指南](docs/first-run.md)完成下载校验、组件准备、转写和字幕导出；运行本地流程不要求使用 Codex。
 

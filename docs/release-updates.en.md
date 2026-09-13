@@ -4,7 +4,7 @@
 
 ## Release states
 
-As of September 13, 2026, the [0.2.0 local preview](https://github.com/ShawnSiao/siao-cut/releases/tag/local-preview-0.2.0-20260913) is available as a GitHub Pre-release. It is unsigned, has automatic updates disabled, provides no `latest.json`, and is not marked as the stable Latest release. See the [first-run guide](first-run.en.md).
+As of September 13, 2026, the [0.2.0 local preview](https://github.com/ShawnSiao/siao-cut/releases/tag/local-preview-0.2.0-20260913-r2) is available as a GitHub Pre-release. It is unsigned, has automatic updates disabled, provides no `latest.json`, and is not marked as the stable Latest release. See the [first-run guide](first-run.en.md).
 
 | State | Meaning | Current status |
 | --- | --- | --- |

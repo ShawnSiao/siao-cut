@@ -6,10 +6,10 @@
 
 ## 1. 获取预览版
 
-从 [GitHub 预览发布页](https://github.com/ShawnSiao/siao-cut/releases/tag/local-preview-0.2.0-20260913)下载名称含 `local-preview` 的安装器及 `SHA256SUMS`，在 PowerShell 中检查下载文件：
+从 [GitHub 预览发布页](https://github.com/ShawnSiao/siao-cut/releases/tag/local-preview-0.2.0-20260913-r2)下载名称含 `local-preview` 的安装器及 `SHA256SUMS`，在 PowerShell 中检查下载文件：
 
 ```powershell
-Get-FileHash -LiteralPath '.\SiaoCut_0.2.0_local-preview_20260913_x64-setup.exe' -Algorithm SHA256
+Get-FileHash -LiteralPath '.\SiaoCut_0.2.0_local-preview_20260913-r2_x64-setup.exe' -Algorithm SHA256
 ```
 
 将输出与 `SHA256SUMS` 中对应文件的值逐字比较。哈希一致只说明下载完整，不代表安装器已签名。阅读发布页的实机验收限制后再决定是否安装；不要为安装而关闭系统防护。

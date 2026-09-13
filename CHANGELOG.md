@@ -6,6 +6,10 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [local-preview-0.2.0-20260913-r2] - 2026-09-13
+
+Second unsigned preview build; application version remains 0.2.0 and automatic updates remain disabled. / 第二次未签名预览构建，应用版本仍为 0.2.0，自动更新保持关闭。
+
 ### Fixed / 修复
 
 - Share verified runtime selection and VAD gating between CLI and desktop background Whisper transcription. Previously, background jobs omitted VAD and always recorded it as unused. Candidates now retain the actual timing mode and counts; version checks and replacement review remain required. / CLI 与桌面后台 Whisper 转写共用运行时校验和 VAD 门控；修复后台任务未启用 VAD 且始终记录为未使用的问题。候选结果记录实际时间模式和数量，保留版本检查及替换审核。
@@ -58,5 +62,7 @@ Unsigned Windows x64 preview based on `3d3e433`; app version remains `0.2.0`. Th
 - The preview still needs full native regression after installation, system scaling, historical formal-installer upgrades, real media and AI workflows, signing, and provenance acceptance. Historical test results apply only to their recorded builds. / 预览包仍需完成安装后完整原生回归、系统缩放、历史正式安装包升级、真实媒体与 AI 流程、签名和来源证明验收；历史结果只适用于记录中的构建。
 - Windows 11 and external Creator Beta acceptance remain incomplete. / Windows 11 和外部 Creator Beta 验收仍未完成。
 
-[Unreleased]: https://github.com/ShawnSiao/siao-cut/compare/local-preview-0.2.0-20260913...main
+[Unreleased]: https://github.com/ShawnSiao/siao-cut/compare/local-preview-0.2.0-20260913-r2...main
 [local-preview-0.2.0-20260913]: https://github.com/ShawnSiao/siao-cut/releases/tag/local-preview-0.2.0-20260913
+
+[local-preview-0.2.0-20260913-r2]: https://github.com/ShawnSiao/siao-cut/releases/tag/local-preview-0.2.0-20260913-r2

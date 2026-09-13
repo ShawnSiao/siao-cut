@@ -8,7 +8,7 @@
 
 SiaoCut is a Windows-local-first editing workbench for AI talking-head creators. It uses the transcript and subtitles as the primary editing surface, keeping media import, transcription, subtitle review, soft cuts, and video export on the local machine.
 
-> **Project status: in development.** An [unsigned local preview installer](https://github.com/ShawnSiao/siao-cut/releases/tag/local-preview-0.2.0-20260913) is available for testing and feedback, with automatic updates disabled. Release acceptance is incomplete; this is not a stable release.
+> **Project status: in development.** An [unsigned local preview installer](https://github.com/ShawnSiao/siao-cut/releases/tag/local-preview-0.2.0-20260913-r2) is available for testing and feedback, with automatic updates disabled. Release acceptance is incomplete; this is not a stable release.
 
 See the [first-run guide](docs/first-run.en.md) for download verification, component setup, transcription, and subtitle export. The local workflow does not require Codex.
 
