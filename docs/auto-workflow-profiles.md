@@ -34,6 +34,8 @@ siaocut --json auto cancel <workflowId>
 siaocut --json auto continue <workflowId>
 ```
 
+`awaiting_authorization` 表示已选择 AI 执行方式，但尚未授权发送实际字幕。转写完成后，从任务入口选择「核对并授权发送」，检查文本、接收方、模型和费用提示；`auto continue` 不会代替发送授权。启动工作流时保存执行偏好不等于授权发送。
+
 `needs_agent` 表示翻译执行仍需完成，`needs_review` 表示必须处理建议或确认完成审阅。Agent 提交只生成候选结果；审阅前不会修改字幕或译文。
 
 ## 恢复与审计

@@ -14,6 +14,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+mod whisper_execution;
+pub(crate) use whisper_execution::transcribe_whisper_audio;
+
 pub fn tool_path(variable: &str, default: &str) -> String {
     env::var(variable).unwrap_or_else(|_| default.to_owned())
 }
@@ -204,91 +207,20 @@ pub fn transcribe(
             String::from_utf8_lossy(&result.stderr).trim()
         )
     }
-    let audio_duration = ffprobe_duration(&wav)
-        .filter(|duration| duration.is_finite() && *duration > 0.0)
-        .ok_or_else(|| {
-            anyhow!("transcription_timing_invalid: 无法确认标准化音频时长，结果未应用")
-        })?;
-
-    let (whisper, backend) = resolved_whisper_runtime()?;
-    let vad_capability = crate::runtime::vad_timeline_capability(Path::new(&whisper), &backend);
-    let vad_model = vad_capability
-        .verified
-        .then(whisper_vad_model_path)
-        .flatten();
-    let timing_mode = if vad_model.is_some() {
-        TranscriptionTimingMode::verified_vad()
-    } else {
-        TranscriptionTimingMode::no_vad()
-    };
-    let output_base = run_directory.join("transcript");
-    run_whisper(
-        &whisper,
-        model,
-        &wav,
-        &output_base,
-        language,
-        vad_model.as_deref(),
-    )?;
-    import_whisper_json_at_baseline_with_mode(
+    let output = transcribe_whisper_audio(model, &wav, language)?;
+    import_whisper_result_at_baseline_with_mode(
         db,
         &project.id,
-        &output_base.with_extension("json"),
+        &output.raw,
         TranscriptionImportBaseline {
             expected_version_id,
             expected_source_path: &project.media.source_path,
             expected_source_sha256: &source_sha256,
-            audio_duration,
+            audio_duration: output.duration,
             confirm_replace,
         },
-        timing_mode,
+        output.timing_mode,
     )
-}
-
-fn run_whisper(
-    whisper: &str,
-    model: &Path,
-    wav: &Path,
-    output_base: &Path,
-    language: Option<&str>,
-    vad_model: Option<&str>,
-) -> Result<()> {
-    let mut command = hidden_command(whisper);
-    command
-        .args(["-m"])
-        .arg(model)
-        .args(["-f"])
-        .arg(wav)
-        .args(["-ojf", "-sow", "-ml", "60", "-of"])
-        .arg(output_base);
-    if let Some(vad_model) = vad_model {
-        command.args([
-            "--vad",
-            "-vm",
-            vad_model,
-            "--vad-min-silence-duration-ms",
-            "250",
-            "--vad-speech-pad-ms",
-            "80",
-        ]);
-    }
-    if let Some(language) = language {
-        command.args(["-l", language]);
-    }
-    let result = command
-        .output()
-        .with_context(|| format!("无法启动 whisper.cpp：{whisper}"))?;
-    if !result.status.success() {
-        bail!(
-            "whisper.cpp 转录失败（退出码 {}）：{}",
-            result
-                .status
-                .code()
-                .map_or_else(|| "unknown".to_owned(), |code| code.to_string()),
-            String::from_utf8_lossy(&result.stderr).trim()
-        )
-    }
-    Ok(())
 }
 
 const MAX_CAPTION_DURATION_SECONDS: f64 = 8.0;
@@ -343,7 +275,7 @@ struct TranscriptionImportBaseline<'a> {
 }
 
 #[derive(Clone, Copy)]
-struct TranscriptionTimingMode {
+pub(crate) struct TranscriptionTimingMode {
     mode: &'static str,
     vad_used: bool,
 }
@@ -818,6 +750,7 @@ fn import_whisper_json_at_baseline(
     )
 }
 
+#[cfg(test)]
 fn import_whisper_json_at_baseline_with_mode(
     db: &mut Connection,
     project_id: &str,
@@ -828,7 +761,17 @@ fn import_whisper_json_at_baseline_with_mode(
     let raw: Value = serde_json::from_str(
         &fs::read_to_string(json_path).context("whisper.cpp 未生成 JSON 输出")?,
     )?;
-    let validated = validate_whisper_transcript(&raw, baseline.audio_duration)?;
+    import_whisper_result_at_baseline_with_mode(db, project_id, &raw, baseline, timing_mode)
+}
+
+fn import_whisper_result_at_baseline_with_mode(
+    db: &mut Connection,
+    project_id: &str,
+    raw: &Value,
+    baseline: TranscriptionImportBaseline<'_>,
+    timing_mode: TranscriptionTimingMode,
+) -> Result<TranscriptionResult> {
+    let validated = validate_whisper_transcript(raw, baseline.audio_duration)?;
     let current = project::load(db, project_id)?;
     if current.history.current_version_id.as_deref() != Some(baseline.expected_version_id) {
         bail!("transcription_project_changed: 本地转录期间项目已被修改，结果未应用")
@@ -926,11 +869,27 @@ fn import_whisper_json_at_baseline_with_mode(
 mod transcription_timing_tests;
 
 /// Reuse the original-media timing validator for persisted Whisper candidates.
-pub(crate) fn normalized_whisper_candidate(raw: &Value, duration: f64) -> Result<Value> {
+pub(crate) fn normalized_whisper_candidate(
+    raw: &Value,
+    duration: f64,
+    timing_mode: TranscriptionTimingMode,
+) -> Result<Value> {
     let validated = validate_whisper_transcript(raw, duration)?;
+    let timing = TimingValidation {
+        status: "verified".into(),
+        time_domain: "original_media".into(),
+        mode: timing_mode.mode.into(),
+        vad_used: timing_mode.vad_used,
+        segment_count: validated.segments.len(),
+        word_count: validated
+            .segments
+            .iter()
+            .map(|segment| segment.words.len())
+            .sum(),
+    };
     Ok(serde_json::json!({
         "language": validated.language,
-        "timingValidation": { "status": "verified", "timeDomain": "original_media", "vadUsed": false },
+        "timingValidation": timing,
         "segments": validated.segments.into_iter().map(|segment| serde_json::json!({
             "start": segment.start, "end": segment.end, "text": segment.text,
             "speaker": "S01", "words": segment.words,

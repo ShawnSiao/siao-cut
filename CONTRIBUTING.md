@@ -9,7 +9,7 @@ SiaoCut 接受 Bug 修复、功能改进、测试、文档和设计贡献。所�
 - Windows 10 或 Windows 11
 - Git
 - Rust stable，包含 `rustfmt` 和 `clippy`
-- Node.js 22 或更高版本
+- Node.js 22.13+（22.x）或 24+；CI 使用 Node.js 24
 - Microsoft Edge WebView2 Runtime
 
 安装 Desktop 依赖：

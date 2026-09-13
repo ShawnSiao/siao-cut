@@ -2,7 +2,9 @@
 
 [简体中文](dependency-security.md) | [English](dependency-security.en.md)
 
-## 当前评估
+## 2026 年 7 月 21 日评估记录
+
+本文保留有日期和范围的历史检查结果，不代表持续有效的安全结论。2026 年 9 月 13 日的文档同步未重新运行依赖审计；发布前应按当前锁文件重新检查。
 
 截至 2026 年 7 月 21 日，Dependabot 报告 `glib 0.18.5` 受 GHSA-wrw7-89jp-8q8g 影响。两个告警分别来自桌面端和更新器契约工具的 `Cargo.lock`。
 
@@ -27,7 +29,7 @@ cargo tree --manifest-path tools/updater-contract/Cargo.toml --target x86_64-pc-
 告警关闭不等于依赖已经升级，也不扩大当前平台支持范围。
 
 
-## 桌面契约生成依赖
+## 2026 年 9 月 12 日桌面契约生成依赖记录
 
 2026 年 9 月 12 日新增并锁定 `ts-rs 12.0.1`，用于从 Rust 编辑请求与响应 DTO
 生成 TypeScript 类型，沿用 `tools/generate-core-contract.mjs --check` 检查漂移。

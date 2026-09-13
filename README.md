@@ -8,7 +8,9 @@
 
 SiaoCut 是面向 AI 口播创作者的 Windows 本地优先剪辑工作台。它以文稿和字幕为主要编辑入口，在本机完成媒体导入、语音转写、字幕审阅、软剪辑和视频导出。
 
-> **项目状态：开发中。** 当前仓库尚未发布安装包，也没有经过受信任 Windows 代码签名的公开版本。源码可以构建和运行，但不应视为正式发布版本。
+> **项目状态：开发中。** 已提供[未签名本地预览安装包](https://github.com/ShawnSiao/siao-cut/releases/tag/local-preview-0.2.0-20260913-r2)，用于体验和反馈，自动更新关闭。尚未完成正式发布验收，不应视为稳定版。
+
+首次体验可按[首次使用指南](docs/first-run.md)完成下载校验、组件准备、转写和字幕导出；运行本地流程不要求使用 Codex。
 
 ## 工作流程
 
@@ -19,13 +21,15 @@ SiaoCut 是面向 AI 口播创作者的 Windows 本地优先剪辑工作台。�
 
 ## 当前能力
 
+以下说明对应当前源码。尚未发布的修复见[变更日志](CHANGELOG.md#unreleased)，现有预览安装包不会自动包含这些修复。
+
 | 功能 | 当前实现 |
 | --- | --- |
-| 本地转写 | 使用外部配置的 FFmpeg 规范化音频，通过同源构建的 whisper.cpp 在 CPU 或兼容的 Vulkan GPU 上转写；只有通过原始媒体时间轴验收的运行时才启用 VAD，其他运行时自动安全回退。模型由使用者明确选择。 |
+| 本地转写 | 使用外部配置的 FFmpeg 规范化音频，通过同源构建的 whisper.cpp 在 CPU 或兼容的 Vulkan GPU 上转写；只有通过原始媒体时间轴验收的运行时才启用 VAD，未通过 VAD 验收时使用无 VAD 路径。已选择的运行时缺失或哈希变化时拒绝执行。模型由使用者明确选择。 |
 | 多人长音频（实验） | 显式连接本机回环 MOSS 服务，生成分段、匿名说话人标签和待审复核项；服务、CUDA、Python 和模型不随 SiaoCut 安装。 |
 | 文稿剪辑 | 支持字幕定位与编辑、翻译审阅、软剪辑、撤销、重做和版本恢复。原片不会被覆盖。 |
 | 语音证据 | 标记语速、停顿、口头语、低置信度、响度、静音和疑似削波；可选说话人模型用于生成待审阅说话人轨。 |
-| Agent 审阅 | Agent 只接收文本、时间戳和结构约束。结果以三方差异形式待审，不会直接改写项目。 |
+| AI 辅助与审阅 | 可使用自行配置的 LLM API、本机 Codex 或手工交接。发送前确认接收方、模型和文本范围；结果以三方差异形式待审，不会直接改写项目。 |
 | 一键工作流 | 提供「快速初稿」「平衡审阅」「精细交付」三种固定路径；后台阶段可恢复，建议和译文仍须人工决定。 |
 | 导出 | 支持 SRT、VTT、ASS、Markdown、MP4 和 MKV。字幕可烧录进画面、内嵌为文本轨，或作为 UTF-8 SRT/VTT 文件放在视频旁；视频可使用原始比例或 `9:16` 画布。 |
 | 项目完整性 | Rust Core 是唯一写入者；SQLite 保存项目版本，媒体 SHA-256 审计会在原片缺失或变化时阻止导出。 |
@@ -34,6 +38,7 @@ SiaoCut 是面向 AI 口播创作者的 Windows 本地优先剪辑工作台。�
 
 - 当前只支持 Windows 10 和 Windows 11。
 - 媒体处理在本机完成。模型、运行时和 URL 媒体只在明确操作后从标示来源下载。
+- AI 辅助可向确认的服务发送字幕文本和任务上下文，可能产生费用；本机 Codex 也可能使用远程模型。MOSS 仅向已配置的本机回环服务传输临时音频。
 - 应用安装包只包含桌面程序、Rust Core 和组件元数据；FFmpeg、Whisper、VAD、模型与 `yt-dlp` 不随包提供，缺少时应用仍可启动并显示未配置状态。
 - 桌面应用、CLI 和 Skill 都通过 Rust Core 修改项目，不直接写入 SQLite。
 - 语音分析和 Agent 结果只提供证据或建议；应用文本修改和剪辑前需要人工确认。
@@ -48,7 +53,7 @@ SiaoCut 是面向 AI 口播创作者的 Windows 本地优先剪辑工作台。�
 - Windows 10 或 Windows 11
 - Git
 - Rust stable 与 Visual Studio 2022 C++ Build Tools
-- Node.js 22 或更高版本
+- Node.js 22.13+（22.x）或 24+；CI 使用 Node.js 24
 - Microsoft Edge WebView2 Runtime
 
 ### 启动桌面应用
@@ -104,8 +109,9 @@ tools/                构建、发布和仓库检查工具
 ## 文档
 
 - [用户手册](docs/workbench-user-guide.md)
+- [AI 服务配置与数据边界](docs/ai-services.md)
 - [一键工作流预设](docs/auto-workflow-profiles.md)
-- [0.3 语音智能](docs/voice-intelligence-0.3.md)
+- [语音智能](docs/voice-intelligence.md)
 - [快速字幕时间安全模式](docs/quick-transcription-timing.md)
 - [MOSS 多人长音频转写](docs/multispeaker-transcription.md)
 - [英文创作者源码 Beta](docs/english-creator-beta.md)

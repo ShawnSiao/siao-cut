@@ -1,6 +1,6 @@
 # Third-party runtime notices
 
-SiaoCut source is Apache-2.0. Runtime dependencies remain separately licensed and are not included in the app-only installer. The installed application exposes the pinned source, size, SHA-256 and license metadata before an external component is selected.
+SiaoCut source is Apache-2.0. Third-party dependencies retain their own licenses. SQLite is compiled into Rust Core; media runtime executables and model weights are external to the app-only installer. The installed application exposes the pinned source, size, SHA-256 and license metadata before an external component is selected.
 
 | Component | Current local use | License / release requirement |
 | --- | --- | --- |
@@ -12,4 +12,14 @@ SiaoCut source is Apache-2.0. Runtime dependencies remain separately licensed an
 | yt-dlp | Windows x64 2026.08.19 is installed externally before explicitly confirmed public URL imports | The combined PyInstaller executable is GPL-3.0-or-later and includes components under additional licenses; yt-dlp source is Unlicense. The release manifest pins the executable and official license-file SHA-256 values, and self-update is disabled. |
 | LobeHub AI service logos | Provider marks displayed in the bundled environment settings interface | MIT. Copyright (c) 2023 LobeHub. The license text is bundled under `notices/licenses/`. |
 
-The installer includes the repository-tracked license texts under `notices/licenses/` and the machine-readable component manifest under `notices/runtime-manifest.json`. No runtime executable or model weight is included. No media is uploaded by Rust Core. Model downloads and user-confirmed public URL imports remain the only built-in network operations.
+The installer includes the repository-tracked license texts under `notices/licenses/` and the machine-readable component manifest under `notices/runtime-manifest.json`. No FFmpeg, Whisper, VAD, yt-dlp executable, or model weight is included.
+
+Network operations depend on the selected feature:
+
+- Models and media runtimes are downloaded from disclosed sources after an explicit selection; component update checks can contact their configured sources.
+- Public URL imports contact the selected media site and download source after confirmation.
+- Configured AI services can contact their endpoints for model discovery, connection tests, and approved text tasks. Local Codex may also use a remote model. These tasks contain text and structural context, not media bytes or media paths; service credentials are used for authentication and are not part of the task text.
+- Experimental MOSS transcription sends a temporary WAV only to the explicitly configured loopback HTTP service on the same computer. It does not support remote MOSS endpoints.
+- Eligible signed builds can check for application updates; installation requires confirmation and signature checks. The current unsigned preview has automatic updates disabled.
+
+See [AI service configuration](docs/ai-services.md) (Chinese), [MOSS transcription](docs/multispeaker-transcription.en.md), and [release behavior](docs/release-updates.en.md) for the corresponding data and acceptance boundaries.

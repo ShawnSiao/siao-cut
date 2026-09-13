@@ -27,7 +27,7 @@ Use this Skill when the user asks to 转写、润色字幕、翻译字幕、剪�
 - A soft cut is only a proposal until the user asks to apply it. Always report the spoken text and time range, never internal cut ids.
 - `cut dismiss <projectId> <cutId>` records an explicit 「保留原片」 decision without changing the timeline or making translations stale. Use `cut restore` to undo either an applied or dismissed cut decision.
 - `auto start` defaults to the `balanced` profile for backward compatibility. Select `draft` or `delivery` only when the user explicitly asks for that workflow outcome. Never add translation, AI execution, or a non-source subtitle mode to `draft`.
-- An automatic workflow may stop at `needs_agent` or `needs_review`. Resolve every pending proposal through the existing review commands, then use `auto continue`; this confirmation never authorizes automatic application.
+- An automatic workflow may stop at `awaiting_authorization`, `needs_agent`, or `needs_review`. For `awaiting_authorization`, direct the user to the app's task entry to inspect and authorize the actual text, recipient, model, and usage. `auto continue` never substitutes for sending authorization. Resolve every pending proposal through the existing review commands, then continue; this never authorizes automatic application.
 - Before export, run `audit`. A stale translation is a warning: ask whether the user wants to refresh it or export the last reviewed translation.
 - Run `media prepare <projectId>` once when the user wants proxy playback, waveform evidence, or thumbnails. Reuse `ready` artifacts while their `sourceSha256` still matches the imported media.
 - Final video export is a background Core job. Report its progress from `video status`; use `video cancel` only when the user asks to stop. A cancelled job must not be described as a completed export.
@@ -89,7 +89,7 @@ Use `task review <patchItemId> --action apply|keep` for one item. Use `task revi
 
 ## Workflow recipes
 
-Use one workflow for one review objective. Supported kinds are `polish`, `translate`, `proofread`, `edit`, `cut`, and `summary`.
+Use one workflow for one review objective. Supported kinds are `polish`, `translate`, `proofread`, `punctuate`, `edit`, `cut`, `summary`, and `speaker_names`. Punctuation uses the text-patch response shape above; speaker-name and summary tasks have different result schemas. Follow the claimed payload's instructions rather than submitting generic text patches for those tasks.
 
 ```powershell
 # Correct transcription errors and verbal clutter
